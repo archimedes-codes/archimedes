@@ -485,6 +485,24 @@ These are properties of the repo, not of any branch:
   loosening the assertion — the churn is a real violation, and CI's `/tmp` does not
   churn. If it ever bites CI, the honest fix is a dedicated temp root for the census,
   not a wider tolerance.
+- **ADR numbers collide on disk, and a plan will confidently name one that is taken.** `0086` is used by
+  TWO files (`0086-glossary-names-govern-new-code-and-are-repaired-on-touch-not-by-sweep.md` and
+  `0086-two-stage-async-session-titling-with-wire-isolation.md`) — pre-existing, and the only collision
+  measured at `9cb94746`: `ls docs/decisions/ | grep -oE '^[0-9]{4}' | sort | uniq -d` prints `0086`, and
+  81 files carry 80 distinct numbers. The reason this costs a run time rather than being cosmetic: a
+  plan that names the next number is wrong more often than it is right. The `codemode` spec said `0088`,
+  then "corrected" itself to `0087`, and BOTH were already taken — `0087` and `0088` exist on disk — so
+  the shipped ADR is `0089`. Do not derive the number from a plan or from `max+1` alone: the directory
+  has gaps (0001–0089 holds 80 distinct numbers, so 9 are missing), so `max+1` avoids collisions but a
+  gap-filler will not, and the check that matters is the `uniq -d` above run AFTER you pick, not before.
+- **A backgrounded `cargo` command with no `cd` in its subshell dies with `could not find Cargo.toml`,
+  and at exit 101 it is indistinguishable from a real test failure.** It masqueraded as the documented
+  `worker_e2e` flake above once. `sh -c` does not inherit your interactive cwd into a backgrounded
+  subshell, and `cargo test` run from the repo root (rather than `src-tauri/`) fails the same way for
+  the same reason — there is no `Cargo.toml` at the root of this repo. So always write
+  `cd src-tauri && cargo …` inside the command, and read the TEXT of a `cargo` failure before
+  concluding a test flaked: "could not find Cargo.toml" means the command never ran, and re-running it
+  to confirm a flake will simply fail again.
 - **Plans carry stale baselines within hours** on a busy branch: re-measure test
   counts at your own HEAD rather than trusting the plan's.
 - **Do not `git add -f` a file under `docs/roadmap/` to get it into a sibling worktree — `cp` it there.**
