@@ -495,7 +495,11 @@ pub struct AgentLoop {
     /// `pub` so a test can swap in a temp-config manager; constructed in
     /// `new` with `home_dir` = `dirs::home_dir` + `project_cwd` =
     /// `space_cwd`).
-    pub mcp: McpManager,
+    ///
+    /// `Arc` — shared, so nested codemode calls can drive parallel MCP
+    /// `call_tool`s through it (every manager receiver is `&self`); a test
+    /// swaps in a temp-config manager.
+    pub mcp: Arc<McpManager>,
     /// The subagent dispatch handle (a native parent spawns a native
     /// child — `SubagentDispatcher::dispatch`; `None` when the manager is
     /// absent).
@@ -581,11 +585,11 @@ impl AgentLoop {
         // The MCP manager (ADR 0018 — the `mcp` tool's machinery): the
         // global `~/.pi/agent/mcp.json` + the desktop `settings.json`
         // `mcpServers` (ADR 0019) + the project `<space_cwd>/.pi/mcp.json`.
-        let mcp = McpManager::new(
+        let mcp = Arc::new(McpManager::new(
             dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
             space_cwd.clone(),
             config_dir.as_deref(),
-        );
+        ));
         // (ADR 0030 / finding 6) The permission cluster — the frozen half
         // (boundary + guard list + default rules + `~`-expansion home, all from
         // the ONE `$HOME` read) and the inert per-turn values — is built by the
@@ -876,7 +880,7 @@ impl AgentLoop {
         }
         // Session teardown: kill the MCP stdio children (dropping a
         // `StdioClient` kills the child via `kill_on_drop`) + clear the state.
-        self.mcp.close_all();
+        self.mcp.close_all().await;
     }
 
     /// Handle one prompt (the model → tool → retry/compaction loop).
