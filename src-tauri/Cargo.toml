@@ -1,6 +1,6 @@
 [package]
 name = "archimedes"
-version = "0.9.3"
+version = "0.10.0"
 license = "MIT"
 description = "A Tauri App"
 authors = ["you"]
