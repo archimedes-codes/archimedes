@@ -35,7 +35,7 @@ verified-by: re-read against THIS tree on `feature/backlog-79-122-124-28` (HEAD 
   `anthropic_messages` and `EMPTY_USER_MESSAGE_PLACEHOLDER` (`agent/harness/provider/anthropic.rs`); and
   `responses_content_wire` / `responses_input` (`agent/harness/provider/responses.rs`, read to confirm it is NOT sanitized).
   **Run for #148:** `cargo build --all-targets` (succeeded); `cargo test --package archimedes --lib agent::harness::provider`
-  → 149 passed, 0 failed; `cargo test` (full suite) → 1878 passed, 0 failed, 1 ignored (lib) plus all integration suites passed, 0 failed;
+  → 152 passed, 0 failed; `cargo test` (full suite) → 1878 passed, 0 failed, 1 ignored (lib) plus all integration suites passed, 0 failed;
   `cargo clippy --all-targets` → 0 warnings; `cargo fmt --check` → 0 diff; `pnpm test` → 167 files passed, 3430 passed, 1 skipped, 0 failed;
   `pnpm build` → succeeded.
 ---
@@ -163,9 +163,9 @@ and read by every seam that touches it: the SSE parser's prefix-hold accumulator
   - **Anthropic wire** (`agent/harness/provider/anthropic.rs`): `anthropic_tool_result_content` does the
     same for the `tool_result` block's `content`, using the constant imported from `openai.rs`.
     `anthropic_messages` also drops empty text blocks from user/assistant `Blocks` (so a pasted image with no
-    caption no longer carries an empty text block). If that leaves a `Blocks` message with no content
-    and no `tool_calls`, it emits `EMPTY_USER_MESSAGE_PLACEHOLDER` (`"(empty)"`); with `tool_calls` it
-    emits only the `tool_use` blocks.
+    caption no longer carries an empty text block). An effectively-empty `Text` user/assistant message
+    with no `tool_calls`, or a `Blocks` message left with no content and no `tool_calls`, emits
+    `EMPTY_USER_MESSAGE_PLACEHOLDER` (`"(empty)"`); with `tool_calls` it emits only the `tool_use` blocks.
   - **A `tool` message is replaced, never omitted.** Its `content` pairs with `tool_call_id`, so the #122
     omit-`content` guard stays limited to an assistant row that carries `tool_calls`.
   - **The predicate is `content_is_effectively_empty`**, so a tool whose real output is only whitespace,
@@ -177,10 +177,13 @@ and read by every seam that touches it: the SSE parser's prefix-hold accumulator
     that happens to use the same words.
   - Pinned by the `request_body_*` tests in `openai.rs` — `request_body_replaces_empty_tool_text_with_no_output_placeholder`,
     `request_body_replaces_empty_tool_blocks_with_no_output_placeholder`,
-    `request_body_preserves_real_text_and_mixed_tool_blocks`, and the flipped assertion in
+    `request_body_preserves_real_text_and_mixed_tool_blocks`,
+    `request_body_assistant_with_tool_calls_followed_by_empty_tool_result`, and the flipped assertion in
     `request_body_keeps_content_for_blocks_tool_messages_and_real_text` — and by the
-    `anthropic_tool_result_content_*`, `anthropic_messages_*` and
-    `anthropic_request_body_tool_result_never_contains_empty_text` tests in `anthropic.rs`. They are unit
+    `anthropic_tool_result_content_*`, `anthropic_messages_*` (including
+    `anthropic_messages_empty_text_without_tool_calls_becomes_empty_placeholder`),
+    `anthropic_request_body_tool_result_never_contains_empty_text`, and
+    `anthropic_request_body_consecutive_tool_messages_empty_and_real_merge` tests in `anthropic.rs`. They are unit
     pins one level below the wire, like every other pin on this page, so the "no contract test" gap above
     still stands.
 

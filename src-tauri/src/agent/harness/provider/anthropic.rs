@@ -617,11 +617,12 @@ pub struct AnthropicProvider {
     pub custom_headers: Option<std::collections::BTreeMap<String, String>>,
 }
 
-/// The text sent for a user/assistant `Blocks` message that has NO usable
-/// content left once its empty text blocks are dropped (and no `tool_calls`
-/// to carry). Anthropic rejects an empty `content` array and empty text
-/// blocks, and dropping the whole message would break the strict
-/// user/assistant alternation, so a visible stand-in is sent instead.
+/// The text sent for an effectively-empty `Text` or all-empty `Blocks`
+/// user/assistant message with no `tool_calls` to carry (where no usable
+/// content is left once empty text blocks are dropped). Anthropic rejects
+/// an empty string, an empty `content` array, and empty text blocks, and
+/// dropping the whole message would break the strict user/assistant
+/// alternation, so a visible stand-in is sent instead.
 pub(crate) const EMPTY_USER_MESSAGE_PLACEHOLDER: &str = "(empty)";
 
 /// The Anthropic WIRE shape of a content block: `Text` →
@@ -729,8 +730,9 @@ fn merge_content(existing: &mut Value, next: &Value) {
 /// **object** — the OpenAI wire's string form does not apply; an assistant
 /// message with `tool_calls` and EMPTY `Text` content → `tool_use` blocks
 /// ONLY, no empty `text` block). Effectively-empty text blocks in `Blocks`
-/// content are dropped; an all-empty `Blocks` message with no `tool_calls`
-/// is sent as a single `"(empty)"` text block.
+/// content are dropped; an effectively-empty `Text` or all-empty `Blocks`
+/// message with no `tool_calls` is sent as `"(empty)"` (string or single
+/// text block).
 fn anthropic_messages(req: &ModelRequest) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for m in req.messages.iter().filter(|m| m.role != ChatRole::System) {
