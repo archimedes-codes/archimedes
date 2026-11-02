@@ -377,6 +377,15 @@ jobs:
   # announcing the wrong number. Separate job, not a step in the one above: it
   # needs jq and nothing else, so it owes no toolchain install and stays fast
   # enough to be the first red light on the PR that introduced the drift.
+  #
+  # THE PREMISE CHANGED once, and honestly: the rquickjs allocator guard below
+  # does need cargo, so this job now installs the pinned toolchain — scoped to
+  # that one step group rather than moved into the matrix job, because the guard
+  # is still a shell script whose proof-of-failure is a fixture, and the version
+  # steps above keep their original cost. The guard could not go in
+  # `lint-test-build` instead: that job runs on three OSes, and a dependency-graph
+  # fact is the same on all three, so it would pay three cold compiles to learn
+  # one answer.
   scripts:
     name: Shell scripts
     runs-on: ubuntu-latest
@@ -445,3 +454,41 @@ jobs:
       # test script above is what changed.
       - name: Check the three version fields agree
         run: bash scripts/check-versions.sh
+
+      # The rquickjs allocator guard, and the ONLY step in this job that needs a
+      # compiler. Same toolchain rule as the matrix job: no version named here,
+      # `src-tauri/rust-toolchain.toml` is the pin, and the step runs with
+      # `working-directory: src-tauri` so rustup reads that file. `cargo tree`
+      # resolves manifests and builds nothing, so this owes no apt webkit install
+      # and no dependency cache — there is no compilation to make redundant.
+      - name: Install the pinned Rust toolchain
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
+          rustc --version
+
+      # Its own premise proof, same as the census and command guards above: this
+      # guard's job is to go red on a graph shape that is NOT in the tree today,
+      # so a live run can never demonstrate that it can fail. The fixtures carry
+      # captured resolver output from an actually-poisoned graph.
+      - name: Prove the rquickjs allocator guard can fail
+        run: bash scripts/check-rquickjs-allocator.sh --self-test
+
+      # The guard on the real graph. WHY HERE AND NOT IN A TEST: the failure it
+      # catches is a COMPILE-time feature unification — a dependency turning on
+      # rquickjs's `rust-alloc`/`allocator` makes `set_memory_limit` a documented
+      # no-op, so the 256 MiB codemode cap stops enforcing while every test that
+      # measures the cap's BEHAVIOUR still sees a cap. Only the resolver knows
+      # what got unified, so only a build-graph check can answer it.
+      #
+      # ⚠ DO NOT "SIMPLIFY" THIS TO `cargo tree --edges features -p rquickjs`.
+      # That form is vacuous: `-p` prints the package SUBTREE, and the feature
+      # node points IN from whoever enabled it, so it is outside what gets
+      # printed. Measured on a poisoned graph, the `-p` dump and the clean dump
+      # are byte-identical apart from that one missing line, and the guard prints
+      # green. The script reads the FULL feature tree for that reason; the
+      # self-test above pins the claim so a rewiring to the `-p` form reddens.
+      - name: Check the rquickjs build graph has no custom allocator
+        run: bash scripts/check-rquickjs-allocator.sh

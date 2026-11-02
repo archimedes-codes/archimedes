@@ -31,7 +31,12 @@ pub const CODEMODE_MEMORY_LIMIT: usize = 256 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineLimits {
     /// QuickJS-managed memory cap (bytes) — `AsyncRuntime::set_memory_limit`.
-    /// Effective only with the default `std` build (a no-op under `rust-alloc`).
+    /// rquickjs documents this as a no-op under the `rust-alloc`/`allocator`
+    /// features (see the note on the dependency in `Cargo.toml`, where the
+    /// measured behaviour on 0.14.0 is recorded too). That it is installed at
+    /// all is pinned by
+    /// `memory_cap_is_installed_not_merely_requested`, and that it enforces by
+    /// `a_tiny_cap_surfaces_as_a_script_end_not_a_hang`.
     pub memory_bytes: usize,
     /// JS stack cap (bytes) — `AsyncRuntime::set_max_stack_size`.
     /// The crate default is 256 * 1024.
@@ -473,12 +478,121 @@ mod tests {
         // string is what reaches us. The CONTRACT this test holds is that the
         // cap turns the blowup into a `Failed`, not a hang and not a `Done`.
         let (engine, _turn) = test_engine(64 * 1024 * 1024, Duration::from_secs(5)).await;
-        let end = engine
-            .eval("const a = []; for (let i = 0; i < 1e7; i++) { a.push('x'.repeat(100)); }")
-            .await;
+        let end = engine.eval(BLOWUP).await;
         assert!(
             matches!(end, ScriptEnd::Failed(_)),
             "the memory cap must surface as a throw, got {end:?}"
+        );
+    }
+
+    /// The cap the pin test below asks for. Deliberately small and explicit —
+    /// 8 MiB against the 256 MiB production figure and the 64 MiB the behaviour
+    /// tests use — so the assertion reads as a statement about the MECHANISM
+    /// ("the number I asked for is the number the runtime reports") rather than
+    /// about any particular budget. It also keeps the negative control fast.
+    const PIN_MEMORY_LIMIT: usize = 8 * 1024 * 1024;
+
+    /// The blowup script, shared by the two cap tests. 1e7 iterations of a
+    /// 100-char string is ~1 GB of JS strings: far over every cap in this file,
+    /// so the ONLY thing that can end it is a limit that is actually installed.
+    const BLOWUP: &str = "const a = []; for (let i = 0; i < 1e7; i++) { a.push('x'.repeat(100)); }";
+
+    /// FINDING 1's pin: the memory cap is INSTALLED, not merely requested.
+    ///
+    /// WHY THIS TEST EXISTS. `AsyncRuntime::set_memory_limit`'s own doc comment
+    /// (rquickjs-core-0.14.0/src/runtime/async.rs:204-210) says it "is a Noop
+    /// when a custom allocator is being used, as is the case for the
+    /// 'rust-alloc' or 'allocator' features". Those features are transitive, so
+    /// any dependency that turns one on turns the 256 MiB cap into a comment —
+    /// and `memory_cap_rejects_a_blowup` cannot see it, because it measures
+    /// BEHAVIOUR at a cap that would then simply be absent: an uncapped heap
+    /// does not throw, it grows until the OOM killer takes the process.
+    ///
+    /// WHAT THIS ACTUALLY OBSERVES, and what it does NOT — stated plainly
+    /// because a guard that overstates itself is worse than no guard:
+    ///
+    ///   `AsyncRuntime::memory_usage` (async.rs:248) fills a
+    ///   `rquickjs::runtime::MemoryUsage` (= `rquickjs_sys::JSMemoryUsage`) via
+    ///   `JS_ComputeMemoryUsage`, which copies `malloc_limit` straight out of
+    ///   `rt->malloc_state.malloc_limit` (quickjs.c:7583) — the SAME field
+    ///   `JS_SetMemoryLimit` writes (quickjs.c:2443). So this reads the limit
+    ///   back out of the C runtime through a path the setter does not touch.
+    ///
+    ///   It therefore detects the cap never being installed: never calling the
+    ///   setter, calling it with the wrong number, a future `EngineLimits` that
+    ///   drops `memory_bytes`, or a rquickjs that makes the setter conditional
+    ///   on the allocator and skips the write. In each case the reported limit
+    ///   is 0 (= QuickJS's "unlimited", quickjs.c:2321) or a different number,
+    ///   and this assertion goes RED. The control below PROVES that: a runtime
+    ///   nobody set a limit on reports 0, not a plausible-looking default — so
+    ///   the equality is discriminating and not tautological.
+    ///
+    ///   It does NOT detect a limit that is RECORDED but not ENFORCED — which
+    ///   is the literal shape of the upstream "no-op" warning. Measured on this
+    ///   tree, that configuration does not occur: the cap check lives in
+    ///   `js_malloc_rt` (quickjs.c:2017), ABOVE the `rt->mf.js_malloc` allocator
+    ///   dispatch, so it runs whichever allocator is installed, and a
+    ///   `--features rquickjs/rust-alloc` build of this exact dependency set
+    ///   still refused an 8 MiB blowup (`malloc_size` plateaued at 8 387 864
+    ///   bytes against the 8 388 608 requested). The enforcement half is
+    ///   `a_tiny_cap_surfaces_as_a_script_end_not_a_hang`; the two together
+    ///   cover install + enforce, and neither alone does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn memory_cap_is_installed_not_merely_requested() {
+        let (engine, _turn) = test_engine(PIN_MEMORY_LIMIT, Duration::from_secs(5)).await;
+        let reported = engine.runtime().memory_usage().await.malloc_limit;
+        assert_eq!(
+            usize::try_from(reported).expect("malloc_limit is a byte count, never negative"),
+            PIN_MEMORY_LIMIT,
+            "the cap CodemodeEngine::new asked for is not the cap the QuickJS \
+             runtime reports — set_memory_limit is a no-op in this build, so the \
+             memory limit is NOT enforcing anything (requested {PIN_MEMORY_LIMIT}, \
+             runtime reports {reported})"
+        );
+
+        // THE ANTI-TAUTOLOGY CONTROL, inside the test that depends on it. If
+        // `malloc_limit` reported something non-zero for an untouched runtime,
+        // the assertion above could pass on a build where the setter does
+        // nothing, and this whole pin would be a decoration. 0 is QuickJS's
+        // encoding of "unlimited" — exactly what a silent no-op leaves behind.
+        let untouched = rquickjs::AsyncRuntime::new()
+            .expect("fresh runtime for the control")
+            .memory_usage()
+            .await
+            .malloc_limit;
+        assert_eq!(
+            untouched, 0,
+            "a runtime with NO limit installed must report 0, or the assertion \
+             above proves nothing (it reported {untouched})"
+        );
+    }
+
+    /// FINDING 1's negative control: a cap small enough to be crossed for
+    /// certain, asserted to end the run as a `ScriptEnd`.
+    ///
+    /// THE LOAD-BEARING DETAIL is the two durations. `wall_clock` is 30 s and
+    /// the outer guard is 10 s, so the wall clock CANNOT be what ends this run:
+    /// the only mechanism that can is the memory cap. Swap the two (a 5 s wall
+    /// clock, say) and this passes with no cap installed at all — which is the
+    /// vacuous-green shape `memory_cap_rejects_a_blowup` alone cannot rule out.
+    ///
+    /// Asserting `ScriptEnd` rather than "the process survived" is the cheap
+    /// version of the reviewer's hang concern, and measured under the mutation
+    /// above it fails as `Done` — with no cap installed the 1 GB allocation
+    /// simply COMPLETES and the script reports success. That is the worse
+    /// failure and the one this catches: the sandbox answering a 1 GB blowup
+    /// with `Done` instead of refusing it. A hang or an OOM-kill would be the
+    /// other route and both are covered too, since `expect` on the timeout is a
+    /// failure and not a pass.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_tiny_cap_surfaces_as_a_script_end_not_a_hang() {
+        let (engine, _turn) = test_engine(PIN_MEMORY_LIMIT, Duration::from_secs(30)).await;
+        let end = tokio::time::timeout(Duration::from_secs(10), engine.eval(BLOWUP))
+            .await
+            .expect("the 8 MiB cap must end the blowup well inside its 30 s wall clock");
+        assert!(
+            matches!(end, ScriptEnd::Failed(_)),
+            "an allocation over the installed cap must surface as a throw, got {end:?}"
         );
     }
 
