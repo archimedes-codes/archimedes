@@ -301,6 +301,12 @@ pub(crate) struct PermissionContext {
     /// Render requester for escalated web fetches (Task 7). Travels with the
     /// cluster into the ONE `ToolCtx` construction.
     pub(super) render_requester: Option<Arc<dyn crate::agent::web::RenderRequester>>,
+    /// (B1) The event sink attached by `AgentLoop::new` (via
+    /// `PermissionContext::attach_tool_event_sink`, defined in `loop/emit.rs`)
+    /// and copied into EVERY `ToolCtx` so the codemode bridge streams live
+    /// nested-call rows. `None` until attached (and in every harness-free
+    /// fixture, where emitting is a silent no-op).
+    pub(super) tool_event_sink: Option<Arc<dyn crate::agent::tools::ToolEventSink>>,
 }
 
 impl PermissionContext {
@@ -347,6 +353,9 @@ impl PermissionContext {
             // [`AgentLoop::set_permission`] (the child Worker) or by a gate test.
             permission_block: None,
             render_requester: None,
+            // (B1) `None` until `AgentLoop::new` attaches the loop's sink
+            // (this constructor cannot see the loop's sink/store/events).
+            tool_event_sink: None,
         }
     }
 
@@ -428,6 +437,10 @@ impl PermissionContext {
             file_policy: self.file_policy.clone(),
             web: self.web.clone(),
             render_requester: self.render_requester.clone(),
+            // (B1) The loop's event sink (attached in `AgentLoop::new`): the
+            // Arc handle is COPIED so every ctx — and every clone of one —
+            // streams through the SAME sink.
+            event_sink: self.tool_event_sink.clone(),
         }
     }
 }
@@ -594,7 +607,19 @@ impl AgentLoop {
         // (boundary + guard list + default rules + `~`-expansion home, all from
         // the ONE `$HOME` read) and the inert per-turn values — is built by the
         // bundle itself; see [`PermissionContext`].
-        let permissions = PermissionContext::new(config_dir.as_deref(), &space_cwd);
+        let mut permissions = PermissionContext::new(config_dir.as_deref(), &space_cwd);
+        // (B1) The MINIMAL deviation from the "edit only `to_tool_ctx`" note,
+        // and the reason lives HERE: `PermissionContext::new` builds the bundle
+        // BEFORE `sink` / `store` / `events` exist as anything but these
+        // constructor parameters, so the sink must be attached immediately
+        // after construction — `to_tool_ctx` is what COPIES the field into the
+        // `ToolCtx`, it cannot invent the sink.
+        permissions.attach_tool_event_sink(
+            session_id.clone(),
+            sink.clone(),
+            store.clone(),
+            events.clone(),
+        );
         Self {
             session_id,
             space_cwd,
