@@ -7,8 +7,7 @@ import type { ToolCallUiStatus } from "../store/sessions";
  * The `CodemodeCard`: one expandable card for a `codemode` tool call whose body
  * lists the script's NESTED calls.
  *
- * THE CONTRACT UNDER TEST (`docs/roadmap/codemode-status.md`, "Frozen cross-task
- * contracts" item 1, as AMENDED twice):
+ * THE CONTRACT UNDER TEST (`docs/features/codemode-transcript-contract.md`):
  * - Both the live `tool_execution_update` frame and the final
  *   `tool_execution_end` result serialize the PARENT's `ToolResult` —
  *   `{ content, details: { calls }, isError }` — so the nested calls are read

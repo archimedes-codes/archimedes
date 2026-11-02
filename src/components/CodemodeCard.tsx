@@ -24,10 +24,10 @@ import { cn } from "./lib/utils";
  * `MessageBubble` is memoized — so the prop IS the live path. No store
  * subscription, no reducer edit, no new linkage.
  *
- * THE ONE SOURCE (`docs/roadmap/codemode-status.md`, "Frozen cross-task
- * contracts" item 1, as amended): both the live `tool_execution_update` frame
- * and the final `tool_execution_end` result carry the parent's SERIALIZED
- * `ToolResult` (`tools/types.rs:42` → `{ content, details, isError }`), and
+ * THE ONE SOURCE (`docs/features/codemode-transcript-contract.md`): both the
+ * live `tool_execution_update` frame and the final `tool_execution_end` result
+ * carry the parent's SERIALIZED `ToolResult` (`tools/types.rs:42` →
+ * `{ content, details, isError }`), and
  * `merge_json` (`normalize.rs:162`) is a shallow top-level key overwrite — so
  * live and final land the SAME shape at the SAME key, and the nested calls are
  * always read from `rawOutput.details.calls`. There is no `rawOutput.calls`
