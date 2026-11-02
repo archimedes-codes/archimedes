@@ -485,6 +485,21 @@ These are properties of the repo, not of any branch:
   loosening the assertion — the churn is a real violation, and CI's `/tmp` does not
   churn. If it ever bites CI, the honest fix is a dedicated temp root for the census,
   not a wider tolerance.
+- **`npx vitest run src/components` does NOT run `src/lib/toolDetailsRegistry.test.ts`, and the
+  file's own tests are the repo's main guard on the tool-details wire contract.** Measured at
+  `cb28abd0`: that glob matches 78 files and the registry is not among them. CI is safe — its
+  `pnpm test` is `vitest run` with no path filter, so it does cover the file — so this is a
+  LOCAL-GATE trap, not a coverage hole: a run that validates "the components" and reports green
+  has not touched the registry, and a producer/reader key change it would catch goes untested.
+  Run the file explicitly alongside the components glob.
+- **`agent::childproc::tests::tool_child_reads_eof_on_closed_stdin` flakes on Windows and needs
+  an owner — not a drive-by fix.** Observed failing on CI's `windows-latest` leg while
+  `childproc.rs` was untouched by the branch under review, passing on the other run of the same
+  SHA and on all runs of the next push. Its own docblock already says why: *"A regression pin,
+  not the proof. On a host where cargo's own stdin is already `/dev/null` — which is what a CI
+  step gets — this test passes with OR without `closed_stdin`."* So its pass/fail depends on the
+  inherited handle, and the behaviour proof lives in the `execute_tool` test that re-execs the
+  binary with a real pipe. Re-run before investigating.
 - **ADR numbers collide on disk, and a plan will confidently name one that is taken.** `0086` is used by
   TWO files (`0086-glossary-names-govern-new-code-and-are-repaired-on-touch-not-by-sweep.md` and
   `0086-two-stage-async-session-titling-with-wire-isolation.md`) — pre-existing, and the only collision
