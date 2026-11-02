@@ -1,6 +1,6 @@
 ---
 status: live
-last-verified: 2026-10-29
+last-verified: 2026-11-02
 verified-by: re-read against THIS tree on `feature/backlog-79-122-124-28` (HEAD `c43b752`), every
   gap below re-confirmed still open by reading the code that would have to change — not copied from
   the plan or the run's status file. **Symbols actually read for #122:** `EMPTY_CONTENT_SANITISE_PLACEHOLDER`,
@@ -27,8 +27,17 @@ verified-by: re-read against THIS tree on `feature/backlog-79-122-124-28` (HEAD 
   rewrite in `storage/db.rs` → **0 hits**; `grep` for `root set` in ADR 0084 → **0 hits** (see the
   root-set bullet, where that correction matters); `grep` for any TS test reading
   `definition_permission.rs` → **0 hits**; `git show --stat 3ce1319` vs `8d5da2b` for the union drift.
-  **Not run:** the Rust suite — the pins below are cited by name as the tests that exist and were read
-  as source, not as measurements taken here.
+  **Not run (for the #122 / #124 pins):** the Rust suite — those pins are cited by name as the tests that
+  exist and were read as source, not as measurements taken here.
+  **#148 addendum (2026-11-02):** verified at HEAD (`e0b0430`) on `feature/tool-result-empty-content-sanitization`;
+  symbols read: `TOOL_EMPTY_OUTPUT_PLACEHOLDER` and `tool_content_wire` plus the `ChatRole::Tool` branch of
+  `request_body` (`agent/harness/provider/openai.rs`); `anthropic_tool_result_content`, the `Blocks` arm of
+  `anthropic_messages` and `EMPTY_USER_MESSAGE_PLACEHOLDER` (`agent/harness/provider/anthropic.rs`); and
+  `responses_content_wire` / `responses_input` (`agent/harness/provider/responses.rs`, read to confirm it is NOT sanitized).
+  **Run for #148:** `cargo build --all-targets` (succeeded); `cargo test --package archimedes --lib agent::harness::provider`
+  → 149 passed, 0 failed; `cargo test` (full suite) → 1878 passed, 0 failed, 1 ignored (lib) plus all integration suites passed, 0 failed;
+  `cargo clippy --all-targets` → 0 warnings; `cargo fmt --check` → 0 diff; `pnpm test` → 167 files passed, 3430 passed, 1 skipped, 0 failed;
+  `pnpm build` → succeeded.
 ---
 
 # Empty message content (#122) and permission-note announcements (#124) — known gaps
@@ -109,7 +118,7 @@ and read by every seam that touches it: the SSE parser's prefix-hold accumulator
   one level below the wire, by the `request_body` unit pins
   (`request_body_omits_content_for_an_empty_text_assistant_message_with_tool_calls`,
   `request_body_keeps_content_for_an_empty_text_assistant_message_without_tool_calls`,
-  `request_body_keeps_content_for_blocks_tool_messages_and_real_text`). A change to
+  `request_body_keeps_content_for_blocks_tool_messages_and_real_text` — which since #148 pins an empty `tool` message as `(no output)`, not `""`; see the #148 bullet below). A change to
   `request_body`'s output that a real server rejects is invisible to every gate here — and the
   hole is not #122's alone: `anthropic_request_body` and `responses_request_body` are pinned the
   same way, by their own inline unit tests (`anthropic_request_body_maps_the_request`,
@@ -139,6 +148,50 @@ and read by every seam that touches it: the SSE parser's prefix-hold accumulator
   inbound echo of it (a model repeating it, a replayed transcript) is dropped, so it can read
   as a reply that says nothing. Say that plainly to a user who asks; nothing here can be
   "fixed" without giving up the exact-match rule.
+
+- **Tool results are sanitised on the wire: an empty `tool` message goes out as `(no output)`. — shipped
+  in #148, recorded, not open work.** A second, separate upstream failure from the banner above, on the
+  same principle (ADR 0054: fix the wire where the request is built). LiteLLM proxies `/chat/completions`
+  to Vertex AI Claude and attaches prompt caching (`cache_control`) to the `tool_result` it builds, so a
+  tool whose output was empty — `bash` exiting 0 with no output, a `grep`/`find` with no matches, `read`
+  of a 0-byte file, an MCP tool or a subagent — sent `"content": ""` or `[{"type":"text","text":""}]`
+  and Vertex answered HTTP 400 `cache_control cannot be set for empty text blocks`. Now:
+  - **OpenAI wire** (`agent/harness/provider/openai.rs`): `request_body` routes every `ChatRole::Tool`
+    message through `tool_content_wire`. `Text` that is `content_is_effectively_empty` becomes
+    `TOOL_EMPTY_OUTPUT_PLACEHOLDER` (`"(no output)"`). A `Blocks` result drops its empty text blocks,
+    keeps images, and becomes the `(no output)` string if nothing is left.
+  - **Anthropic wire** (`agent/harness/provider/anthropic.rs`): `anthropic_tool_result_content` does the
+    same for the `tool_result` block's `content`, using the constant imported from `openai.rs`.
+    `anthropic_messages` also drops empty text blocks from user/assistant `Blocks` (so a pasted image with no
+    caption no longer carries an empty text block). If that leaves a `Blocks` message with no content
+    and no `tool_calls`, it emits `EMPTY_USER_MESSAGE_PLACEHOLDER` (`"(empty)"`); with `tool_calls` it
+    emits only the `tool_use` blocks.
+  - **A `tool` message is replaced, never omitted.** Its `content` pairs with `tool_call_id`, so the #122
+    omit-`content` guard stays limited to an assistant row that carries `tool_calls`.
+  - **The predicate is `content_is_effectively_empty`**, so a tool whose real output is only whitespace,
+    or exactly the LiteLLM banner, is rewritten to `(no output)` as well. Real text and images are
+    untouched.
+  - **Durable rows are not rewritten.** `native_messages` keeps what the tool actually returned; the
+    placeholder exists only in the outgoing request body (ADR 0054). The UI's own `(no output)` for an
+    empty tool call (`docs/features/tool-call-output.md`) is a display-side string in a different layer
+    that happens to use the same words.
+  - Pinned by the `request_body_*` tests in `openai.rs` — `request_body_replaces_empty_tool_text_with_no_output_placeholder`,
+    `request_body_replaces_empty_tool_blocks_with_no_output_placeholder`,
+    `request_body_preserves_real_text_and_mixed_tool_blocks`, and the flipped assertion in
+    `request_body_keeps_content_for_blocks_tool_messages_and_real_text` — and by the
+    `anthropic_tool_result_content_*`, `anthropic_messages_*` and
+    `anthropic_request_body_tool_result_never_contains_empty_text` tests in `anthropic.rs`. They are unit
+    pins one level below the wire, like every other pin on this page, so the "no contract test" gap above
+    still stands.
+
+- **The OpenAI Responses wire still sends empty tool output unsanitised. — open work.**
+  `responses_content_wire` / `responses_input` (`agent/harness/provider/responses.rs`) turn a `tool`
+  message into a `function_call_output` item whose `output` is `m.content` verbatim, so an empty result
+  still goes out as `""` or `[{"type":"input_text","text":""}]`-style empty parts. #148 scoped itself to
+  the OpenAI-completions wire (the LiteLLM path) and the native Anthropic wire, so this was left. Whether
+  the Responses API rejects it was not measured — what is known is only that it is the same unsanitised
+  shape. If a Responses-wire provider is seen rejecting an empty `function_call_output`, the fix is
+  the same helper pattern in `responses_content_wire`, in `responses.rs`.
 
 ## #124 — path-tool permission pattern announcements
 
@@ -204,4 +257,4 @@ from the deleted follow-up note: the modal's per-tool copy — `describeNote` in
 unenforced-class wording; ADR 0084 carries the row-4 ruling and the refusal of a second
 matcher, with the 2026-10-29 amendment that scopes #124's change to the announcement half.
 For #122, `docs/decisions/0054-*.md` is the rule that decides where a wire shape gets
-corrected, and it is the reason both deferred items above are deferrals rather than bugs.
+corrected, and it is the reason both deferred items above are deferrals rather than bugs, and the reason the #148 tool-result placeholder lives in the request body and not in the stored rows.
