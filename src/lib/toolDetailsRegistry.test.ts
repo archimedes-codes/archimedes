@@ -41,7 +41,7 @@ import { normalizeToolOutput } from "./toolOutput";
  * THE ONE AGREED PRODUCER LIST — FROZEN, NOT RE-DERIVED
  * ---------------------------------------------------------------------------
  *
- * `PRODUCER_KEYS` (Part 1) is the FROZEN copy of the 34-key producer union that
+ * `PRODUCER_KEYS` (Part 1) is the FROZEN copy of the 35-key producer union that
  * the plan re-derived from the tree ONCE
  * (`docs/roadmap/improvement-correctness-seams-task07b-details-registry.md`,
  * §"The frozen producer list", re-derived at HEAD `29b16df` by enumerating every
@@ -59,8 +59,14 @@ import { normalizeToolOutput } from "./toolOutput";
  * The frozen 34-key list was re-checked against the tree at this task's HEAD
  * (`1483d94`, after task06's `db4f4ca` rewrite of `interactive/mod.rs`): every
  * production emission site was opened and its key set read, exactly as the plan's
- * census greps describe. THE DISTINCT KEY UNION IS THE FROZEN 34, BYTE-FOR-BYTE —
- * no key added, no key dropped — so the contract handed to task08 stands as is.
+ * census greps describe. THE DISTINCT KEY UNION WAS THE FROZEN 34, BYTE-FOR-BYTE —
+ * no key added, no key dropped — so the contract handed to task08 stood as is.
+ *
+ * ONE key has entered since, and it is a live wire change recorded rather than a
+ * silent edit: `calls`, the codemode nested-call list C2 emits on the parent
+ * `ToolResult` (`details.calls`) and `src/components/CodemodeCard.tsx` reads. The
+ * list is therefore the frozen 34 PLUS `calls` = 35, and the Part-2b reader union
+ * and the Part-2c spanning set both gained it (the card is a named reader of it).
  *
  * ONE number in the plan's census TEXT has since drifted, and it is a SITE count,
  * not a key: the plan counts 39 emission sites (28 `details: Some` + 11
@@ -98,7 +104,7 @@ import { normalizeToolOutput } from "./toolOutput";
  *     silently contributing zero keys;
  *  2. the collected key sets must be NON-EMPTY: the envelope-frame reader set, and
  *     `PRODUCER_KEYS`;
- *  3. `PRODUCER_KEYS`' `as const` TYPE must stay exactly the frozen 34-name tuple
+ *  3. `PRODUCER_KEYS`' `as const` TYPE must stay exactly the frozen 35-name tuple
  *     (`FROZEN_TUPLE_PIN`) — a dropped, added or reordered key, or a collapse to
  *     `string[]`, fails `pnpm build` (tsc typechecks test files) rather than
  *     shrinking the contract silently;
@@ -136,7 +142,8 @@ const stripJsComments = (source: string): string =>
 // no producer emits (it must appear in Part 2b's legacy envelope, likewise with a
 // reason). Copy byte-for-byte.
 
-// THE details wire vocabulary — producer side. 34 keys. Re-derived from
+// THE details wire vocabulary — producer side. 35 keys (the frozen 34 below,
+// plus `calls`, the codemode nested-call list). Re-derived from
 // the tree ONCE at plan time (vet round 2, HEAD 29b16df) by enumerating
 // EVERY production `details: Some(json!({...}))` / `ok_text(.., Some(json!))`
 // site (39 sites, 7 files — see the grep in §The frozen producer list);
@@ -144,30 +151,30 @@ const stripJsComments = (source: string): string =>
 // copies THIS literal verbatim. Any edit must move a key between Live and
 // legacy-envelope, never silently add it.
 const PRODUCER_KEYS = [
-  "bytes", "cancelled", "command", "customInput", "description", "diff",
-  "dir", "entries", "error", "exitCode", "extractor", "lines", "matches",
-  "occurrences", "operation", "path", "provider", "reason", "renderer",
-  "rendererNote", "responseId", "resultCount", "results", "scope", "skill",
-  "skills", "status", "stderr", "stdout", "title", "todos", "truncated",
-  "url", "wordCount",
+  "bytes", "calls", "cancelled", "command", "customInput", "description",
+  "diff", "dir", "entries", "error", "exitCode", "extractor", "lines",
+  "matches", "occurrences", "operation", "path", "provider", "reason",
+  "renderer", "rendererNote", "responseId", "resultCount", "results", "scope",
+  "skill", "skills", "status", "stderr", "stdout", "title", "todos",
+  "truncated", "url", "wordCount",
 ] as const;
 
 type ProducerKey = (typeof PRODUCER_KEYS)[number];
 
-/** The compile-time half of vacuity guard 3. `PRODUCER_KEYS` is a 34-element
- *  `as const` tuple and must STAY one: this alias spells the frozen 34 names in
+/** The compile-time half of vacuity guard 3. `PRODUCER_KEYS` is a 35-element
+ *  `as const` tuple and must STAY one: this alias spells the frozen 35 names in
  *  the frozen order, and `FROZEN_TUPLE_PIN` is only assignable to `true` while the
  *  two types are mutually assignable. Drop a key, add a key, reorder, or widen the
  *  const to `string[]` and `pnpm build` fails HERE — the contract cannot shrink
- *  silently. (The 34 names are spelled a second time on purpose: this is the
+ *  silently. (The 35 names are spelled a second time on purpose: this is the
  *  tamper seal on the copy above, not a second consumer of it.) */
 type FrozenProducerTuple = readonly [
-  "bytes", "cancelled", "command", "customInput", "description", "diff",
-  "dir", "entries", "error", "exitCode", "extractor", "lines", "matches",
-  "occurrences", "operation", "path", "provider", "reason", "renderer",
-  "rendererNote", "responseId", "resultCount", "results", "scope", "skill",
-  "skills", "status", "stderr", "stdout", "title", "todos", "truncated",
-  "url", "wordCount",
+  "bytes", "calls", "cancelled", "command", "customInput", "description",
+  "diff", "dir", "entries", "error", "exitCode", "extractor", "lines",
+  "matches", "occurrences", "operation", "path", "provider", "reason",
+  "renderer", "rendererNote", "responseId", "resultCount", "results", "scope",
+  "skill", "skills", "status", "stderr", "stdout", "title", "todos",
+  "truncated", "url", "wordCount",
 ];
 
 type AssertEqual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -186,10 +193,10 @@ const FROZEN_TUPLE_PIN: AssertEqual<typeof PRODUCER_KEYS, FrozenProducerTuple> =
 //
 //   • the TOOL-RESULT frame — `{content, details}` (`result.content`,
 //     `result.details`). Not part of the `details` vocabulary; it is the frame
-//     AROUND it. Kept in its own column so the 24-field union stays clean.
+//     AROUND it. Kept in its own column so the 25-field union stays clean.
 //   • the DETAILS frame — the envelope the producers emit, and one of its
 //     per-subagent ENTRIES (`details.progress[i]`, `details.results[i]`). Reads
-//     here are what the 24-field reader union enumerates.
+//     here are what the 25-field reader union enumerates.
 //   • the RAW-INPUT frame — the tool call's own `rawInput` (`summarizeToolCall`).
 //     Its field names (`command`, `path`, `url`, `operation`, …) collide with
 //     producer keys while being a DIFFERENT frame, so they are never counted as
@@ -209,7 +216,7 @@ const CARD = "src/components/SubagentDelegatingCard.tsx";
 
 /** One named reader: the file that owns it, and the accessor idioms to collect.
  *  `envelope` collects reads of the DETAILS frame / its entries — the columns the
- *  24-field union enumerates. `resultFrame` and `inputFrame` are the other two
+ *  25-field union enumerates. `resultFrame` and `inputFrame` are the other two
  *  frames, collected so the "did this reader contribute anything at all" guard can
  *  be answered honestly for a reader that legitimately reads no `details` field. */
 type ReaderSpec = {
@@ -298,6 +305,27 @@ const CARD_EVIDENCE = {
   prefixes: ["(?<![\\w$.])progress", "(?<![\\w$.])result", "(?<![\\w$.])p", "(?<![\\w$.])r"],
 };
 
+/** The `CodemodeCard`'s `details` read — the same evidence mechanism applied to
+ *  the SECOND card, which is a component and therefore cannot join `READERS`
+ *  (the walk matches `function <name>(`, and a component is `export default
+ *  function CodemodeCard({`, with the read sitting in the component BODY rather
+ *  than in a named helper the plan could name).
+ *
+ *  The prefix collects `details`-accessed keys ONLY. The element reads
+ *  (`element.toolCallId` / `.toolName` / `.status`) and the `calls.reduce(…)`
+ *  machinery are reads off the ELEMENTS and the local variable, not off the
+ *  DETAILS frame, so a bare `e`/`element`/`calls` prefix would leak
+ *  `toolCallId`, `reduce`, `map`, `values` into `READER_ENVELOPE_KEYS` and redden
+ *  Part 2b's "no unannotated envelope key" check. A `details`-only prefix over
+ *  the row-derivation region captures exactly the ONE frame key `calls`. */
+const CODEMODE_CARD = "src/components/CodemodeCard.tsx";
+const CODEMODE_CARD_EVIDENCE = {
+  file: CODEMODE_CARD,
+  from: "const calls =",
+  to: "const rows =",
+  prefixes: ["(?<![\\w$.])details"],
+};
+
 /** One declaration region: from the named declaration to the NEXT top-level one.
  *  Cheaper and steadier than brace-matching, and it cannot bleed into a sibling
  *  function — which matters, because a bleed would credit a reader with keys it
@@ -377,12 +405,27 @@ if (cardFrom < 0 || cardTo < 0) {
 }
 const CARD_READS = new Set([...collect(cardSource.slice(cardFrom, cardTo), CARD_EVIDENCE.prefixes)].sort());
 
+const codemodeCardSource = stripJsComments(readFileSync(CODEMODE_CARD_EVIDENCE.file, "utf8"));
+const codemodeCardFrom = codemodeCardSource.indexOf(CODEMODE_CARD_EVIDENCE.from);
+const codemodeCardTo = codemodeCardSource.indexOf(CODEMODE_CARD_EVIDENCE.to, codemodeCardFrom);
+if (codemodeCardFrom < 0 || codemodeCardTo < 0) {
+  throw new Error(
+    `the codemode card evidence region is BLIND: could not locate "${CODEMODE_CARD_EVIDENCE.from}" .. ` +
+      `"${CODEMODE_CARD_EVIDENCE.to}" in ${CODEMODE_CARD_EVIDENCE.file} — the row derivation was renamed, ` +
+      `so the \`details.calls\` read the registry credits the CodemodeCard with is unverified`,
+  );
+}
+const CODEMODE_CARD_READS = new Set(
+  [...collect(codemodeCardSource.slice(codemodeCardFrom, codemodeCardTo), CODEMODE_CARD_EVIDENCE.prefixes)].sort(),
+);
+
 /** Everything the readers read off the DETAILS frame or its entries — the set the
- *  24-field union must account for. The card's reads are included: it is live
- *  production code, and excluding it would understate the reader side. */
+ *  25-field union must account for. Both cards' reads are included: they are live
+ *  production code, and excluding them would understate the reader side. */
 const READER_ENVELOPE_KEYS = new Set<string>([
   ...walk.flatMap((row) => row.envelope),
   ...CARD_READS,
+  ...CODEMODE_CARD_READS,
 ]);
 
 /** Part 2a — the LIVE reader reads, as `reader → key` pairs the walk must find.
@@ -408,6 +451,10 @@ const LIVE_READER_READS: readonly string[] = [
   "summarizeSubagentDetails → results",
   "summarizeSubagentFor → results",
   "extractTargetInfo → results",
+  // `calls` — emitted by codemode (C2's parent `ToolResult` details) and read by
+  // name on the TS side: the `CodemodeCard`'s row derivation reads
+  // `details.calls` and nothing else off the details frame.
+  "CodemodeCard → calls",
 ];
 
 /** Part 2b — the LEGACY ENVELOPE. Exactly the fields the TS reader reads that NO
@@ -453,7 +500,7 @@ const LEGACY_ENVELOPE_FIELDS: readonly { key: string; why: string }[] = [
  *  WHOLE, never as new keys"), so they are NOT members of
  *  `LEGACY_ENVELOPE_FIELDS` — that list stays the 5 container-level keys. They
  *  still need a column of their own, because the third column is what makes the
- *  24-field union partition cleanly: without it, 15 real reads sit in neither
+ *  25-field union partition cleanly: without it, 15 real reads sit in neither
  *  annotated list and the "no unattached field" guard would have nothing to check
  *  them against.
  *
@@ -478,20 +525,21 @@ const ENVELOPE_ENTRY_FIELDS: readonly { key: string; container: string; why: str
   { key: "toolCount", container: "progress", why: "the tool-count fallback when the transcript carries no tool-call rows (:349)" },
 ];
 
-/** Part 2b — the 24-field reader union (the grounding report's §3c list). Every
+/** Part 2b — the 25-field reader union (the grounding report's §3c list, plus
+ *  `calls` — the codemode nested-call list the `CodemodeCard` reads). Every
  *  member is read by a named reader or by the card's live chain — the assertion
  *  below proves it mechanically instead of trusting the transcription.
  *
- *  NOT one flat "legacy" bucket: `error`, `status`, `exitCode` and `results` are
- *  LIVE producer keys the reader ALSO reads (the spanning keys), and the remaining
- *  20 are envelope-only. The dual annotation lives in Part 2c's set difference;
- *  nothing here carries a naive "TS-only" flag. */
+ *  NOT one flat "legacy" bucket: `error`, `status`, `exitCode`, `results` and
+ *  `calls` are LIVE producer keys the reader ALSO reads (the spanning keys), and
+ *  the remaining 20 are envelope-only (25 − 5). The dual annotation lives in
+ *  Part 2c's set difference; nothing here carries a naive "TS-only" flag. */
 const READER_UNION_FIELDS = [
   "error", "agent", "task", "status", "model", "currentTool", "currentToolArgs",
   "currentToolStartedAt", "toolCalls", "recentOutput", "output", "progress",
   "results", "childSessionId", "exitCode", "finalOutput", "usage",
-  "progressSummary", "tokens", "percent", "contextPercent", "cost", "durationMs",
-  "toolCount",
+  "progressSummary", "tokens", "percent", "contextPercent", "cost", "calls",
+  "durationMs", "toolCount",
 ] as const;
 
 /** Part 2c — the exception list: producer keys the TS side never addresses BY NAME
@@ -578,14 +626,14 @@ describe("Part 1 — the frozen producer list (the contract task08 copies)", () 
     expect(new Set(PRODUCER_KEYS).size).toBe(PRODUCER_KEYS.length);
   });
 
-  it("PRODUCER_KEYS' as-const TYPE is exactly the frozen 34-name tuple (vacuity guard 3)", () => {
+  it("PRODUCER_KEYS' as-const TYPE is exactly the frozen 35-name tuple (vacuity guard 3)", () => {
     // `FROZEN_TUPLE_PIN` is typed `true` only while the const's type matches the
     // frozen tuple — a deleted/added/reordered key or a collapse to `string[]`
     // fails `pnpm build` before this line ever runs. The runtime reads below pin the
     // LENGTH, so a list that shrank to something the tuple alias does not describe
     // cannot pass by being merely non-empty.
     expect(FROZEN_TUPLE_PIN).toBe(true);
-    expect(PRODUCER_KEYS.length).toBe(34);
+    expect(PRODUCER_KEYS.length).toBe(35);
     expect([...PRODUCER_KEYS].sort()).toEqual([...PRODUCER_KEYS]);
   });
 });
@@ -628,22 +676,29 @@ describe("Part 2 — the reader side, in two annotated columns", () => {
     expect(undeclared).toEqual([]);
   });
 
-  it("every field of the 24-field union is actually read (the union has no invented member)", () => {
+  it("every field of the 25-field union is actually read (the union has no invented member)", () => {
     const unread = READER_UNION_FIELDS.filter(
       (k) => !READER_ENVELOPE_KEYS.has(k) && !CARD_READS.has(k),
     );
     expect(unread).toEqual([]);
-    expect(READER_UNION_FIELDS.length).toBe(24);
-    expect(new Set(READER_UNION_FIELDS).size).toBe(24);
+    expect(READER_UNION_FIELDS.length).toBe(25);
+    expect(new Set(READER_UNION_FIELDS).size).toBe(25);
   });
 
   it("Part 2a: every enumerated LIVE reader read is still a real read", () => {
-    const found = new Set(
-      walk.flatMap((row) => row.envelope.map((k) => `${row.reader} → ${k}`)),
-    );
-    // The card's reads count too (it is a live reader of `error`/`exitCode`/`status`
-    // /`results`), so the pair set is the walk PLUS the card's key names.
-    for (const key of CARD_READS) found.add(`SubagentDelegatingCard → ${key}`);
+    // The cards' reads count too (they are live readers — `SubagentDelegatingCard`
+    // of `error`/`exitCode`/`status`/`results`, the `CodemodeCard` of `calls`), so
+    // the pair set is the walk PLUS each card's key names. Both card read-sets
+    // must be folded in here: a `LIVE_READER_READS` entry naming a card whose
+    // read-set this builder ignores would fail, which is the point — the pair has
+    // to be CONSTRUCTED, not merely written down.
+    const cardPairs = (reader: string, reads: ReadonlySet<string>): string[] =>
+      [...reads].map((key) => `${reader} → ${key}`);
+    const found = new Set([
+      ...walk.flatMap((row) => row.envelope.map((k) => `${row.reader} → ${k}`)),
+      ...cardPairs("SubagentDelegatingCard", CARD_READS),
+      ...cardPairs("CodemodeCard", CODEMODE_CARD_READS),
+    ]);
     const missing = LIVE_READER_READS.filter((pair) => !found.has(pair));
     expect(missing).toEqual([]);
     expect(LIVE_READER_READS.length).toBeGreaterThan(0);
@@ -685,11 +740,11 @@ describe("Part 2 — the reader side, in two annotated columns", () => {
     expect(entryReasonless).toEqual([]);
   });
 
-  it("the three reader columns partition the 24-field union EXACTLY (no key in two columns, none in none)", () => {
+  it("the three reader columns partition the 25-field union EXACTLY (no key in two columns, none in none)", () => {
     // The registry's shape, stated as a fact: a reader field is either a LIVE
     // producer key the reader also reads (spanning), a container-level legacy
     // envelope field, or a field nested inside one of those containers. Three
-    // columns, disjoint, and their union is the whole 24 — which is what makes the
+    // columns, disjoint, and their union is the whole 25 — which is what makes the
     // lists auditable instead of three overlapping prose lists.
     const legacyKeys = LEGACY_ENVELOPE_FIELDS.map((f) => f.key);
     const entryKeys = ENVELOPE_ENTRY_FIELDS.map((f) => f.key);
@@ -726,11 +781,12 @@ describe("Part 2 — the reader side, in two annotated columns", () => {
     const annotated = Object.keys(UNREAD_BY_NAME_REASONS).sort();
     expect(exceptions).toEqual(annotated);
 
-    // The four spanning keys (`error`, `exitCode`, `results`, `status`) are live
-    // producer keys the reader ALSO reads, so they must NOT be in the exception
-    // list — that is the whole difference between this table and a naive
-    // "TS-only-by-name" bucket.
-    expect(SPANNING_KEYS).toEqual(["error", "exitCode", "results", "status"]);
+    // The five spanning keys (`calls`, `error`, `exitCode`, `results`, `status`)
+    // are live producer keys the reader ALSO reads, so they must NOT be in the
+    // exception list — that is the whole difference between this table and a
+    // naive "TS-only-by-name" bucket. The literal is in the derive's SORTED order
+    // (`SPANNING_KEYS` ends in `.sort()`), not append-last.
+    expect(SPANNING_KEYS).toEqual(["calls", "error", "exitCode", "results", "status"]);
     for (const key of SPANNING_KEYS) expect(annotated).not.toContain(key);
 
     const reasonless = annotated.filter((k) => (reasonFor(k) ?? "").trim().length < 20);
@@ -757,6 +813,7 @@ describe("Part 2 — the reader side, in two annotated columns", () => {
     );
     console.info("[toolDetailsRegistry] details-frame reads:\n  " + report.join("\n  "));
     console.info("[toolDetailsRegistry] card envelope reads: [" + [...CARD_READS].sort().join(", ") + "]");
+    console.info("[toolDetailsRegistry] codemode card reads: [" + [...CODEMODE_CARD_READS].sort().join(", ") + "]");
     expect(report.length).toBe(READERS.length);
   });
 });
@@ -978,6 +1035,24 @@ const DETAILS_FIXTURES: readonly DetailsFixture[] = [
     payload: {
       responseId: "resp_02",
       matches: ["12:the registry is a list you can diff"],
+    },
+  },
+  {
+    group: "{calls} — codemode (the nested-call list on the PARENT ToolResult)",
+    emittedBy: ["codemode (C2) — harness/loop/codemode.rs"],
+    registerKeys: ["calls"],
+    payload: {
+      calls: [
+        {
+          toolCallId: "call_ab12/c0",
+          toolName: "read",
+          args: { path: "a.ts" },
+          status: "ok",
+          text: "line one",
+          isError: false,
+          details: {},
+        },
+      ],
     },
   },
   {

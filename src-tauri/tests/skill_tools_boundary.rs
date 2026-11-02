@@ -123,6 +123,8 @@ fn ctx(cwd: &Path, roots: &[&Path]) -> ToolCtx {
         ),
         web: Default::default(),
         render_requester: None,
+        // (B1) No event sink: emitting is a silent no-op here.
+        event_sink: None,
     }
 }
 
@@ -618,6 +620,8 @@ THE-SKILL-BODY",
         cancel: CancellationToken::new(),
         web: Default::default(),
         render_requester: None,
+        // (B1) No event sink: emitting is a silent no-op here.
+        event_sink: None,
     };
     let via_link = home_link.join(".agents/skills/alpha/SKILL.md");
     let r = execute_tool(

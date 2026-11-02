@@ -4,6 +4,7 @@
 
 pub mod boundary;
 pub mod childproc;
+pub mod codemode;
 pub mod crashlog;
 pub mod debuglog;
 pub mod definition_permission;

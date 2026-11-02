@@ -84,6 +84,41 @@ ddgs = "0.1"
 ipnet = "2"
 pdf-extract = "0.12"
 regex = "1"
+# The codemode sandbox engine (ADR 0089): an embedded QuickJS in the
+# Worker. `futures` exposes AsyncRuntime/AsyncContext; `parallel` is the
+# crate's (experimental) gate for the Send + Sync impls the engine needs
+# to live inside tokio::spawn(loop_.run()) — decided by a compile-time
+# assertion, not assumption (see codemode-task02). WITHOUT `parallel` the
+# assertion does not compile — `AsyncRuntime`/`AsyncContext` are `!Send +
+# !Sync`, their impls are `#[cfg(feature = "parallel")]` in the crate.
+# `rust-alloc`/`allocator` must stay OFF. rquickjs documents `set_memory_limit`
+# as "a Noop when a custom allocator is being used, as is the case for the
+# 'rust-alloc' or 'allocator' features"
+# (rquickjs-core-0.14.0/src/runtime/async.rs:204-210), and this dependency is
+# pinned to the version carrying that warning.
+#
+# The warning is stronger than what was measured here, and both halves are
+# recorded so nobody re-derives it: with `--features rquickjs/rust-alloc` on this
+# exact dependency set, the limit was still REPORTED (memory_usage's
+# `malloc_limit` read back 8 388 608) and still ENFORCED (an 8 MiB-capped blowup
+# threw with `malloc_size` plateaued at 8 387 864) — because QuickJS's cap check
+# sits in `js_malloc_rt` (quickjs.c:2017), ABOVE the `rt->mf.js_malloc` allocator
+# dispatch. So the no-op is not reproducible on 0.14.0. Keep the features off
+# regardless: the guarantee we are relying on is the one the crate PROMISES, and
+# a future rquickjs that moves the check behind the allocator dispatch makes the
+# cap vanish silently.
+#
+# Guards, and which one catches what — a unit test CANNOT catch the graph
+# poisoning, because feature unification happens at compile time, before any
+# test runs:
+#   - scripts/check-rquickjs-allocator.sh (CI `scripts` job) — the BUILD GRAPH:
+#     asks the resolver whether either feature got unified in from a transitive
+#     dependency. That is the only party that can know.
+#   - engine.rs `memory_cap_is_installed_not_merely_requested` — the cap is
+#     INSTALLED (reads the limit back out of the C runtime).
+#   - engine.rs `a_tiny_cap_surfaces_as_a_script_end_not_a_hang` — the cap is
+#     ENFORCED (an allocation above an 8 MiB cap must end as a ScriptEnd).
+rquickjs = { version = "0.14.0", features = ["futures", "parallel"] }
 # (Task 4) The ATOMIC settings write (`config::write_settings_atomic`):
 # `NamedTempFile` in the config dir + `persist` (rename), so a torn write can
 # never destroy `settings.json`. Was a DEV-dependency (test temp dirs only);
