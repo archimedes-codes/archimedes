@@ -351,6 +351,14 @@ workflow can do — is writing notes a person would read.
 - **Planning**: when expanding a roadmap task into a plan (`specify`), dispatch
   the `researcher` agent definition (`subagent` with `agentName: "researcher"`)
   rather than a config-less dispatch.
+- **A plan that consumes a predecessor must tell the implementer to VERIFY it, not assert it.**
+  When a wave plans all its tasks before any implementer runs, no predecessor has landed while
+  the planners write — so "task A1 has landed" is false at planning time no matter how the
+  orchestrator believes it. Measured on `codemode`: the orchestrator told two planners A1 had
+  landed, and the one that checked and reported `DEVIATION:` at its own HEAD was right. So
+  instruct verification-at-start and require a `DEVIATION:` report on mismatch; that instruction
+  is what turned a wrong premise into a harmless one. Related: `finish` deletes the plan family,
+  so a plan that is ALSO a durable record must be copied out first (see the Docs bullet above).
 
 ### Working in this repo
 
