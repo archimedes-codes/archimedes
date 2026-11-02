@@ -2270,6 +2270,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn request_body_assistant_with_tool_calls_followed_by_empty_tool_result() {
+        let req = ModelRequest {
+            model: "m".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: MessageContent::Text(String::new()),
+                    tool_call_id: None,
+                    tool_calls: Some(vec![ToolCall {
+                        id: "call_1".to_string(),
+                        name: "read".to_string(),
+                        arguments: json!({ "path": "/test" }),
+                    }]),
+                },
+                ChatMessage {
+                    role: ChatRole::Tool,
+                    content: MessageContent::Text(String::new()),
+                    tool_call_id: Some("call_1".to_string()),
+                    tool_calls: None,
+                },
+            ],
+            tools: vec![],
+            options: ModelOptions {
+                temperature: None,
+                max_tokens: None,
+                reasoning_effort: None,
+                stream: true,
+            },
+            session_id: None,
+        };
+        let body = request_body(&req, true);
+        let msgs = body["messages"].as_array().expect("messages array");
+        assert_eq!(msgs.len(), 2);
+
+        // Assistant content is omitted
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert!(
+            msgs[0].get("content").is_none(),
+            "assistant content must be omitted when empty with tool_calls: {}",
+            msgs[0]
+        );
+        assert_eq!(msgs[0]["tool_calls"][0]["id"], "call_1");
+
+        // Tool message content is "(no output)"
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[1]["tool_call_id"], "call_1");
+        assert_eq!(msgs[1]["content"], TOOL_EMPTY_OUTPUT_PLACEHOLDER);
+    }
+
     /// Serialize ONE `tool` message with `content` through `request_body` and
     /// return that message's wire object (`messages[0]` — there is no system
     /// message, so the tool message is first).

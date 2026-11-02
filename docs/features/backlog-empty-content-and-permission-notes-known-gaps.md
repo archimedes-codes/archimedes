@@ -257,4 +257,4 @@ from the deleted follow-up note: the modal's per-tool copy — `describeNote` in
 unenforced-class wording; ADR 0084 carries the row-4 ruling and the refusal of a second
 matcher, with the 2026-10-29 amendment that scopes #124's change to the announcement half.
 For #122, `docs/decisions/0054-*.md` is the rule that decides where a wire shape gets
-corrected, and it is the reason both deferred items above are deferrals rather than bugs, and the reason the #148 tool-result placeholder lives in the request body and not in the stored rows.
+corrected, and it is the reason both deferred items above are deferrals rather than bugs. It is also the reason the #148 tool-result placeholder lives in the request body and not in the stored rows.

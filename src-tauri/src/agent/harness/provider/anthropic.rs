@@ -760,7 +760,15 @@ fn anthropic_messages(req: &ModelRequest) -> Vec<Value> {
             "user"
         };
         let mut content = match &m.content {
-            MessageContent::Text(t) => Value::String(t.clone()),
+            MessageContent::Text(s) => {
+                if content_is_effectively_empty(s)
+                    && m.tool_calls.as_ref().is_none_or(|c| c.is_empty())
+                {
+                    Value::String(EMPTY_USER_MESSAGE_PLACEHOLDER.to_string())
+                } else {
+                    Value::String(s.clone())
+                }
+            }
             MessageContent::Blocks(blocks) => {
                 let wire = anthropic_nonempty_blocks(blocks);
                 if wire.is_empty() && m.tool_calls.as_ref().is_none_or(|c| c.is_empty()) {
@@ -2138,6 +2146,53 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_request_body_consecutive_tool_messages_empty_and_real_merge() {
+        let req = ModelRequest {
+            model: "m".to_string(),
+            messages: vec![
+                chat_message(
+                    ChatRole::Tool,
+                    MessageContent::Text(String::new()),
+                    Some("t1"),
+                    None,
+                ),
+                chat_message(
+                    ChatRole::Tool,
+                    MessageContent::Text("real output".to_string()),
+                    Some("t2"),
+                    None,
+                ),
+            ],
+            tools: vec![],
+            options: ModelOptions {
+                temperature: None,
+                max_tokens: None,
+                reasoning_effort: None,
+                stream: true,
+            },
+            session_id: None,
+        };
+        let body = anthropic_request_body(&req);
+        let messages = body["messages"].as_array().expect("messages are present");
+        assert_eq!(
+            messages.len(),
+            1,
+            "two consecutive tool messages merge into ONE user message"
+        );
+        assert_eq!(messages[0]["role"], "user");
+        let content = messages[0]["content"]
+            .as_array()
+            .expect("the merged content is a block array");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[0]["tool_use_id"], "t1");
+        assert_eq!(content[0]["content"], "(no output)");
+        assert_eq!(content[1]["type"], "tool_result");
+        assert_eq!(content[1]["tool_use_id"], "t2");
+        assert_eq!(content[1]["content"], "real output");
+    }
+
+    #[test]
     fn anthropic_request_body_image_block_wire_shape() {
         // The Anthropic image wire shape: `source.data` is the base64
         // VERBATIM (NO `data:` prefix — unlike the OpenAI data-URI
@@ -2345,6 +2400,48 @@ mod tests {
             body2["messages"][0]["content"],
             json!([{ "type": "text", "text": "(empty)" }])
         );
+    }
+
+    #[test]
+    fn anthropic_messages_empty_text_without_tool_calls_becomes_empty_placeholder() {
+        for empty in [
+            "",
+            "   ",
+            "\n\t ",
+            "[System: Empty message content sanitised to satisfy protocol]",
+        ] {
+            let body_user = req_body(vec![chat_message(
+                ChatRole::User,
+                MessageContent::Text(empty.to_string()),
+                None,
+                None,
+            )]);
+            assert_eq!(
+                body_user["messages"][0]["content"],
+                json!("(empty)"),
+                "empty user text {empty:?} must emit placeholder"
+            );
+
+            let body_assistant = req_body(vec![
+                chat_message(
+                    ChatRole::User,
+                    MessageContent::Text("hello".to_string()),
+                    None,
+                    None,
+                ),
+                chat_message(
+                    ChatRole::Assistant,
+                    MessageContent::Text(empty.to_string()),
+                    None,
+                    None,
+                ),
+            ]);
+            assert_eq!(
+                body_assistant["messages"][1]["content"],
+                json!("(empty)"),
+                "empty assistant text {empty:?} must emit placeholder"
+            );
+        }
     }
 
     #[test]
