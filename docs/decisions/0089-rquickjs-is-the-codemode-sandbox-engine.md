@@ -91,6 +91,87 @@ the exception-path rule (check the turn token, then the deadline, *before* falli
 the interrupt raises an **uncatchable** exception and `Ctx::eval` surfaces it as
 `Error::Exception`.
 
+**Threat model: QuickJS is not a security boundary against a determined script.** The
+sandbox is a JS VM plus three resource limits — 256 MiB of QuickJS-managed memory, a 256 KiB JS
+stack, a 300 s wall clock — and it provides **no capability containment**. Everything a script
+can reach is a host tool: `tools.<name>(args)` is the only door into the host
+(`__codemodeCall`, `loop/codemode.rs`), and a call that comes through it is contained by the
+nested-call **policy gate** — the same `policy_verdict` → `gate_tool` / `deny_tool_result`
+corridor a direct model-initiated call runs, in the same decision order (`Bridge::run_nested`).
+So a script is granted **exactly the model's own reach, no wider and no narrower**, and the gate
+carries the scope and the limits ADR 0030 already assigns it: `bash` is always beyond the
+boundary, `mcp` and the web tools are ungated, and the write floor is by ADR 0030's own words "a
+guard-rail, not a security boundary". Nothing about embedding QuickJS widens or narrows that.
+The word "sandbox" in the tool's advertised description therefore means *a VM with limits*; the
+clause in that description which carries a guarantee is *"Every nested call passes the same
+policy gate as a direct call"*, and that clause is the one the implementation holds.
+
+**What is therefore true by design.** A script may drive any granted tool as often as it likes,
+in a loop, with **no model turn between calls** — `run_nested` synthesizes a `ToolCall` per
+`tools.<name>`, and the bridge keeps no call counter, no rate limit and no per-script budget.
+Each nested call is bounded by the *tool's own* execution limit and not by anything the sandbox
+adds: a nested `bash` may carry a `timeout_ms` up to `MAX_BASH_TIMEOUT` (15 minutes, three times
+the script's own clock) and the bridge clamps it no further than the direct route does. What the
+script's clock does bound is the *run*: losing the `race_turn` drops the nested futures, and a
+dropped `bash` future takes its child via `kill_on_drop` (a cancelled-but-still-polled run reaches
+the executor's post-loop group-kill). So the exposure is not one long call — it is an unbounded
+*number* of calls inside the window, each with its own child process and up to `MAX_OUTPUT_BYTES`
+(100 KiB) of text, and `details.calls` grows by one element per call with no cap while every live
+frame re-serializes the whole snapshot. A script that loops until the clock expires therefore
+fills its own parent tool result with rows, and the turn token ends it. That ceiling is real; it
+is simply a ceiling on the run, not a judgement about how much work is too much.
+
+**The exclusion list is NAME-based.** `ask`, `sudo_exec`, `manage_todo_list`, `subagent`,
+`list_agents` and `codemode` are never installed as script globals (`EXCLUDED_FROM_SCRIPT`), and
+that is the mechanism: `callable_specs` filters them out of `ALL_TOOLS`, `tools.<name>` is built
+FROM `ALL_TOOLS`, so a hard-coded spelling is a JS `TypeError` rather than a dispatch;
+`describeTool` refuses them again at call time so an excluded name is not discoverable either;
+and a nested built-in dispatches through `execute_tool`, whose `match` has no arm for any of the
+six and ends in `unknown tool`. The consequence of the scope being a NAME is that an interactive
+behaviour reachable through a **non-excluded tool's ARGUMENTS** is not covered by it. The live
+instance is `mcp`, which a script may call and which carries `action: "auth"` — the interactive
+OAuth flow, which opens the user's browser and then waits up to 300 s on a local callback. As of
+this commit that path is **not** rejected from a script: no action-level rejection exists in
+`agent/mcp/tool.rs` (checked at this SHA). The accepted residual risk is therefore precisely
+*argument-level interactivity*, bounded by the fact that the flow is raced against the turn token
+and its own wait is bounded, so it costs at most the script's remaining clock — but it does open a
+window on the user's desktop for an authorization nobody asked for. If an action-level rejection
+for interactive MCP actions lands, record it here as the mitigation for this paragraph; until it
+does, this paragraph is the honest state.
+
+**What the sandbox is for.** Two things, neither of them containment: turning many sequential
+model turns into one script, and keeping large intermediate outputs inside the sandbox so that
+only the script's completion value reaches the model. The second is a real, checkable property —
+the parent's `ToolResult` text is the completion value, the nested rows ride in `details`, and
+`run_tool_batch` puts `result.content` (never `details`) into the provider message, so a script
+that fans out fifty `bash` runs costs the model one block while the UI still sees all fifty rows.
+The resource limits exist so that a *bug* cannot wedge the Worker, not to contain an adversary;
+and the Worker is the blast-radius ceiling, as elsewhere in this design — a stalled engine
+degrades to a Worker-local stalled session (ADR 0025), never to an app death.
+
+**One honest limit on the memory cap.** The 256 MiB figure is a property of rquickjs's FEATURE
+SET, not of our code: `set_memory_limit`'s own doc comment (`rquickjs-core-0.14.0`,
+`runtime/async.rs`) says it "is a Noop when a custom allocator is being used, as is the case for
+the `rust-alloc` or `allocator` features", and those features are **transitive** — nothing in
+`src-tauri/Cargo.toml` asks for them, and any dependency that does, anywhere in the graph, makes
+the cap decorative while every test that measures the cap's *behaviour* keeps passing. Three
+things hold it today, and they hold different halves. The dependency-line comment in
+`src-tauri/Cargo.toml` states the rule for a human reader. The engine now carries a runtime pin,
+`memory_cap_is_installed_not_merely_requested` (`agent/codemode/engine.rs`), which reads the limit
+back out of the C runtime through `memory_usage` → `JS_ComputeMemoryUsage` and asserts it equals
+what `CodemodeEngine::new` asked for, with a control asserting an untouched runtime reports `0`
+so the equality is discriminating and not tautological — that detects a cap never *installed*, and
+it does not detect a limit recorded but not enforced. The enforcement half is a build-graph check,
+`scripts/check-rquickjs-allocator.sh` (CI's `scripts` job, with its own `--self-test` fixtures),
+because feature unification happens at compile time and only the resolver knows what got unified;
+it reads the FULL `cargo tree -e features`, never the `-p rquickjs` subtree form, which does not
+print the incoming feature edge and would therefore print green forever. One fact narrows the
+exposure without closing it: `archimedes` is the only crate in the graph that depends on
+`rquickjs` (checked against `Cargo.lock`), so today no third party can turn this on — a future one
+can. And in any configuration the cap counts QuickJS-managed memory rather than process RSS: a
+script's `bash` children allocate outside it entirely, which is the same point the threat model
+keeps returning to — these limits bound the VM, not the blast radius.
+
 **Consequences.**
 
 - `rquickjs` + `rquickjs-core` + `rquickjs-sys` join the graph (`rquickjs-macro` does **not** —
