@@ -160,7 +160,7 @@ impl AgentLoop {
                 // mid-mcp-call cancels the in-flight request + kills the stdio
                 // child; the flow's internal `cancel` is the TURN token too).
                 tokio::select! {
-                    r = mcp_tool(&mut self.mcp, &tc.arguments, turn) => r,
+                    r = mcp_tool(&self.mcp, &tc.arguments, turn) => r,
                     _ = turn.cancelled() => Self::cancelled_tool_result(),
                 }
             }
