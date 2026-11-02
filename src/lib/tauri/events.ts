@@ -61,8 +61,11 @@ export function listenSessionStalled(
 
 /**
  * A session's generated title (the naming pass's push). The PULL form is
- * `list_sessions` — which runs ONCE at boot, so a title generated in this
- * run reaches the sidebar ONLY through this event.
+ * `list_sessions` — which runs at boot, and since #143 again on every window
+ * focus via `hooks/useSessionTitleRecovery` (merged by
+ * `mergeRefreshedSessionRows`, non-empty titles only). So this event is the
+ * INSTANT route and the focus re-read is the backstop for a frame this
+ * broadcast dropped — the label no longer depends on this one push alone.
  */
 export function listenSessionTitled(
   callback: (payload: SessionTitledPayload) => void,

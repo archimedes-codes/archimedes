@@ -23,6 +23,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use serde_json::json;
 
+use crate::agent::debuglog;
 use crate::agent::events::EventSink;
 use crate::agent::harness::catalog::{Model, ModelCatalog};
 use crate::agent::harness::compact::is_compaction_summary;
@@ -404,7 +405,7 @@ pub(crate) fn resolve_naming_reasoning(model: &Model, configured: Option<&str>) 
         .find(|level| level.to_lowercase() == needle)
         .cloned()
         .or_else(|| {
-            eprintln!("{}", unrecognized_reasoning_log(raw));
+            debuglog::log(&unrecognized_reasoning_log(raw));
             None
         })
 }
@@ -676,10 +677,16 @@ pub(crate) async fn name_session(request: NamingRequest) {
         _ => request.session_model.clone(),
     };
 
-    // Auth: an unconfigured model is a SILENT skip, not a failure (pi's
+    // Auth: an unconfigured model is a SKIP, not a failure (pi's
     // `hasConfiguredAuth` guard — naming must not nag, and must not burn the
-    // budget, over a provider the user never configured).
+    // budget, over a provider the user never configured). It is not SILENT any
+    // more (#143): a user who set no key and gets no title needs the log line
+    // to learn that is why, but it still consumes nothing.
     if model.api_key.is_empty() {
+        debuglog::log(&format!(
+            "session-name: no configured auth for model {}; skipping the title request for {session_id}",
+            model.id
+        ));
         return;
     }
 
@@ -718,7 +725,9 @@ pub(crate) async fn name_session(request: NamingRequest) {
     let mut stream = match provider.complete(&model_request).await {
         Ok(stream) => stream,
         Err(e) => {
-            eprintln!("session-name: the title request failed for {session_id}: {e}");
+            debuglog::log(&format!(
+                "session-name: the title request failed for {session_id}: {e}"
+            ));
             note_failure(&request.state, session_id);
             return;
         }
@@ -750,7 +759,7 @@ pub(crate) async fn name_session(request: NamingRequest) {
     let finish = match drained {
         Drain::Done(finish) => finish,
         Drain::Failed(why) => {
-            eprintln!("session-name: {why} for {session_id}");
+            debuglog::log(&format!("session-name: {why} for {session_id}"));
             note_failure(&request.state, session_id);
             return;
         }
@@ -759,7 +768,9 @@ pub(crate) async fn name_session(request: NamingRequest) {
     // For `Done(Length)`, only accept the cleaned title if it has at least 2 words
     // and contains no newlines; otherwise treat truncation as a failure.
     if finish == FinishReason::Error {
-        eprintln!("session-name: the title answer had an error ({finish:?}) for {session_id}");
+        debuglog::log(&format!(
+            "session-name: the title answer had an error ({finish:?}) for {session_id}"
+        ));
         note_failure(&request.state, session_id);
         return;
     }
@@ -773,9 +784,9 @@ pub(crate) async fn name_session(request: NamingRequest) {
             None => false,
         };
         if !is_valid {
-            eprintln!(
+            debuglog::log(&format!(
                 "session-name: the title answer was truncated ({finish:?}) with no valid title for {session_id}"
-            );
+            ));
             note_failure(&request.state, session_id);
             return;
         }
@@ -783,7 +794,9 @@ pub(crate) async fn name_session(request: NamingRequest) {
     let Some(title) = cleaned else {
         // An answer that cleans to nothing is pi's `if (!title) onFailure()`:
         // writing `""` would label the session with nothing.
-        eprintln!("session-name: the model answered with no usable title for {session_id}");
+        debuglog::log(&format!(
+            "session-name: the model answered with no usable title for {session_id}"
+        ));
         note_failure(&request.state, session_id);
         return;
     };
@@ -809,7 +822,9 @@ pub(crate) async fn name_session(request: NamingRequest) {
         }
         Ok(false) => {}
         Err(e) => {
-            eprintln!("session-name: failed to write title for {session_id}: {e}");
+            debuglog::log(&format!(
+                "session-name: failed to write title for {session_id}: {e}"
+            ));
             note_failure(&request.state, session_id);
         }
     }
@@ -863,10 +878,10 @@ fn note_failure(state: &StdMutex<HashMap<String, SessionState>>, session_id: &st
     {
         state.fails += 1;
         if state.fails == MAX_FAILURES {
-            eprintln!(
+            debuglog::log(&format!(
                 "session-name: naming failed {MAX_FAILURES} times for {session_id}; \
                  check the model configuration or set sessionNamingModel"
-            );
+            ));
         }
     }
 }
@@ -1512,6 +1527,11 @@ mod tests {
         /// `ScriptedProvider`'s `None` script precedent): the request stays
         /// IN FLIGHT, which is what the `in_flight` guard test needs.
         Pending,
+        /// `complete()` itself returns `Err` — the request never became a
+        /// stream at all. Distinct from `error()`, whose failure arrives
+        /// INSIDE an already-open stream; the two end at different
+        /// diagnostics of the naming pass.
+        Refused(String),
     }
 
     impl Script {
@@ -1602,6 +1622,7 @@ mod tests {
             match self.state.next_script() {
                 Script::Events(events) => Ok(stream::iter(events).boxed()),
                 Script::Pending => futures_util::future::pending().await,
+                Script::Refused(msg) => Err(ProviderError::Fatal(msg)),
             }
         }
     }
@@ -2073,6 +2094,109 @@ mod tests {
             h.emitted().is_empty(),
             "a failing provider emits NOTHING — no UI error"
         );
+    }
+
+    // ── The naming pass's diagnostics reach the debug log (issue #143) ─────
+    //
+    // A declined title is invisible in a shipped build: there is no terminal,
+    // and a Worker-stderr route does not exist for a pass that runs in the
+    // SUPERVERVISOR (ADR 0037). These tests are the proof that the lines land in
+    // `supervisor.log` — the only file a user or supporter can read.
+    //
+    // Both tests own TWO scratch dirs: the harness's (the private `config_dir`
+    // + SQLite) and the LOG dir. They must stay separate: `debuglog::init`
+    // points the process-global `DIR` at whatever it is handed, and the
+    // harness's dir is a config dir full of a live SQLite file, not a log
+    // target.
+
+    /// Restores the global debug log to DISABLED on scope exit — INCLUDING on a
+    /// panicking assertion, which the plain "call `init(false, None)` last"
+    /// shape does not (the `commands/sessions.rs` / `session_tests` guard, the
+    /// same reason `debuglog.rs`'s own tests keep the teardown).
+    struct DisableDebuglogOnExit;
+    impl Drop for DisableDebuglogOnExit {
+        fn drop(&mut self) {
+            crate::agent::debuglog::init(false, None);
+        }
+    }
+
+    /// The `#[allow(clippy::await_holding_lock)]` is INTENTIONAL (the
+    /// `session_tests` / `commands/sessions.rs` precedent): the guard holds the
+    /// process-global `debuglog` target for the whole test, so a sibling's
+    /// `debuglog::init` cannot repoint `DIR` between the spawn and the read.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn a_title_request_failure_is_written_to_the_debug_log() {
+        // The order is the `commands/sessions.rs` one and it is load-bearing:
+        // the lock is declared FIRST so it outlives both, and `_disable`
+        // BEFORE the dir so it drops AFTER it (locals drop in reverse) — the
+        // global `DIR` is cleared before the dir it names is removed.
+        let _lock = crate::test_support::env_lock();
+        let log_dir = ScratchDir::in_env_temp("naming-log-", "log");
+        let _disable = DisableDebuglogOnExit;
+        crate::agent::debuglog::init(true, Some(log_dir.to_path_buf()));
+
+        // `Script::Refused` is the arm where `complete()` itself returns `Err`
+        // — the "the title request failed" diagnostic (a stream that errors
+        // MID-flight reports through the drain instead, with its own line).
+        let h = harness(vec![Script::Refused("the endpoint is down".to_string())]);
+        let id = "arch_logged_failure";
+        h.seed_session(id);
+
+        h.agent_end(id, false);
+        h.await_request().await;
+
+        let content = std::fs::read_to_string(log_dir.join("supervisor.log"))
+            .expect("the naming pass wrote the debug log");
+        // The FULL line, not a substring of the session id: the text is the
+        // durable handle a supporter greps for (several of these sentences are
+        // quoted in the docs), and the error's `Display` is what names the
+        // cause — the one fact #143's reporter was missing.
+        assert!(
+            content.contains(
+                "session-name: the title request failed for arch_logged_failure: \
+                 fatal: the endpoint is down"
+            ),
+            "the failure line is in supervisor.log:\n{content}"
+        );
+    }
+
+    /// Same lock-across-await rationale as the test above (and the same
+    /// `#[allow]`).
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn an_unconfigured_model_logs_the_skip_and_counts_no_failure() {
+        let _lock = crate::test_support::env_lock();
+        let log_dir = ScratchDir::in_env_temp("naming-log-", "log");
+        let _disable = DisableDebuglogOnExit;
+        crate::agent::debuglog::init(true, Some(log_dir.to_path_buf()));
+
+        let h = harness(vec![Script::answering("never")]);
+        let id = "arch_logged_skip";
+        h.record_row(id, None, false);
+        let mut unconfigured = h.model();
+        unconfigured.api_key = String::new();
+        h.seed_config(id, &unconfigured);
+        h.seed_transcript(id);
+
+        h.agent_end(id, false);
+        drain_tasks().await;
+
+        let content = std::fs::read_to_string(log_dir.join("supervisor.log"))
+            .expect("the skip is logged too — a silent decline is the bug");
+        assert!(
+            content.contains(
+                "session-name: no configured auth for model m1; skipping the title \
+                 request for arch_logged_skip"
+            ),
+            "the skip line is in supervisor.log:\n{content}"
+        );
+        // And it is still a SKIP, not a failure: the guard's consumption rule
+        // is unchanged (`a_model_without_an_api_key_calls_nothing_and_counts_no_failure`
+        // pins the same property without the log).
+        let state = h.state_of(id).expect("the pass ran");
+        assert_eq!(state.fails, 0, "an unconfigured model is NOT a failure");
+        assert!(!state.in_flight, "the early exit still cleared the flag");
     }
 
     #[tokio::test]

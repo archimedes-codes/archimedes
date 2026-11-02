@@ -1796,6 +1796,25 @@ impl SessionManager {
         // Reset the cancel flag (a fresh turn is not a cancel).
         *cancel_requested.lock().unwrap_or_else(|p| p.into_inner()) = false;
 
+        // Level-triggered titling (#143): a new prompt is the "catch up on
+        // whatever is due" moment, so nudge the naming pass here. The
+        // `agent_end` trigger in `router.rs` rides the Worker client's
+        // DROPPABLE 256-slot broadcast (`worker/client.rs`'s `Lagged` arm
+        // `continue`s) — one overflow and a session stays untitled until its
+        // NEXT turn; this call is an ordinary function call and cannot be
+        // dropped. `maybe_name_session` is idempotent and every guard
+        // declines while consuming nothing (`naming.rs`), so an over-call
+        // costs a row read and changes nothing.
+        //
+        // BELT-AND-BRACES on placement, not necessity: the pass counts
+        // interactions from `native_messages` (the Worker's `TranscriptInsert`
+        // store frames — `SessionStore::load_messages`), while the write a few
+        // lines below goes to the DISPLAY `messages` table (`db.record_message`).
+        // So this prompt's own user row is invisible to the nudge whichever
+        // side of the write it sits on; placing it BEFORE keeps the intent
+        // legible — "name what the PREVIOUS turns earned" — and costs nothing.
+        self.maybe_name_session(session_id);
+
         // Record the user's message in the transcript (the client owns history)
         // before the turn begins — the USER DISPLAY ROW write stays Supervisor-side
         // (the Worker persists only the provider-transcript user row via the store
@@ -2507,6 +2526,22 @@ impl SessionManager {
                 *kind = Some(CloseKind::User);
             }
         }
+        // Level-triggered titling (#143): the LAST chance before teardown.
+        // `agent_end` is titling's only other trigger and it rides the
+        // DROPPABLE 256-slot broadcast (`worker/client.rs`; the pump's
+        // `Lagged` arm `continue`s), so a session whose final turn's frame
+        // was lost — a STOPPED or FAILED turn included, whose user row is
+        // persisted at `begin_turn` — would never be titled at all. This call
+        // is an ordinary function call and cannot be dropped.
+        //
+        // BEFORE the `detach`, deliberately: the claim `maybe_name_session`
+        // takes is synchronous, so it lands while the row and its `naming`
+        // slice are certainly intact (the teardown — `router.rs`'s
+        // `on_session_exited_expected` — is ASYNCHRONOUS, driven by the
+        // Worker's `Exited`). A request that outlives that teardown is already
+        // neutered by the "missing entry → never re-create" rule in
+        // `InFlightClaim::drop` / `note_failure`.
+        self.maybe_name_session(session_id);
         // `detach` the Worker (the `WorkerManager` removes the `workers` entry +
         // spawns the background reap — the `Exited` is EXPECTED: NO `on_crash`;
         // the router's EXPECTED-exit handling does the `session-closed` cleanup).
@@ -2657,11 +2692,18 @@ fn synthesize_catalog_config_options(
 #[cfg(test)]
 mod session_tests {
     use super::*;
+    use crate::agent::events::RpcEvent;
+    use crate::agent::harness::provider::{
+        ChatMessage, ChatRole, FinishReason, MessageContent, ModelRequest, ProviderError,
+        ProviderEvent,
+    };
     use crate::agent::worker::client::{WorkerError, WorkerHandle};
     use crate::agent::worker::manager::WorkerFactory;
     use crate::storage::Db;
     use crate::test_support::ScratchDir;
+    use futures_util::stream::{BoxStream, StreamExt};
     use std::path::Path;
+    use std::time::Duration;
     use tokio::sync::mpsc;
 
     #[test]
@@ -2949,16 +2991,55 @@ mod session_tests {
     /// `SessionManager`'s router / crash handler; `attach_worker_manager`
     /// hands the `WorkerManager` to the `SessionManager` after both are
     /// built). Returns the manager + the `WorkerManager` + the `Db`.
+    ///
+    /// The naming pass's provider seam is wired to the canned-title double
+    /// (see `build_worker_manager_with_title_provider`) — the whole suite,
+    /// because the double is inert unless a title request is actually made.
     fn build_worker_manager(
         dir: &Path,
         catalog: ModelCatalog,
         sink: &Arc<dyn EventSink>,
     ) -> (Arc<SessionManager>, Arc<WorkerManager>, Arc<Db>) {
+        let (manager, wm, db, _requests) =
+            build_worker_manager_with_title_provider(dir, catalog, sink, false);
+        (manager, wm, db)
+    }
+
+    /// `build_worker_manager` PLUS the naming provider's request channel —
+    /// the observation point for the tests that must SEE a title request
+    /// (`close_session` / `send_prompt_with_images` nudge the naming pass;
+    /// nothing else in this module does). `pending` scripts the double to
+    /// never answer, which keeps a request IN FLIGHT (the in-flight-guard
+    /// pin).
+    fn build_worker_manager_with_title_provider(
+        dir: &Path,
+        catalog: ModelCatalog,
+        sink: &Arc<dyn EventSink>,
+        pending: bool,
+    ) -> (
+        Arc<SessionManager>,
+        Arc<WorkerManager>,
+        Arc<Db>,
+        mpsc::UnboundedReceiver<ModelRequest>,
+    ) {
         let db = open_db(dir);
         let mut manager = SessionManager::new(dir.to_path_buf());
         manager.attach_db(db.clone());
         manager.set_catalog(catalog);
         manager.set_sink(sink.clone());
+        // The naming pass's provider seam (`set_provider_factory` is
+        // `&mut self`, so it goes in BEFORE the `Arc`). SAFE FOR THE WHOLE
+        // HELPER: `provider_factory` has exactly ONE consumer — the title
+        // request in `naming.rs` — so no other `session_tests` behaviour
+        // changes; and the double answers in memory, so a nudge can never
+        // reach the network from here.
+        let (tx, requests) = mpsc::unbounded_channel::<ModelRequest>();
+        manager.set_provider_factory(move |_model: &Model| {
+            Box::new(CannedTitleProvider {
+                requests: tx.clone(),
+                pending,
+            }) as Box<dyn Provider>
+        });
         let manager = Arc::new(manager);
         let wm = {
             let m = manager.clone();
@@ -2971,7 +3052,282 @@ mod session_tests {
             ))
         };
         manager.attach_worker_manager(wm.clone());
-        (manager, wm, db)
+        (manager, wm, db, requests)
+    }
+
+    // ── The naming-provider double (the level-triggered-titling tests) ─────
+    //
+    // The minimal form of `naming.rs`'s `RecordingProvider` (module-private
+    // there, so it cannot be imported). The requests go out on an
+    // UNBOUNDED CHANNEL rather than a `Notify`: a `Notify` loses a signal
+    // that arrives BEFORE the test registers its waiter, and the
+    // prompt-start nudge fires while the test is still awaiting the turn
+    // settle — so the signal would be gone by the time the test looked.
+    // `recv()` after the fact is then still exact, because on a
+    // current-thread runtime the woken test task is polled only AFTER the
+    // naming task's poll ends, and everything the naming task does after
+    // handing back its stream is an immediately-ready await — so the
+    // conditional title write has already happened when `recv()` returns.
+
+    /// The canned title the double answers with.
+    const CANNED_TITLE: &str = "Porting the session namer";
+
+    /// The title-request `Provider` double.
+    struct CannedTitleProvider {
+        /// Every request, in arrival order.
+        requests: mpsc::UnboundedSender<ModelRequest>,
+        /// Never answer (the request stays IN FLIGHT).
+        pending: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for CannedTitleProvider {
+        async fn complete(
+            &self,
+            req: &ModelRequest,
+        ) -> Result<BoxStream<'static, ProviderEvent>, ProviderError> {
+            let _ = self.requests.send(req.clone());
+            if self.pending {
+                let () = futures_util::future::pending().await;
+            }
+            Ok(futures_util::stream::iter(vec![
+                ProviderEvent::TextDelta(CANNED_TITLE.to_string()),
+                ProviderEvent::Done(FinishReason::Stop),
+            ])
+            .boxed())
+        }
+    }
+
+    /// A `ChatMessage` user row (the shape `native_messages` stores).
+    fn user_row(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::User,
+            content: MessageContent::Text(text.to_string()),
+            tool_call_id: None,
+            tool_calls: None,
+        }
+    }
+
+    /// A `ChatMessage` assistant row.
+    fn assistant_row(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::Assistant,
+            content: MessageContent::Text(text.to_string()),
+            tool_call_id: None,
+            tool_calls: None,
+        }
+    }
+
+    /// Seed the PREVIOUS turn's transcript into `native_messages` — the
+    /// table the naming pass counts interactions in and excerpts from (the
+    /// Worker's `TranscriptInsert` store frames land here; the Supervisor's
+    /// own `send_prompt` write goes to the DISPLAY `messages` table, so
+    /// naming never sees a prompt's own row).
+    fn seed_previous_turn(db: &Arc<Db>, id: &str) {
+        let store = SessionStore::new(db.clone());
+        store
+            .insert_message(
+                id,
+                0,
+                "user",
+                &serde_json::to_string(&user_row("Fix the login redirect")).unwrap(),
+            )
+            .expect("the user row writes");
+        store
+            .insert_message(
+                id,
+                1,
+                "assistant",
+                &serde_json::to_string(&assistant_row("Point the redirect at /login")).unwrap(),
+            )
+            .expect("the assistant row writes");
+    }
+
+    /// Let every spawned task run to its next await point — the NEGATIVE
+    /// assertions need it (without a yield, "no request was made" would pass
+    /// vacuously on a current-thread runtime). The `naming.rs` harness's
+    /// `drain_tasks` shape.
+    async fn drain_tasks() {
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// Read the row until the naming pass's conditional write lands (the
+    /// write happens inside the spawned task). The bounded `yield_now` loop
+    /// is a scheduling guard, not a sleep-based "give it time" — the request
+    /// channel is what proves the pass ran; a pass that never ran returns
+    /// `(None, 0)` and reddens the caller's assertion.
+    async fn stored_title(db: &Arc<Db>, id: &str) -> (Option<String>, i64) {
+        for _ in 0..100 {
+            let row = db
+                .session(id)
+                .expect("the row reads")
+                .expect("the row exists");
+            if row.title.is_some() {
+                return (row.title, row.title_stage);
+            }
+            tokio::task::yield_now().await;
+        }
+        let row = db
+            .session(id)
+            .expect("the row reads")
+            .expect("the row exists");
+        (row.title, row.title_stage)
+    }
+
+    // ── Level-triggered titling (#143) ─────────────────────────────────────
+    //
+    // `agent_end` is titling's droppable trigger: it rides the Worker
+    // client's 256-slot `broadcast` and a `Lagged` pump DROPS it, which is
+    // #143's "the title arrives late, or never". The two Supervisor-side
+    // nudges below are ordinary function calls and therefore cannot be
+    // dropped, so a session gets titled at the next prompt or at close even
+    // when the frame never arrived. These tests drive the REAL lifecycle
+    // (a `fake_worker` session, whose canned turn emits `turn_end` +
+    // `agent_settled` and NO `agent_end`) — the absence of the frame is the
+    // scenario, not an approximation of it.
+
+    /// #143: a session that NEVER receives `agent_end` is still titled by
+    /// `close_session` — the last chance before teardown, and a nudge that
+    /// no broadcast overflow can eat.
+    #[tokio::test]
+    async fn closing_a_session_titles_it_with_no_agent_end_frame_ever_delivered() {
+        let dir = temp_config_dir();
+        // Naming ON (the production default — `sessionNamingEnabled` absent
+        // reads as enabled; this test is ABOUT the naming pass).
+        write_settings_json(&dir, serde_json::json!({}));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+        let (manager, _wm, db, mut requests) =
+            build_worker_manager_with_title_provider(&dir, native_test_catalog(), &sink, false);
+        let info = manager
+            .start_session(dir.to_path_buf(), &sink)
+            .await
+            .expect("the native session started");
+        let id = info.session_id.clone();
+        // The PREVIOUS turn's transcript, in the table naming reads.
+        seed_previous_turn(&db, &id);
+        assert_eq!(db.session(&id).unwrap().unwrap().title_stage, 0);
+
+        // NO `agent_end` is ever routed — the fixture never emits one.
+        manager
+            .close_session(&id)
+            .await
+            .expect("the close succeeds");
+
+        let request = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+            .await
+            .expect("close_session nudged the naming pass — a title request was made")
+            .expect("the request channel is open");
+        assert_eq!(
+            request.model, "m1",
+            "the request asks the session's own model (the BARE id)"
+        );
+        let (title, stage) = stored_title(&db, &id).await;
+        assert_eq!(
+            title.as_deref(),
+            Some(CANNED_TITLE),
+            "the close nudge wrote the title the provider answered with"
+        );
+        assert_eq!(stage, 1, "stage 0 -> 1 (the two-stage ladder)");
+    }
+
+    /// #143: the same untitled session gets titled at the NEXT prompt — the
+    /// "catch up on whatever is due" moment, naming from the PREVIOUS turn's
+    /// transcript (the prompt's own row is not visible to naming either way:
+    /// the Supervisor writes the DISPLAY row, the Worker writes
+    /// `native_messages`).
+    #[tokio::test]
+    async fn a_prompt_titles_an_untitled_session_from_the_previous_turn_with_no_agent_end() {
+        let dir = temp_config_dir();
+        write_settings_json(&dir, serde_json::json!({}));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+        let (manager, _wm, db, mut requests) =
+            build_worker_manager_with_title_provider(&dir, native_test_catalog(), &sink, false);
+        let info = manager
+            .start_session(dir.to_path_buf(), &sink)
+            .await
+            .expect("the native session started");
+        let id = info.session_id.clone();
+        seed_previous_turn(&db, &id);
+
+        // The turn settles (the fixture's `agent_settled`) and NO `agent_end`
+        // is ever routed for turn 1.
+        manager
+            .send_prompt_with_images(&id, "and the tests?".to_string(), Vec::new())
+            .await
+            .expect("the prompt turn resolved");
+
+        let request = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+            .await
+            .expect("the prompt start nudged the naming pass")
+            .expect("the request channel is open");
+        assert_eq!(request.model, "m1");
+        let (title, stage) = stored_title(&db, &id).await;
+        assert_eq!(
+            title.as_deref(),
+            Some(CANNED_TITLE),
+            "the prompt nudge titled the session from the previous turn's transcript"
+        );
+        assert_eq!(stage, 1);
+
+        let _ = manager.close_session(&id).await;
+    }
+
+    /// A nudge that arrives while a title request is already IN FLIGHT
+    /// spawns nothing — the `in_flight` guard (the same one
+    /// `naming.rs::a_request_in_flight_blocks_a_second` pins for the
+    /// `agent_end` trigger) covers the new call sites for free. This one
+    /// passes BEFORE the nudges land: it pins the property the nudges must
+    /// not break, so a nudge that over-spawns reddens it.
+    #[tokio::test]
+    async fn a_nudge_while_a_title_request_is_in_flight_spawns_no_second_one() {
+        let dir = temp_config_dir();
+        write_settings_json(&dir, serde_json::json!({}));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+        // `pending`: the double never answers, so the first request stays IN
+        // FLIGHT and guard 4 — not the now-titled row — is what declines.
+        let (manager, _wm, db, mut requests) =
+            build_worker_manager_with_title_provider(&dir, native_test_catalog(), &sink, true);
+        let info = manager
+            .start_session(dir.to_path_buf(), &sink)
+            .await
+            .expect("the native session started");
+        let id = info.session_id.clone();
+        seed_previous_turn(&db, &id);
+
+        // The first request, via the trigger that exists today.
+        manager.route_event(
+            &id,
+            false,
+            WorkerInboundEvent::Event(RpcEvent::agent_end {
+                messages: vec![],
+                will_retry: false,
+            }),
+        );
+        tokio::time::timeout(Duration::from_secs(5), requests.recv())
+            .await
+            .expect("the first title request was made")
+            .expect("the request channel is open");
+        assert!(
+            manager.naming_state(&id, |s| s.is_some_and(|s| s.in_flight)),
+            "the request is in flight (the double never answered)"
+        );
+
+        // The extra nudge — the close-site call, on the same session.
+        manager
+            .close_session(&id)
+            .await
+            .expect("the close succeeds");
+        drain_tasks().await;
+
+        assert!(
+            requests.try_recv().is_err(),
+            "the in-flight guard declined the nudge: no second request"
+        );
     }
 
     /// Stamp a seeded crash log's mtime `secs_ago` seconds in the past, so

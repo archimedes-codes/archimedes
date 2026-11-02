@@ -64,9 +64,23 @@ impl EventSink for RecSink {
 /// and `archimedes.db` when it drops.
 fn temp_config_dir() -> archimedes_lib::test_support::ScratchDir {
     let dir = archimedes_lib::test_support::ScratchDir::in_env_temp("session-native-", "cfg");
+    // `sessionNamingEnabled: false` is ISOLATION, not a knob this suite
+    // exercises: naming defaults ON (`session_naming_enabled` is
+    // `#[serde(default = "default_true")]`), and titling is now nudged from
+    // NON-droppable Supervisor sites (`send_prompt_with_images`,
+    // `close_session`) as well as the `agent_end` frame — so a fixture that
+    // drives those calls on a session with a persisted user row would fire a
+    // REAL title HTTP request (the seeded model carries `api_key: "k"`,
+    // `base_url: ""`). Naming has its own suite (`session::naming`, a
+    // recording provider); this one tests the session lifecycle.
     std::fs::write(
         dir.join("settings.json"),
-        json!({ "theme": "dark", "defaultThinkingLevel": "high" }).to_string(),
+        json!({
+            "theme": "dark",
+            "defaultThinkingLevel": "high",
+            "sessionNamingEnabled": false
+        })
+        .to_string(),
     )
     .unwrap();
     dir

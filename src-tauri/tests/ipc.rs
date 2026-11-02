@@ -365,7 +365,15 @@ async fn seed_default_model(dirs: &TestDirs) -> tokio::task::JoinHandle<()> {
         "providers": [
             { "id": "tama", "name": "tama", "baseUrl": format!("http://{addr}/v1"), "apiKey": "k", "api": "openai-completions" }
         ],
-        "defaultModel": "tama/m/1"
+        "defaultModel": "tama/m/1",
+        // ISOLATION, not a knob this suite exercises: naming defaults ON
+        // (`session_naming_enabled` is `#[serde(default = "default_true")]`)
+        // and titling is now nudged from the non-droppable Supervisor sites
+        // (`send_prompt_with_images`, `close_session`), so this mounted mock
+        // server would receive an UNEXPECTED chat-completion from tests that
+        // only ever test the IPC surface. Naming has its own suite
+        // (`session::naming`, a recording provider).
+        "sessionNamingEnabled": false
     });
     std::fs::write(
         dirs.config_dir.join("settings.json"),
@@ -1447,7 +1455,12 @@ async fn refreshing_a_provider_pushes_the_new_context_window_to_a_live_session()
             { "id": "tama", "name": "tama", "baseUrl": format!("http://{addr}/v1"),
               "apiKey": "k", "api": "openai-completions" }
         ],
-        "defaultModel": "tama/m/1"
+        "defaultModel": "tama/m/1",
+        // ISOLATION (see `seed_default_model`): naming defaults ON and is
+        // nudged from the non-droppable Supervisor sites, so this mock
+        // server would otherwise receive an unexpected chat-completion from
+        // a test that only tests the context-window push.
+        "sessionNamingEnabled": false
     });
     std::fs::write(
         dirs.config_dir.join("settings.json"),
@@ -1566,7 +1579,12 @@ async fn refreshing_a_provider_with_unchanged_metadata_pushes_nothing() {
             { "id": "tama", "name": "tama", "baseUrl": format!("http://{addr}/v1"),
               "apiKey": "k", "api": "openai-completions" }
         ],
-        "defaultModel": "tama/m/1"
+        "defaultModel": "tama/m/1",
+        // ISOLATION (see `seed_default_model`): naming defaults ON and is
+        // nudged from the non-droppable Supervisor sites, so this mock
+        // server would otherwise receive an unexpected chat-completion from
+        // a test that only tests the no-op refresh.
+        "sessionNamingEnabled": false
     });
     std::fs::write(
         dirs.config_dir.join("settings.json"),

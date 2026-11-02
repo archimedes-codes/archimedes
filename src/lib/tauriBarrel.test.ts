@@ -474,9 +474,12 @@ describe("the scanner actually reads the tree", () => {
     // the documented way, and 43 -> 44 when issue #126/#127/#132 landed
     // `components/settings/ProviderAuthSection.test.tsx` (the provider sign-in /
     // device-flow / paste-token surface), which mocks the barrel the documented
-    // way.
-    expect(mockers).toHaveLength(44);
-    // 43 of the 44 SPREAD `vi.importActual`, which is the shape that makes the
+    // way, and 44 -> 45 when #143 added `hooks/useSessionTitleRecovery.test.ts`
+    // (the focus-driven title re-read), which mocks the barrel the documented
+    // way — it needs `listSessions` mocked, and this file's own rule is that a
+    // mocker must spread, so an unlisted export still resolves.
+    expect(mockers).toHaveLength(45);
+    // 44 of the 45 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. The new mocker spreads
     // too, so the remaining one is still `hooks/useWindowMaximized.test.ts`,
     // which replaces the module wholesale — so a name it forgets is `undefined`,
@@ -485,7 +488,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(readFileSync(f, "utf8")),
       ).length,
-    ).toBe(43);
+    ).toBe(44);
   });
 });
 

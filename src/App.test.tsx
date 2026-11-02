@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import App from "./App";
 import {
   externalOpen,
+  listSessions,
   listSpaces,
   sessionRecency,
   listenInteractiveRequestClose,
@@ -1620,5 +1621,58 @@ describe("App (the ADR 0075 recency fetch at boot)", () => {
     // `sessions.test.ts`, which drives `setSpaces` directly. What THIS file can
     // pin is that the fetch happens, once, and that both maps are filled by the
     // single payload.
+  });
+});
+
+describe("App (title recovery mounted at the app root, #143)", () => {
+  const clearStore = () =>
+    useSessions.setState({
+      sessions: [],
+      historySessions: [],
+      archivedSessions: [],
+      spaces: [],
+      activeSessionId: null,
+      activeSpacePath: null,
+      messages: {},
+      sessionRecency: {},
+      sessionOrder: {},
+    });
+  beforeEach(clearStore);
+  afterEach(clearStore);
+
+  it("a window focus re-reads listSessions and NOTHING else (the boot trio is untouched)", async () => {
+    // Mounts the REAL `App`, so this is the only place that pins the hook is
+    // actually mounted — the hook's own suite proves what it does, not that
+    // anything runs it. Counts are taken AFTER boot, because boot already
+    // `listSessions`es once: the assertion is "focus adds exactly one read",
+    // and it is the ONLY thing that distinguishes "recovery mounted" from
+    // "recovery mounted and re-running the boot trio".
+    useSessions.setState({
+      sessions: [
+        { sessionId: "s1", cwd: "/x", capabilities: {}, archived: false },
+      ],
+    });
+    render(<App />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const bootReads = vi.mocked(listSessions).mock.calls.length;
+    const bootRecency = vi.mocked(sessionRecency).mock.calls.length;
+    const bootSpaces = vi.mocked(listSpaces).mock.calls.length;
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+
+    // Exactly one extra read, and it carries the archived-inclusive flag.
+    const reads = vi.mocked(listSessions).mock.calls;
+    expect(reads.length).toBe(bootReads + 1);
+    expect(reads[reads.length - 1]?.[0]).toBe(true);
+    // The boot trio's OTHER two calls stay put: `sessionRecency` is pinned to
+    // one call by the test above, and re-running `setSpaces` would re-seed
+    // `committedTrusted` and could move the selected tab.
+    expect(vi.mocked(sessionRecency).mock.calls.length).toBe(bootRecency);
+    expect(vi.mocked(listSpaces).mock.calls.length).toBe(bootSpaces);
   });
 });

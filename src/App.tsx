@@ -49,6 +49,7 @@ import {
 import NewSpaceDialog from "./components/NewSpaceDialog";
 import NewSessionErrorBanner from "./components/NewSessionErrorBanner";
 import { useActiveSpaceCwd } from "./hooks/useActiveSpaceCwd";
+import { useSessionTitleRecovery } from "./hooks/useSessionTitleRecovery";
 import { useWindowMaximized } from "./hooks/useWindowMaximized";
 
 function App() {
@@ -65,6 +66,15 @@ function App() {
   // there. See `useAppShortcuts` for what it claims and what it no longer yields
   // to.
   useAppShortcuts();
+
+  // Title recovery (#143): re-read the stored rows when the window regains
+  // focus, so a `session-titled` push that was dropped cannot strand a live
+  // Session's label until restart. App-scoped like the two hooks above — the
+  // sidebar row it fixes is visible while the Settings page is open (the
+  // workspace is unmounted there), so a hook mounted with the workspace would
+  // not exist exactly when the stale label is on screen. See the hook's own doc
+  // for why it calls ONLY `listSessions`.
+  useSessionTitleRecovery();
 
   // Register the Tauri event listeners once; dispatch into the stores.
   // `listen()` is async, so cleanup must await the pending registrations
@@ -103,10 +113,13 @@ function App() {
           .markStalled(payload.sessionId, payload.at, payload.crashLog),
       ),
     );
-    // A generated session title (the naming pass): the label rides the
-    // PUSH, because `listSessions` is fetched ONCE at boot (below) and
-    // nothing re-fetches it — a title minted in this run would otherwise
-    // never reach the sidebar / side pane.
+    // A generated session title (the naming pass): the label rides this PUSH
+    // because `listSessions` is fetched ONCE at boot (below) — a title minted
+    // in this run would otherwise never reach the sidebar / side pane. Since
+    // #143 there IS a second route, `useSessionTitleRecovery` (a focus-driven
+    // re-read merged by `mergeRefreshedSessionRows`), but the push stays the
+    // INSTANT one and the recovery is the backstop for a frame this broadcast
+    // dropped — do not delete this listener on the theory the pull covers it.
     unlistenPromises.push(
       listenSessionTitled(({ sessionId, title }) =>
         useSessions.getState().titleSession(sessionId, title),

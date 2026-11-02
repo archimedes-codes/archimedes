@@ -702,20 +702,42 @@ interface SessionsState {
   /**
    * Merge refreshed stored-session rows into the per-id maps (#85) — the
    * post-refresh path, so a corrected context window reaches a STORED session
-   * without a restart.
+   * without a restart — and, since #143, carry a refreshed `title` onto EVERY
+   * list that holds the id, live included.
    *
    * Why not `setHistorySessions`: that function re-SPLITS the lists by the
    * archived flag, and its own comment forbids running it mid-run ("do NOT
    * re-run this mid-run — re-splitting would drop sticky live+archived entries
    * and silently un-archive on the next close"). So this touches the two
-   * per-id maps and NOTHING about membership: a row only contributes values
-   * for a session the store already knows, and an unknown id is ignored.
+   * per-id maps and the `title` field and NOTHING about membership: a row only
+   * contributes values for a session the store already knows, and an unknown id
+   * is ignored.
    *
-   * The store's map WINS over the row for a LIVE session (`contextUsageOf` /
-   * `sessionConfigOptionsOf` read the map first), so this skips any id already
-   * present in `sessions`: a live frame is fresher than the `list_sessions`
-   * read the refresh ran alongside, and clobbering it with a snapshot would
-   * move the bar BACKWARDS.
+   * TWO PASSES, TWO RULES — do not unify them.
+   *
+   * 1. `contextUsage` / `configOptions` keep the LIVE SKIP. The store's map
+   *    WINS over the row for a live session (`contextUsageOf` /
+   *    `sessionConfigOptionsOf` read the map first), so this skips any id
+   *    already present in `sessions`: a live frame is fresher than the
+   *    `list_sessions` read the refresh ran alongside, and clobbering it with a
+   *    snapshot would move the bar BACKWARDS.
+   *
+   * 2. `title` deliberately does NOT inherit that skip (#143). The skip's
+   *    rationale is about the per-id MAPS, and `title` has no map — and a live
+   *    Session's title USED to reach the UI only through the `session-titled`
+   *    push, which rides a droppable frame. So the title pass writes into every
+   *    list holding the id (live, history, archived) exactly as `titleSession`
+   *    does, so a resumed-archived (sticky) pair cannot disagree. That makes
+   *    this the pull's recovery route; the push stays the instant one.
+   *
+   * LOAD-BEARING: a fetched row may only ever overwrite a title with ANOTHER
+   * NON-EMPTY title — never `null` / `undefined` / `""` — in the live AND the
+   * stored lists. `SessionInfo.title` is `string | null | undefined`
+   * (`lib/tauri/types.ts`) and `list_sessions` legitimately answers `NULL` for
+   * a row this store already labels, so a null-tolerant merge would turn a
+   * STALE label into a LOST one. Lists that hold no titled id keep their SAME
+   * array reference (the `titleSession` precedent — a fresh array would
+   * re-render every sidebar row on every window focus).
    */
   mergeRefreshedSessionRows: (rows: SessionInfo[]) => void;
   /**
@@ -1463,7 +1485,51 @@ export const useSessions = create<SessionsState>((set, get) => ({
           changed = true;
         }
       }
-      return changed ? { contextUsage, configOptions } : state;
+
+      // The TITLE pass (#143) — a SEPARATE rule from the map pass above, and it
+      // deliberately does NOT inherit that pass's live-skip. A live Session's
+      // title reaches the UI only through the `session-titled` push, which rides
+      // a droppable frame; if it is missed, nothing else can ever deliver the
+      // label short of a restart. So a refreshed row's non-empty title is
+      // written into EVERY list that holds the id — live, history, archived —
+      // mirroring `titleSession`'s renamed-same-array rule so a resumed-archived
+      // (sticky) pair cannot disagree.
+      //
+      // Only a NON-EMPTY title ever writes: `list_sessions` answers `title:
+      // NULL` for a row this store already labels, and overwriting with that
+      // would trade a stale label for a lost one. An id in NO list is skipped
+      // (populating lists is boot's job, not a merge's), and a list that holds
+      // none of the titled ids keeps its SAME array.
+      const titles = new Map<string, string>();
+      for (const row of rows) {
+        // `title` is `string | null | undefined` on the wire — accept only a
+        // non-empty string, and let a later row for the same id win.
+        if (typeof row.title === "string" && row.title !== "") {
+          titles.set(row.sessionId, row.title);
+        }
+      }
+      const retitled = (list: SessionInfo[]) => {
+        if (!list.some((s) => titles.has(s.sessionId))) return list;
+        return list.map((s) => {
+          const title = titles.get(s.sessionId);
+          return title === undefined ? s : { ...s, title };
+        });
+      };
+      const sessions = retitled(state.sessions);
+      const historySessions = retitled(state.historySessions);
+      const archivedSessions = retitled(state.archivedSessions);
+      const titleChanged =
+        sessions !== state.sessions ||
+        historySessions !== state.historySessions ||
+        archivedSessions !== state.archivedSessions;
+
+      if (!changed && !titleChanged) return state;
+      return {
+        ...(changed ? { contextUsage, configOptions } : {}),
+        ...(titleChanged
+          ? { sessions, historySessions, archivedSessions }
+          : {}),
+      };
     }),
 
   setHistorySessions: (rows) =>

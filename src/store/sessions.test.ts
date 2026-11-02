@@ -3164,6 +3164,160 @@ describe("archivedSessions (sticky, ADR 0016)", () => {
     });
   });
 
+  it("mergeRefreshedSessionRows carries a refreshed title onto the LIVE row (#143)", () => {
+    // The title is the ONE field the live-skip must NOT cover. The skip exists
+    // because `contextUsageOf` / `sessionConfigOptionsOf` read the store's map
+    // first, so a snapshot row would move a live bar BACKWARDS — but `title` has
+    // no map, and for a live Session the `session-titled` push is its only
+    // route to the UI (the boot `list_sessions` predates it). A dropped push is
+    // therefore stranded until restart unless THIS merge delivers the title.
+    useSessions.setState({
+      sessions: [info("live-1", "/x")],
+      historySessions: [],
+      archivedSessions: [],
+      contextUsage: {},
+      configOptions: {},
+    });
+    useSessions.getState().mergeRefreshedSessionRows([
+      { ...info("live-1", "/x"), title: "Porting the session namer" },
+    ]);
+    expect(useSessions.getState().sessions[0].title).toBe(
+      "Porting the session namer",
+    );
+  });
+
+  it("mergeRefreshedSessionRows titles BOTH copies of a sticky live+archived pair (#143)", () => {
+    // The same sticky membership `titleSession` rewrites every list for: a
+    // resumed archived Session sits in `sessions` AND `archivedSessions`, and a
+    // refresh that updates one copy would leave the sidebar and the Archived
+    // section disagreeing about the same Session's label.
+    useSessions.setState({
+      sessions: [info("live-arch", "/x")],
+      historySessions: [],
+      archivedSessions: [{ ...info("live-arch", "/x"), archived: true }],
+      contextUsage: {},
+      configOptions: {},
+    });
+    useSessions.getState().mergeRefreshedSessionRows([
+      {
+        ...info("live-arch", "/x"),
+        archived: true,
+        title: "Resumed and retitled",
+      },
+    ]);
+    const st = useSessions.getState();
+    expect(st.sessions[0].title).toBe("Resumed and retitled");
+    expect(st.archivedSessions[0].title).toBe("Resumed and retitled");
+  });
+
+  it("mergeRefreshedSessionRows never wipes a LIVE title with a null/empty fetched one (#143)", () => {
+    // LOAD-BEARING (R1). `SessionInfo.title` is `string | null | undefined`
+    // (`types.ts:73`) and `list_sessions` legitimately answers `title: NULL` —
+    // so a null-tolerant merge would turn a STALE label into a LOST one, the
+    // worse bug. A fetched row may only ever overwrite a title with another
+    // NON-EMPTY title.
+    useSessions.setState({
+      sessions: [{ ...info("live-1", "/x"), title: "Keep me" }],
+      historySessions: [],
+      archivedSessions: [],
+      contextUsage: {},
+      configOptions: {},
+    });
+    // `null` off the wire.
+    useSessions.getState().mergeRefreshedSessionRows([
+      { ...info("live-1", "/x"), title: null },
+    ]);
+    expect(useSessions.getState().sessions[0].title).toBe("Keep me");
+    // `undefined` (the field absent from the payload).
+    useSessions.getState().mergeRefreshedSessionRows([
+      { ...info("live-1", "/x"), title: undefined },
+    ]);
+    expect(useSessions.getState().sessions[0].title).toBe("Keep me");
+    // And the empty string (a title the backend has not filled in).
+    useSessions.getState().mergeRefreshedSessionRows([
+      { ...info("live-1", "/x"), title: "" },
+    ]);
+    expect(useSessions.getState().sessions[0].title).toBe("Keep me");
+  });
+
+  it("mergeRefreshedSessionRows never wipes a STORED/ARCHIVED title with a null fetched one (#143)", () => {
+    // The same rule on the other side of the live boundary: a stored row's own
+    // `title` is what the sidebar renders, so a refresh that reads the row
+    // before the naming pass committed would blank a correct label.
+    useSessions.setState({
+      sessions: [],
+      historySessions: [{ ...info("hist-1", "/x"), title: "Stored label" }],
+      archivedSessions: [
+        { ...info("arch-1", "/x"), archived: true, title: "Archived label" },
+      ],
+      contextUsage: {},
+      configOptions: {},
+    });
+    useSessions.getState().mergeRefreshedSessionRows([
+      { ...info("hist-1", "/x"), title: null },
+      { ...info("arch-1", "/x"), archived: true, title: "" },
+    ]);
+    const st = useSessions.getState();
+    expect(st.historySessions[0].title).toBe("Stored label");
+    expect(st.archivedSessions[0].title).toBe("Archived label");
+  });
+
+  it("mergeRefreshedSessionRows keeps the SAME array for a list that holds no titled id (#143)", () => {
+    // Reference identity, not equality: `titleSession`'s `renamed` helper is the
+    // precedent, and a fresh array per list would re-render every row in the
+    // sidebar on every window focus.
+    useSessions.setState({
+      sessions: [info("live-1", "/x")],
+      historySessions: [info("hist-1", "/x")],
+      archivedSessions: [{ ...info("arch-1", "/x"), archived: true }],
+      contextUsage: {},
+      configOptions: {},
+    });
+    const before = useSessions.getState();
+    useSessions.getState().mergeRefreshedSessionRows([
+      { ...info("hist-1", "/x"), title: "Only history changes" },
+    ]);
+    const after = useSessions.getState();
+    expect(after.historySessions).not.toBe(before.historySessions);
+    expect(after.sessions).toBe(before.sessions);
+    expect(after.archivedSessions).toBe(before.archivedSessions);
+  });
+
+  it("mergeRefreshedSessionRows changes NO membership when it carries titles (#143)", () => {
+    // The #85 contract restated for the title pass: this action never touches
+    // membership. A titled id is RETITLED where it already sits, an unknown id
+    // is ignored (boot's job to list it), and no row is moved or dropped.
+    useSessions.setState({
+      sessions: [info("live-arch", "/x")],
+      historySessions: [info("hist-1", "/x")],
+      archivedSessions: [
+        { ...info("live-arch", "/x"), archived: true },
+        { ...info("arch-1", "/x"), archived: true },
+      ],
+      contextUsage: {},
+      configOptions: {},
+    });
+    useSessions.getState().mergeRefreshedSessionRows([
+      { ...info("live-arch", "/x"), title: "Titled live" },
+      { ...info("hist-1", "/x"), title: "Titled stored" },
+      { ...info("arch-1", "/x"), archived: true, title: "Titled archived" },
+      { ...info("ghost", "/x"), title: "Never seen before" },
+    ]);
+    const st = useSessions.getState();
+    expect(st.sessions.map((s) => s.sessionId)).toEqual(["live-arch"]);
+    expect(st.historySessions.map((s) => s.sessionId)).toEqual(["hist-1"]);
+    expect(st.archivedSessions.map((s) => s.sessionId)).toEqual([
+      "live-arch",
+      "arch-1",
+    ]);
+    // The unknown id created nothing.
+    expect(
+      [...st.sessions, ...st.historySessions, ...st.archivedSessions].some(
+        (s) => s.sessionId === "ghost",
+      ),
+    ).toBe(false);
+  });
+
   it("archiveSession moves the entry historySessions → archivedSessions and calls the backend", async () => {
     useSessions.setState({
       historySessions: [info("h1", "/x")],
