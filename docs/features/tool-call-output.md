@@ -17,7 +17,8 @@ A tool-call card in the transcript shows what happened, in two places:
   `(+N images)`, `details` as a fallback — including the failure reason for a failed
   call with empty stdout), a bare string as-is, or compact JSON; scrollable
   (`max-h-80`), capped at 20k chars with a truncation note. `(no output)` only when
-  there is genuinely nothing (empty text items count as nothing for a successful call).
+  there is genuinely nothing (empty text items count as nothing for a successful call;
+  issue #148 wire sanitization aligns with this literal on outbound tool messages).
   A `content`-derived diff (the first-generation ACP diff channel — removed,
   ADR 0022: the native tool frames emit no `content`, but the frontend's
   `extractDiffs` / `diffMessages` handling is kept forward-compat) keeps priority
