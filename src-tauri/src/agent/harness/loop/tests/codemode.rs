@@ -299,10 +299,11 @@ async fn codemode_dispatch_runs_a_script_through_agent_loop() {
 ///
 /// Both halves of the claim are pinned against the REAL engine:
 ///
-/// - *batches* = runs CONCURRENTLY. Three nested `bash` calls that each sleep 700 ms
-///   cannot finish in well under 3 × 700 ms unless they overlap. A bridge that
-///   awaited each call inside the JS host closure (the obvious implementation, and
-///   the one that deadlocks against the runtime lock) cannot pass this.
+/// - *batches* = runs CONCURRENTLY. Three nested `bash` calls that each wait
+///   cannot finish in well under the sum of their waits unless they overlap. A
+///   bridge that awaited each call inside the JS host closure (the obvious
+///   implementation, and the one that deadlocks against the runtime lock) cannot
+///   pass this.
 /// - *completion order* = the row array is ordered by FINISH, not by issue: the
 ///   script issues slow → medium → fast, so a completion-ordered array reads fast,
 ///   medium, slow. A bridge that ordered by issue sequence is RED here.
@@ -328,13 +329,49 @@ async fn promise_all_batches_nested_calls_in_completion_order() {
     let turn = CancellationToken::new();
 
     // Issued slow → medium → fast; completion order is the reverse.
-    let script = "\
-      const out = await Promise.all([\n\
-        tools.bash({ command: 'sleep 0.7; echo slow' }),\n\
-        tools.bash({ command: 'sleep 0.35; echo medium' }),\n\
-        tools.bash({ command: 'echo fast' }),\n\
-      ]);\n\
-      out.map(r => r.text.trim()).join(',');";
+    //
+    // The two SLOW commands are built per platform, because the nested `bash`
+    // hands its string to the platform shell verbatim (`exec/bash.rs`: `sh -c` on
+    // unix, `cmd.exe /d /s /c` on Windows) and the two do not share a grammar:
+    //
+    // - unix: `sleep 0.7; echo slow` — `sleep` takes fractional seconds and `;`
+    //   sequences.
+    // - Windows: `ping -n 3 127.0.0.1 > NUL && echo slow`. `sleep` is not a
+    //   Windows command, `;` is not a separator (cmd hands the whole
+    //   `sleep 0.7; echo slow` to whatever resolves the first token, and GNU
+    //   `sleep` on the runner's PATH then rejects `0.7;`, `echo` and `slow` as
+    //   three bad intervals — that is the red this replaced), and `&&` is the
+    //   sequencing operator. `ping -n` to a loopback address is the wait this tool
+    //   DOCUMENTS for itself (`tool_specs::BASH_DESCRIPTION` recommends exactly
+    //   this form) and it is proven to wait, exit 0 and need no console input by
+    //   `agent::tools::exec::tests::bash::bash_ping_workaround_actually_waits_without_console_input`.
+    //   NOT `timeout /t`: that needs console input, which a Tool child never has
+    //   (stdin is NULL — see `bash::translate_no_console_input`).
+    //
+    // Windows' waits are ~2 s and ~1 s rather than 0.7/0.35 because `ping -n`
+    // waits one second BETWEEN replies, so `-n 3` is 2 intervals and `-n 2` is 1 —
+    // hence 3 and 2, and never `-n 1`, which waits nothing and would let `medium`
+    // tie with `fast`. The concurrency claim is a ratio, so the coarser quantum
+    // costs nothing; the serial bound below is derived from the same constants the
+    // script is built from, so the two cannot drift.
+    #[cfg(unix)]
+    let (slow_cmd, medium_cmd, serial_ms) =
+        ("sleep 0.7; echo slow", "sleep 0.35; echo medium", 1050_u64);
+    #[cfg(not(unix))]
+    let (slow_cmd, medium_cmd, serial_ms) = (
+        "ping -n 3 127.0.0.1 > NUL && echo slow",
+        "ping -n 2 127.0.0.1 > NUL && echo medium",
+        3000_u64,
+    );
+    let script = format!(
+        "const out = await Promise.all([\n  \
+         tools.bash({{ command: '{}' }}),\n  \
+         tools.bash({{ command: '{}' }}),\n  \
+         tools.bash({{ command: 'echo fast' }}),\n\
+         ]);\n\
+         out.map(r => r.text.trim()).join(',');",
+        slow_cmd, medium_cmd
+    );
     let started = std::time::Instant::now();
     let result = loop_
         .dispatch_tool(
@@ -372,11 +409,14 @@ async fn promise_all_batches_nested_calls_in_completion_order() {
         .unwrap_or_else(|| panic!("`details.calls` is an array: {:?}", result.details));
     assert_eq!(rows.len(), 3, "one row per nested call: {rows:?}");
 
-    // CONCURRENCY: 3 × 700 ms is ~2.1 s serial; the bound is a 15% margin on that.
+    // CONCURRENCY: serial would take `serial_ms` (the two waits summed); the bound
+    // is a 15% margin on that. Derived from the same constant the script's waits
+    // are built from, so changing a wait cannot silently widen the bound.
     assert!(
-        elapsed < Duration::from_millis(1800),
+        elapsed < Duration::from_millis(serial_ms + serial_ms / 7),
         "the three nested calls ran CONCURRENTLY (that is what `Promise.all` \
-         batching means); serial would be ~2100ms and this took {}ms",
+         batching means); serial would be ~{}ms and this took {}ms",
+        serial_ms,
         elapsed.as_millis()
     );
 
