@@ -164,6 +164,22 @@ impl AgentLoop {
                     _ = turn.cancelled() => Self::cancelled_tool_result(),
                 }
             }
+            "codemode" => {
+                // The `&mut self` here is exactly WHY the bridge takes `&AgentLoop`
+                // and dispatches nested built-ins through `execute_tool` on a
+                // CLONED `ToolCtx`: a script's nested call cannot re-enter this
+                // method, so the gate corridor is re-implemented in
+                // `loop/codemode.rs` against `&self` instead of reused from here.
+                // The engine is per-call (no field on the loop) and the turn token
+                // is the one cancellation authority.
+                crate::agent::harness::r#loop::codemode::exec_codemode(
+                    self,
+                    &tc.id,
+                    &tc.arguments,
+                    turn,
+                )
+                .await
+            }
             other => ToolResult {
                 content: vec![ContentBlock::Text {
                     text: format!("unknown tool: {other}"),

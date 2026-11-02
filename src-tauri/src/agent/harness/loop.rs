@@ -1338,6 +1338,7 @@ pub(crate) fn result_text(result: &ToolResult) -> String {
 
 pub(crate) use super::tool_specs::tool_specs;
 
+mod codemode;
 mod emit;
 mod gate;
 mod tools;
