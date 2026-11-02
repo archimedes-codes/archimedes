@@ -84,6 +84,16 @@ ddgs = "0.1"
 ipnet = "2"
 pdf-extract = "0.12"
 regex = "1"
+# The codemode sandbox engine (ADR 0089): an embedded QuickJS in the
+# Worker. `futures` exposes AsyncRuntime/AsyncContext; `parallel` is the
+# crate's (experimental) gate for the Send + Sync impls the engine needs
+# to live inside tokio::spawn(loop_.run()) — decided by a compile-time
+# assertion, not assumption (see codemode-task02). WITHOUT `parallel` the
+# assertion does not compile — `AsyncRuntime`/`AsyncContext` are `!Send +
+# !Sync`, their impls are `#[cfg(feature = "parallel")]` in the crate.
+# `rust-alloc`/`allocator` must stay OFF: they make `set_memory_limit` a
+# no-op, which would silently break the 256 MiB cap.
+rquickjs = { version = "0.14.0", features = ["futures", "parallel"] }
 # (Task 4) The ATOMIC settings write (`config::write_settings_atomic`):
 # `NamedTempFile` in the config dir + `persist` (rename), so a torn write can
 # never destroy `settings.json`. Was a DEV-dependency (test temp dirs only);
