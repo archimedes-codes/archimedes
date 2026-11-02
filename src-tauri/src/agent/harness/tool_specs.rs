@@ -62,11 +62,14 @@ const BASH_DESCRIPTION: &str = "Run a shell command (cmd.exe /d /s /c; the strin
 /// reddens the Windows CI leg. `the_codemode_description_never_names_another_advertised_tool`
 /// keeps the ban visible from Linux. Hence `Evaluate`, `callable`, `discover`,
 /// `built-in` — never `read`, `reads`, `thread`, `spread`, `already`.
-const CODEMODE_DESCRIPTION: &str = "Evaluate a JavaScript program in an embedded sandbox and \
-    return its final value. The program may call any built-in or MCP tool through \
-    `tools.<name>(args)`, await them like any Promise, and discover the full callable set \
-    through `ALL_TOOLS` / `searchTools` / `describeTool`. Every nested call passes the same \
-    policy gate as a direct call.";
+const CODEMODE_DESCRIPTION: &str = "Evaluate a JavaScript program and return its final \
+    value. The program runs in an embedded JavaScript VM with memory, stack and wall-clock \
+    limits; those limits bound the run, they are not a permission boundary. The program may \
+    call any built-in or MCP tool through `tools.<name>(args)`, await them like any Promise, \
+    and discover the full callable set through `ALL_TOOLS` / `searchTools` / `describeTool`. \
+    Every nested call passes the same policy gate as a direct call, so a script cannot \
+    reach past a denial — and a script that calls a gated tool in a loop can prompt you \
+    once per call.";
 
 /// The tool specs sent to the model (the built-ins + the suite tools —
 /// the schemas mirror the `tools.ts` override). `pub(crate)` so the

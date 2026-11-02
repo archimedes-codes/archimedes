@@ -21,9 +21,16 @@ import type { ToolCallUiStatus } from "../store/sessions";
  *   `vi.mock("../lib/tauri")` here — the card imports no store and no tauri
  *   barrel, and these tests prove that by needing neither.
  *
- * The live `tool_execution_update` EMISSION is B1-gated (nothing emits it in
- * this tree yet), so the live path is exercised the way the card actually sees
- * it: as a `tool_call_update`-folded `rawOutput` prop, replaced by a later one.
+ * The card is exercised as a pure component, so the live path is modelled the way the card
+actually sees it: as a `tool_call_update`-folded `rawOutput` prop, replaced by a later one.
+That is a testing choice, not a missing producer — the bridge DOES emit live
+`tool_execution_update` frames (B1 landed the sink in `0966c4c0` and
+`Bridge::emit_live` drives it, pinned by
+`promise_all_batches_nested_calls_in_completion_order`); what no test here does is drive the
+Rust emitter, because the card only ever consumes the folded prop. The emitter side and the
+reducer fold that feeds it are covered in `src-tauri`'s `loop/tests/codemode.rs`, and the
+gap of "no frontend test carries a real codemode payload through the reducer" is recorded in
+`docs/features/codemode-known-gaps.md` §9.
  */
 
 type NestedCall = {

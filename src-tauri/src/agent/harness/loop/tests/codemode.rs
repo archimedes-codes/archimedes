@@ -862,6 +862,101 @@ async fn an_excluded_tool_is_not_installed_as_a_script_global() {
     );
 }
 
+/// The interactive MCP `auth` action is refused BEFORE dispatch, so a script cannot
+/// open the user's browser and block on a consent screen. The refusal is
+/// argument-level: `mcp` itself stays callable, and the NAME-based list cannot express
+/// this case.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_interactive_mcp_auth_action_is_refused_from_a_script() {
+    let (events_tx, _events_rx) = mpsc::unbounded_channel();
+    let (provider, _calls) = ScriptedProvider::new(terminal_scripts());
+    let (_space, mut loop_) = build_loop(
+        Box::new(provider),
+        events_tx,
+        Arc::new(StdMutex::new(CancellationToken::new())),
+        watch::channel(0u64).0,
+        RetryPolicy::new_with(5, Duration::from_millis(1)),
+    );
+    let turn = CancellationToken::new();
+
+    let result = loop_
+        .dispatch_tool(
+            &ToolCall {
+                id: "auth1".to_string(),
+                name: "codemode".to_string(),
+                arguments: json!({
+                    // A server name this manager does not HOLD, so the refusal is the
+                    // ONLY way to get this text: had the call reached `mcp_tool` it
+                    // would have answered with the tool's own server-scope error, and
+                    // had it reached `authenticate` it would have opened a browser.
+                    "code": "const r = await tools.mcp({ action: 'auth', server: 'no-such-server' });\n\
+                             r.isError + '|' + r.text;"
+                }),
+            },
+            &turn,
+        )
+        .await;
+    // The SCRIPT succeeds — a refused nested call is a result, not an exception, so
+    // the parent's own outcome must not turn red over it.
+    assert!(
+        !result.is_error,
+        "the refusal is a RESULT the script can branch on, not a thrown script: {}",
+        text(&result)
+    );
+    let body = text(&result);
+    assert!(
+        body.starts_with("true|"),
+        "the script saw `isError: true`, got {body:?}"
+    );
+    assert!(
+        body.contains("not callable from a codemode script"),
+        "the refusal names itself as the bridge's, so the model is not sent looking \
+         for a broken MCP server: {body:?}"
+    );
+    assert!(
+        !body.contains("not found") && !body.contains("Unknown action"),
+        "this is the BRIDGE's refusal, not `mcp_tool`'s — the call must never reach \
+         the tool: {body:?}"
+    );
+
+    // The row records it as the bridge's refusal, NOT a gate denial: `denied` is
+    // reserved for what the POLICY GATE refused, and the gate never saw this call.
+    let rows = result
+        .details
+        .as_ref()
+        .and_then(|d| d.get("calls"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["status"].as_str(), Some("error"), "{}", rows[0]);
+    assert_eq!(rows[0]["toolName"].as_str(), Some("mcp"), "{}", rows[0]);
+
+    // And the NON-interactive actions still dispatch — the refusal is scoped to the
+    // one action that blocks on a human, not to the `mcp` tool. `status` is the tool's
+    // default arm, so an over-broad refusal would answer differently here.
+    let result = loop_
+        .dispatch_tool(
+            &ToolCall {
+                id: "auth2".to_string(),
+                name: "codemode".to_string(),
+                arguments: json!({
+                    "code": "const r = await tools.mcp({});\n!r.isError;"
+                }),
+            },
+            &turn,
+        )
+        .await;
+    assert!(!result.is_error, "the script ran: {}", text(&result));
+    assert_eq!(
+        text(&result),
+        "true",
+        "`mcp({{}})` (the status action) must still dispatch — only `auth` is \
+         refused: {}",
+        text(&result)
+    );
+}
+
 /// The discovery globals: `ALL_TOOLS` carries the advertised set, `describeTool`
 /// answers a built-in's advertised schema, and `searchTools` matches
 /// case-insensitively with an optional `limit`.

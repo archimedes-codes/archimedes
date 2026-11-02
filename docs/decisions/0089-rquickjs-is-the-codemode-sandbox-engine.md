@@ -98,13 +98,17 @@ can reach is a host tool: `tools.<name>(args)` is the only door into the host
 (`__codemodeCall`, `loop/codemode.rs`), and a call that comes through it is contained by the
 nested-call **policy gate** — the same `policy_verdict` → `gate_tool` / `deny_tool_result`
 corridor a direct model-initiated call runs, in the same decision order (`Bridge::run_nested`).
-So a script is granted **exactly the model's own reach, no wider and no narrower**, and the gate
+So a script is granted **the model's own reach, minus what the exclusion lists remove** — never
+wider, and the ADR's whole claim is that "never wider" half; the exclusions make a script strictly
+narrower than the model. The gate
 carries the scope and the limits ADR 0030 already assigns it: `bash` is always beyond the
 boundary, `mcp` and the web tools are ungated, and the write floor is by ADR 0030's own words "a
 guard-rail, not a security boundary". Nothing about embedding QuickJS widens or narrows that.
-The word "sandbox" in the tool's advertised description therefore means *a VM with limits*; the
-clause in that description which carries a guarantee is *"Every nested call passes the same
-policy gate as a direct call"*, and that clause is the one the implementation holds.
+The advertised description says this in the model's own terms rather than relying on the word
+"sandbox" to carry it: the program runs in "an embedded JavaScript VM with memory, stack and
+wall-clock limits; those limits bound the run, they are not a permission boundary". The clause that
+carries the real guarantee is *"Every nested call passes the same policy gate as a direct call"*,
+and that clause is the one the implementation holds.
 
 **What is therefore true by design.** A script may drive any granted tool as often as it likes,
 in a loop, with **no model turn between calls** — `run_nested` synthesizes a `ToolCall` per
@@ -121,23 +125,32 @@ frame re-serializes the whole snapshot. A script that loops until the clock expi
 fills its own parent tool result with rows, and the turn token ends it. That ceiling is real; it
 is simply a ceiling on the run, not a judgement about how much work is too much.
 
-**The exclusion list is NAME-based.** `ask`, `sudo_exec`, `manage_todo_list`, `subagent`,
-`list_agents` and `codemode` are never installed as script globals (`EXCLUDED_FROM_SCRIPT`), and
-that is the mechanism: `callable_specs` filters them out of `ALL_TOOLS`, `tools.<name>` is built
-FROM `ALL_TOOLS`, so a hard-coded spelling is a JS `TypeError` rather than a dispatch;
-`describeTool` refuses them again at call time so an excluded name is not discoverable either;
-and a nested built-in dispatches through `execute_tool`, whose `match` has no arm for any of the
-six and ends in `unknown tool`. The consequence of the scope being a NAME is that an interactive
-behaviour reachable through a **non-excluded tool's ARGUMENTS** is not covered by it. The live
-instance is `mcp`, which a script may call and which carries `action: "auth"` — the interactive
-OAuth flow, which opens the user's browser and then waits up to 300 s on a local callback. As of
-this commit that path is **not** rejected from a script: no action-level rejection exists in
-`agent/mcp/tool.rs` (checked at this SHA). The accepted residual risk is therefore precisely
-*argument-level interactivity*, bounded by the fact that the flow is raced against the turn token
-and its own wait is bounded, so it costs at most the script's remaining clock — but it does open a
-window on the user's desktop for an authorization nobody asked for. If an action-level rejection
-for interactive MCP actions lands, record it here as the mitigation for this paragraph; until it
-does, this paragraph is the honest state.
+**The exclusion list is NAME-based, plus one ARGUMENT-level refusal.** `ask`, `sudo_exec`,
+`manage_todo_list`, `subagent`, `list_agents` and `codemode` are never installed as script
+globals (`EXCLUDED_FROM_SCRIPT`), and that is the mechanism: `callable_specs` filters them out of
+`ALL_TOOLS`, `tools.<name>` is built FROM `ALL_TOOLS`, so a hard-coded spelling is a JS
+`TypeError` rather than a dispatch; `describeTool` refuses them again at call time so an excluded
+name is not discoverable either; and a nested built-in dispatches through `execute_tool`, whose
+`match` has no arm for any of the six and ends in `unknown tool`. A NAME cannot express the one
+case where interactivity lives in a tool's ARGUMENTS rather than its identity, so the bridge adds
+`interactive_args` (`harness/loop/codemode.rs`), checked in `run_nested` after the unknown-param
+check and before the gate: `mcp` with `action: "auth"` is refused from a script. That action runs
+the interactive OAuth flow — it opens the user's default browser and waits up to 300 s on a local
+callback for a human to finish a consent screen — which is the same "a program that blocks on a
+human is a stall wearing a costume" the `interactive` names are excluded for, and a script could
+have looped it over every configured server in one turn.
+
+The refusal is deliberately narrow, and both narrowings are load-bearing. It lives in the BRIDGE,
+not in `agent/mcp/tool.rs`: the model's own direct `mcp({action:'auth'})` still works, because a
+human watching a turn ask for authorization is the flow's designed use, and only the unattended
+script route is the problem. And `connect` is NOT refused — `call_tool`, `list_tools` and
+`describe` each run `ensure_connected`, so any nested MCP call spawns a stdio child whether or not
+the script asks to connect. Refusing the word would forbid no process the same script could not
+already start; it would only make the failure confusing. So the residual risk that remains is
+precisely **process fan-out through a permitted tool**, not human-blocking: a script may spawn one
+stdio child per configured server, bounded by the user's own config, and `close_all` reaps them at
+the end of the loop. `mcp` is not in `POLICIED_TOOLS`, so no nested MCP call prompts — that is
+unchanged from a direct call, and the script's clock bounds it.
 
 **What the sandbox is for.** Two things, neither of them containment: turning many sequential
 model turns into one script, and keeping large intermediate outputs inside the sandbox so that

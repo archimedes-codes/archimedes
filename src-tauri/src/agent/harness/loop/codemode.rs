@@ -73,6 +73,7 @@ use super::super::dispatch::is_tool_enabled;
 use super::AgentLoop;
 use crate::agent::codemode::{race_turn, CodemodeEngine, EngineLimits, ScriptEnd};
 use crate::agent::harness::provider::{ToolCall, ToolSpec};
+use crate::agent::harness::r#loop::tools::cancelled_tool_result;
 use crate::agent::harness::tool_specs::unknown_param_error;
 use crate::agent::mcp::mcp_tool;
 use crate::agent::policy::Decision;
@@ -119,11 +120,49 @@ const EXCLUDED_FROM_SCRIPT: &[(&str, &str)] = &[
     ("codemode", "recursive"),
 ];
 
+/// The ARGUMENT-level half of [`EXCLUDED_FROM_SCRIPT`].
+///
+/// The name list above cannot express this case, because the interactivity is not in
+/// the tool's NAME — it is in one of `mcp`'s ACTIONS. `mcp` is deliberately NOT
+/// excluded: it is the sanctioned way for a script to reach a server. But
+/// `action: "auth"` runs the interactive OAuth flow — it opens the user's default
+/// browser and then waits up to 300 s on a local callback for a human to finish a
+/// consent screen. That is the same "a program that blocks on a human is a stall
+/// wearing a costume" the `interactive` names are excluded for, plus it opens a
+/// window on the user's desktop to authorize something nobody asked for, and a script
+/// can do it in a loop over every configured server in one turn.
+///
+/// `connect` is NOT refused here, and that is deliberate rather than an oversight:
+/// `call_tool`, `list_tools` and `describe` all run `ensure_connected`, so any nested
+/// MCP call spawns a stdio child whether or not the script says `connect`. Refusing
+/// the word would forbid no process that the same script could not already start —
+/// it would only make the failure confusing. The process-spawning surface is a real
+/// limit and ADR 0089 records it as one; this refusal is about the HUMAN, which
+/// `connect` does not involve.
+///
+/// Returns the refusal text, or `None` when the arguments are callable.
+fn interactive_args(name: &str, args: &Value) -> Option<String> {
+    if name != "mcp" {
+        return None;
+    }
+    // A non-object `args` reaches the tool and gets the tool's own error; there is no
+    // `action` key to read, so there is nothing interactive to refuse here.
+    let action = args.get("action").and_then(Value::as_str)?;
+    if action == "auth" {
+        return Some(
+            "mcp action \"auth\" is not callable from a codemode script (it opens the \
+             user's browser and waits on a human)"
+                .to_string(),
+        );
+    }
+    None
+}
+
 /// One nested call's status, in the frozen element shape. Serialized as `running` /
 /// `ok` / `error` / `denied` — the four strings D1's `rowStatus` switches on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(super) enum NestedStatus {
+enum NestedStatus {
     /// Started, not finished — a cancel or a dropped script can leave a row here,
     /// which is the contract's word for "it did not complete".
     Running,
@@ -143,7 +182,7 @@ pub(super) enum NestedStatus {
 /// `details.calls` are literally the same value.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct NestedRow {
+struct NestedRow {
     /// `"<parentCallId>/<n>"` — the SAME string the policy gate received as its
     /// `requestId`, so a row and its permission prompt correlate. NEVER a frame's
     /// `tool_call_id`.
@@ -960,7 +999,7 @@ impl Bridge<'_> {
         // 0. CANCELLATION beats everything (`turn.rs`: a stopped turn never prompts,
         //    and the nested call dies with the script).
         if self.turn.is_cancelled() {
-            return (cancelled_result(), false);
+            return (cancelled_tool_result(), false);
         }
         // 1. The `enabled_tools` filter — the SAME predicate `dispatch_tool` gates on
         //    and its exact wording, so a disabled tool reads identically.
@@ -977,7 +1016,15 @@ impl Bridge<'_> {
         if let Some(error) = unknown_param_error(self.specs, &nested) {
             return (ToolResult::fail(error, None), false);
         }
-        // 3. The gate.
+        // 3. The argument-level exclusion — the interactive `mcp` `auth` action, which
+        //    the NAME-based list cannot catch because `mcp` itself is callable. Like the
+        //    two checks above it is a bridge refusal, not a gate refusal, so the row
+        //    reads `error` rather than `denied`: `denied` is reserved for what the POLICY
+        //    GATE refused, and the gate never sees this call.
+        if let Some(refusal) = interactive_args(&nested.name, &nested.arguments) {
+            return (ToolResult::fail(refusal, None), false);
+        }
+        // 4. The gate.
         match self.loop_.policy_verdict(&nested) {
             Some(Decision::Ask) => {
                 let guard = self.loop_.guard_target(&nested);
@@ -1014,7 +1061,7 @@ impl Bridge<'_> {
             // RACED against the TURN token exactly as the direct arm races it.
             tokio::select! {
                 result = mcp_tool(&self.loop_.mcp, &nested.arguments, self.turn) => result,
-                _ = self.turn.cancelled() => cancelled_result(),
+                _ = self.turn.cancelled() => cancelled_tool_result(),
             }
         } else {
             execute_tool(&self.ctx, &nested.name, &nested.arguments).await
@@ -1030,14 +1077,6 @@ impl Bridge<'_> {
         self.emit_live();
     }
 
-    /// The live frame: B1's sink, keyed on the PARENT call's id, carrying a serialized
-    /// [`ToolResult`] whose `details.calls` is the current snapshot.
-    ///
-    /// `is_error: false` while the script runs — the parent has not failed yet, and a
-    /// frame claiming failure would paint the parent row red for a nested call the
-    /// script may still recover from. The final `tool_execution_end` replaces the whole
-    /// `rawOutput` (`merge_json`'s shallow top-level overwrite), so nothing here leaks
-    /// into the settled state.
     /// The live frame: B1's sink, keyed on the PARENT call's id, carrying a serialized
     /// [`ToolResult`] whose `details.calls` is the current snapshot.
     ///
@@ -1217,11 +1256,6 @@ fn exception_verdict(
         .and_then(|exception| exception.message())
         .unwrap_or_else(|| "unknown exception".to_string());
     ScriptEnd::Failed(message)
-}
-
-/// The cancelled result — the exact bytes a direct call's cancelled arm returns.
-fn cancelled_result() -> ToolResult {
-    ToolResult::fail("cancelled".to_string(), None)
 }
 
 /// The `mcp` search predicate: a case-insensitive substring in the name OR in the
@@ -1407,6 +1441,42 @@ mod tests {
                 "`{name}` is advertised and must be callable: {names:?}"
             );
         }
+    }
+
+    /// The exclusion has an ARGUMENT-level half, because `mcp`'s interactive OAuth
+    /// action is not reachable by name — `mcp` itself is callable.
+    #[test]
+    fn the_interactive_mcp_auth_action_is_refused_while_every_other_action_is_not() {
+        // The refusal is scoped to the ONE action that blocks on a human.
+        assert!(interactive_args("mcp", &json!({ "action": "auth", "server": "a" })).is_some());
+        // A non-object `action`, a missing `action`, and the other actions all pass —
+        // `status` is the DEFAULT arm of the tool, so refusing it would break every
+        // nested MCP call.
+        for args in [
+            json!({ "action": "status" }),
+            json!({}),
+            json!({ "server": "a" }),
+            json!({ "search": "echo" }),
+            json!({ "tool": "a_echo", "args": {} }),
+            json!({ "action": 7 }),
+            json!("not an object"),
+        ] {
+            assert_eq!(
+                interactive_args("mcp", &args),
+                None,
+                "`{args}` is not the interactive action and must dispatch"
+            );
+        }
+        // And it is scoped to `mcp`: no other tool's `action` key means anything here,
+        // so a `bash` command merely CONTAINING the word must not be refused.
+        assert_eq!(
+            interactive_args("bash", &json!({ "action": "auth", "command": "true" })),
+            None
+        );
+        // `connect` is NOT refused, on purpose: `call_tool`/`list_tools` each run
+        // `ensure_connected`, so a nested MCP call spawns the same child regardless.
+        // The pin is that this stays a deliberate choice, not a silent omission.
+        assert_eq!(interactive_args("mcp", &json!({ "connect": "a" })), None);
     }
 
     /// The search predicate is case-insensitive over BOTH name and description, and an
