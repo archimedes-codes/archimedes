@@ -16,6 +16,7 @@ import type { AppPalette } from "../lib/theme";
 import { splitMentionBlocks, type MentionBlock, type SkillBlock } from "../lib/skills";
 import { fileIconFor } from "../lib/fileIcons";
 import ToolCallCard from "./ToolCallCard";
+import CodemodeCard from "./CodemodeCard";
 import SubagentDelegatingCard from "./SubagentDelegatingCard";
 import DiffBlock from "./DiffBlock";
 import OpenAnchor from "./OpenAnchor";
@@ -841,7 +842,15 @@ export default memo(
       case "tool-call":
         return (
           <div className="w-full">
-            {message.title === "subagent" ? (
+            {message.title === "codemode" ? (
+              <CodemodeCard
+                title={message.title}
+                status={message.status}
+                rawInput={message.rawInput}
+                rawOutput={message.rawOutput}
+                isStreaming={isStreaming}
+              />
+            ) : message.title === "subagent" ? (
               <SubagentDelegatingCard
                 title={message.title}
                 status={message.status}

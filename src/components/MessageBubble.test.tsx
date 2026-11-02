@@ -482,6 +482,87 @@ describe("MessageBubble", () => {
     expect(screen.queryByText("No subagents yet.")).toBeNull();
   });
 
+  // --- `codemode` tool call: render the `CodemodeCard` (not the plain
+  // `ToolCallCard`, not the `SubagentDelegatingCard`); the nested calls come
+  // from the parent result's `details.calls` (the frozen contract's ONE key). ---
+
+  it("renders a codemode tool call as the CodemodeCard (not the plain ToolCallCard)", async () => {
+    const message: Message = {
+      kind: "tool-call",
+      id: "t1",
+      title: "codemode",
+      status: "pending",
+      rawInput: { code: 'tools.bash({ command: "ls" })' },
+      rawOutput: {
+        details: {
+          calls: [
+            {
+              toolCallId: "call_ab12/c0",
+              toolName: "bash",
+              args: {},
+              status: "ok",
+              text: "ls",
+              isError: false,
+              details: {},
+            },
+          ],
+        },
+      },
+      at: 1,
+    };
+    render(<MessageBubble message={message} sessionId="s1" isStreaming={true} />);
+
+    // The nested row is the card's own marker (the plain card would dump the
+    // result as JSON text, and the subagent card would list subagents).
+    expect(screen.getByText("bash")).toBeTruthy();
+    // The script block's header is unique to `CodemodeCard`; it renders on the
+    // first paint, while the Shiki highlight itself resolves asynchronously out
+    // of a `useEffect` — hence the awaited query for the highlighted body.
+    await screen.findByTestId("codemode-script-header");
+    // (Parenthesised on purpose: `await a.b` would await the PROPERTY of the
+    // pending Promise, which is `undefined`.)
+    expect((await screen.findByTestId("codemode-script-lang")).textContent).toBe(
+      "javascript",
+    );
+
+    // Neither sibling card's body marker is present.
+    expect(screen.queryByText("No output.")).toBeNull();
+    expect(screen.queryByText("No subagents yet.")).toBeNull();
+  });
+
+  it("renders a codemode tool call with NO result as the CodemodeCard empty state", () => {
+    const message: Message = {
+      kind: "tool-call",
+      id: "t1",
+      title: "codemode",
+      status: "pending",
+      at: 1,
+    };
+    render(<MessageBubble message={message} sessionId="s1" isStreaming={true} />);
+    // Open by default, so the empty state is visible without a click — the
+    // branch is taken regardless of result shape.
+    expect(screen.getByText("No nested calls yet.")).toBeTruthy();
+    expect(screen.queryByText("No output.")).toBeNull();
+    expect(screen.queryByText("No subagents yet.")).toBeNull();
+  });
+
+  it("the non-codemode tool call still renders the plain ToolCallCard (unchanged)", () => {
+    const message: Message = {
+      kind: "tool-call",
+      id: "t1",
+      title: "bash",
+      status: "completed",
+      rawInput: { command: "ls -la" },
+      at: 1,
+    };
+    render(<MessageBubble message={message} />);
+    expect(screen.getByText("Ran")).toBeTruthy();
+    expect(screen.getByText("ls -la")).toBeTruthy();
+    // No `CodemodeCard` for any other title.
+    expect(screen.queryByTestId("codemode-script-header")).toBeNull();
+    expect(screen.queryByText("No nested calls yet.")).toBeNull();
+  });
+
   // --- User-message skill blocks: collapsible cards (collapsed by default —
   // ZCode's `ToolLayout` defaults `isOpen` to `false`). ---
 
