@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-11-02
-verified-by: read against this tree at `fd24969f` plus the review fixes on top. `grep '\.eval(' src/agent/` gives 7 hits, all inside `codemode/engine.rs`'s own `mod tests`. No `NestedStatus`/`NestedRow` consumer outside `harness/loop/codemode.rs`. The duplicated doc paragraph is gone. The `TimedOut` and `WALL_CLOCK` grep of `loop/tests/codemode.rs` is still 0. Every item re-confirmed against the code, not copied from the roadmap family. Kept to one line and free of interior colons so this front-matter parses as strict YAML, which several other files in this directory do not.
+verified-by: read against this tree on PR #151 (its pre-squash commits are orphaned by the squash merge — cite the PR, not a hash). `grep '\.eval(' src/agent/` gives 7 hits, all inside `codemode/engine.rs`'s own `mod tests`. No `NestedStatus`/`NestedRow` consumer outside `harness/loop/codemode.rs`. The duplicated doc paragraph is gone. The `TimedOut` and `WALL_CLOCK` grep of `loop/tests/codemode.rs` is still 0. Every item re-confirmed against the code, not copied from the roadmap family. Kept to one line and free of interior colons so this front-matter parses as strict YAML, which several other files in this directory do not.
 ---
 
 # Codemode — known gaps

@@ -1,7 +1,9 @@
 ---
 status: live
 last-verified: 2026-11-02
-verified-by: every claim below re-read against THIS tree at `b4aeec80` — the producer
+verified-by: >-
+  every claim below re-read against THIS tree on PR #151 (pre-squash commit `b4aeec80`,
+  which this branch's squash merge orphans — cite the PR number) — the producer
   (`agent/harness/loop/codemode.rs`: `NestedRow`, `NestedStatus`, `RowBook`, `Bridge::emit_live`,
   `Bridge::drain_after_script`, `ORPHAN_DRAIN`, and the `tests/codemode.rs` frame assertions), the
   pipeline (`agent/normalize.rs`'s `tool_execution_update` / `toolcall_delta` arms, `TurnState`,

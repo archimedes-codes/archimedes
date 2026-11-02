@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-11-02
-verified-by: written while shipping the codemode family, from the approved spec (revision 2, fetched from the owner-designated gist to `docs/roadmap/codemode.md` during the run) reconciled line by line against this tree at `9cb94746`. Claims re-checked here rather than copied — the MinGW compiler, the mingw build dir, `LOOP_INTERNAL_TOOLS`, the census tables, the exclusion list and the four limits. Single-line `verified-by` with no interior colon so this parses as strict YAML, which several other files in this directory do not.
+verified-by: written while shipping the codemode family, from the approved spec (revision 2, fetched from the owner-designated gist to `docs/roadmap/codemode.md` during the run) reconciled line by line against this tree on PR #151 (pre-squash tip `e826c023`, which the squash orphans — cite the PR). Claims re-checked here rather than copied — the MinGW compiler, the mingw build dir, `LOOP_INTERNAL_TOOLS`, the census tables, the exclusion list and the four limits. Single-line `verified-by` with no interior colon so this parses as strict YAML, which several other files in this directory do not.
 ---
 
 # Codemode — the design
