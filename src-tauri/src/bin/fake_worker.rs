@@ -985,6 +985,7 @@ fn main() {
             Inbound::Config {
                 model,
                 thinking,
+                clear_thinking,
                 trusted,
             } => {
                 let mut payload = serde_json::json!({
@@ -996,6 +997,9 @@ fn main() {
                 }
                 if let Some(t) = thinking {
                     payload["thinking"] = serde_json::Value::String(t);
+                }
+                if clear_thinking {
+                    payload["clearThinking"] = serde_json::Value::Bool(true);
                 }
                 emit(
                     &mut stdout,

@@ -2032,14 +2032,28 @@ impl SessionManager {
                     })
                     .flatten();
                 if let Some(level) = &current_level {
-                    let valid = model.supports_thinking_level(level);
+                    // Issue #146: `supports_thinking_level` soft-passes an EMPTY
+                    // advertised set (right for dispatch, where the parent's model is
+                    // unknown). On a SWITCH the new model is known, and one that
+                    // advertises NO levels cannot take a level at all — keeping the
+                    // old one would send it as `reasoning_effort` and the request
+                    // errors. So a no-levels model is never "valid" here.
+                    let valid =
+                        !model.thinking_levels.is_empty() && model.supports_thinking_level(level);
                     if !valid {
                         let reset = remembered_thinking_level(
                             &load_settings(&self.config_dir).default_thinking_levels,
                             &model,
                         );
-                        let sent =
-                            self.send_config_to(&wm, session_id, None, reset.as_deref(), None);
+                        // A `None` reset must CLEAR the worker's level: `thinking: None`
+                        // alone means "leave it alone" (issue #146).
+                        let sent = self.send_config_clearing_to(
+                            &wm,
+                            session_id,
+                            None,
+                            reset.as_deref(),
+                            reset.is_none(),
+                        );
                         if sent.is_ok() {
                             self.update_config_state(session_id, |s| {
                                 s.thinking_level = reset.clone();
@@ -2138,6 +2152,30 @@ impl SessionManager {
         };
         handle
             .send_config(model, thinking, trusted)
+            .map_err(|e| SessionError::Command {
+                error: format!("the session's Worker is not running; the config change could not be applied: {e}"),
+            })
+    }
+
+    /// `send_config_to` that can also CLEAR the worker's thinking level
+    /// (`clear_thinking`, issue #146). Same error mapping and same
+    /// finding-12 contract: a failed send is an error, so the caller leaves
+    /// its mirror untouched.
+    fn send_config_clearing_to(
+        &self,
+        wm: &WorkerManager,
+        session_id: &str,
+        model: Option<&Model>,
+        thinking: Option<&str>,
+        clear_thinking: bool,
+    ) -> Result<(), SessionError> {
+        let Some(handle) = wm.handle_for(session_id) else {
+            return Err(SessionError::UnknownSession {
+                id: session_id.to_string(),
+            });
+        };
+        handle
+            .send_config_clearing(model, thinking, clear_thinking, None)
             .map_err(|e| SessionError::Command {
                 error: format!("the session's Worker is not running; the config change could not be applied: {e}"),
             })
@@ -3866,6 +3904,94 @@ mod session_tests {
         assert_eq!(
             thought["currentValue"], "xhigh",
             "an invalid level resets to the new model's remembered level"
+        );
+        let _ = manager.close_session(&info.session_id).await;
+    }
+
+    /// Issue #146: switching from a reasoning model to one that advertises NO
+    /// thinking levels must CLEAR the previous model's level. The level is
+    /// sent as `reasoning_effort` on every request, so a stale one reaches a
+    /// model that does not accept it and the request errors.
+    #[tokio::test]
+    async fn a_native_model_switch_to_a_model_without_levels_clears_the_level() {
+        let catalog = ModelCatalog {
+            models: vec![
+                level_test_model("tama", "a", &["off", "high"]),
+                // No advertised levels: a non-reasoning model.
+                level_test_model("tama", "plain", &[]),
+            ],
+            default_model: Some("tama/a".to_string()),
+            compaction: crate::agent::harness::catalog::CompactionConfig::default(),
+        };
+        let dir = temp_config_dir();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+        write_settings_json(&dir, serde_json::json!({}));
+        let (manager, info) = start_native_session_with_catalog(&dir, &sink, catalog).await;
+        let _ = manager
+            .set_config_option(&info.session_id, "thought_level", "high", &sink)
+            .await
+            .expect("the level change applies");
+        let _ = manager
+            .set_config_option(&info.session_id, "model", "tama/plain", &sink)
+            .await
+            .expect("the model switch applies");
+        // The session's mirrored level must not survive onto a model that
+        // advertises no levels.
+        let state = manager
+            .with_session(&info.session_id, |s| s.config_state.clone())
+            .flatten()
+            .expect("the session is live");
+        assert_eq!(
+            state.thinking_level, None,
+            "a model with no levels must not keep the previous model's level"
+        );
+        let _ = manager.close_session(&info.session_id).await;
+    }
+
+    /// Issue #146: switching to a model that DOES advertise levels, but has no
+    /// remembered level and does not accept the current one, resets to `None`
+    /// (the model's default). That reset must reach the worker as a CLEAR, not
+    /// be dropped as "leave alone".
+    #[tokio::test]
+    async fn a_native_model_switch_with_no_memory_clears_an_invalid_level() {
+        let catalog = ModelCatalog {
+            models: vec![
+                level_test_model("tama", "a", &["off", "high"]),
+                level_test_model("tama", "d", &["off", "low", "medium"]),
+            ],
+            default_model: Some("tama/a".to_string()),
+            compaction: crate::agent::harness::catalog::CompactionConfig::default(),
+        };
+        let dir = temp_config_dir();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+        write_settings_json(&dir, serde_json::json!({}));
+        let (manager, info) = start_native_session_with_catalog(&dir, &sink, catalog).await;
+        let _ = manager
+            .set_config_option(&info.session_id, "thought_level", "high", &sink)
+            .await
+            .expect("the level change applies");
+        let updated = manager
+            .set_config_option(&info.session_id, "model", "tama/d", &sink)
+            .await
+            .expect("the model switch applies");
+        // No memory for `d` → the level is cleared, not kept as "high".
+        let state = manager
+            .with_session(&info.session_id, |s| s.config_state.clone())
+            .flatten()
+            .expect("the session is live");
+        assert_eq!(
+            state.thinking_level, None,
+            "an invalid level with no remembered replacement resets to None"
+        );
+        let thought = updated
+            .iter()
+            .find(|o| o["id"] == "thought_level")
+            .expect("a thought_level selector");
+        assert_ne!(
+            thought["currentValue"], "high",
+            "the stale level must not be reported as current"
         );
         let _ = manager.close_session(&info.session_id).await;
     }
