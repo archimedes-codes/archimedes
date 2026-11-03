@@ -1504,6 +1504,29 @@ impl SessionManager {
             // path passes a definition). The per-agent layer governs CHILDREN.
             None,
         );
+        // (Fulcrum T3) THE packaging hop for the FIVE desktop-config fields.
+        // `settings` above is `load_settings(&self.config_dir)`'s output, so
+        // this is the Supervisor reading its own config — the ONE reader left,
+        // which is what lets the Worker read none.
+        //
+        // `agent_overrides` is POST-FOLD by construction (ADR 0066): the
+        // retired `subagentModels` → `agentOverrides` fold runs inside
+        // `load_settings`, and the legacy map is cleared there, so the Worker
+        // can never see the raw `subagent_models` map. ADR 0067's tri-state
+        // rides untouched — an entry's `tools` is `None` when the list is
+        // empty, never `Some(vec![])`.
+        //
+        // This is also the hop that makes the `config-update` push meaningful:
+        // the same five land in the registry's stored env (via `attach`), which
+        // is what `subagent_flow` reads to build each child's five — so a push
+        // that refreshes the parent's copy reaches the NEXT dispatch's child.
+        let env = env.with_desktop_config(crate::agent::worker::protocol::DesktopConfig {
+            file_policy: settings.file_policy.clone(),
+            web: settings.web.clone(),
+            mcp_servers: settings.mcp_servers.clone(),
+            agent_overrides: settings.agent_overrides.clone(),
+            providers: settings.providers.clone(),
+        });
         // (Fulcrum T2) The resume seed: the stored `sessions.cost_usd` figure
         // rides the envelope so the Worker's fresh `AgentLoop` CONTINUES the
         // session's total instead of restarting at zero. Gated on `is_resume`
@@ -3103,6 +3126,139 @@ mod session_tests {
         };
         manager.attach_worker_manager(wm.clone());
         (manager, wm, db, requests)
+    }
+
+    // ── (Fulcrum T3) The `config-update` push trigger ──────────────────────
+
+    /// THE production trigger: a Settings SAVE pushes `config-update` to every
+    /// live Worker, and the registry's STORED env is refreshed with it.
+    ///
+    /// Why this test and not only the frame's unit tests: `Inbound::ConfigUpdate`
+    /// can exist, decode, and be routed by the Worker, and the whole suite stays
+    /// green while NO PRODUCTION PATH EVER SENDS IT. That is the failure mode the
+    /// status file's T3 escalation named — a push nobody pushes is worse than a
+    /// documented loss, because the green suite says live-reload works. So this
+    /// asserts the trigger itself, against a real attached `fake_worker`.
+    ///
+    /// The second assertion is the half that reaches CHILDREN: a child's five
+    /// packaged fields are read from the PARENT's stored env
+    /// (`DesktopConfig::from_env(&parent_env)`), so an un-mirrored registry entry
+    /// would hand the next subagent the PRE-EDIT policy — ADR 0023's
+    /// next-dispatch property, silently broken.
+    #[tokio::test]
+    async fn save_settings_pushes_config_update_to_a_live_worker() {
+        let dir = temp_config_dir();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+        let (manager, wm, _db, _requests) =
+            build_worker_manager_with_title_provider(&dir, native_test_catalog(), &sink, false);
+
+        // A live session: a row (what `push_config_update` iterates) AND an
+        // attached Worker (what the frame is sent to).
+        let env = StartEnv::from_parts(
+            "push-sess".to_string(),
+            "/tmp".to_string(),
+            crate::agent::worker::protocol::StartMode::Fresh,
+            None,
+            native_test_catalog().models[0].clone(),
+            native_test_catalog(),
+            None,
+            true,
+            None,
+            dir.display().to_string(),
+            false,
+            None,
+            None,
+        );
+        wm.attach("push-sess", &env).await.expect("attach");
+        manager.with_session_entry("push-sess", |row| {
+            row.live = Some(LiveWorkerSession {
+                cwd: std::path::PathBuf::from("/tmp"),
+                close_kind: Arc::new(StdMutex::new(None)),
+                pending_turn: Arc::new(StdMutex::new(None)),
+                cancel_requested: Arc::new(StdMutex::new(false)),
+                pending_modal_ids: StdMutex::new(HashSet::new()),
+            });
+        });
+
+        // The edited settings the user just saved: a policy that ASKS, and an
+        // override layer naming one agent.
+        let settings = crate::config::Settings {
+            file_policy: crate::agent::policy::FilePolicy {
+                reads: crate::agent::policy::AccessPolicy::Ask,
+                writes: crate::agent::policy::AccessPolicy::Sandboxed,
+                shell: crate::agent::policy::AccessPolicy::Ask,
+                rules: Vec::new(),
+            },
+            agent_overrides: HashMap::from([(
+                "scout".to_string(),
+                crate::config::AgentOverrideFields {
+                    model: Some("fake/m1".to_string()),
+                    thinking: None,
+                    // ADR 0067: an empty list is ABSENT, never `Some(vec![])`.
+                    tools: None,
+                },
+            )]),
+            ..crate::config::Settings::default()
+        };
+
+        let delivered = crate::commands::settings::save_settings_and_push(&manager, &settings)
+            .await
+            .expect("the save succeeds");
+        assert_eq!(
+            delivered, 1,
+            "the live session's Worker got the frame (a push that reports zero              deliveries is the silent no-op this test exists to catch)"
+        );
+
+        // The frame really went out: the fixture echoes it as its
+        // `config-update-ack` `SinkFrame`, re-emitted through the router onto
+        // the manager's sink.
+        let ack = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let v = rx.recv().await.expect("the sink stays open");
+                if v["event"] == "config-update-ack" {
+                    return v;
+                }
+            }
+        })
+        .await
+        .expect("the `config-update-ack` arrives — the frame crossed the pipe");
+        assert_eq!(
+            ack["payload"]["filePolicy"]["reads"], "ask",
+            "the PUSHED policy is the one the Worker received (camelCase on              both sides — a casing mismatch drops the field silently): {ack}"
+        );
+        assert_eq!(
+            ack["payload"]["agentOverrides"]["scout"]["model"], "fake/m1",
+            "the override layer rides the same frame"
+        );
+
+        // The registry's STORED env is refreshed — the hop that gives the NEXT
+        // dispatched child the edited values.
+        let stored = wm.test_env_for("push-sess").expect("still attached");
+        assert_eq!(
+            stored.file_policy.reads,
+            crate::agent::policy::AccessPolicy::Ask,
+            "the parent's stored policy is the pushed one"
+        );
+        assert_eq!(
+            stored
+                .agent_overrides
+                .get("scout")
+                .and_then(|e| e.model.as_deref()),
+            Some("fake/m1"),
+            "and so is the override layer children inherit"
+        );
+
+        // The file was written too (the push is an ADDITION to the save, never
+        // a replacement for it).
+        let on_disk = crate::config::load_settings(&dir);
+        assert_eq!(
+            on_disk.file_policy.reads,
+            crate::agent::policy::AccessPolicy::Ask,
+            "`settings.json` still holds what the user saved"
+        );
+
+        wm.reap_all().await;
     }
 
     // ── The naming-provider double (the level-triggered-titling tests) ─────

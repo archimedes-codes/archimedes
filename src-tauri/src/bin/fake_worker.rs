@@ -1052,6 +1052,35 @@ fn main() {
             Inbound::Compact { instructions } => {
                 eprintln!("fake worker: compact requested (instructions: {instructions:?})");
             }
+            // (Fulcrum T3) The live-reload push. Echoed like the `Config` arm
+            // above, because the fixture's job is to prove the frame is
+            // ENCODED and DECODED compatibly across the pipe: a Supervisor that
+            // sends a `config-update` the fixture cannot decode would silently
+            // no-op, and the parity test would pass while the real Worker and
+            // the fixture disagreed about the wire.
+            Inbound::ConfigUpdate {
+                file_policy,
+                web,
+                agent_overrides,
+            } => {
+                let mut payload = serde_json::json!({ "sessionId": sid });
+                if let Some(p) = file_policy {
+                    payload["filePolicy"] = serde_json::to_value(&p).unwrap_or_default();
+                }
+                if let Some(w) = web {
+                    payload["web"] = serde_json::to_value(&w).unwrap_or_default();
+                }
+                if let Some(o) = agent_overrides {
+                    payload["agentOverrides"] = serde_json::to_value(&o).unwrap_or_default();
+                }
+                emit(
+                    &mut stdout,
+                    &Outbound::SinkFrame {
+                        event: "config-update-ack".to_string(),
+                        payload,
+                    },
+                );
+            }
             // `abort` / a `permission-response` to an unknown id / an
             // `interactive-response` / an unknown `type`: no response
             // (the fixture is permissive).

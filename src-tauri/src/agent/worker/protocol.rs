@@ -102,6 +102,45 @@ pub enum Inbound {
         clear_thinking: bool,
         trusted: Option<bool>,
     },
+    /// (Fulcrum T3) The live-reload push: the Supervisor re-sends the three
+    /// desktop-config fields the Worker used to re-read from `settings.json`
+    /// when the user SAVES Settings.
+    ///
+    /// This frame is WHY the disk read could be removed at all. Freezing those
+    /// three into the one `start` envelope would silently delete the
+    /// user-visible property "edit Settings, it applies at the next prompt, no
+    /// restart": `PermissionContext::refresh` re-read `file_policy` + `rules` +
+    /// `web` at the top of EVERY turn (ADR 0030 Deviation 4) and
+    /// `agent_overrides` was re-read per subagent dispatch (ADR 0023). The
+    /// status file's Decisions log chose the push over accepting that loss;
+    /// the rejected alternatives (a silent loss, or keeping a `config_dir` read
+    /// inside the crate that T4 must make daemon-side) stay rejected.
+    ///
+    /// Deliberately a SEPARATE variant from `Config`, not a widening of it:
+    /// `Config` is the per-session composer controls (model / thinking /
+    /// trusted) and routes to `set_model` / `set_thinking_level`, while this is
+    /// the app-level settings snapshot and routes to the loop's packaged
+    /// config. Reusing one variant for both would mean one payload describing
+    /// two different actors.
+    ///
+    /// Deliberately MISSING `providers` and `mcp_servers`: those stay
+    /// session-construction snapshots (the recorded residual hole in the status
+    /// file — MCP already behaved that way, and headers already re-resolved
+    /// only on `set_model`).
+    ///
+    /// EVERY field is an `Option` with `#[serde(default)]`, so a Worker that
+    /// predates a field ignores it and a Supervisor that only knows about one
+    /// of the three cannot wipe the other two: `None` means "leave it alone".
+    #[serde(rename = "config-update", rename_all = "camelCase")]
+    ConfigUpdate {
+        #[serde(default)]
+        file_policy: Option<crate::agent::policy::FilePolicy>,
+        #[serde(default)]
+        web: Option<crate::config::WebSettings>,
+        #[serde(default)]
+        agent_overrides:
+            Option<std::collections::HashMap<String, crate::config::AgentOverrideFields>>,
+    },
     #[serde(rename = "abort")]
     Abort,
     /// `/compact` (ADR 0044 — a Composer command the CLIENT intercepts, so
@@ -337,6 +376,137 @@ pub struct StartEnv {
     /// session and a fresh child carry `None`.
     #[serde(default)]
     pub cost_usd: Option<f64>,
+    /// (Fulcrum T3) The desktop's file-access policy — PACKAGED, so the Worker
+    /// never opens `settings.json` to find it.
+    ///
+    /// THE field whose disk read this task removes: `PermissionContext::refresh`
+    /// re-read `file_policy` from `settings.json` at the top of EVERY turn (ADR
+    /// 0030 Deviation 4). It now consumes the value that rode the envelope, and
+    /// a later edit reaches the loop through the `config-update` push
+    /// ([`Inbound::ConfigUpdate`]) instead of through a second disk read — the
+    /// live-reload property is preserved by the push, not lost with the read.
+    ///
+    /// ADDITIVE and camelCase (`filePolicy`) like every other field here:
+    /// `#[serde(default)]` so a Supervisor that predates the field still
+    /// decodes. The default is `FilePolicy::default()` — all-`Allow` — which is
+    /// BYTE-IDENTICAL to what an old Supervisor produced by pointing
+    /// `config_dir` at a dir with no `settings.json` in it (ADR 0030 Deviation
+    /// 2's out-of-the-box posture), so the additive path cannot change anyone's
+    /// gating.
+    ///
+    /// [`StartEnv::with_desktop_config`] is the construction seam.
+    #[serde(default)]
+    pub file_policy: crate::agent::policy::FilePolicy,
+    /// (Fulcrum T3) The web tools' configuration — PACKAGED (the second of the
+    /// five). Same per-turn re-read, same push, same additive default
+    /// (all-empty ⇒ the env-only `WebConfig`, exactly what today's
+    /// `config_dir: None` case yields).
+    #[serde(default)]
+    pub web: crate::config::WebSettings,
+    /// (Fulcrum T3) The desktop `mcpServers` layer — PACKAGED (the third).
+    /// `None` on the manager side means "no desktop layer"; here the EMPTY map
+    /// means the same thing, and that is what an old envelope decodes to.
+    ///
+    /// RESIDUAL LIMITATION, recorded not fixed (status file Decisions log):
+    /// this is a session-CONSTRUCTION snapshot. A user who adds an MCP server
+    /// mid-session needs a session restart — which matches today's behaviour,
+    /// because the `McpManager`'s server set is built once per `AgentLoop`.
+    /// `config-update` deliberately does NOT carry it.
+    #[serde(default)]
+    pub mcp_servers: std::collections::HashMap<String, serde_json::Value>,
+    /// (Fulcrum T3) The ADR 0066 agent-override layer — PACKAGED (the fourth),
+    /// and PACKAGED POST-FOLD: the Supervisor builds this from
+    /// `crate::config::load_settings`, which folds the retired `subagentModels`
+    /// into `agent_overrides` and clears the legacy map BEFORE the envelope is
+    /// built. The Worker must NEVER see the raw `subagent_models` map (ADR
+    /// 0066).
+    ///
+    /// ADR 0067's tri-state rides untouched: an entry's `tools` is `None` when
+    /// the list is empty — an empty list is ABSENT, never `Some(vec![])` — and
+    /// nothing in the packaging collapses or invents a state.
+    ///
+    /// The ABSENCE-vs-empty distinction lives one level up, on the loop-side
+    /// mirror and on `resolve_launch`'s parameter, both `Option<HashMap<…>>`:
+    /// `None` = "a layer that cannot speak" (today's `config_dir: None`),
+    /// `Some(empty)` = a live layer that says nothing. Both collapse to
+    /// `global: None` inside `override_layer`, and both stay distinguishable
+    /// from `None` at the seam — pinned by
+    /// `packaged_settings_keeps_no_layer_and_an_empty_map_apart`.
+    ///
+    /// This field rides the `config-update` push, so ADR 0023's "a settings
+    /// edit applies at the NEXT dispatch" property survives the removal of the
+    /// per-dispatch disk read.
+    #[serde(default)]
+    pub agent_overrides: std::collections::HashMap<String, crate::config::AgentOverrideFields>,
+    /// (Fulcrum T3) The user's provider rows — PACKAGED (the FIFTH field, the
+    /// one the spec's four-field list missed; issue #129).
+    ///
+    /// The whole `Vec<ProviderConfig>`, not a pre-expanded header map, because
+    /// TWO sites need the headers and they need DIFFERENT rows:
+    /// `default_build_loop` needs the START model's provider, and
+    /// `AgentLoop::set_model` needs the NEW model's provider on every mid-session
+    /// switch. A single expanded map cannot answer the second question.
+    ///
+    /// The `headers` values ride as the RAW templates (`"$CORP_TENANT"`); the
+    /// `$VAR` expansion (`provider_auth::headers::expand_map`) stays worker-side
+    /// and runs against the WORKER's process env — which is the same env the
+    /// disk-read version expanded against, because the Worker is spawned by the
+    /// Supervisor and inherits its environment. So packaging the rows changes
+    /// where the rows come from, not what the headers resolve to.
+    ///
+    /// `#[serde(default)]` → the empty vec = no custom headers, byte-identical
+    /// to the old `config_dir: None` case. Like `mcp_servers`, this is a
+    /// construction snapshot and deliberately NOT on the push (the recorded
+    /// hole; a model switch re-resolves from this snapshot, exactly as today).
+    #[serde(default)]
+    pub providers: Vec<crate::config::ProviderConfig>,
+}
+
+/// The FIVE desktop-config fields the Worker used to read out of
+/// `settings.json` (Fulcrum T3), bundled so they are PACKAGED at one call site
+/// with NAMED fields rather than appended to a 13-parameter positional
+/// constructor.
+///
+/// The bundle exists for the same reason [`StartEnv::with_seed_cost`] does:
+/// `from_parts` has fourteen call sites and every one of them would gain five
+/// arguments. Here the five types are all DISTINCT, so a swapped slot is a
+/// compile error rather than the silent mis-slot T2 avoided — but the builder
+/// still keeps the fourteen fixtures that need NONE of these fields untouched,
+/// and it names the five as the SET they are: the packaged desktop config, one
+/// concept, one place to look when a sixth field joins it.
+///
+/// Every field is the DESKTOP's own type (T3 moves no types — the definitions
+/// stay in `crate::config` / `agent::policy` and move in T5–T7).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DesktopConfig {
+    pub file_policy: crate::agent::policy::FilePolicy,
+    pub web: crate::config::WebSettings,
+    pub mcp_servers: std::collections::HashMap<String, serde_json::Value>,
+    pub agent_overrides: std::collections::HashMap<String, crate::config::AgentOverrideFields>,
+    pub providers: Vec<crate::config::ProviderConfig>,
+}
+
+impl DesktopConfig {
+    /// The child's five, copied from the PARENT's stored envelope (Fulcrum T3,
+    /// the `subagent_flow.rs` hop).
+    ///
+    /// One named function rather than five hand-copied `.clone()`s because this
+    /// line IS the ADR 0023 live property on the child path: a `config-update`
+    /// push that overwrites the PARENT's packaged fields propagates to every
+    /// NEXT dispatch's child precisely because the child's five are read off
+    /// the parent's live envelope here, and nothing else. A field added to the
+    /// bundle and forgotten in a hand-written copy would silently freeze one
+    /// knob for children while the parent kept live-reloading it; through this
+    /// function there is no list to forget one from.
+    pub fn from_env(parent: &StartEnv) -> Self {
+        Self {
+            file_policy: parent.file_policy.clone(),
+            web: parent.web.clone(),
+            mcp_servers: parent.mcp_servers.clone(),
+            agent_overrides: parent.agent_overrides.clone(),
+            providers: parent.providers.clone(),
+        }
+    }
 }
 
 impl StartEnv {
@@ -376,10 +546,46 @@ impl StartEnv {
             // child): nothing is stored yet, so there is nothing to seed. The
             // resume path opts in via [`StartEnv::with_seed_cost`] instead of
             // widening this signature — `from_parts` is a 13-parameter
-            // positional constructor with fourteen call sites, and T3 appends
-            // its own trailing parameters to it after this field lands.
+            // positional constructor with fourteen call sites, and T3's five
+            // config fields ride [`StartEnv::with_desktop_config`] for the
+            // same reason.
             cost_usd: None,
+            // (Fulcrum T3) The five packaged desktop-config fields are INERT
+            // here on purpose: every one of them is `#[serde(default)]` on the
+            // wire, and the inert value is the SAME value an old envelope
+            // decodes to — all-`Allow` policy, env-only web, no desktop MCP
+            // layer, a silent override layer, no custom headers. A fixture that
+            // builds through `from_parts` therefore gets the posture today's
+            // "no `settings.json` anywhere" fixture had, unchanged. The real
+            // Supervisor paths package the real values through
+            // [`StartEnv::with_desktop_config`].
+            file_policy: crate::agent::policy::FilePolicy::default(),
+            web: crate::config::WebSettings::default(),
+            mcp_servers: std::collections::HashMap::new(),
+            agent_overrides: std::collections::HashMap::new(),
+            providers: Vec::new(),
         }
+    }
+
+    /// Attach the FIVE packaged desktop-config fields to an already-built
+    /// `StartEnv` (Fulcrum T3). The Supervisor's only edit of these five.
+    ///
+    /// A builder and NOT five more `from_parts` parameters, following
+    /// [`StartEnv::with_seed_cost`]: the positional constructor has fourteen
+    /// call sites, thirteen of which are fixtures that carry no desktop config
+    /// at all. The Supervisor's session-start site is the ONE place that has a
+    /// `Settings` in scope, and it calls this.
+    ///
+    /// The `agent_overrides` half MUST be the POST-FOLD map (ADR 0066) — i.e.
+    /// whatever `crate::config::load_settings` produced, never the raw
+    /// `subagent_models` map.
+    pub fn with_desktop_config(mut self, config: DesktopConfig) -> Self {
+        self.file_policy = config.file_policy;
+        self.web = config.web;
+        self.mcp_servers = config.mcp_servers;
+        self.agent_overrides = config.agent_overrides;
+        self.providers = config.providers;
+        self
     }
 
     /// Attach the session's stored cost total to an already-built `StartEnv`
@@ -550,6 +756,7 @@ pub fn decode_inbound(line: &str) -> Result<Inbound, ProtoError> {
         "start"
         | "prompt"
         | "config"
+        | "config-update"
         | "compact"
         | "abort"
         | "close"
@@ -705,6 +912,60 @@ mod tests {
             // `cost_usd` decodes to `None` SILENTLY, so a round-trip alone does
             // not pin the spelling.
             cost_usd: Some(0.5),
+            // (Fulcrum T3) The FIVE packaged desktop-config fields, NON-default
+            // ON PURPOSE for the same reason as the two above: this literal is
+            // what `every_inbound_variant_round_trips` encodes and DECODES, so
+            // the `Deserialize` half of `FilePolicy` / `WebSettings` /
+            // `ProviderConfig` / `AgentOverrideFields` is exercised on every
+            // run, and the camelCase WIRE NAMES are pinned byte-wise by
+            // `the_start_env_packages_the_five_desktop_config_fields_in_camel_case`.
+            file_policy: crate::agent::policy::FilePolicy {
+                reads: crate::agent::policy::AccessPolicy::Ask,
+                writes: crate::agent::policy::AccessPolicy::Sandboxed,
+                shell: crate::agent::policy::AccessPolicy::Ask,
+                rules: vec![crate::agent::policy::AccessRule {
+                    path: "/etc/hosts".to_string(),
+                    direction: crate::agent::policy::RuleDirection::ReadWrite,
+                    decision: crate::agent::policy::RuleDecision::Deny,
+                }],
+            },
+            web: crate::config::WebSettings {
+                brave_api_key: "b-key".to_string(),
+                tavily_api_key: String::new(),
+                perplexity_api_key: String::new(),
+                searxng_url: String::new(),
+                default_provider: "brave".to_string(),
+                proxy: String::new(),
+            },
+            mcp_servers: std::collections::HashMap::from([(
+                "desktop-server".to_string(),
+                serde_json::json!({ "command": "npx", "args": ["-y", "srv"] }),
+            )]),
+            agent_overrides: std::collections::HashMap::from([(
+                "scout".to_string(),
+                crate::config::AgentOverrideFields {
+                    model: Some("fake/m3".to_string()),
+                    thinking: None,
+                    // ADR 0067: an EMPTY list is ABSENT, never `Some(vec![])`.
+                    tools: None,
+                },
+            )]),
+            providers: vec![crate::config::ProviderConfig {
+                id: "corp".to_string(),
+                name: "Corp".to_string(),
+                base_url: "https://corp.invalid/v1".to_string(),
+                api_key: "k".to_string(),
+                api: "openai-completions".to_string(),
+                key_url: None,
+                auth_mode: "api_key".to_string(),
+                headers: Some(std::collections::HashMap::from([(
+                    "X-Tenant".to_string(),
+                    "$CORP_TENANT".to_string(),
+                )])),
+                allow_insecure_http: false,
+                use_gcloud_token_auth: false,
+                oidc: None,
+            }],
         }))
     }
 
@@ -843,6 +1104,324 @@ mod tests {
         );
     }
 
+    /// (Fulcrum T3) The FIVE packaged desktop-config fields ride the `start`
+    /// envelope as camelCase keys, and `from_parts`' defaults are the INERT
+    /// ones (an empty map / an empty vec / the all-`Allow` policy / the
+    /// env-only web config) — the shape a test fixture and an old-style
+    /// Supervisor produce.
+    ///
+    /// Why a byte-level pin rather than the round-trip alone: `StartEnv` is
+    /// camelCase but the types it embeds are NOT uniformly renamed — so a
+    /// hand-written camelCase line can decode to nothing on BOTH sides with no
+    /// error at all (see [`the_start_env_carries_the_stored_cost_as_cost_usd`]
+    /// and the module's casing note). The lines below are therefore derived
+    /// from an ENCODED frame by string surgery.
+    #[test]
+    fn the_start_env_packages_the_five_desktop_config_fields_in_camel_case() {
+        let line = encode_inbound(&start_inbound());
+        for key in [
+            r#""filePolicy":"#,
+            r#""web":"#,
+            r#""mcpServers":"#,
+            r#""agentOverrides":"#,
+            r#""providers":"#,
+        ] {
+            assert!(
+                line.contains(key),
+                "the `start` envelope carries {key}: {line}"
+            );
+        }
+        // The inner `providers[].headers` is the FIFTH field's payload (issue
+        // #129) — the row `set_model` re-resolves. If it did not ride, the
+        // Worker would still have to open `settings.json`.
+        assert!(
+            line.contains(r#""headers":{"X-Tenant":"$CORP_TENANT"}"#),
+            "the provider row's raw header TEMPLATE rides the envelope \
+             (expansion stays worker-side, against the Worker's own env): {line}"
+        );
+        // The ADR 0067 tri-state survives the wire: an absent `tools` is
+        // ABSENT, not `null` and not `[]`.
+        assert!(
+            !line.contains(r#""tools":[]"#),
+            "an override entry never serializes an empty tool list: {line}"
+        );
+        assert!(
+            !line.contains(r#""file_policy""#) && !line.contains(r#""mcp_servers""#),
+            "no snake_case spelling of the packaged keys ever reaches the wire: {line}"
+        );
+
+        // And they DECODE — the round-trip direction, on the same literal.
+        match decode_inbound(&line).expect("the grown `start` decodes") {
+            Inbound::Start(env) => {
+                assert_eq!(
+                    env.file_policy.reads,
+                    crate::agent::policy::AccessPolicy::Ask
+                );
+                assert_eq!(
+                    env.file_policy.writes,
+                    crate::agent::policy::AccessPolicy::Sandboxed
+                );
+                assert_eq!(env.file_policy.rules.len(), 1);
+                assert_eq!(env.web.brave_api_key, "b-key");
+                assert_eq!(env.web.default_provider, "brave");
+                assert!(env.mcp_servers.contains_key("desktop-server"));
+                assert_eq!(
+                    env.agent_overrides
+                        .get("scout")
+                        .and_then(|e| e.model.as_deref()),
+                    Some("fake/m3")
+                );
+                assert_eq!(
+                    env.agent_overrides
+                        .get("scout")
+                        .and_then(|e| e.tools.as_ref()),
+                    None,
+                    "ADR 0067: an absent `tools` stays absent across the wire"
+                );
+                assert_eq!(env.providers.len(), 1);
+                assert_eq!(env.providers[0].id, "corp");
+                assert_eq!(
+                    env.providers[0]
+                        .headers
+                        .as_ref()
+                        .and_then(|h| h.get("X-Tenant"))
+                        .map(String::as_str),
+                    Some("$CORP_TENANT"),
+                    "the header template arrives UNEXPANDED"
+                );
+            }
+            other => panic!("expected `Start`, got {other:?}"),
+        }
+    }
+
+    /// (Fulcrum T3) The ADDITIVE direction, pinned the way `permission` and
+    /// `costUsd` pin theirs: an OLD supervisor's `start` — every one of the
+    /// five keys REMOVED from the encoded line — still decodes, and each field
+    /// lands on its INERT default.
+    ///
+    /// The inert defaults are not a formality; they are what keeps an old peer
+    /// working after this change:
+    /// * `file_policy` → `FilePolicy::default()` = all-`Allow` (ADR 0030
+    ///   Deviation 2's out-of-the-box posture — the SAME thing today's
+    ///   "no `settings.json` in the temp dir" case produces);
+    /// * `web` → all-empty = env-only web config;
+    /// * `mcp_servers` / `agent_overrides` → the EMPTY map = no desktop MCP
+    ///   layer / a silent override layer;
+    /// * `providers` → the empty vec = no custom headers, byte-identical to
+    ///   today's `config_dir: None` case.
+    #[test]
+    fn an_old_shape_start_envelope_still_decodes_to_the_five_inert_defaults() {
+        let line = encode_inbound(&start_inbound());
+        // Strip the five keys by SURGERY on the encoded line, so the only
+        // thing this test varies is the presence of the keys themselves.
+        let mut old = line.clone();
+        for key in [
+            "filePolicy",
+            "web",
+            "mcpServers",
+            "agentOverrides",
+            "providers",
+        ] {
+            old = drop_json_key(&old, key);
+        }
+        assert_ne!(
+            old, line,
+            "the rewrite happened (a key was actually removed)"
+        );
+        assert!(
+            !old.contains(r#""filePolicy""#) && !old.contains(r#""providers""#),
+            "the old-shape line names none of the packaged keys: {old}"
+        );
+        match decode_inbound(&old).expect("a `start` without the five keys decodes") {
+            Inbound::Start(env) => {
+                assert_eq!(
+                    env.file_policy,
+                    crate::agent::policy::FilePolicy::default(),
+                    "no packaged policy = the all-`Allow` default"
+                );
+                assert_eq!(env.web, crate::config::WebSettings::default());
+                assert!(
+                    env.mcp_servers.is_empty(),
+                    "no packaged map = no desktop layer"
+                );
+                assert!(
+                    env.agent_overrides.is_empty(),
+                    "no packaged map = a layer that says nothing"
+                );
+                assert!(
+                    env.providers.is_empty(),
+                    "no packaged rows = no custom headers (the old `config_dir: None` case)"
+                );
+                // The pre-existing fields are untouched by the strip.
+                assert_eq!(env.session_id, "s1");
+                assert_eq!(env.cost_usd, Some(0.5));
+            }
+            other => panic!("expected `Start`, got {other:?}"),
+        }
+
+        // `from_parts` (the fixture/old-call shape) builds the SAME inert
+        // five: a caller that knows nothing about them gets the inert env, not
+        // a panic and not a half-populated one.
+        let plain = test_env();
+        assert_eq!(
+            plain.file_policy,
+            crate::agent::policy::FilePolicy::default()
+        );
+        assert_eq!(plain.web, crate::config::WebSettings::default());
+        assert!(plain.mcp_servers.is_empty());
+        assert!(plain.agent_overrides.is_empty());
+        assert!(plain.providers.is_empty());
+    }
+
+    /// Remove one top-level key (and its value) from a flat-ish JSON object
+    /// line by bracket matching. Deliberately dumb and local: a real parser
+    /// would let this test pass even if the key were renamed rather than
+    /// removed, and the whole point is that the key is ABSENT.
+    fn drop_json_key(line: &str, key: &str) -> String {
+        let needle = format!(r#""{key}":"#);
+        let start = line
+            .find(&needle)
+            .unwrap_or_else(|| panic!("the encoded line carries `{key}`: {line}"));
+        let value_start = start + needle.len();
+        let bytes = line.as_bytes();
+        let first = bytes[value_start];
+        let mut end = value_start;
+        if first == b'"' {
+            // A string value: run to the closing quote (backslash-escaped
+            // quotes are skipped).
+            end += 1;
+            while end < bytes.len() && !(bytes[end] == b'"' && bytes[end - 1] != b'\\') {
+                end += 1;
+            }
+            end += 1;
+        } else if first == b'{' || first == b'[' {
+            // An object/array value: depth-match the brackets, skipping the
+            // contents of strings (a `{` inside a string value is not a
+            // bracket). NOTE the `==` comparisons — a bare `open =>` match arm
+            // would be a NEW BINDING that matches every byte, not a
+            // comparison, and would silently mis-scan the whole line.
+            let close = if first == b'{' { b'}' } else { b']' };
+            let mut depth = 0usize;
+            let mut in_string = false;
+            while end < bytes.len() {
+                let b = bytes[end];
+                if in_string {
+                    if b == b'"' && bytes[end.saturating_sub(1)] != b'\\' {
+                        in_string = false;
+                    }
+                } else {
+                    match b {
+                        _ if b == b'"' => in_string = true,
+                        _ if b == first => depth += 1,
+                        _ if b == close => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                end += 1;
+            }
+        } else {
+            panic!("unsupported value shape for `{key}`");
+        }
+        // Swallow one adjacent comma (either side — the key's position in the
+        // encoded line is serde's business, not this helper's).
+        let mut from = start;
+        let mut to = end;
+        if to < line.len() && bytes[to] == b',' {
+            to += 1;
+        } else if from > 0 && bytes[from - 1] == b',' {
+            from -= 1;
+        }
+        format!("{}{}", &line[..from], &line[to..])
+    }
+
+    /// (Fulcrum T3) The `config-update` frame's WIRE NAME is `config-update`
+    /// and it is routed by `decode_inbound`'s EXPLICIT allow-list.
+    ///
+    /// The routing is pinned separately from the round-trip on purpose: the
+    /// decoder matches an explicit `type` list and sends everything else to
+    /// `Unknown { raw }`, so a `config-update` frame that is not in that list
+    /// is a SILENT no-op over real IPC — the live-reload push would look like
+    /// it worked (the Supervisor sent a line, nothing errored) while the Worker
+    /// dropped it. Same reason `decode_inbound_routes_a_compact_line_to_the_compact_variant`
+    /// exists.
+    #[test]
+    fn decode_inbound_routes_a_config_update_line_to_the_config_update_variant() {
+        let line = r#"{"type":"config-update","filePolicy":{"reads":"ask","writes":"ask","shell":"ask"},"web":{"braveApiKey":"b-key","tavilyApiKey":"","perplexityApiKey":"","searxngUrl":"","defaultProvider":"brave","proxy":""},"agentOverrides":{"scout":{"model":"fake/m3"}}}"#;
+        match decode_inbound(line).expect("the `config-update` line decodes") {
+            Inbound::ConfigUpdate {
+                file_policy,
+                web,
+                agent_overrides,
+            } => {
+                assert_eq!(
+                    file_policy.map(|p| p.reads),
+                    Some(crate::agent::policy::AccessPolicy::Ask),
+                    "the pushed policy arrives (the top-level keys ARE camelCase \
+                     — `StartEnv`'s casing applies here too)"
+                );
+                assert_eq!(web.map(|w| w.brave_api_key).as_deref(), Some("b-key"));
+                assert_eq!(
+                    agent_overrides
+                        .as_ref()
+                        .and_then(|m| m.get("scout"))
+                        .and_then(|e| e.model.as_deref()),
+                    Some("fake/m3"),
+                    "ADR 0023's next-dispatch property rides the push"
+                );
+            }
+            other => panic!(
+                "`config-update` must decode to `Inbound::ConfigUpdate`, got {other:?} \
+                 (the `decode_inbound` type allow-list is missing `config-update`)"
+            ),
+        }
+    }
+
+    /// (Fulcrum T3) Every field of `config-update` is optional in BOTH
+    /// directions: a frame that carries only ONE of the three updates decodes
+    /// with the other two `None` — `None` means "leave that field alone",
+    /// which is what makes a partial push (and an older Supervisor that only
+    /// learned about one of the three) safe rather than destructive.
+    #[test]
+    fn a_config_update_frame_with_missing_fields_leaves_them_alone() {
+        let only_policy = r#"{"type":"config-update","filePolicy":{"reads":"sandboxed","writes":"ask","shell":"ask"}}"#;
+        match decode_inbound(only_policy).expect("a policy-only push decodes") {
+            Inbound::ConfigUpdate {
+                file_policy,
+                web,
+                agent_overrides,
+            } => {
+                assert_eq!(
+                    file_policy.map(|p| p.reads),
+                    Some(crate::agent::policy::AccessPolicy::Sandboxed)
+                );
+                assert!(web.is_none(), "no web key = leave the web config alone");
+                assert!(
+                    agent_overrides.is_none(),
+                    "no overrides key = leave the override layer alone"
+                );
+            }
+            other => panic!("expected `ConfigUpdate`, got {other:?}"),
+        }
+        // An entirely empty frame is legal and means "nothing changed" — the
+        // permissive direction an OLD worker's decode relies on.
+        match decode_inbound(r#"{"type":"config-update"}"#).expect("an empty push decodes") {
+            Inbound::ConfigUpdate {
+                file_policy,
+                web,
+                agent_overrides,
+            } => {
+                assert!(file_policy.is_none() && web.is_none() && agent_overrides.is_none());
+            }
+            other => panic!("expected `ConfigUpdate`, got {other:?}"),
+        }
+    }
+
     /// Every `Inbound` variant round-trips through `encode_line` +
     /// `decode_inbound` (including the `PermissionResponse` carrying
     /// `Selected { option_id: "trust-space" }` and the
@@ -918,6 +1497,27 @@ mod tests {
                         duration_ms: 99,
                     },
                 },
+            },
+            // (Fulcrum T3) The live-reload push, with all three fields set.
+            Inbound::ConfigUpdate {
+                file_policy: Some(crate::agent::policy::FilePolicy {
+                    reads: crate::agent::policy::AccessPolicy::Ask,
+                    writes: crate::agent::policy::AccessPolicy::Ask,
+                    shell: crate::agent::policy::AccessPolicy::Sandboxed,
+                    rules: Vec::new(),
+                }),
+                web: Some(crate::config::WebSettings {
+                    brave_api_key: "b".to_string(),
+                    ..crate::config::WebSettings::default()
+                }),
+                agent_overrides: Some(std::collections::HashMap::from([(
+                    "scout".to_string(),
+                    crate::config::AgentOverrideFields {
+                        model: Some("fake/m3".to_string()),
+                        thinking: Some("low".to_string()),
+                        tools: Some(vec!["read".to_string()]),
+                    },
+                )])),
             },
         ];
         for case in cases {

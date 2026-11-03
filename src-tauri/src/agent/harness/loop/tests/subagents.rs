@@ -21,7 +21,7 @@ use crate::agent::subagent::{
 use crate::agent::tools::ContentBlock;
 use crate::agent::worker::client::{WorkerError, WorkerHandle, WorkerInboundEvent};
 use crate::agent::worker::manager::{WorkerFactory, WorkerManager};
-use crate::agent::worker::protocol::{StartEnv, StartMode};
+use crate::agent::worker::protocol::{DesktopConfig, StartEnv, StartMode};
 
 /// The `fake_worker` fixture factory (the `WorkerFactory` seam — the
 /// `CARGO_MANIFEST_DIR`/`target/debug` convention; `cargo test` builds
@@ -50,7 +50,7 @@ impl WorkerFactory for FakeWorkerFactory {
 async fn make_worker_manager(
     dead_bound: Duration,
     models: Vec<Model>,
-    config_dir: Option<&std::path::Path>,
+    agent_overrides: Option<&std::collections::HashMap<String, crate::config::AgentOverrideFields>>,
     sink: Arc<dyn EventSink>,
 ) -> Arc<WorkerManager> {
     let factory: Arc<dyn WorkerFactory> = Arc::new(FakeWorkerFactory);
@@ -89,14 +89,27 @@ async fn make_worker_manager(
         None,
         true,
         None,
-        config_dir
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/tmp".to_string()),
+        // (Fulcrum T3) `config_dir` stays a plain string on the envelope (T3
+        // does not delete the field), but NOTHING reads it any more — this
+        // fixture's child is `fake_worker`, which performs no filesystem I/O.
+        "/tmp".to_string(),
         true,
         None,
         // (issue #101) `from_parts`' new trailing arg (parent fixture: no block).
         None,
     );
+    // (Fulcrum T3) The packaged desktop config on the PARENT's stored env.
+    // `None` here leaves the env on its inert five (the layer that cannot
+    // speak); `Some(map)` is what the Supervisor ships, and it is what each
+    // child's five are read off (`DesktopConfig::from_env(&parent_env)`) —
+    // the ADR 0023 next-dispatch hop.
+    let env = match agent_overrides {
+        Some(map) => env.with_desktop_config(DesktopConfig {
+            agent_overrides: map.clone(),
+            ..DesktopConfig::default()
+        }),
+        None => env,
+    };
     wm.attach("s1", &env)
         .await
         .expect("the parent attach completes");
@@ -110,10 +123,10 @@ async fn make_worker_manager(
 async fn make_subagent_manager(
     dead_bound: Duration,
     models: Vec<Model>,
-    config_dir: Option<&std::path::Path>,
+    agent_overrides: Option<&std::collections::HashMap<String, crate::config::AgentOverrideFields>>,
     sink: Arc<dyn EventSink>,
 ) -> Arc<SubagentSessionManager> {
-    let wm = make_worker_manager(dead_bound, models, config_dir, sink).await;
+    let wm = make_worker_manager(dead_bound, models, agent_overrides, sink).await;
     let manager = Arc::new(SubagentSessionManager::new());
     manager.set_worker_manager(wm);
     manager
@@ -236,6 +249,16 @@ async fn a_native_subagent_with_a_suffix_model_key_uses_the_suffix_thinking() {
 /// frame carries the RESOLVED model + thinking + tools, and the
 /// `subagent` tool result is the child's captured final text (the
 /// `fake_worker`'s canned `"canned answer"`).
+///
+/// (Fulcrum T3 + ADR 0066) The document is still written in the RETIRED
+/// `subagentModels` spelling and still folded through the real
+/// `load_settings` — because the fold is the SUPERVISOR's job, and the
+/// envelope must carry the POST-FOLD map. What changed is only WHERE the fold's
+/// output goes: it used to be re-read by `resolve_launch` from
+/// `config_dir/settings.json` per dispatch; now the Supervisor packages it and
+/// the loop reads its `packaged_agent_overrides`. Hand-building the map here
+/// would let this test pass while the fold itself broke, so the legacy spelling
+/// is deliberately kept as the fixture's input.
 #[tokio::test]
 async fn a_native_subagent_with_a_settings_override_runs_the_override_model() {
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
@@ -257,16 +280,10 @@ async fn a_native_subagent_with_a_settings_override_runs_the_override_model() {
     // frontmatter target) + `fake/m3` (the override target — IN the
     // catalog, so it is NOT stale).
     let models = vec![fake_model("m1"), fake_model("m2"), fake_model("m3")];
-    // #96: a TEST-SCOPE guard, declared BEFORE `make_subagent_manager` and
-    // the loop, so it outlives both. Both get `Some(config_dir.path())` — a
-    // borrowed path, never the guard. LIMIT, recorded honestly: the value
-    // does travel to the child via `StartEnv.config_dir`, but this test's
-    // child is `src/bin/fake_worker.rs`, a canned stdin/stdout fixture that
-    // performs NO filesystem I/O, so the "read by a real child process"
-    // premise is false for it. The dir still must outlive the test because
-    // the PARENT-side `AgentLoop` holds the same `config_dir` and re-reads
-    // `settings.json` every turn, and the `WorkerManager` owns the child —
-    // and this placement provides that.
+    // The settings document, in the LEGACY spelling, parsed and folded exactly
+    // as the Supervisor does it: `load_settings` moves `subagentModels` into
+    // `agent_overrides` and CLEARS the legacy map (ADR 0066). The scratch dir
+    // exists only to feed that one read — the loop and the child never see it.
     let config_dir =
         crate::test_support::ScratchDir::in_env_temp("harness-agent-def-e2e-cfg-", "override");
     std::fs::write(
@@ -274,6 +291,30 @@ async fn a_native_subagent_with_a_settings_override_runs_the_override_model() {
         r#"{ "subagentModels": { "scout": "fake/m3" } }"#,
     )
     .unwrap();
+    let folded = crate::config::load_settings(&config_dir);
+    assert_eq!(
+        folded
+            .agent_overrides
+            .get("scout")
+            .and_then(|e| e.model.as_deref()),
+        Some("fake/m3"),
+        "the fixture's premise: the fold produced the override"
+    );
+    assert!(
+        folded.subagent_models.is_empty(),
+        "ADR 0066: the legacy map is CLEARED, so the Worker can never see it"
+    );
+    // ADR 0067: the folded entry's `tools` is ABSENT (the legacy spelling
+    // carried only a model) — never `Some(vec![])`.
+    assert_eq!(
+        folded
+            .agent_overrides
+            .get("scout")
+            .and_then(|e| e.tools.as_ref()),
+        None,
+        "an absent tool list stays absent through the fold"
+    );
+    let overrides = folded.agent_overrides.clone();
     let sink_events = Arc::new(StdMutex::new(Vec::<(String, Value)>::new()));
     let sink: Arc<dyn EventSink> = Arc::new(RecordingSink {
         events: sink_events.clone(),
@@ -281,7 +322,7 @@ async fn a_native_subagent_with_a_settings_override_runs_the_override_model() {
     let manager = make_subagent_manager(
         Duration::from_secs(30),
         models.clone(),
-        Some(config_dir.path()),
+        Some(&overrides),
         sink.clone(),
     )
     .await;
@@ -294,7 +335,7 @@ async fn a_native_subagent_with_a_settings_override_runs_the_override_model() {
         sink,
         Some(Arc::new(InProcessDispatcher::new(manager)) as Arc<dyn SubagentDispatcher>),
         models,
-        Some(config_dir.path()),
+        Some(&overrides),
     );
     // The Agent definition: `model: fake/m2` (IN the catalog — NOT
     // stale) + `thinking: low` (the override replaces ONLY the

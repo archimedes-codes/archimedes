@@ -274,21 +274,19 @@ pub fn default_build_loop(
         let turn_cancel = Arc::new(StdMutex::new(CancellationToken::new()));
         let (settle_tx, _settle_rx) = watch::channel(0u64);
         // (2) `AgentLoop::new` with the Task-1 seams, Worker-backed
-        // (`build_provider_with_headers` — the envelope's `Model` carries
-        // the provider config; the provider's CUSTOM headers (issue #129,
-        // R1) are re-resolved from `settings.json` at this construction site
-        // (`env.config_dir` is in scope; the CORE's maps — the
-        // `PermissionResponse` / `InteractiveResponse` handlers resolve the
-        // loop's gate oneshots through them — + the shared `StaticTrustSource`
-        // + the `TodoStore`). A model with no configured headers → `None` —
-        // byte-identical to the old `build_provider(&env.model)`.
+        // (`build_provider_with_headers` — the envelope's `Model` carries the
+        // provider config; the provider's CUSTOM headers (issue #129, R1) come
+        // from the PACKAGED `env.providers` — the FIFTH field, whose disk read
+        // is what this line used to perform through `env.config_dir`. The
+        // CORE's maps — the `PermissionResponse` / `InteractiveResponse`
+        // handlers resolve the loop's gate oneshots through them — + the shared
+        // `StaticTrustSource` + the `TodoStore`). A model with no configured
+        // headers → `None` — byte-identical to the old `build_provider(&env.model)`
+        // and to an old envelope (`providers` decodes to the empty vec).
         let provider = crate::agent::harness::provider::build_provider_with_headers(
             &env.model,
-            crate::agent::harness::provider::provider_headers_for(
-                std::path::Path::new(&env.config_dir),
-                &env.model,
-            )
-            .as_ref(),
+            crate::agent::harness::provider::headers_for_providers(&env.providers, &env.model)
+                .as_ref(),
         );
         let store: Arc<dyn Store> = Arc::new(IpcStore::new(outbound.clone()));
         let trust: Option<Arc<dyn TrustSource>> = trust.clone().map(|t| t as Arc<dyn TrustSource>);
@@ -337,6 +335,27 @@ pub fn default_build_loop(
                 pending_render.clone(),
             ));
         loop_.set_render_requester(Some(render_req));
+        // (Fulcrum T3) THE packaging hop: the five desktop-config fields ride
+        // the envelope, and this is where they reach the loop that used to read
+        // them off `settings.json`. BEFORE the first prompt (and before
+        // `spawn`, so the MCP manager swap sees no connected server).
+        //
+        // The two per-turn fields are handed over as `Some(_)` UNCONDITIONALLY,
+        // and that is deliberate rather than sloppy: `PermissionContext::refresh`
+        // treats `None` ("no packaged layer") and `Some(FilePolicy::default())`
+        // ("a layer that allows everything") as the SAME all-`Allow` posture, so
+        // an old envelope — whose `#[serde(default)]` fields decode to exactly
+        // those inert values — gates exactly as it does today. `None` stays a
+        // real state for the loop's own fixtures and for a loop built without
+        // any desktop config at all, which is where the "layer that cannot
+        // speak" pin lives (see `packaged_settings_keeps_no_layer_and_an_empty_map_apart`).
+        loop_.set_desktop_config(
+            Some(env.file_policy.clone()),
+            Some(env.web.clone()),
+            Some(env.agent_overrides.clone()),
+            env.providers.clone(),
+            env.mcp_servers.clone(),
+        );
         // (3) The wire field IS the harness convention (`None` = all,
         // `Some(v)` = exactly `v`, `Some(vec![])` = NO tools) — applied
         // VERBATIM, NO mapping (the settings `[]` = all convention is
@@ -601,6 +620,34 @@ impl WorkerCore {
                 if let Some(t) = trusted {
                     if let Some(s) = &self.trust {
                         s.set(t);
+                    }
+                }
+                Vec::new()
+            }
+            Inbound::ConfigUpdate {
+                file_policy,
+                web,
+                agent_overrides,
+            } => {
+                // (Fulcrum T3) The live-reload push → the loop's control
+                // queue. An ALL-`None` frame is dropped here rather than sent:
+                // a `ConfigUpdate` with nothing in it changes nothing, and
+                // forwarding it would wake the loop for no reason (the same
+                // "only send what changed" shape the `Config` arm above uses
+                // for its two optional commands).
+                if let Some(ctl) = &self.loop_control {
+                    if file_policy.is_some() || web.is_some() || agent_overrides.is_some() {
+                        if let Err(e) = ctl
+                            .control_tx
+                            .send(ControlCmd::ConfigUpdate {
+                                file_policy,
+                                web,
+                                agent_overrides,
+                            })
+                            .await
+                        {
+                            eprintln!("worker: control send failed: {e}");
+                        }
                     }
                 }
                 Vec::new()

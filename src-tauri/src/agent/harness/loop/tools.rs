@@ -229,7 +229,7 @@ impl AgentLoop {
                 enabled_tools: self.enabled_tools(),
                 sink: &self.sink,
                 catalog: &self.catalog,
-                config_dir: self.config_dir.as_deref(),
+                agent_overrides: self.packaged_agent_overrides.as_ref(),
             },
             params,
             turn,

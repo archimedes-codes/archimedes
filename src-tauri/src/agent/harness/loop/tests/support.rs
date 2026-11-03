@@ -372,21 +372,24 @@ pub(super) fn build_loop_with_sink(
     (space, loop_, db)
 }
 
-/// `build_loop_with_db` with a REAL settings home carrying the provider's
+/// `build_loop_with_db` with PACKAGED provider rows carrying the provider's
 /// custom headers (issue #129, R1 — the mid-session-switch fixture).
 ///
-/// The header-less builders cannot pin R1: `build_loop_with_db` threads a
-/// bare `None` as the loop's `config_dir`, so `set_model`'s re-lookup would
-/// have nothing to read and a switch test built on it could never fire the
-/// header assert. This builder therefore
-/// 1. writes a scratch `settings.json` whose provider row (`id ==
-///    provider_id`) carries `headers` (the RAW template map — expanded here
-///    through the SAME `provider_auth::headers::expand_map` the production
-///    spine calls, so the test asserts the EXPANDED value on the wire),
-/// 2. hands that dir to `build_loop_with_sink` as `config_dir` (so
-///    `AgentLoop::set_model` re-resolves from it), and
-/// 3. returns the settings-home guard FIRST — the #96 rule: never
-///    `.0`-project a builder result to discard a guard; bind it.
+/// The header-less builders cannot pin R1: they leave the loop's packaged
+/// `providers` empty, so `set_model`'s re-lookup would find no row and a switch
+/// test built on one could never fire the header assert. This builder therefore
+/// 1. builds the provider row (`id == provider_id`) carrying `headers` — the
+///    RAW template map, so the loop's own expansion through the SAME
+///    `provider_auth::headers::expand_map` the production spine calls produces
+///    the value the test asserts on the wire, and
+/// 2. packages it through [`AgentLoop::set_desktop_config`], so
+///    `AgentLoop::set_model` re-resolves from the packaged slice.
+///
+/// (Fulcrum T3) It used to write a scratch `settings.json` and hand the dir to
+/// `build_loop_with_sink` as `config_dir`. That is exactly the disk read this
+/// task removes, so the row now rides the same seam production uses
+/// (`StartEnv.providers` → `set_desktop_config`); there is no settings home to
+/// own any more, which is why the tuple lost its guard.
 ///
 /// The caller builds the INITIAL provider itself (through
 /// `build_provider_with_headers`) so a test can distinguish the initial
@@ -402,47 +405,43 @@ pub(super) fn build_loop_with_headers_and_db(
     provider_id: &str,
     headers: HashMap<String, String>,
     sink: Arc<dyn EventSink>,
-) -> (ScratchDir, ScratchDir, AgentLoop, Arc<Db>) {
-    // The settings home (a scratch dir holding `settings.json`).
-    let config_home = crate::test_support::ScratchDir::in_env_temp("provider-headers-", "settings");
-    let settings = crate::config::Settings {
-        providers: vec![crate::config::ProviderConfig {
-            id: provider_id.to_string(),
-            name: provider_id.to_string(),
-            // The row's base URL is IRRELEVANT here — the `Model` carries the
-            // wire's base URL; this row exists so the header re-lookup in
-            // `set_model` finds a row whose `id == model.provider`.
-            base_url: "https://example.invalid/v1".to_string(),
-            api_key: String::new(),
-            api: "openai-completions".to_string(),
-            key_url: None,
-            auth_mode: "api_key".to_string(),
-            // The RAW template map (the shape `settings.json` holds — the
-            // expansion happens in `provider_headers_for`, exactly as in
-            // production).
-            headers: Some(headers),
-            allow_insecure_http: false,
-            // (issue #128) The mechanical additive grow: `ProviderConfig`
-            // gained T4's `use_gcloud_token_auth`; this fixture does not use
-            // the ADC flow.
-            use_gcloud_token_auth: false,
-            // (issue #127) The mechanical additive grow: no OIDC login on this fixture.
-            oidc: None,
-        }],
-        ..crate::config::Settings::default()
-    };
-    crate::config::write_settings(&config_home, &settings).expect("settings.json writes");
-    let (space, loop_, db) = build_loop_with_sink(
+) -> (ScratchDir, AgentLoop, Arc<Db>) {
+    let (space, mut loop_, db) = build_loop_with_sink(
         provider,
         events,
         turn_cancel,
         settle_tx,
         retry,
         models,
-        Some(&config_home),
+        // No settings dir — the row arrives packaged below.
+        None,
         sink,
     );
-    (config_home, space, loop_, db)
+    let row = crate::config::ProviderConfig {
+        id: provider_id.to_string(),
+        name: provider_id.to_string(),
+        // The row's base URL is IRRELEVANT here — the `Model` carries the
+        // wire's base URL; this row exists so the header re-lookup in
+        // `set_model` finds a row whose `id == model.provider`.
+        base_url: "https://example.invalid/v1".to_string(),
+        api_key: String::new(),
+        api: "openai-completions".to_string(),
+        key_url: None,
+        auth_mode: "api_key".to_string(),
+        // The RAW template map (the shape the settings document holds — the
+        // expansion happens in `headers_for_providers`, exactly as in
+        // production).
+        headers: Some(headers),
+        allow_insecure_http: false,
+        // (issue #128) The mechanical additive grow: `ProviderConfig`
+        // gained T4's `use_gcloud_token_auth`; this fixture does not use
+        // the ADC flow.
+        use_gcloud_token_auth: false,
+        // (issue #127) The mechanical additive grow: no OIDC login on this fixture.
+        oidc: None,
+    };
+    loop_.set_desktop_config(None, None, None, vec![row], HashMap::new());
+    (space, loop_, db)
 }
 
 /// Build an `AgentLoop` (drops the `Db` — the tests that need the
@@ -603,7 +602,7 @@ pub(super) fn build_loop_with_dispatcher(
     sink: Arc<dyn EventSink>,
     subagent: Option<Arc<dyn SubagentDispatcher>>,
     models: Vec<Model>,
-    config_dir: Option<&std::path::Path>,
+    agent_overrides: Option<&std::collections::HashMap<String, crate::config::AgentOverrideFields>>,
 ) -> (ScratchDir, AgentLoop) {
     let space = crate::test_support::ScratchDir::in_env_temp("harness-loop-test-", "dispatch");
     let db = Arc::new(Db::open(&space.join("t.db")).expect("db should open"));
@@ -613,7 +612,7 @@ pub(super) fn build_loop_with_dispatcher(
         compaction: CompactionConfig::default(),
     };
     let (prompt_tx, prompt_rx) = mpsc::channel(8);
-    let loop_ = AgentLoop::new(
+    let mut loop_ = AgentLoop::new(
         "s1".to_string(),
         // A copy of the path — the guard below owns the dir (#96).
         space.to_path_buf(),
@@ -635,9 +634,19 @@ pub(super) fn build_loop_with_dispatcher(
         subagent,
         SudoDeps::default(),
         retry,
-        config_dir.map(|p| p.to_path_buf()),
+        // (Fulcrum T3) No settings dir: the override layer arrives packaged.
+        None,
         "t".to_string(),
     );
+    // The PACKAGED ADR 0066 layer the parent loop hands to `resolve_launch` on
+    // every dispatch (`loop/tools.rs` reads
+    // `self.packaged_agent_overrides`). `None` = the layer that cannot speak,
+    // which is what every other test in this file wants; `Some(map)` is the
+    // override case. Only the overrides half is set — the policy/web/providers
+    // halves stay inert so a dispatch test gates on the default posture.
+    if let Some(map) = agent_overrides {
+        loop_.set_desktop_config(None, None, Some(map.clone()), Vec::new(), HashMap::new());
+    }
     (space, loop_)
 }
 

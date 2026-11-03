@@ -218,7 +218,12 @@ pub(crate) struct SubagentParent<'a> {
     pub enabled_tools: Option<&'a [String]>,
     pub sink: &'a Arc<dyn EventSink>,
     pub catalog: &'a ModelCatalog,
-    pub config_dir: Option<&'a std::path::Path>,
+    /// (Fulcrum T3) The PACKAGED ADR 0066 override layer the parent loop holds
+    /// (was `config_dir`, which `resolve_launch` read `settings.json` from).
+    /// `None` = a layer that cannot speak; `Some(map)` = a layer that may be
+    /// empty — the distinction `resolve_launch` keeps.
+    pub agent_overrides:
+        Option<&'a std::collections::HashMap<String, crate::config::AgentOverrideFields>>,
 }
 
 /// The `subagent` dispatch's outcome (the `SubagentOutcome` mapping).
@@ -331,7 +336,7 @@ pub(crate) async fn dispatch_subagent(
         &launch,
         &agent_name,
         parent.catalog,
-        parent.config_dir,
+        parent.agent_overrides,
         parent.space_cwd,
     );
     let (dispatch_rx, cancel) = dispatcher.dispatch(
@@ -659,7 +664,7 @@ mod tests {
                 enabled_tools: None,
                 sink: &sink,
                 catalog: &catalog,
-                config_dir: None,
+                agent_overrides: None,
             },
             &serde_json::json!({ "task": "the task" }),
             &CancellationToken::new(),
@@ -731,7 +736,7 @@ mod tests {
                 enabled_tools: None,
                 sink: &sink,
                 catalog: &catalog,
-                config_dir: None,
+                agent_overrides: None,
             },
             &serde_json::json!({ "task": "the task" }),
             &CancellationToken::new(),
@@ -776,7 +781,7 @@ mod tests {
                 enabled_tools: None,
                 sink: &sink,
                 catalog: &catalog,
-                config_dir: None,
+                agent_overrides: None,
             },
             &serde_json::json!({ "task": "the task" }),
             &CancellationToken::new(),

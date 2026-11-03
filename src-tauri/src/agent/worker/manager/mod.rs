@@ -403,6 +403,59 @@ impl WorkerManager {
         delivered
     }
 
+    /// (Fulcrum T3) Mirror the three live-reload fields into a session's
+    /// STORED `StartEnv`, after the `config-update` frame was DELIVERED.
+    ///
+    /// This is the half that makes the push reach CHILDREN, and it is the
+    /// reason the registry keeps the env at all: `subagent_flow` builds every
+    /// child's five packaged fields from the PARENT's stored env
+    /// (`DesktopConfig::from_env(&parent_env)`), so refreshing this copy is
+    /// what gives a subagent the edited policy / override layer on the NEXT
+    /// dispatch — ADR 0023's "next dispatch, no restart", which a frame sent
+    /// only to the parent's stdin would not provide.
+    ///
+    /// Callers must send FIRST and mirror ONLY on success (finding 12's rule,
+    /// the `refresh_live_models` discipline): a frame that never arrived means
+    /// the loop never applied it, and mirroring then would make the next child
+    /// inherit a policy its parent is not running.
+    ///
+    /// Only the three fields the frame carries move. `providers` /
+    /// `mcp_servers` stay the construction snapshot — the recorded residual
+    /// hole — so a mid-session provider or MCP edit still needs a restart.
+    pub fn mirror_stored_desktop_config(
+        &self,
+        session_id: &str,
+        file_policy: Option<&crate::agent::policy::FilePolicy>,
+        web: Option<&crate::config::WebSettings>,
+        agent_overrides: Option<
+            &std::collections::HashMap<String, crate::config::AgentOverrideFields>,
+        >,
+    ) {
+        let mut map = self.state.workers.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(entry) = map.get_mut(session_id) else {
+            return;
+        };
+        if let Some(p) = file_policy {
+            entry.env.file_policy = p.clone();
+        }
+        if let Some(w) = web {
+            entry.env.web = w.clone();
+        }
+        if let Some(o) = agent_overrides {
+            entry.env.agent_overrides = o.clone();
+        }
+    }
+
+    /// (test only) The ATTACH-time `StartEnv` the registry holds for a session
+    /// — the copy `subagent_flow` builds each child's five packaged fields from.
+    /// `None` when the session is not attached. Follows the `test_*` naming
+    /// convention of the accessors above; production reads this map only through
+    /// the typed methods, never through a getter.
+    pub fn test_env_for(&self, session_id: &str) -> Option<StartEnv> {
+        let map = self.state.workers.lock().unwrap_or_else(|p| p.into_inner());
+        map.get(session_id).map(|e| e.env.clone())
+    }
+
     /// The session's `WorkerHandle` (a clone) — `None` when the session is not
     /// attached (or was already reaped). The `SessionManager` uses this to relay
     /// frames (prompt / config / abort / responses) to the session's Worker.

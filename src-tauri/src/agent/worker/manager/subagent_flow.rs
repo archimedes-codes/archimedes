@@ -15,7 +15,9 @@ use crate::agent::session::resolve_composed_model;
 use crate::agent::subagent::{SubagentFailureReason, SubagentMetrics, SubagentOutcome};
 use crate::agent::types::mint_session_id;
 use crate::agent::worker::client::WorkerHandle;
-use crate::agent::worker::protocol::{Inbound, StartEnv, StartMode, SubagentDispatchWire};
+use crate::agent::worker::protocol::{
+    DesktopConfig, Inbound, StartEnv, StartMode, SubagentDispatchWire,
+};
 
 use super::pump::start_pump;
 use super::registry::{reap_worker, ManagerState};
@@ -739,6 +741,15 @@ pub(crate) fn dispatch_subagent(
         // `clone()` on the `Box` clones the block, which is what we want here).
         wire.launch.permission.as_deref().cloned(),
     );
+    // (Fulcrum T3) The child inherits the PARENT's five packaged desktop-config
+    // fields. THIS line is ADR 0023's live property on the child path: a
+    // `config-update` push refreshes the parent's stored env in the registry,
+    // and because the child's five are read off that live copy right here, the
+    // NEXT dispatch's child runs the edited policy / override layer — the same
+    // "a settings edit applies at the next dispatch, no restart" the per-dispatch
+    // `settings.json` read used to buy. `DesktopConfig::from_env` exists so a
+    // sixth packaged field cannot be silently forgotten in a hand-written copy.
+    let env = env.with_desktop_config(DesktopConfig::from_env(&parent_env));
     // 6. The `subagent-session-started` UI lifecycle event (the
     // current driver's step 9 — the PARENT session's sink: the
     // `model` in the COMPOSED `provider/id` form, the

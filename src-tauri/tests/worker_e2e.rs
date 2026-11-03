@@ -27,7 +27,7 @@ use archimedes_lib::agent::harness::catalog::{Model, ModelCatalog};
 use archimedes_lib::agent::harness::prompt::build_child_system_message;
 use archimedes_lib::agent::worker::client::{WorkerError, WorkerHandle, WorkerInboundEvent};
 use archimedes_lib::agent::worker::manager::{WorkerFactory, WorkerManager};
-use archimedes_lib::agent::worker::protocol::StartEnv;
+use archimedes_lib::agent::worker::protocol::{DesktopConfig, StartEnv};
 use archimedes_lib::agent::{EventSink, PermissionOutcome, TranscriptPersister};
 use archimedes_lib::storage::Db;
 use serde_json::Value;
@@ -366,9 +366,10 @@ fn tool_execution_end(
 /// exactly `v`). NO `settings.json` is written, so the Worker runs on the
 /// all-`Allow` file-access default (ADR 0030).
 ///
-/// Returns the `config_dir` guard WITH the env (#96 task 06): `StartEnv`
-/// carries only the `display()` string, so a guard dropped at the end of this
-/// builder would delete the `settings.json` the child has not read yet.
+/// Returns the scratch-dir guard WITH the env (#96 task 06): `StartEnv` carries
+/// only the `config_dir` `display()` string, so the dir needs an owner. (Since
+/// T3 nothing READS that path — the five desktop-config fields ride the
+/// envelope — but the guard is still what makes the minted dir owned.)
 fn start_env(
     session_id: &str,
     cwd: &Path,
@@ -390,19 +391,24 @@ fn start_env(
     )
 }
 
-/// The `StartEnv` builder with a file-access policy: the `settings.json`
-/// is written into the temp `config_dir` BEFORE the env is returned, so the
-/// Worker's per-turn read (ADR 0030 Deviation 4) sees the pinned policy from
-/// its first tool call. `None` = no file at all (the default).
+/// The `StartEnv` builder with a file-access policy: the policy rides the
+/// envelope as the PACKAGED `filePolicy` field (Fulcrum T3), so the Worker's
+/// gate sees the pinned policy from its first tool call. `None` = no packaged
+/// policy (the all-`Allow` default).
 ///
-/// The `config_dir` guard comes back as the tuple's SECOND element (#96 task
-/// 06) — LOAD-BEARING, not tidiness: `StartEnv` carries only
-/// `config_dir.display().to_string()`, so if the guard were a local of this
-/// builder it would drop HERE and remove the `settings.json` before the child
-/// ever read it. That would break
-/// `permission_round_trip_real_worker` in a way that looks like a policy bug.
-/// The tests bind it FIRST in their own bodies, which is what makes it drop
-/// LAST there — after the `detach` reap.
+/// (Fulcrum T3) It used to write `settings.json` into the temp `config_dir`
+/// before returning, for the Worker's per-turn read (ADR 0030 Deviation 4) to
+/// pick up. That read is gone — the Worker opens no desktop config any more —
+/// so a file here would be DEAD WEIGHT and the gate would run all-`Allow`,
+/// which is not what the callers below assert. This is the same hop production
+/// takes: `session/mod.rs` packages `load_settings`' five onto the envelope.
+///
+/// The second tuple element is now just the scratch-dir guard the tests bind
+/// FIRST (#96). The old "guard must outlive the child, or the child reads a
+/// missing `settings.json`" reason is gone with the read; the guard stays
+/// because these tests still hand the dir's path to `config_dir` (a field T3
+/// retains and nothing reads) and #96's census still requires ownership of
+/// every minted dir.
 // The Worker's start envelope IS 8 positional knobs; a struct would obscure
 // which `StartEnv` field each test pins (and this mirrors `start_env`).
 #[allow(clippy::too_many_arguments)]
@@ -417,39 +423,37 @@ fn start_env_with_file_policy(
     file_policy: Option<archimedes_lib::agent::policy::FilePolicy>,
 ) -> (StartEnv, archimedes_lib::test_support::ScratchDir) {
     let config_dir = temp_dir();
-    if let Some(policy) = file_policy {
-        std::fs::write(
-            config_dir.join("settings.json"),
-            format!(
-                r#"{{ "filePolicy": {} }}"#,
-                serde_json::to_string(&policy).expect("a FilePolicy serializes")
-            ),
-        )
-        .expect("the settings file is written");
-    }
-    (
-        StartEnv::from_parts(
-            session_id.to_string(),
-            cwd.display().to_string(),
-            archimedes_lib::agent::worker::protocol::StartMode::Fresh,
-            None,
-            model,
-            catalog,
-            None,
-            trusted,
-            enabled_tools,
-            config_dir.display().to_string(),
-            subagent_enabled,
-            None,
-            // (issue #101) `from_parts`' new trailing arg. `None` for the MAIN
-            // env this builder makes (a main session has no definition); the
-            // CHILD's block is what the dispatch e2e asserts on, and it arrives
-            // through `wire.launch.permission` → the child's own `StartEnv`,
-            // never through this builder.
-            None,
-        ),
-        config_dir,
-    )
+    let env = StartEnv::from_parts(
+        session_id.to_string(),
+        cwd.display().to_string(),
+        archimedes_lib::agent::worker::protocol::StartMode::Fresh,
+        None,
+        model,
+        catalog,
+        None,
+        trusted,
+        enabled_tools,
+        config_dir.display().to_string(),
+        subagent_enabled,
+        None,
+        // (issue #101) `from_parts`' new trailing arg. `None` for the MAIN
+        // env this builder makes (a main session has no definition); the
+        // CHILD's block is what the dispatch e2e asserts on, and it arrives
+        // through `wire.launch.permission` → the child's own `StartEnv`,
+        // never through this builder.
+        None,
+    );
+    // Only package when a policy was asked for: `None` must leave the env on
+    // the inert five (the same values an old envelope decodes to), so the two
+    // states stay distinguishable — see `StartEnv::with_desktop_config`.
+    let env = match file_policy {
+        Some(policy) => env.with_desktop_config(DesktopConfig {
+            file_policy: policy,
+            ..DesktopConfig::default()
+        }),
+        None => env,
+    };
+    (env, config_dir)
 }
 
 // ── (1) The full turn ────────────────────────────────────────────────
@@ -1879,5 +1883,275 @@ async fn the_definition_permission_deny_refuses_the_child_real_worker() {
     assert!(
         h.crashes.try_recv().is_err(),
         "no on_crash (the child reaped cleanly, the main closed cleanly)"
+    );
+}
+
+// ── (Fulcrum T3) The `config-update` push, end to end ───────────────
+
+/// Mount a four-request script on the mock server, ONE mock per request, each
+/// capped at a single hit (`up_to_n_times`). Wiremock routes an overlapping
+/// match to the FIRST mock that still has budget, so the four turns of
+/// `config_update_push_reaches_a_live_worker` walk the list in mount order —
+/// the loop-level `ScriptedProvider` shape, over the real HTTP wire.
+///
+/// The helper `mount_two_request_streams` cannot express this: it discriminates
+/// on `"role":"tool"`, and BOTH of the push test's tool-result turns carry one.
+async fn mount_request_script(server: &MockServer, bodies: &[String]) {
+    for body in bodies {
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(body.clone(), "text/event-stream"),
+            )
+            // `up_to_n_times` is a `Mock` method (it comes AFTER
+            // `respond_with`), and an exhausted mock reports `false` from
+            // `matches`, so the walk falls through to the next one — mount
+            // order IS request order (all mocks share the default priority,
+            // and ties keep insertion order).
+            .up_to_n_times(1)
+            .mount(server)
+            .await;
+    }
+}
+
+/// One canned `chat.completions` body: a single `read` tool call on `path`.
+fn sse_read_call(id: &str, path: &str) -> String {
+    // The inner JSON is escaped twice: once into the SSE `data:` line, once
+    // into the `arguments` STRING field the OpenAI wire carries.
+    let args = format!(r#"{{"path":"{path}"}}"#).replace('"', "\\\"");
+    format!(
+        "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"{id}\",\"function\":{{\"name\":\"read\",\"arguments\":\"{args}\"}}}}]}}}}]}}\n\n\
+         data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n\
+         data: [DONE]\n\n"
+    )
+}
+
+/// One canned `chat.completions` body: terminal text, no tool call.
+fn sse_final(text: &str) -> String {
+    format!(
+        "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}}}}]}}\n\n\
+         data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n\
+         data: [DONE]\n\n"
+    )
+}
+
+/// (Fulcrum T3) THE live-reload push over REAL IPC: a live Worker's gate
+/// consults a PUSHED `file_policy` on its NEXT prompt and never opens a
+/// `settings.json` to get it.
+///
+/// Why this test has to exist: `StartEnv` can carry the five fields and
+/// `Inbound::ConfigUpdate` can sit in the enum, and the entire suite stays
+/// green while NOTHING ever sends the frame. This drives the real
+/// `archimedes --worker` through the real stdin/stdout pipe, so it reddens
+/// unless `WorkerHandle::send_config_update`, `decode_inbound`'s allow-list,
+/// `WorkerCore::handle`'s arm, and the loop's `ControlCmd::ConfigUpdate` apply
+/// are ALL in place — and, since the frame crosses a process boundary, that
+/// the wire casing matches on both sides.
+///
+/// # Non-vacuity — this cannot pass for the wrong reason
+///
+/// 1. **No `settings.json` exists anywhere.** The env packages NO policy (so
+///    the loop starts on the all-`Allow` default) and `HOME` is pinned to an
+///    empty scratch home, so there is no settings file for the Worker to read
+///    even if someone re-added the disk read. The pushed policy is the ONLY
+///    possible source of turn 2's refusal.
+/// 2. **Turn 1 asserts the SAME read is ALLOWED before the push.** So the
+///    refusal is attributable to the push — not to the path, the boundary, the
+///    trust posture, or the `read` tool being broken.
+///
+/// # Why the ordering is deterministic (no sleeps, no races)
+///
+/// `run()` applies a control command only BETWEEN turns, so the push must be
+/// applied before turn 2 begins or the assertion is a coin-flip. Turn 1 is the
+/// barrier: this test sends the second prompt only AFTER it has observed turn
+/// 1's `agent_settled`, so at that moment the prompt queue is empty and the
+/// loop is parked in its `select!` — the control branch is the only ready one,
+/// and the push is applied before the second prompt can be received. No
+/// timing assumption, no wall-clock guess.
+// The `ENV_LOCK` is held across `await` points INTENTIONALLY — the Worker
+// CHILD reads `HOME` while this test awaits, and a sibling holds the same lock
+// with a MUTATED `HOME` (the `full_turn_real_worker_canned_provider` precedent
+// in this file).
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn config_update_push_reaches_a_live_worker() {
+    // `HOME` isolation (the `ENV_LOCK` pattern used elsewhere in this file):
+    // the Worker reads `HOME` for its protected-dir list while a sibling test
+    // may be mutating it. An EMPTY scratch home also guarantees there is no
+    // user-level `settings.json` in play.
+    let _lock = archimedes_lib::test_support::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let home = temp_dir();
+    let original_home = std::env::var_os("HOME");
+    struct RestoreHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            match self.0.take() {
+                // SAFETY: the `ENV_LOCK` is still held — it is declared first,
+                // so it drops last.
+                Some(v) => unsafe { std::env::set_var("HOME", v) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+    // SAFETY: the `ENV_LOCK` is held for the whole set→assert→restore span.
+    unsafe { std::env::set_var("HOME", home.path()) };
+    let _restore_home = RestoreHome(original_home);
+
+    let mut h = E2e::new().await;
+    let server = MockServer::start().await;
+    // A file OUTSIDE the Space: the Space `cwd` is the boundary, so the
+    // POLICY (not the boundary) is what decides — under all-`Allow` it reads,
+    // under `sandboxed` it is refused.
+    let outside = temp_dir();
+    std::fs::write(outside.join("secret.txt"), "OUTSIDE-CONTENT").unwrap();
+    let path = outside.join("secret.txt").display().to_string();
+
+    // The four model requests, in order: turn 1's `read` → turn 1's settle →
+    // turn 2's `read` (the SAME path) → turn 2's settle.
+    mount_request_script(
+        &server,
+        &[
+            sse_read_call("call_1", &path),
+            sse_final("first done"),
+            sse_read_call("call_2", &path),
+            sse_final("second done"),
+        ],
+    )
+    .await;
+
+    let cwd = temp_dir();
+    // NO packaged policy at all (`None`): the loop starts on the all-`Allow`
+    // default, and `config_dir` is an EMPTY scratch dir — no `settings.json`.
+    let (env, _config_dir) = start_env_with_file_policy(
+        "e2e-push",
+        cwd.path(),
+        wire_model(&server, "e2e-model"),
+        ModelCatalog {
+            models: vec![wire_model(&server, "e2e-model")],
+            ..Default::default()
+        },
+        false,
+        Some(vec!["read".to_string()]),
+        false,
+        None,
+    );
+    h.attach(env).await;
+
+    // ── Turn 1: before the push, the same read is ALLOWED (and silently). ──
+    h.manager
+        .handle_for("e2e-push")
+        .expect("the session is attached")
+        .send_prompt("read it", &[])
+        .expect("the first prompt is sent");
+    let evs = h
+        .wait(Duration::from_secs(60), |evs| {
+            evs.iter().any(|(_, _, e)| {
+                matches!(e, WorkerInboundEvent::Event(ev) if ev.kind() == "agent_settled")
+            })
+        })
+        .await
+        .expect("turn 1 settles within the bound");
+    let (before, before_is_error) = tool_execution_end(&evs, Some("read"))
+        .expect("turn 1's read produced a tool_execution_end");
+    assert!(
+        !before_is_error,
+        "PREMISE: before the push, the packaged default (all-`Allow`) lets this \
+         read through. If this already fails, the fixture is wrong and turn 2's \
+         refusal would prove nothing: {before:?}"
+    );
+    assert_eq!(
+        before["content"][0]["text"], "OUTSIDE-CONTENT",
+        "the pre-push read really read the file"
+    );
+    assert!(
+        !h.collected_events
+            .iter()
+            .any(|(_, _, e)| matches!(e, WorkerInboundEvent::PermissionRequest { .. })),
+        "the all-`Allow` default prompts for NOTHING (ADR 0030 Deviation 2)"
+    );
+
+    // ── The push: `reads`/`writes` → `sandboxed`, over the REAL pipe. ──
+    h.manager
+        .handle_for("e2e-push")
+        .expect("the session is attached")
+        .send_config_update(
+            Some(archimedes_lib::agent::policy::FilePolicy {
+                reads: archimedes_lib::agent::policy::AccessPolicy::Sandboxed,
+                writes: archimedes_lib::agent::policy::AccessPolicy::Sandboxed,
+                shell: archimedes_lib::agent::policy::AccessPolicy::Allow,
+                rules: Vec::new(),
+            }),
+            None,
+            None,
+        )
+        .expect("the config-update frame is written to the live worker's stdin");
+
+    // ── Turn 2: the SAME read is now REFUSED, and never prompts. ──
+    h.manager
+        .handle_for("e2e-push")
+        .expect("the session is attached")
+        .send_prompt("read it again", &[])
+        .expect("the second prompt is sent");
+    let evs = h
+        .wait(Duration::from_secs(60), |evs| {
+            evs.iter()
+                .filter(|(_, _, e)| {
+                    matches!(e, WorkerInboundEvent::Event(ev) if ev.kind() == "agent_settled")
+                })
+                .count()
+                >= 2
+        })
+        .await
+        .expect("turn 2 settles within the bound");
+    let ends: Vec<(String, Value, bool)> = evs
+        .iter()
+        .filter_map(|(_, _, e)| match e {
+            WorkerInboundEvent::Event(RpcEvent::tool_execution_end {
+                tool_call_id,
+                result,
+                is_error,
+                ..
+            }) if tool_call_id == "call_2" => {
+                Some((tool_call_id.clone(), result.clone(), *is_error))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        ends.len(),
+        1,
+        "turn 2's read (call_2) produced exactly one tool_execution_end"
+    );
+    let (_, after, after_is_error) = ends[0].clone();
+    assert!(
+        after_is_error,
+        "the PUSHED `sandboxed` policy is in force on the NEXT prompt — the \
+         same read that turn 1 allowed is now refused, with no restart and no \
+         settings file. If this fails the frame reached the pipe but was never \
+         applied (check `decode_inbound`'s `config-update` allow-list, \
+         `WorkerCore::handle`'s arm, and the loop's `apply_config_update`): \
+         {after:?}"
+    );
+    assert!(
+        !h.collected_events
+            .iter()
+            .any(|(_, _, e)| matches!(e, WorkerInboundEvent::PermissionRequest { .. })),
+        "`sandboxed` is a DENY, never a prompt — no `permission-request` on \
+         either turn"
+    );
+
+    // ── Bookkeeping: a clean close, no crash. ──
+    let handle = h
+        .manager
+        .detach("e2e-push")
+        .expect("the session is attached");
+    let code = tokio::time::timeout(Duration::from_secs(15), handle.exited())
+        .await
+        .expect("the worker exits after the close");
+    assert_eq!(code, Some(0), "a clean close exits 0, got {code:?}");
+    assert!(
+        h.crashes.try_recv().is_err(),
+        "no on_crash on a clean close"
     );
 }

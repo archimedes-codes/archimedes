@@ -25,12 +25,46 @@ pub async fn get_settings(
 }
 
 /// Persist the settings (overwrites the file).
+///
+/// (Fulcrum T3) After a SUCCESSFUL write, the three live-reload fields are
+/// PUSHED to every live Worker (`push_config_update`). This is the production
+/// trigger for the `config-update` frame, and it is the reason the Worker was
+/// allowed to stop reading `settings.json`: the per-turn
+/// `PermissionContext::refresh` re-read (ADR 0030 Deviation 4) and the
+/// per-dispatch `agentOverrides` re-read (ADR 0023) are replaced by this push,
+/// so "edit Settings, it applies at the next prompt, no restart" still holds.
+/// Without this call the frame exists and nothing sends it — every test of the
+/// frame would pass while the property stayed broken.
+///
+/// BEST-EFFORT and deliberately unchecked: the file is already written by the
+/// time the push runs, so a session whose Worker is mid-teardown must not turn
+/// a SAVE that succeeded into an error the Settings UI reports. A Worker that
+/// is not running has nothing to reload; it picks the values up from the
+/// envelope when its next session starts.
 #[tauri::command]
 pub async fn save_settings(
     state: State<'_, Arc<SessionManager>>,
     settings: Settings,
 ) -> Result<(), SettingsError> {
-    write_settings(state.config_dir(), &settings).map_err(SettingsError::SaveFailed)
+    // The delivered-count is discarded: a save must not fail because a Worker
+    // was mid-teardown (see the doc above).
+    save_settings_and_push(&state, &settings).await.map(|_| ())
+}
+
+/// The `save_settings` body, factored out so the PUSH TRIGGER is testable:
+/// `tauri::State` cannot be constructed in a unit test (the repo's own note in
+/// `commands::update`'s tests records the same wall), and "the save actually
+/// pushes" is exactly the property a green suite would otherwise fake. A test
+/// calls THIS with a real `SessionManager` and a real attached Worker.
+///
+/// Returns the number of Workers the push reached — discarded by the command
+/// (best-effort), asserted on by the test.
+pub(crate) async fn save_settings_and_push(
+    state: &Arc<SessionManager>,
+    settings: &Settings,
+) -> Result<usize, SettingsError> {
+    write_settings(state.config_dir(), settings).map_err(SettingsError::SaveFailed)?;
+    Ok(state.push_config_update(settings).await)
 }
 
 /// The effective catalog's models (the frontend's Default-model select +

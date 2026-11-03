@@ -62,15 +62,29 @@ fn allow_rule(path: &str) -> String {
     format!(r#"[{{ "path": "{path}", "direction": "write", "decision": "allow" }}]"#)
 }
 
-/// The policy-gate fixture: an `AgentLoop` whose `config_dir` holds a
-/// `settings.json` with the given policy JSON (`None` = NO `config_dir`
-/// at all — the no-settings-layer case), on a fresh `space_cwd`, with a
-/// RECORDING sink (the `TestSink` cannot see `permission-request`) and
-/// `trust: None` (untrusted — fail-closed, so an `Ask` really prompts).
-/// The `config_dir` is returned WITH the loop: it must outlive it (the
-/// loop re-reads the file every turn, and the temp dir is removed on
-/// drop — dropping it early would silently degrade every test to the
-/// all-`Allow` default).
+/// The policy-gate fixture: an `AgentLoop` whose PACKAGED policy comes from
+/// the given policy JSON (`None` = no packaged config at all — the
+/// no-settings-layer case), on a fresh `space_cwd`, with a RECORDING sink (the
+/// `TestSink` cannot see `permission-request`) and `trust: None` (untrusted —
+/// fail-closed, so an `Ask` really prompts).
+///
+/// (Fulcrum T3) The JSON is PARSED IN-PROCESS and handed to the loop through
+/// [`AgentLoop::set_desktop_config`]. It used to be written to
+/// `config_dir/settings.json` and read back by the loop on every turn — and
+/// the loop cannot read it any more, because the Worker process no longer
+/// opens desktop config (the prerequisite for the `fulcrum-core` crate split).
+///
+/// Parsing rather than hand-building the `FilePolicy` keeps the fixture's
+/// vocabulary the REAL WIRE DOCUMENT (the same `filePolicy` block the Settings
+/// UI writes), so a renamed wire key reddens here exactly as it reddened under
+/// the disk read. This is the SUPERVISOR's job in the fixture's clothing: in
+/// production `load_settings` parses that document and the Supervisor packages
+/// the result onto the `start` envelope; here the parse is the same serde call
+/// and the packaging is the setter.
+///
+/// The parsed `Settings` rides out as the tuple's third element for a test that
+/// wants to know what the loop STARTED with (the live-reload pins push a
+/// change over it); every other caller binds it to `_`.
 ///
 /// #96: the `space_cwd` scratch guard is the FIRST element (it is a
 /// production `PathBuf` field on `AgentLoop` and cannot live in the loop),
@@ -88,14 +102,23 @@ pub(super) fn build_policy_loop(
     events: mpsc::UnboundedSender<RpcEvent>,
     sink: Arc<dyn EventSink>,
     settings: Option<&str>,
-) -> (crate::test_support::ScratchDir, AgentLoop, Option<Tmp>) {
-    let config_dir = settings.map(|_| Tmp::new("cfg"));
-    if let (Some(dir), Some(json)) = (config_dir.as_ref(), settings) {
-        std::fs::write(dir.path().join("settings.json"), json).unwrap();
-    }
+) -> (
+    crate::test_support::ScratchDir,
+    AgentLoop,
+    Option<crate::config::Settings>,
+) {
+    // The same document `load_settings` would have parsed. A body this fixture
+    // writes is always a VALID partial `Settings` (every field is
+    // `#[serde(default)]`), so a parse failure here is the fixture's bug —
+    // loud, rather than the silent all-`Allow` degradation the disk version
+    // would have produced from an unreadable file.
+    let parsed = settings.map(|json| {
+        serde_json::from_str::<crate::config::Settings>(json)
+            .expect("the fixture's settings document parses")
+    });
     // `_cfg_space` is MOVED OUT into the return tuple below: dropping it
-    // here would remove the config dir while the caller still asserts
-    // against it.
+    // here would remove the loop's `space_cwd` while the caller still
+    // asserts against it.
     let (_cfg_space, mut loop_, _db) = build_loop_with_db(
         provider,
         events,
@@ -103,14 +126,26 @@ pub(super) fn build_policy_loop(
         watch::channel(0u64).0,
         RetryPolicy::new_with(5, Duration::from_millis(1)),
         vec![fake_model("m1")],
-        config_dir
-            .as_ref()
-            .map(|d| d.path().to_path_buf())
-            .as_deref(),
+        // No settings dir: there is nothing left for the loop to read.
+        None,
     );
     // Swap the `TestSink` for the recording one (the field is `pub`).
     loop_.sink = sink;
-    (_cfg_space, loop_, config_dir)
+    // THE packaging hop — the twin of `worker/core.rs`'s
+    // `default_build_loop` handing the envelope's five to a fresh loop. Only
+    // when there IS a document: `settings: None` must leave the loop on its
+    // `None` packaged fields (the layer that cannot speak), not install an
+    // all-default one, because those two states are the distinction T3 keeps.
+    if let Some(s) = parsed.as_ref() {
+        loop_.set_desktop_config(
+            Some(s.file_policy.clone()),
+            Some(s.web.clone()),
+            Some(s.agent_overrides.clone()),
+            s.providers.clone(),
+            s.mcp_servers.clone(),
+        );
+    }
+    (_cfg_space, loop_, parsed)
 }
 
 /// The tool call the policy tests share: a `read` of `path`.
@@ -454,10 +489,19 @@ async fn the_default_policy_reads_and_writes_beyond_the_boundary_in_silence() {
     }
 }
 
-/// (ADR 0030 Deviation 4 — "affects an already-running session") the
-/// policy is re-read from `settings.json` at the top of EVERY prompt:
-/// a settings edit BETWEEN two prompts changes the SECOND prompt's
-/// gating, with no restart and no relaunch.
+/// (ADR 0030 Deviation 4 — "affects an already-running session", Fulcrum T3)
+/// the policy is RE-APPLIED at the top of EVERY prompt from the packaged
+/// state, and the packaged state is replaced by the `config-update` push: an
+/// edit BETWEEN two prompts changes the SECOND prompt's gating, with no
+/// restart and no relaunch.
+///
+/// The injection used to be `fs::write(config_dir/settings.json)` — the disk
+/// was the live-reload channel. It is now the push, because the Worker reads
+/// no file: this calls the in-process twin of the `config-update` frame
+/// ([`AgentLoop::apply_config_update`], which is exactly what
+/// `ControlCmd::ConfigUpdate` runs). The ASSERTION is unchanged — a
+/// per-session snapshot of the policy would still prompt on turn 2, and that
+/// is what this pins.
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn a_settings_edit_between_prompts_changes_the_next_turns_gating() {
@@ -495,7 +539,7 @@ async fn a_settings_edit_between_prompts_changes_the_next_turns_gating() {
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
     let sink_events = Arc::new(StdMutex::new(Vec::<(String, Value)>::new()));
     let settings = policy_settings("ask", "ask", "ask");
-    let (_space, mut loop_, _cfg) = build_policy_loop(
+    let (_space, mut loop_, _started) = build_policy_loop(
         Box::new(provider),
         events_tx,
         Arc::new(RecordingSink {
@@ -503,9 +547,6 @@ async fn a_settings_edit_between_prompts_changes_the_next_turns_gating() {
         }),
         Some(&settings),
     );
-    // The loop's own `config_dir` (the fixture's temp dir): re-read
-    // between the prompts, exactly as a user editing Settings would.
-    let config_dir = loop_.config_dir.clone().expect("a settings dir");
 
     // Turn 1: `reads: ask` → the prompt fires (answered `allow`).
     let pending = loop_.pending_permissions.clone();
@@ -518,12 +559,16 @@ async fn a_settings_edit_between_prompts_changes_the_next_turns_gating() {
         "turn 1 prompts under `ask`"
     );
 
-    // The user edits the file BETWEEN the prompts: `ask` → `sandboxed`.
-    std::fs::write(
-        config_dir.join("settings.json"),
-        policy_settings("sandboxed", "sandboxed", "allow"),
-    )
-    .unwrap();
+    // The user edits Settings BETWEEN the prompts: `ask` → `sandboxed`. The
+    // Supervisor's `save_settings` hook pushes the changed policy; the loop
+    // applies it through the same entry point the control queue calls.
+    let edited = serde_json::from_str::<crate::config::Settings>(&policy_settings(
+        "sandboxed",
+        "sandboxed",
+        "allow",
+    ))
+    .expect("the edited document parses");
+    loop_.apply_config_update(Some(edited.file_policy.clone()), None, None);
 
     // Turn 2: the SAME out-of-boundary read is now a Deny — no prompt,
     // an error result. A per-session (or per-process) snapshot of the
@@ -532,7 +577,7 @@ async fn a_settings_edit_between_prompts_changes_the_next_turns_gating() {
     assert_eq!(
         permission_requests(&sink_events.lock().unwrap()).len(),
         1,
-        "the second turn must NOT prompt after the file changed to `sandboxed`"
+        "the second turn must NOT prompt after the push changed the policy to `sandboxed`"
     );
     let ends = tool_ends(&mut events_rx);
     let (result, is_error) = ends.get("t2").expect("a tool result for t2").clone();
@@ -1673,11 +1718,17 @@ async fn a_tilde_spelled_guarded_write_yields_an_ancestor_rule_for_matches() {
     );
 }
 
-/// Deviation 4 for the RULES layer: a rule added to `settings.json` BETWEEN
-/// prompts is enforced at the NEXT prompt, with no restart. This is the
-/// per-turn concat's promise (mirror of
+/// Deviation 4 for the RULES layer: a rule that arrives BETWEEN prompts is
+/// enforced at the NEXT prompt, with no restart. This is the per-turn concat's
+/// promise (mirror of
 /// `a_settings_edit_between_prompts_changes_the_next_turns_gating`, which pins
 /// the posture half).
+///
+/// (Fulcrum T3) The channel is the `config-update` push, not a
+/// `settings.json` write: the rules are DERIVED from the packaged `FilePolicy`
+/// by the per-turn concat, so pushing a policy that carries the new rule is
+/// what a Settings save now does. The assertion — turn 2 stops prompting
+/// because the rule moved the call from row 3 to row 1 — is unchanged.
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn a_settings_rule_edit_between_prompts_changes_the_next_turns_gating() {
@@ -1712,7 +1763,7 @@ async fn a_settings_rule_edit_between_prompts_changes_the_next_turns_gating() {
     ]);
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
     let sink_events = Arc::new(StdMutex::new(Vec::<(String, Value)>::new()));
-    let (_space, mut loop_, _cfg) = build_policy_loop(
+    let (_space, mut loop_, _started) = build_policy_loop(
         Box::new(provider),
         events_tx,
         Arc::new(RecordingSink {
@@ -1721,7 +1772,6 @@ async fn a_settings_rule_edit_between_prompts_changes_the_next_turns_gating() {
         // Turn 1: NO rules → the guard asks.
         Some(&policy_settings("allow", "allow", "allow")),
     );
-    let config_dir = loop_.config_dir.clone().expect("a settings dir");
 
     let pending = loop_.pending_permissions.clone();
     let answer = tokio::spawn(answer_permission(pending, "s1", "reject", None));
@@ -1733,18 +1783,23 @@ async fn a_settings_rule_edit_between_prompts_changes_the_next_turns_gating() {
         "turn 1 prompts (row 3, no rules)"
     );
 
-    // The user edits Settings BETWEEN the prompts: a deny rule appears.
-    std::fs::write(
-        config_dir.join("settings.json"),
-        policy_settings_with_rules("allow", "allow", "allow", &deny_rule("~/.agents/skills")),
-    )
-    .unwrap();
+    // The user edits Settings BETWEEN the prompts: a deny rule appears. The
+    // push carries the WHOLE policy (the rule rides inside `filePolicy`), so
+    // the per-turn concat rebuilds `default_rules()` + the user rules from it.
+    let edited = serde_json::from_str::<crate::config::Settings>(&policy_settings_with_rules(
+        "allow",
+        "allow",
+        "allow",
+        &deny_rule("~/.agents/skills"),
+    ))
+    .expect("the edited document parses");
+    loop_.apply_config_update(Some(edited.file_policy.clone()), None, None);
 
     bounded_prompt(&mut loop_, "two").await;
     assert_eq!(
         permission_requests(&sink_events.lock().unwrap()).len(),
         1,
-        "turn 2 must NOT prompt: the new rule moved the call from row 3 to row 1"
+        "turn 2 must NOT prompt: the pushed rule moved the call from row 3 to row 1"
     );
     let ends = tool_ends(&mut events_rx);
     let (result, is_error) = ends.get("t2").expect("a tool result for t2").clone();

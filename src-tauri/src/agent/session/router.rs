@@ -506,6 +506,75 @@ impl SessionManager {
             }
         });
     }
+    // ── (Fulcrum T3) The `config-update` push (live-reload) ────────────────
+
+    /// Push the three live-reload desktop-config fields to every LIVE Worker
+    /// (Fulcrum T3) — the frame that REPLACED the Worker's per-turn
+    /// `settings.json` read, so "edit Settings, it applies at the next prompt,
+    /// no restart" survives the removal of that read.
+    ///
+    /// Called from `commands::settings::save_settings` after the file is
+    /// written: the Supervisor is the only process that reads desktop config,
+    /// and it hands the result down. Without this trigger the frame exists but
+    /// nothing sends it, and a green suite would claim live-reload works.
+    ///
+    /// All THREE fields go on every push (the caller just saved the whole
+    /// `Settings`, so all three are fresh). `None` would mean "leave it alone"
+    /// — used by a partial push, which the frame supports for an older
+    /// Supervisor; here there is no such caller, and sending all three is what
+    /// keeps the Workers' packaged state equal to the file that was just saved.
+    ///
+    /// Best-effort per session, the `refresh_live_models` discipline verbatim:
+    /// a dead / mid-teardown Worker is SKIPPED, never an error — the save
+    /// already succeeded and must not be reported as failed because one
+    /// session is going away. The `sessions` lock is collected BEFORE any send
+    /// so it is never held across an `await` / a pipe write.
+    ///
+    /// On a DELIVERED frame the registry's STORED env is mirrored too
+    /// (`mirror_stored_desktop_config`) — that copy is what each child's
+    /// packaged five are read from, so the push reaches subagents dispatched
+    /// after this point (ADR 0023's next-dispatch property). A failed send
+    /// mirrors NOTHING: the loop never applied it, and a child must not inherit
+    /// a policy its parent is not running (finding 12's rule).
+    ///
+    /// `providers` / `mcp_servers` are deliberately NOT pushed — the recorded
+    /// residual hole (both stay session-construction snapshots).
+    ///
+    /// Returns the number of Workers the frame was DELIVERED to.
+    pub async fn push_config_update(&self, settings: &crate::config::Settings) -> usize {
+        let Some(wm) = self.worker_manager.get().cloned() else {
+            // No `WorkerManager` wired (the pre-`setup_dirs` state, or a test
+            // harness): nothing is running, so there is nothing to push to.
+            return 0;
+        };
+        // The live MAIN session ids, collected BEFORE any send.
+        let ids: Vec<String> = {
+            let sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
+            sessions.keys().cloned().collect()
+        };
+        let mut delivered = 0;
+        for id in ids {
+            let Some(handle) = wm.handle_for(&id) else {
+                // A row with no live Worker (already reaped) — skip.
+                continue;
+            };
+            let policy = settings.file_policy.clone();
+            let web = settings.web.clone();
+            let overrides = settings.agent_overrides.clone();
+            if handle
+                .send_config_update(
+                    Some(policy.clone()),
+                    Some(web.clone()),
+                    Some(overrides.clone()),
+                )
+                .is_ok()
+            {
+                wm.mirror_stored_desktop_config(&id, Some(&policy), Some(&web), Some(&overrides));
+                delivered += 1;
+            }
+        }
+        delivered
+    }
 }
 
 /// Is `name` (a bare file name) a **Worker** crash log — in either of the

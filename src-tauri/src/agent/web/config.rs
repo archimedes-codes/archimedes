@@ -39,12 +39,20 @@ fn non_empty_env(key: &str) -> Option<String> {
 impl WebConfig {
     /// Read + merge. `None` config_dir → env only. Blank/whitespace settings
     /// values count as unset (the `load_settings` blank-normalization habit).
+    ///
+    /// (Fulcrum T3) The WORKER path never calls this — it goes through
+    /// [`WebConfig::from_web_settings`] with the `web` slice that rode the
+    /// `start` envelope / the `config-update` push, because the Worker opens no
+    /// desktop config. This entry is the SUPERVISOR-side disk read (and the
+    /// fixture this file's own tests drive); it has no worker-reachable caller.
     pub fn from_settings(dir: Option<&Path>) -> Self {
         let settings = dir.map(load_settings);
         Self::from_web_settings(settings.as_ref().map(|s| &s.web))
     }
 
-    /// Read + merge from an already-loaded `WebSettings` block.
+    /// Read + merge from an already-loaded `WebSettings` block — the entry the
+    /// Worker's per-turn `PermissionContext::refresh` uses (Fulcrum T3), fed by
+    /// `StartEnv.web` and overwritten by a `config-update` push.
     pub fn from_web_settings(web: Option<&WebSettings>) -> Self {
         let default_provider = web
             .map(|w| w.default_provider.trim())

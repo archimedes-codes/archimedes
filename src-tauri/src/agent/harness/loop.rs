@@ -84,6 +84,22 @@ pub enum ControlCmd {
     /// IDLE — a command sent mid-turn queues behind the turn, the same rule as
     /// `SetModel`. `instructions` are the user's extra summary instructions.
     Compact { instructions: Option<String> },
+    /// (Fulcrum T3) Replace the loop's PACKAGED desktop config — the
+    /// `config-update` push's landing point.
+    ///
+    /// Each field is an `Option` and `None` means "leave that one alone", so a
+    /// partial push cannot wipe a knob the Supervisor did not intend to change.
+    /// `file_policy` / `web` are applied to the permission cluster immediately
+    /// (so a mid-turn push is seen by the NEXT tool call's `to_tool_ctx`, and
+    /// certainly by the next turn's `refresh`); `agent_overrides` is the
+    /// dispatch-time layer and is simply stored for the next
+    /// `resolve_launch`.
+    ConfigUpdate {
+        file_policy: Option<crate::agent::policy::FilePolicy>,
+        web: Option<crate::config::WebSettings>,
+        agent_overrides:
+            Option<std::collections::HashMap<String, crate::config::AgentOverrideFields>>,
+    },
 }
 
 /// A compaction the loop must run before its next model call, and what to
@@ -359,25 +375,25 @@ impl PermissionContext {
         }
     }
 
-    /// Re-read the per-turn half from `settings.json` (ADR 0030 Deviation 4:
-    /// ONE read per turn, called at the top of every `handle_prompt`, so every
-    /// tool call in a turn agrees and a mid-turn hand-edit is observed at the
-    /// NEXT prompt). `permission_block` / `enabled_tools` / `render_requester`
-    /// are setter-driven and deliberately untouched here.
-    fn refresh(&mut self, config_dir: Option<&Path>) {
-        // (ADR 0030 Deviation 4) The policy and web config are
-        // re-read from `settings.json` ONCE per turn — the same in-process read
-        // `launch.rs` does per dispatch, so a user who flips a select in
-        // Settings affects an ALREADY-RUNNING session at its next prompt
-        // (no restart, no relaunch). ONE read per turn (not per tool call):
-        // every tool call in a turn must agree, or a half-asked batch would
-        // be a policy the user never chose. `config_dir: None` → the
-        // all-`Allow` default (no settings layer) + env-only web config.
-        let settings = config_dir.map(crate::config::load_settings);
-        self.file_policy = settings
-            .as_ref()
-            .map(|s| s.file_policy.clone())
-            .unwrap_or_default();
+    /// Re-apply the PACKAGED per-turn half (Fulcrum T3; was: the per-turn
+    /// `settings.json` read — ADR 0030 Deviation 4).
+    ///
+    /// Called at the top of every `handle_prompt`, so every tool call in a turn
+    /// agrees and a push that lands mid-turn is observed at the NEXT prompt —
+    /// the same agreement guarantee Deviation 4 bought with its "one read per
+    /// turn" rule, now without the read.
+    ///
+    /// `None` for either argument means "no packaged value" and produces the
+    /// all-`Allow` policy + the env-only web config — BYTE-IDENTICAL to what
+    /// today's `config_dir: None` case produced (ADR 0030 Deviation 2's
+    /// out-of-the-box posture). That identity is what makes the additive wire
+    /// safe: an old envelope decodes to `None`s and gates exactly as it does now.
+    fn refresh(
+        &mut self,
+        file_policy: Option<&crate::agent::policy::FilePolicy>,
+        web: Option<&crate::config::WebSettings>,
+    ) {
+        self.file_policy = file_policy.cloned().unwrap_or_default();
         // (T03) The rules IN FORCE for this turn: the frozen defaults FIRST,
         // the user rules SECOND — the CONCATENATION CONTRACT of
         // `policy::default_rules()` (an exact-tie appended `allow` must beat a
@@ -386,9 +402,8 @@ impl PermissionContext {
         // guard-membership set, not rules), so this is the user rules — but the
         // shape stays, because it is the contract and it is what protects the
         // order of whatever the defaults become. ONE concat per turn, next to
-        // the `file_policy` re-read, so the gate and the executors judge the
-        // SAME list for the whole turn and a mid-turn hand-edit lands at the
-        // NEXT prompt (Deviation 4).
+        // the `file_policy` re-apply, so the gate and the executors judge the
+        // SAME list for the whole turn.
         // UNCONDITIONAL — `self.rules` starts as `Vec::new()` and is
         // overwritten here on every prompt, so it is never the empty init
         // again once a prompt has been handled.
@@ -397,9 +412,7 @@ impl PermissionContext {
             rules.extend(self.file_policy.rules.iter().cloned());
             rules
         };
-        self.web = crate::agent::web::config::WebConfig::from_web_settings(
-            settings.as_ref().map(|s| &s.web),
-        );
+        self.web = crate::agent::web::config::WebConfig::from_web_settings(web);
     }
 
     /// The ONE `ToolCtx` construction (moved verbatim from `tools.rs`): the
@@ -453,10 +466,43 @@ pub struct AgentLoop {
     pub model: Model,
     pub provider: Box<dyn Provider>,
     pub catalog: ModelCatalog,
-    /// The settings dir (the `settings.json` home — ADR 0066:
-    /// `resolve_launch` reads the `agentOverrides` entry for the agent's name
-    /// from here at dispatch time; `None` = no override layer).
+    /// The settings dir. HISTORICALLY this was the `settings.json` home the
+    /// loop read on every turn and every dispatch; (Fulcrum T3) it reads
+    /// NOTHING there any more — the five desktop-config fields ride the
+    /// `StartEnv` and the `config-update` push.
+    ///
+    /// The field and the `new` parameter are RETAINED for signature stability
+    /// (two integration fixtures outside this task's owned file set call
+    /// `AgentLoop::new` positionally and pass it), and NOTHING reads it — hence
+    /// the `_`-prefixed accessor below. The follow-up that widens that set
+    /// should delete the parameter outright.
+    #[allow(dead_code)]
     config_dir: Option<PathBuf>,
+    // ── (Fulcrum T3) The PACKAGED desktop config ──
+    // The five fields `settings.json` used to supply. `Option` rather than a
+    // bare value because `None` is a real state with a pinned meaning: it is
+    // the old envelope / the no-settings-layer case, and it must behave
+    // byte-identically to today's `config_dir: None` (all-`Allow` policy,
+    // env-only web, no override layer, no custom headers) — NOT to an empty
+    // value that happens to look the same.
+    /// The file-access policy IN FORCE (was: the per-turn `settings.json` read
+    /// inside `PermissionContext::refresh`).
+    packaged_file_policy: Option<crate::agent::policy::FilePolicy>,
+    /// The web tools' configuration IN FORCE (same per-turn read).
+    packaged_web: Option<crate::config::WebSettings>,
+    /// The ADR 0066 override layer, POST-FOLD (ADR 0066) — read per subagent
+    /// dispatch by `resolve_launch`, never re-read from disk. `None` = a layer
+    /// that cannot speak; `Some(empty)` = a live layer that says nothing
+    /// (ADR 0067: both silent, one cause apart).
+    packaged_agent_overrides:
+        Option<std::collections::HashMap<String, crate::config::AgentOverrideFields>>,
+    /// The user's provider rows (issue #129's fifth field). A plain `Vec`
+    /// because `set_model` must treat "no rows" exactly like the old
+    /// `config_dir: None` case (no headers), and an empty vec says that
+    /// directly. A construction snapshot: a model switch re-resolves from here,
+    /// which is today's behaviour (`config-update` deliberately does not carry
+    /// it — the recorded residual hole).
+    packaged_providers: Vec<crate::config::ProviderConfig>,
     pub store: Arc<dyn Store>,
     /// The `RpcEvent`-shaped values (the SAME vocabulary an external
     /// session emits — the driver / tests consume it). UNBOUNDED (ADR
@@ -628,12 +674,24 @@ impl AgentLoop {
         let compactor = Compactor::new(catalog.compaction, model.context_window);
         let (control_tx, control_queue) = mpsc::channel(8);
         // The MCP manager (ADR 0018 — the `mcp` tool's machinery): the
-        // global `~/.pi/agent/mcp.json` + the desktop `settings.json`
-        // `mcpServers` (ADR 0019) + the project `<space_cwd>/.pi/mcp.json`.
+        // global `~/.pi/agent/mcp.json` + the desktop `mcpServers` layer
+        // (ADR 0019) + the project `<space_cwd>/.pi/mcp.json`.
+        //
+        // (Fulcrum T3) NO desktop layer is read HERE any more — `config_dir`
+        // is not consulted (the `settings.json` read that used to sit inside
+        // `McpManager::new` is gone). The desktop layer arrives through
+        // [`AgentLoop::set_desktop_config`] with the PACKAGED map, which is
+        // why the manager is rebuilt there: `AgentLoop::new`'s signature is
+        // frozen (two integration fixtures outside this task's file set call it
+        // positionally), so the envelope's values cannot be constructor
+        // arguments. `core.rs` calls the setter BEFORE `tokio::spawn(run())`,
+        // so no server is ever connected through the interim manager and the
+        // rebuild drops nothing (the same swap the loop's own tests perform on
+        // the `pub` field).
         let mcp = Arc::new(McpManager::new(
             dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
             space_cwd.clone(),
-            config_dir.as_deref(),
+            None,
         ));
         // (ADR 0030 / finding 6) The permission cluster — the frozen half
         // (boundary + guard list + default rules + `~`-expansion home, all from
@@ -659,6 +717,10 @@ impl AgentLoop {
             provider,
             catalog,
             config_dir,
+            packaged_file_policy: None,
+            packaged_web: None,
+            packaged_agent_overrides: None,
+            packaged_providers: Vec::new(),
             store,
             events,
             cancel,
@@ -709,6 +771,95 @@ impl AgentLoop {
         self.cost_acc = total;
     }
 
+    /// Attach the FIVE packaged desktop-config fields (Fulcrum T3). Called by
+    /// `worker/core.rs`'s `default_build_loop` immediately after `AgentLoop::new`
+    /// and BEFORE `tokio::spawn(loop.run())`, from the `StartEnv`.
+    ///
+    /// A setter, not five more `new` parameters: `AgentLoop::new`'s 22-argument
+    /// signature is called positionally by two integration fixtures outside this
+    /// task's owned file set, and the additive rule that governs the wire side
+    /// governs here too — the loop starts on the SAME inert values an old
+    /// envelope decodes to (no policy ⇒ all-`Allow`, no web ⇒ env-only, no
+    /// override layer, no provider rows) and this call overwrites them.
+    ///
+    /// The `mcp_servers` half REPLACES the manager, because the desktop MCP
+    /// layer is read once at manager construction. Nothing has connected yet at
+    /// this point in the start path, so the swap drops no live child; doing it
+    /// any later would (the `mcp` field is `pub` and the loop's own tests already
+    /// swap it, so the shape is established).
+    pub fn set_desktop_config(
+        &mut self,
+        file_policy: Option<crate::agent::policy::FilePolicy>,
+        web: Option<crate::config::WebSettings>,
+        agent_overrides: Option<
+            std::collections::HashMap<String, crate::config::AgentOverrideFields>,
+        >,
+        providers: Vec<crate::config::ProviderConfig>,
+        mcp_servers: std::collections::HashMap<String, serde_json::Value>,
+    ) {
+        self.packaged_file_policy = file_policy;
+        self.packaged_web = web;
+        self.packaged_agent_overrides = agent_overrides;
+        self.packaged_providers = providers;
+        // The empty map means "no desktop layer" — the same thing the old
+        // `config_dir: None` and the old "file with no `mcpServers`" both
+        // meant, so an old envelope leaves the manager exactly as it was.
+        if !mcp_servers.is_empty() {
+            self.mcp = Arc::new(McpManager::new(
+                dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
+                self.space_cwd.clone(),
+                Some(&mcp_servers),
+            ));
+        }
+    }
+
+    /// Apply a `config-update` push (Fulcrum T3) — the live-reload seam.
+    ///
+    /// `Some` OVERWRITES that field, `None` LEAVES IT ALONE: the frame's fields
+    /// are optional precisely so a Supervisor that only knows about one of the
+    /// three cannot wipe the other two.
+    ///
+    /// `file_policy` / `web` are re-applied to the permission cluster HERE
+    /// rather than waiting for the next `handle_prompt`'s `refresh`, so the
+    /// values are in force the moment the command is applied. Note where this
+    /// runs: `run()` polls the control queue only BETWEEN turns, so a push that
+    /// arrives mid-turn queues and lands before the next prompt — which is
+    /// exactly the moment the per-turn `settings.json` re-read it replaces could
+    /// first have been seen (ADR 0030 Deviation 4's bound). The live-reload
+    /// property therefore does not shift by one turn; gate and executor still
+    /// agree because both read the SAME `self.permissions` fields
+    /// (`to_tool_ctx` copies, it does not re-derive).
+    ///
+    /// `agent_overrides` is NOT permission state: `resolve_launch` reads it per
+    /// dispatch, which is ADR 0023's "next dispatch, no restart" property.
+    pub fn apply_config_update(
+        &mut self,
+        file_policy: Option<crate::agent::policy::FilePolicy>,
+        web: Option<crate::config::WebSettings>,
+        agent_overrides: Option<
+            std::collections::HashMap<String, crate::config::AgentOverrideFields>,
+        >,
+    ) {
+        if file_policy.is_some() {
+            self.packaged_file_policy = file_policy;
+        }
+        if web.is_some() {
+            self.packaged_web = web;
+        }
+        if agent_overrides.is_some() {
+            self.packaged_agent_overrides = agent_overrides;
+        }
+        // Re-apply the per-turn cluster from the (possibly updated) packaged
+        // state. UNCONDITIONAL on purpose: `refresh` is idempotent, so there is
+        // no cost to calling it when only `agent_overrides` changed, and a
+        // conditional here would be a second rule for which fields are
+        // permission state — one list, in one place, is the point.
+        self.permissions.refresh(
+            self.packaged_file_policy.as_ref(),
+            self.packaged_web.as_ref(),
+        );
+    }
+
     pub fn set_render_requester(
         &mut self,
         requester: Option<Arc<dyn crate::agent::web::RenderRequester>>,
@@ -740,16 +891,23 @@ impl AgentLoop {
     pub fn set_model(&mut self, model: Model) {
         let switched = ModelKey::from(&self.model) != ModelKey::from(&model);
         if switched {
-            // Re-resolve the provider's custom headers from `settings.json`
-            // via the loop's ALREADY-STORED config dir (issue #129, R1 — no
-            // new field, no factory hand-off; a header edit between spawn and
-            // this switch is picked up, never a stale spawn-time snapshot).
-            // `config_dir: None` → `None` → byte-identical to the old
-            // `build_provider(&model)`.
-            let headers = self
-                .config_dir
-                .as_deref()
-                .and_then(|dir| crate::agent::harness::provider::provider_headers_for(dir, &model));
+            // Re-resolve the provider's custom headers from the PACKAGED
+            // provider rows (issue #129, R1; Fulcrum T3 — this used to read
+            // `settings.json` through `self.config_dir` on every switch, which
+            // is one of the two header sites that made the fifth field
+            // load-bearing). An empty packaged vec → `None` → byte-identical
+            // to the old `config_dir: None` case, i.e. to `build_provider`.
+            //
+            // The snapshot direction is unchanged from today: a header EDIT
+            // between spawn and this switch used to be picked up by the read;
+            // now the switch re-resolves from the construction snapshot. That
+            // is the residual hole the status file records (headers are not on
+            // the `config-update` frame), and it matches MCP's already-frozen
+            // behaviour.
+            let headers = crate::agent::harness::provider::headers_for_providers(
+                &self.packaged_providers,
+                &model,
+            );
             self.provider = crate::agent::harness::provider::build_provider_with_headers(
                 &model,
                 headers.as_ref(),
@@ -945,6 +1103,19 @@ impl AgentLoop {
                         self.run_compaction(CompactionReason::Manual, false, instructions, &turn)
                             .await;
                     }
+                    // (Fulcrum T3) The live-reload push, applied when IDLE —
+                    // the same queue-behind-the-turn rule as `SetModel` and
+                    // `Compact`, and the reason the observable live-reload
+                    // property is unchanged: a push that arrives mid-turn
+                    // queues here and is in force for the NEXT prompt, exactly
+                    // as the per-turn `settings.json` re-read it replaces could
+                    // only ever be seen at the next prompt (ADR 0030 Deviation
+                    // 4's bound).
+                    Some(ControlCmd::ConfigUpdate {
+                        file_policy,
+                        web,
+                        agent_overrides,
+                    }) => self.apply_config_update(file_policy, web, agent_overrides),
                     None => break,
                 },
                 p = self.prompt_queue.recv() => match p {
@@ -964,14 +1135,19 @@ impl AgentLoop {
     /// blocks — when images are present; a text-only prompt keeps the
     /// `Text` shape).
     pub async fn handle_prompt(&mut self, prompt: &PromptTurn) {
-        // (ADR 0030 Deviation 4) The policy, the rule concat and the web
-        // config are re-read ONCE per turn — `PermissionContext::refresh`
-        // (the same in-process read `launch.rs` does per dispatch, so a user
-        // who flips a select in Settings affects an ALREADY-RUNNING session at
-        // its next prompt; ONE read per turn, so every tool call in a turn
-        // agrees). The setter-driven members (`permission_block` /
-        // `enabled_tools` / `render_requester`) are not touched by it.
-        self.permissions.refresh(self.config_dir.as_deref());
+        // (ADR 0030 Deviation 4, Fulcrum T3) The policy, the rule concat and
+        // the web config are re-APPLIED ONCE per turn from the PACKAGED state —
+        // `PermissionContext::refresh`, which used to be the per-turn
+        // `settings.json` read. The per-turn SHAPE is what preserves Deviation
+        // 4's guarantee (every tool call in a turn agrees, because the cluster
+        // is rewritten once, not per tool call); the values now ride the
+        // envelope and the `config-update` push instead of coming off disk. The
+        // setter-driven members (`permission_block` / `enabled_tools` /
+        // `render_requester`) are not touched by it.
+        self.permissions.refresh(
+            self.packaged_file_policy.as_ref(),
+            self.packaged_web.as_ref(),
+        );
         // A Stop is pending (the turn token is cancelled — `NativeHandle::cancel`
         // cancelled it): a queued prompt must not start a FRESH turn after the
         // user pressed Stop. Drain the queue + skip this prompt (the token is

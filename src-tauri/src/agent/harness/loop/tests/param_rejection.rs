@@ -261,12 +261,6 @@ async fn a_rejected_call_never_reaches_the_permission_gate() {
             ProviderEvent::Done(FinishReason::Stop),
         ]),
     ]);
-    let cfg = Tmp::new("cfg");
-    std::fs::write(
-        cfg.path().join("settings.json"),
-        policy_settings("ask", "ask", "ask"),
-    )
-    .unwrap();
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
     let sink_events = Arc::new(StdMutex::new(Vec::<(String, Value)>::new()));
     let (_space, mut loop_, _db) = build_loop_with_db(
@@ -276,7 +270,30 @@ async fn a_rejected_call_never_reaches_the_permission_gate() {
         watch::channel(0u64).0,
         RetryPolicy::new_with(5, Duration::from_millis(1)),
         vec![fake_model("m1")],
-        Some(cfg.path()),
+        None,
+    );
+    // (Fulcrum T3) The `ask` policy is PACKAGED, not written to a
+    // `settings.json` — the disk read this task removes means that file would
+    // now be ignored, so the fixture feeds the loop the way production does.
+    //
+    // Honest scope: this test's assertion (`no permission-request` + the
+    // rejection wording) is a NEGATIVE one, so it does NOT depend on the `ask`
+    // policy actually being in force — it stays green on the all-`Allow`
+    // default too. The packaging is here to keep the fixture's PREMISE true (a
+    // gate that really would have prompted, per the docblock above), not to
+    // make the assertion non-vacuous; the non-vacuity pins for "the loop reads
+    // no file" live in `launch/tests/mod.rs`
+    // (`resolve_launch_ignores_a_settings_file_holding_a_different_override`)
+    // and in `policy_gate`'s two push-path live-reload tests.
+    let packaged =
+        serde_json::from_str::<crate::config::Settings>(&policy_settings("ask", "ask", "ask"))
+            .expect("the fixture's settings document parses");
+    loop_.set_desktop_config(
+        Some(packaged.file_policy.clone()),
+        Some(packaged.web.clone()),
+        Some(packaged.agent_overrides.clone()),
+        packaged.providers.clone(),
+        packaged.mcp_servers.clone(),
     );
     // Swap the `TestSink` for a recording one (`loop_.sink` is `pub`) — the
     // `TestSink` cannot see `permission-request`.

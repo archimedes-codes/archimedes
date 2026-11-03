@@ -71,28 +71,35 @@ pub fn build_provider(m: &crate::agent::harness::catalog::Model) -> Box<dyn Prov
     }
 }
 
-/// Expand + validate ONE provider's custom headers from `settings.json`
-/// (R1, issue #129 — the completion-wire path). `config_dir` is the Worker's
-/// settings home (`env.config_dir`, ALREADY threaded into `AgentLoop`); the
-/// row is the one whose `id == model.provider`. A missing row / a row with no
-/// `headers` → `None` (no custom headers — the current behaviour byte-for-
-/// byte); an unreadable settings file degrades the same way (`config::
-/// load_settings` never fails — it returns the defaults + its own warning), so
-/// provider CONSTRUCTION never fails because headers were unreadable.
+/// Expand + validate ONE provider's custom headers from the PACKAGED provider
+/// rows (R1, issue #129 — the completion-wire path; Fulcrum T3 repoints it at
+/// the envelope). The rows are `StartEnv.providers` — the desktop's
+/// `providers` vec as the Supervisor packaged it — and the row is the one whose
+/// `id == model.provider`. No row / a row with no `headers` → `None` (no custom
+/// headers — the behaviour byte-for-byte), which is ALSO what an old envelope
+/// (`#[serde(default)]` → the empty vec) produces, so the additive path cannot
+/// change anyone's headers.
+///
+/// This replaced `provider_headers_for(config_dir, model)`, which read
+/// `settings.json` through the loop's `config_dir`. Removing that read is the
+/// point: BOTH header sites (`worker/core.rs`'s loop construction and
+/// `AgentLoop::set_model`) are worker-reachable, so packaging four fields and
+/// leaving this one would still leave the Worker opening `settings.json`.
 ///
 /// The expansion engine is the SAME `provider_auth::headers::expand_map` the
-/// discovery spine (T2a) calls — a header value is expanded once and both
-/// wires see the identical result. The insecure-HTTP gate is NOT re-checked
-/// here: it belongs to the discovery spine (T2a's `validate_base_url`), and
-/// this lookup is synchronous by construction (`AgentLoop::set_model` is a
-/// sync `&mut self` method).
-pub(crate) fn provider_headers_for(
-    config_dir: &std::path::Path,
+/// discovery spine (T2a) calls — a header value is expanded once and both wires
+/// see the identical result — and it still runs HERE, against the Worker's own
+/// process env (the env the Worker inherited from the Supervisor at spawn, so
+/// the same `$VAR` resolves to the same value as it did when the lookup read
+/// the file in-process). The insecure-HTTP gate is NOT re-checked here: it
+/// belongs to the discovery spine (T2a's `validate_base_url`), and this lookup
+/// is synchronous by construction (`AgentLoop::set_model` is a sync `&mut self`
+/// method).
+pub(crate) fn headers_for_providers(
+    providers: &[crate::config::ProviderConfig],
     model: &crate::agent::harness::catalog::Model,
 ) -> Option<std::collections::BTreeMap<String, String>> {
-    let settings = crate::config::load_settings(config_dir);
-    settings
-        .providers
+    providers
         .iter()
         .find(|p| p.id == model.provider)
         .and_then(|p| p.headers.as_ref())
@@ -101,7 +108,7 @@ pub(crate) fn provider_headers_for(
 
 /// Build the `Provider` for a `Model` WITH the provider's custom headers
 /// (R1, issue #129): the production construction entry —
-/// `build_provider_with_headers(&model, provider_headers_for(dir, model).as_ref())`.
+/// `build_provider_with_headers(&model, headers_for_providers(&rows, model).as_ref())`.
 /// `custom_headers` is the EXPANDED + VALIDATED map; it rides every completion
 /// request through the ONE seam, [`transport::build_client`]'s
 /// `default_headers`. `None` is byte-identical to [`build_provider`] (which

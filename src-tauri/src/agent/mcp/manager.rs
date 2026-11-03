@@ -29,7 +29,6 @@ use super::http::{HttpClient, TokenProvider};
 use super::oauth;
 use super::stdio::StdioClient;
 use super::types::{AuthSpec, McpState, ServerDef, ToolCallResult, ToolInfo};
-use crate::config::load_settings;
 
 /// A connected MCP server (a stdio or HTTP client — the unified interface
 /// the manager routes `list_tools` / `call_tool` through).
@@ -104,15 +103,25 @@ pub struct McpManager {
 impl McpManager {
     /// Create a manager (load the servers from the config — Task 1's
     /// `load_servers`: global `~/.pi/agent/mcp.json` + the desktop
-    /// `settings.json` `mcpServers` (ADR 0019 — `config_dir: None` =
-    /// absent) + project `<cwd>/.pi/mcp.json`).
-    pub fn new(home_dir: PathBuf, project_cwd: PathBuf, config_dir: Option<&Path>) -> Self {
-        // (ADR 0019) The desktop layer: the `settings.json` `mcpServers`
-        // (best-effort — a missing / corrupt file is the `load_settings`
-        // defaults = an empty map). Merged at global precedence (project
-        // > desktop > global).
-        let desktop = config_dir.map(|d| load_settings(d).mcp_servers);
-        let servers = load_servers(&home_dir, &project_cwd, desktop.as_ref())
+    /// `mcpServers` layer (ADR 0019) + project `<cwd>/.pi/mcp.json`).
+    ///
+    /// (Fulcrum T3) The third parameter is the PACKAGED desktop map, not a
+    /// settings dir: `None` = no desktop layer, which is what `config_dir:
+    /// None` meant before, and what a settings file with no `mcpServers` key
+    /// also produced. The Worker now never opens `settings.json` to build its
+    /// MCP set — the map rode the `start` envelope.
+    ///
+    /// The `~/.pi/agent/mcp.json` and project `<cwd>/.pi/mcp.json` layers are
+    /// UNTOUCHED and still read from disk: those are the user's pi-agent files,
+    /// not desktop config, and the status file records them as out of scope.
+    pub fn new(
+        home_dir: PathBuf,
+        project_cwd: PathBuf,
+        desktop_mcp_servers: Option<&std::collections::HashMap<String, Value>>,
+    ) -> Self {
+        // (ADR 0019) The desktop layer, verbatim from the envelope. Merged at
+        // global precedence (project > desktop > global).
+        let servers = load_servers(&home_dir, &project_cwd, desktop_mcp_servers)
             .into_iter()
             .map(|(name, def)| {
                 (

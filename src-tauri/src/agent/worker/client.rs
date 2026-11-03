@@ -655,6 +655,36 @@ impl WorkerHandle {
         })
     }
 
+    /// Push the three live-reload desktop-config fields (Fulcrum T3) — the
+    /// `config-update` frame, the twin of [`Self::send_config`] for the
+    /// APP-level settings rather than the per-session composer controls.
+    ///
+    /// `None` for any field means "leave that one alone", so a caller that only
+    /// knows about one of the three cannot wipe the other two. That is also why
+    /// this takes the three values instead of a whole `Settings`: the frame is
+    /// additive on purpose, and an older Worker that never heard of a field
+    /// ignores it rather than decoding garbage.
+    ///
+    /// The return is "the frame was written to stdin", NOT "the loop applied
+    /// it" — the same contract [`Self::send_compact`] has. The Worker applies
+    /// it when its loop is IDLE, so the observable bound is the next prompt
+    /// (ADR 0030 Deviation 4's bound, which the per-turn `settings.json` re-read
+    /// this replaces could never beat either).
+    pub fn send_config_update(
+        &self,
+        file_policy: Option<crate::agent::policy::FilePolicy>,
+        web: Option<crate::config::WebSettings>,
+        agent_overrides: Option<
+            std::collections::HashMap<String, crate::config::AgentOverrideFields>,
+        >,
+    ) -> Result<(), WorkerError> {
+        self.send_inbound_frame(Inbound::ConfigUpdate {
+            file_policy,
+            web,
+            agent_overrides,
+        })
+    }
+
     /// A turn abort (the current-turn token cancel — the session stays
     /// alive).
     pub fn send_abort(&self) -> Result<(), WorkerError> {

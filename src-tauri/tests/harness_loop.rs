@@ -8,7 +8,6 @@
 //! provider transcript to the `native_messages` table.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -122,10 +121,6 @@ struct Harness {
     sink_rx: mpsc::UnboundedReceiver<(String, Value)>,
     pending: PendingPermissions,
     store: SessionStore,
-    /// The loop's settings dir (kept alive so the file the loop re-reads
-    /// every turn stays on disk for the whole test — `None` = the loop has
-    /// no `config_dir` at all).
-    _config_dir: Option<TempDir>,
     /// The `Db` dir (#96 task 06). LAST-BUT-ONE on purpose: struct fields drop
     /// in DECLARATION order, so this goes after `store` — which is what holds
     /// the `Arc<Db>` whose SQLite file lives inside it.
@@ -134,15 +129,6 @@ struct Harness {
     /// reason. The loop task can outlive it on a FAILING assertion — recorded
     /// limit, see the plan's CRUX section (task 03's identical limit).
     _cwd: archimedes_lib::test_support::ScratchDir,
-}
-
-/// A temp dir removed on drop (the settings fixture must outlive the loop's
-/// construction, not just its `AgentLoop::new`).
-struct TempDir(PathBuf);
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 /// Build the loop (a mock `Provider` + a temp `Db`) and spawn its
@@ -157,10 +143,18 @@ async fn build_harness(
     build_harness_with_settings(provider, retry, compaction, model, None).await
 }
 
-/// The same, with a `settings.json` written into a fresh temp `config_dir`
-/// (the file-access policy a test needs to pin — the gate decides from the
-/// SETTINGS now, so a test about prompting must say which policy is in
-/// force). `None` = no `config_dir` at all.
+/// The same, with the file-access POLICY the test needs to pin — the gate
+/// decides from the SETTINGS now, so a test about prompting must say which
+/// policy is in force. `None` = no packaged config at all.
+///
+/// (Fulcrum T3) The JSON is PARSED and PACKAGED through
+/// `AgentLoop::set_desktop_config` instead of being written into a temp
+/// `config_dir`. The loop reads no `settings.json` any more, so the old
+/// fixture did not merely become redundant — it became INERT, and an inert
+/// policy means the all-`Allow` default: `tool_call_gates_executes_loops_and_settles`
+/// then never emits the `permission-request` its waiter blocks on, and the
+/// test HANGS instead of failing. Parsing the same document keeps the fixture's
+/// vocabulary the real wire shape (a renamed `filePolicy` key reddens here).
 async fn build_harness_with_settings(
     provider: MockProvider,
     retry: RetryPolicy,
@@ -168,14 +162,10 @@ async fn build_harness_with_settings(
     model: Model,
     settings: Option<&str>,
 ) -> (Harness, tokio::task::JoinHandle<()>) {
-    let config_dir = settings.map(|_| {
-        let d = std::env::temp_dir().join(format!("harness-loop-cfg-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    let parsed = settings.map(|json| {
+        serde_json::from_str::<archimedes_lib::config::Settings>(json)
+            .expect("the fixture's settings document parses")
     });
-    if let (Some(dir), Some(json)) = (config_dir.as_ref(), settings) {
-        std::fs::write(dir.join("settings.json"), json).unwrap();
-    }
     let dir = archimedes_lib::test_support::ScratchDir::in_env_temp("harness-loop-", "db");
     // The loop's `space_cwd` — its own guard, same prefix, different tag, so
     // one census glob still covers both dirs.
@@ -234,9 +224,25 @@ async fn build_harness_with_settings(
         None, // subagent (not exercised)
         SudoDeps::default(),
         retry,
-        config_dir.clone(),
+        // (Fulcrum T3) No settings dir: the loop reads no `settings.json`, so
+        // the policy arrives packaged below (the same seam the Worker's
+        // `default_build_loop` uses).
+        None,
         "t".to_string(),
     );
+    // Only package when the test asked for a policy: `None` must leave the loop
+    // on its inert packaged state (the layer that cannot speak), so the two
+    // states stay distinguishable.
+    let mut loop_ = loop_;
+    if let Some(s) = parsed.as_ref() {
+        loop_.set_desktop_config(
+            Some(s.file_policy.clone()),
+            Some(s.web.clone()),
+            Some(s.agent_overrides.clone()),
+            s.providers.clone(),
+            s.mcp_servers.clone(),
+        );
+    }
     let task = tokio::spawn(loop_.run());
     (
         Harness {
@@ -245,7 +251,6 @@ async fn build_harness_with_settings(
             sink_rx,
             pending,
             store,
-            _config_dir: config_dir.map(TempDir),
             _dir: dir,
             _cwd: cwd,
         },

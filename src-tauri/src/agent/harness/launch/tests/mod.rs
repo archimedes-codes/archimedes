@@ -1,27 +1,36 @@
-use std::path::PathBuf;
-
 use super::*;
 use crate::agent::harness::catalog::{CompactionConfig, Model};
 
 /// The three inputs `resolve_launch` needs (the former `AgentLoop`
-/// fields the method read — the catalog, the settings dir, and the
+/// fields the method read — the catalog, the PACKAGED override layer, and the
 /// space cwd), built the same way the old `build_loop` /
 /// `build_loop_with_db` helpers built them (a fresh temp-dir space
 /// cwd, a `ModelCatalog` over the given `models`).
 struct Ctx {
     catalog: ModelCatalog,
-    config_dir: Option<PathBuf>,
+    /// (Fulcrum T3) The PACKAGED ADR 0066 layer — what `resolve_launch`
+    /// consumes now that it reads no file.
+    ///
+    /// The fixtures below still EXPRESS themselves as a `settings.json` body,
+    /// and `build_ctx` folds that body through the REAL
+    /// `crate::config::load_settings` to produce this map. That is not
+    /// nostalgia for the old fixture: the fold (`subagentModels` →
+    /// `agent_overrides`, legacy map cleared) is what the SUPERVISOR runs
+    /// before it packages the map, so a fixture that skipped it would hand
+    /// `resolve_launch` a map production never sends and the legacy-spelling
+    /// tests would silently test nothing (ADR 0066's whole upgrade property is
+    /// that the legacy spelling still reaches a dispatch).
+    ///
+    /// `None` = no layer carried at all (the old `config_dir: None`);
+    /// `Some(empty)` = a live layer that says nothing. Same silence, different
+    /// CAUSE — see `packaged_settings_keeps_no_layer_and_an_empty_map_apart`.
+    overrides: Option<std::collections::HashMap<String, crate::config::AgentOverrideFields>>,
     /// The scratch Space this fixture MINTED, held by its OWNER rather
     /// than as a `PathBuf` copy of one (#96): holding the fixture and
     /// holding its ownership are then the same act, so a green run cannot
     /// leave the dir behind. Declared LAST so it drops LAST among the
     /// fields; every read site (`&ctx.space_cwd`, `ctx.space_cwd.join(..)`)
     /// still compiles through `Deref<Target = Path>`.
-    ///
-    /// `config_dir` above stays an `Option<PathBuf>` on purpose: it is a
-    /// copy of a path its CALLER owns (the settings scratch dir), and a
-    /// second owner would `remove_dir_all` a dir someone else is still
-    /// asserting against.
     space_cwd: crate::test_support::ScratchDir,
 }
 
@@ -69,7 +78,10 @@ impl Drop for RestoreHome {
 }
 
 /// Build the three inputs (the catalog gets the full `models` vec;
-/// `config_dir` is the settings dir holding `settings.json`).
+/// `config_dir` is a scratch dir holding the `settings.json` whose
+/// `agentOverrides` this fixture wants — FOLDED through the real
+/// `load_settings` into `Ctx::overrides`, which is what `resolve_launch`
+/// now reads; `None` = no packaged layer at all).
 fn build_ctx(models: Vec<Model>, config_dir: Option<&std::path::Path>) -> Ctx {
     Ctx {
         catalog: ModelCatalog {
@@ -77,7 +89,12 @@ fn build_ctx(models: Vec<Model>, config_dir: Option<&std::path::Path>) -> Ctx {
             default_model: None,
             compaction: CompactionConfig::default(),
         },
-        config_dir: config_dir.map(|p| p.to_path_buf()),
+        // (Fulcrum T3) THE FOLD, on the fixture side: `load_settings` is what
+        // the Supervisor calls before it packages the map, and it retires
+        // `subagentModels` into `agent_overrides` (ADR 0066). Reading through
+        // it here keeps the legacy-spelling tests honest — a hand-built map
+        // would let `subagentModels` fixtures pass while the fold was broken.
+        overrides: config_dir.map(|dir| crate::config::load_settings(dir).agent_overrides),
         // The constructor owns the name AND the create (#96) — the former
         // bare `join(format!(…-{uuid}))` mint + `create_dir_all` pair had
         // no cleanup anywhere in this file, so every green run leaked one
@@ -108,7 +125,7 @@ fn resolve_launch_no_agent_name_returns_the_launch_verbatim() {
             &launch,
             "",
             &ctx.catalog,
-            ctx.config_dir.as_deref(),
+            ctx.overrides.as_ref(),
             &ctx.space_cwd
         ),
         (launch, AgentNameResolution::NoName),
@@ -153,7 +170,7 @@ fn resolve_launch_unknown_agent_name_returns_the_launch_verbatim() {
             &launch,
             "nope",
             &ctx.catalog,
-            ctx.config_dir.as_deref(),
+            ctx.overrides.as_ref(),
             &ctx.space_cwd
         ),
         (launch.clone(), AgentNameResolution::Unmatched),
@@ -166,7 +183,7 @@ fn resolve_launch_unknown_agent_name_returns_the_launch_verbatim() {
             &launch,
             "nope",
             &ctx.catalog,
-            ctx.config_dir.as_deref(),
+            ctx.overrides.as_ref(),
             &ctx.space_cwd
         )
         .0,
@@ -200,7 +217,7 @@ fn resolve_launch_case_insensitive_match() {
         &launch,
         "Scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -240,7 +257,7 @@ fn resolve_launch_frontmatter_fills_gaps() {
         &launch,
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(resolved.system_prompt, Some("You are a scout.".to_string()));
@@ -281,7 +298,7 @@ fn resolve_launch_explicit_params_win_over_frontmatter() {
         &launch,
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     // The explicit params win (the file's `model: fake/m2` is stale
@@ -322,7 +339,7 @@ fn resolve_launch_stale_frontmatter_model_degrades_to_explicit_param() {
         &launch,
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -364,7 +381,7 @@ fn resolve_launch_stale_frontmatter_model_degrades_to_none() {
         &launch,
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -406,7 +423,7 @@ fn resolve_launch_stale_model_with_level_suffix_degrades() {
         &launch,
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -445,7 +462,7 @@ fn resolve_launch_unknown_tool_names_are_dropped() {
         &launch,
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -483,7 +500,7 @@ fn resolve_launch_tools_emptied_out_degrades_to_none() {
         &launch,
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -535,7 +552,7 @@ fn resolve_launch_guarded_tool_names_in_frontmatter_degrade_to_none() {
         &launch,
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -577,7 +594,7 @@ fn resolve_launch_empty_body_means_no_system_prompt() {
         &launch,
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -628,7 +645,7 @@ fn resolve_launch_settings_override_beats_frontmatter_model() {
         &LaunchConfig::default(),
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -678,7 +695,7 @@ fn resolve_launch_explicit_param_beats_settings_override() {
         &launch,
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -726,7 +743,7 @@ fn resolve_launch_stale_override_degrades_to_frontmatter() {
         &LaunchConfig::default(),
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -774,7 +791,7 @@ fn resolve_launch_case_insensitive_override_key() {
         &LaunchConfig::default(),
         "Scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -820,7 +837,7 @@ fn resolve_launch_no_override_keeps_the_frontmatter() {
         &LaunchConfig::default(),
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -860,7 +877,7 @@ fn resolve_launch_frontmatter_thinking_migrates_to_its_own_field() {
         &LaunchConfig::default(),
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -906,25 +923,50 @@ struct World {
     _lock: std::sync::MutexGuard<'static, ()>,
     ctx: Ctx,
     /// The isolated `$HOME` this `World` pointed the process at, and the
-    /// settings dir `ctx.config_dir` borrows. Fields drop in DECLARATION
-    /// order, so these two — declared LAST — drop AFTER `_restore` and
-    /// `_lock`: `$HOME` is restored (while the lock is still held) first,
+    /// settings dir `settings_body` was written into. Fields drop in
+    /// DECLARATION order, so these two — declared LAST — drop AFTER `_restore`
+    /// and `_lock`: `$HOME` is restored (while the lock is still held) first,
     /// and only then is the dir it named removed. Declaring them before
     /// `_restore` would remove the dir while `$HOME` still pointed at it,
     /// and the lib reads env WITHOUT holding `ENV_LOCK` (see its docs), so
     /// another test could observe that hole.
+    ///
+    /// (Fulcrum T3) The settings dir is STILL minted and STILL written, even
+    /// though `resolve_launch` no longer reads it: it is the fixture's
+    /// vocabulary (every case below is written as a settings document), it is
+    /// what `build_ctx` folds into `Ctx::overrides`, and
+    /// `resolve_launch_ignores_a_settings_file_holding_a_different_override`
+    /// needs a real file to prove the read is gone.
     _home: crate::test_support::ScratchDir,
     _settings: crate::test_support::ScratchDir,
+    /// (Fulcrum T3) Where the settings document was written, kept readable so
+    /// a test can assert the FILE EXISTS (the non-vacuity precondition of the
+    /// "the file is ignored" pin) — the dir itself is owned by `_settings`.
+    settings_dir: std::path::PathBuf,
 }
 
 /// Write a `settings.json` holding `agentOverrides` for `scout` (ADR 0066)
 /// and an isolated HOME holding the `scout.md` definition, and return the
 /// `Ctx` over them. Keeps the ADR 0066 tests below from repeating the
 /// `env_lock` / `RestoreHome` / scratch-dir dance.
+///
+/// (Fulcrum T3) The settings document is FOLDED into the packaged map by
+/// `build_ctx`; `resolve_launch` reads the map, never the file.
 fn write_override_world(settings_body: &str, definition: &str) -> World {
+    write_override_world_with_file(definition, Some(settings_body))
+}
+
+/// The same fixture with the DEFINITION first and the settings document as an
+/// `Option` — the shape the Fulcrum T3 pins need, where "no settings file at
+/// all" is itself one of the cases under test (the `None` layer, i.e. the old
+/// `config_dir: None` identity). `settings_body: None` mints NO settings dir
+/// and leaves `Ctx::overrides` at `None`.
+fn write_override_world_with_file(definition: &str, settings_body: Option<&str>) -> World {
     let config_dir =
         crate::test_support::ScratchDir::in_env_temp("harness-resolve-launch-settings-", "world");
-    std::fs::write(config_dir.join("settings.json"), settings_body).unwrap();
+    if let Some(body) = settings_body {
+        std::fs::write(config_dir.join("settings.json"), body).unwrap();
+    }
     let home =
         crate::test_support::ScratchDir::in_env_temp("harness-resolve-launch-home-", "world");
     std::fs::create_dir_all(home.join(".agents/agents")).unwrap();
@@ -940,7 +982,11 @@ fn write_override_world(settings_body: &str, definition: &str) -> World {
     }
     let ctx = build_ctx(
         vec![fake_model("m1"), fake_model("m2"), levelled_model("m3")],
-        Some(&config_dir),
+        // A dir with NO `settings.json` folds to an EMPTY map, which is
+        // `Some(empty)` — a live layer that says nothing. When this fixture is
+        // asked for no file at all, pass `None` so `overrides` is `None` (the
+        // layer that cannot speak) and the two causes stay distinguishable.
+        settings_body.map(|_| config_dir.path()),
     );
     // Both dirs MOVE INTO the `World`: a helper-local guard would
     // `remove_dir_all` the fixture at the end of this helper, while the
@@ -950,6 +996,7 @@ fn write_override_world(settings_body: &str, definition: &str) -> World {
         _lock: lock,
         ctx,
         _home: home,
+        settings_dir: config_dir.to_path_buf(),
         _settings: config_dir,
     }
 }
@@ -978,7 +1025,7 @@ fn resolve_launch_the_override_beats_the_frontmatter_for_every_field() {
         &LaunchConfig::default(),
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -1013,7 +1060,7 @@ fn resolve_launch_an_override_pinning_only_model_leaves_the_others_with_the_file
         &LaunchConfig::default(),
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(resolved.model, Some("fake/m3".to_string()));
@@ -1053,7 +1100,7 @@ fn resolve_launch_the_explicit_param_beats_the_override_for_every_field() {
         &launch,
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(resolved.model, Some("fake/m1".to_string()));
@@ -1095,7 +1142,7 @@ fn resolve_launch_an_empty_or_filtered_empty_override_tools_list_falls_through()
             &LaunchConfig::default(),
             "scout",
             &ctx.catalog,
-            ctx.config_dir.as_deref(),
+            ctx.overrides.as_ref(),
             &ctx.space_cwd,
         );
         assert_eq!(
@@ -1119,7 +1166,7 @@ fn resolve_launch_a_narrowing_override_wins_and_the_guarded_names_are_stripped()
         &LaunchConfig::default(),
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -1145,7 +1192,7 @@ fn resolve_launch_an_override_thinking_the_model_lacks_is_demoted() {
         &LaunchConfig::default(),
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(resolved.model, Some("fake/m3".to_string()));
@@ -1170,7 +1217,7 @@ fn resolve_launch_a_capital_override_key_selects_the_whole_entry() {
         &LaunchConfig::default(),
         "Scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -1209,7 +1256,7 @@ fn resolve_launch_no_settings_and_an_empty_map_are_both_a_silent_layer() {
         &LaunchConfig::default(),
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(resolved.model, Some("fake/m1".to_string()));
@@ -1225,7 +1272,7 @@ fn resolve_launch_no_settings_and_an_empty_map_are_both_a_silent_layer() {
         &LaunchConfig::default(),
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -1250,7 +1297,7 @@ fn resolve_launch_a_stale_override_model_degrades_and_the_other_fields_survive()
         &LaunchConfig::default(),
         "scout",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -1803,7 +1850,7 @@ fn resolve_launch_with_an_empty_agent_name_short_circuits() {
         &launch,
         "",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(resolved, launch);
@@ -1855,7 +1902,7 @@ fn resolve_launch_a_blank_name_is_no_name_and_a_padded_name_is_a_match() {
         &launch,
         "   ",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(resolved, launch, "a blank name is config-less");
@@ -1880,7 +1927,7 @@ fn resolve_launch_a_blank_name_is_no_name_and_a_padded_name_is_a_match() {
         &bare,
         "  scout  ",
         &ctx.catalog,
-        ctx.config_dir.as_deref(),
+        ctx.overrides.as_ref(),
         &ctx.space_cwd,
     );
     assert_eq!(
@@ -1911,12 +1958,195 @@ fn the_ctx_removes_its_space_cwd_when_it_is_dropped() {
     );
 }
 
+// ── (Fulcrum T3) The PACKAGED override layer ───────────────────────────
+//
+// `resolve_launch` no longer opens `settings.json`: the ADR 0066 map arrives
+// packaged on the parameter (the Worker process must not read desktop config —
+// the prerequisite for the `fulcrum-core` crate split). These three pins hold
+// the shape of that change: the packaged map DRIVES the resolve, a file on disk
+// no longer does, and the "layer that cannot speak" identity survives one level
+// up at the seam.
+
+/// A `scout.md` with a frontmatter model + tools, for the cases below.
+const SCOUT_FRONTMATTER: &str =
+    "---\nname: scout\ndescription: Fast recon.\nmodel: fake/m1\ntools: [bash]\n---\n";
+
+// (Fulcrum T3) The three states of the PACKAGED parameter, ONE TEST EACH:
+//
+// * `None` — no layer carried at all (an old envelope, or a fixture with no
+//   settings) → "a layer that cannot speak" → the frontmatter applies;
+// * `Some(empty)` — a live settings layer that says nothing → the SAME
+//   frontmatter outcome, reached through a DIFFERENT cause (the cause itself
+//   is pinned by [`packaged_settings_keeps_no_layer_and_an_empty_map_apart`]);
+// * `Some(entry)` — the override WINS over the frontmatter.
+//
+// The first two are output-identical BY DESIGN (`override_layer` collapses
+// "no file" and "no entry" into `global: None`) — what must not collapse is
+// the parameter's own `Option`, because after the file read is gone that is
+// the only thing left that tells the two causes apart.
+//
+// THREE tests, not one test with three fixtures, because a `World` holds the
+// `ENV_LOCK` guard: `write_override_world_with_file` locks it and the `World`
+// releases it only at drop, so a second fixture built while the first is still
+// bound re-locks a NON-REENTRANT `std::sync::Mutex` and deadlocks the thread
+// (`let world = …` shadowing does not drop the previous binding — the old one
+// lives to the end of the block). It hangs a `--test-threads=1` run at the
+// second fixture and, since every sibling that mutates `HOME` waits on the same
+// lock, takes the whole suite with it. One `World` per `#[test]` is the fix
+// that cannot regress: the guard is released when the test function returns,
+// between tests rather than inside one.
+
+/// State 1 of the packaged parameter: `None` — the layer cannot speak.
+#[test]
+fn resolve_launch_with_no_packaged_layer_at_all_uses_the_frontmatter() {
+    let world = write_override_world_with_file(SCOUT_FRONTMATTER, None);
+    let (resolved, resolution) = resolve_launch(
+        &LaunchConfig::default(),
+        "scout",
+        &world.catalog,
+        None,
+        &world.space_cwd,
+    );
+    assert_eq!(resolution, AgentNameResolution::Matched);
+    assert_eq!(
+        resolved.model,
+        Some("fake/m1".to_string()),
+        "no packaged layer → the frontmatter model"
+    );
+}
+
+/// State 2 of the packaged parameter: `Some(empty)` — a live layer that says
+/// nothing. Same outcome as state 1, reached through a different cause.
+#[test]
+fn resolve_launch_with_an_empty_packaged_map_uses_the_frontmatter() {
+    let world = write_override_world_with_file(SCOUT_FRONTMATTER, None);
+    let (resolved, resolution) = resolve_launch(
+        &LaunchConfig::default(),
+        "scout",
+        &world.catalog,
+        Some(&std::collections::HashMap::new()),
+        &world.space_cwd,
+    );
+    assert_eq!(
+        resolution,
+        AgentNameResolution::Matched,
+        "an empty layer is still a MATCHED name — the silence is about the \
+         override, not about the definition"
+    );
+    assert_eq!(
+        resolved.model,
+        Some("fake/m1".to_string()),
+        "an empty packaged map is no override — the frontmatter applies"
+    );
+}
+
+/// State 3 of the packaged parameter: `Some(entry)` — the override wins, per
+/// field (the frontmatter pins `fake/m1` + `bash`, the entry pins `fake/m3` +
+/// `read`, and every field of the entry is what lands).
+#[test]
+fn resolve_launch_with_a_packaged_entry_overrides_the_frontmatter_per_field() {
+    let world = write_override_world_with_file(SCOUT_FRONTMATTER, None);
+    let packaged = std::collections::HashMap::from([(
+        "scout".to_string(),
+        AgentOverrideFields {
+            model: Some("fake/m3".to_string()),
+            thinking: None,
+            tools: Some(vec!["read".to_string()]),
+        },
+    )]);
+    let (resolved, _) = resolve_launch(
+        &LaunchConfig::default(),
+        "scout",
+        &world.catalog,
+        Some(&packaged),
+        &world.space_cwd,
+    );
+    assert_eq!(resolved.model, Some("fake/m3".to_string()));
+    assert_eq!(resolved.tools, Some(vec!["read".to_string()]));
+}
+
+/// (Fulcrum T3) THE non-vacuity pin for "the Worker no longer reads the file":
+/// a `settings.json` that DISAGREES with the packaged map is IGNORED.
+///
+/// Every other test in this file would stay green if the disk read were
+/// re-added, because each writes a file and passes a packaged map that say the
+/// same thing (or nothing). This one says OPPOSITE things: the file pins
+/// `fake/m2`, the packaged map pins `fake/m3`, and the packaged value must win.
+/// Re-insert `config_dir.map(crate::config::load_settings)` into
+/// `resolve_launch` and this test reddens with `fake/m2` — the failure mode
+/// this task's deliverable otherwise could not detect.
+#[test]
+fn resolve_launch_ignores_a_settings_file_holding_a_different_override() {
+    let world = write_override_world_with_file(
+        SCOUT_FRONTMATTER,
+        Some(r#"{ "agentOverrides": { "scout": { "model": "fake/m2" } } }"#),
+    );
+    assert!(
+        world.settings_dir.join("settings.json").is_file(),
+        "the disagreeing file really exists — otherwise this pin proves nothing"
+    );
+    let packaged = std::collections::HashMap::from([(
+        "scout".to_string(),
+        AgentOverrideFields {
+            model: Some("fake/m3".to_string()),
+            thinking: None,
+            tools: None,
+        },
+    )]);
+    let (resolved, _) = resolve_launch(
+        &LaunchConfig::default(),
+        "scout",
+        &world.catalog,
+        Some(&packaged),
+        &world.space_cwd,
+    );
+    assert_eq!(
+        resolved.model,
+        Some("fake/m3".to_string()),
+        "the PACKAGED map is the authority; a `settings.json` on disk is dead \
+         weight to `resolve_launch` now (the file says fake/m2 — reading it is \
+         the disk dependency this task removes)"
+    );
+}
+
+/// (Fulcrum T3) The seam identity: `None` and `Some(empty)` both resolve to a
+/// silent `OverrideLayer`, but the SYNTHETIC `Settings` the packaged map is
+/// wrapped into keeps them distinguishable — `None` produces NO settings value,
+/// `Some(empty)` produces one whose map is empty. That is the one place the ADR
+/// 0066 "no file vs no entry" cause still exists once the file is gone, so it
+/// is pinned HERE rather than left to the reader of a one-line `map`.
+#[test]
+fn packaged_settings_keeps_no_layer_and_an_empty_map_apart() {
+    assert!(
+        packaged_settings(None).is_none(),
+        "`None` = no settings value at all = the layer cannot speak"
+    );
+    let empty = packaged_settings(Some(&std::collections::HashMap::new()));
+    assert!(
+        empty.is_some(),
+        "`Some(empty)` = a live layer that happens to say nothing"
+    );
+    let empty = empty.expect("asserted Some above");
+    assert!(
+        empty.agent_overrides.is_empty(),
+        "and its map is the packaged one, verbatim"
+    );
+    // The bridge feeds the UNCHANGED `override_layer`, so both still resolve to
+    // a silent layer — the identity
+    // `override_layer_keeps_no_file_and_no_entry_and_an_entry_apart` pins at
+    // its own level, against real `Settings` values.
+    assert!(override_layer(packaged_settings(None).as_ref(), "scout")
+        .global
+        .is_none());
+    assert!(override_layer(Some(&empty), "scout").global.is_none());
+}
+
 /// The same claim for the two dirs `write_override_world` mints. The `home`
 /// path is read back from `$HOME` while the `World` still holds the env lock
 /// (so this reads `HOME` under the lock, as the `ENV_LOCK` docs require) and
-/// the settings path from `ctx.config_dir` — no accessor API is added for the
-/// test, and neither path is guessed, so the assertion cannot be confused by
-/// another test's live dir of the same prefix.
+/// the settings path from the `World`'s own `settings_dir` — no accessor API is
+/// added for the test, and neither path is guessed, so the assertion cannot be
+/// confused by another test's live dir of the same prefix.
 #[test]
 fn write_override_world_removes_both_of_its_scratch_dirs() {
     let world = write_override_world(
@@ -1926,10 +2156,7 @@ fn write_override_world_removes_both_of_its_scratch_dirs() {
     let home = std::path::PathBuf::from(
         std::env::var_os("HOME").expect("write_override_world points HOME at its scratch dir"),
     );
-    let settings = world
-        .config_dir
-        .clone()
-        .expect("the settings dir is ctx.config_dir");
+    let settings = world.settings_dir.clone();
     assert!(
         home.is_dir() && settings.is_dir(),
         "both fixtures exist while the `World` is alive"
