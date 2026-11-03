@@ -688,11 +688,17 @@ impl AgentLoop {
         // so no server is ever connected through the interim manager and the
         // rebuild drops nothing (the same swap the loop's own tests perform on
         // the `pub` field).
-        let mcp = Arc::new(McpManager::new(
-            dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
-            space_cwd.clone(),
-            None,
-        ));
+        let mcp = Arc::new(
+            McpManager::new(
+                dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
+                space_cwd.clone(),
+                None,
+            )
+            // (T5/S3, E6) The desktop's opener. `open.rs` cannot move (it is
+            // `tauri`), so the crate's manager takes it as a seam; this is one
+            // of the two sites that rebuild the manager.
+            .with_open_requester(crate::open::desktop_open_requester()),
+        );
         // (ADR 0030 / finding 6) The permission cluster — the frozen half
         // (boundary + guard list + default rules + `~`-expansion home, all from
         // the ONE `$HOME` read) and the inert per-turn values — is built by the
@@ -805,11 +811,18 @@ impl AgentLoop {
         // `config_dir: None` and the old "file with no `mcpServers`" both
         // meant, so an old envelope leaves the manager exactly as it was.
         if !mcp_servers.is_empty() {
-            self.mcp = Arc::new(McpManager::new(
-                dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
-                self.space_cwd.clone(),
-                Some(&mcp_servers),
-            ));
+            self.mcp = Arc::new(
+                McpManager::new(
+                    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
+                    self.space_cwd.clone(),
+                    Some(&mcp_servers),
+                )
+                // (T5/S3, E6) The rebuilt manager carries the SAME opener — the
+                // swap replaces the manager, so an opener wired on the old one
+                // would be silently dropped here and the `auth` action would
+                // open nothing.
+                .with_open_requester(crate::open::desktop_open_requester()),
+            );
         }
     }
 

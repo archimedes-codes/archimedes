@@ -141,12 +141,16 @@ harness-list-agents-home-	src-tauri/src/agent/harness/loop/tests/tools_enabled.r
 harness-resolve-launch-home-	src-tauri/src/agent/harness/launch.rs
 archimedes-prompt-	src-tauri/src/agent/harness/prompt.rs
 mcp-loop-	src-tauri/src/agent/harness/loop/tests/turn_lifecycle.rs
-mcp-	src-tauri/src/agent/mcp/config.rs
+mcp-	crates/fulcrum-core/src/mcp/config.rs
+# (T5/S3) was src-tauri/src/agent/mcp/config.rs before `mcp` moved. `mcp-loop-` above
+# still belongs to the DESKTOP's turn_lifecycle.rs (S5) and outranks this by
+# longest-match, so the two rows keep blaming different files.
 db-	src-tauri/src/storage/db.rs
 archimedes-cmd-agents-	src-tauri/src/commands/agents.rs
 archimedes-agents-	crates/fulcrum-core/src/agents.rs
 archimedes-skills-	crates/fulcrum-core/src/skills.rs
-archimedes-sudo-	src-tauri/src/agent/interactive/sudo_exec.rs
+archimedes-sudo-	crates/fulcrum-core/src/interactive/sudo_exec.rs
+# (T5/S3) was src-tauri/src/agent/interactive/sudo_exec.rs before `interactive` moved.
 archimedes-canonical-	src-tauri/tests/storage.rs
 archimedes-native-mig-	src-tauri/tests/storage.rs
 archimedes-spaces-	src-tauri/tests/storage.rs

@@ -94,6 +94,29 @@ regex = "1"
 ipnet = "2"
 # The cache-bust jitter in `web/cache.rs`.
 rand = "0.9"
+# The MCP OAuth 2.1 client's PKCE S256 challenge (`mcp/oauth.rs:137`,
+# `sha2::Sha256::digest(verifier)`) — moved with `mcp` in T5/S3. Version matches
+# the desktop's, which still needs it for `provider_auth`'s own OAuth paths.
+sha2 = "0.10"
+# The codemode QuickJS sandbox (`codemode/engine.rs`), moved with `codemode` in
+# T5/S3.
+#
+# FEATURES ARE LOAD-BEARING AND MUST STAY EXACTLY `futures` + `parallel`, with
+# `rust-alloc` / `allocator` OFF: `set_memory_limit` is documented as a no-op
+# under a custom allocator (rquickjs-core-0.14.0/src/runtime/async.rs:204-210),
+# which would turn the sandbox's 256 MiB cap into a comment. `parallel` is
+# required for `AsyncRuntime`/`AsyncContext` to be `Send + Sync` at all — without
+# it the crate's own `Send` assertion in `engine.rs` does not compile. The whole
+# history (including the measured note that the no-op is NOT reproducible on
+# 0.14.0 and that the feature stays off anyway, because the guarantee we rely on
+# is the one the crate PROMISES) lives in `src-tauri/Cargo.toml` above its own
+# entry; the same reasoning applies verbatim here and is not re-derived.
+#
+# The identical feature set on BOTH members is also what keeps feature
+# unification honest: `scripts/check-rquickjs-allocator.sh` resolves the ROOT
+# workspace graph, so a divergent feature on this member would poison the
+# desktop's cap through the workspace rather than through its own manifest.
+rquickjs = { version = "0.14.0", features = ["futures", "parallel"] }
 
 # `libc` on ALL unix, matching the desktop's own gate and for the same reason:
 # `childproc.rs`'s process-group kill (`kill(-(pid as i32), SIGKILL)`) and

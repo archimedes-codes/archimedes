@@ -191,9 +191,22 @@ pub async fn auth_mcp_server(name: String, entry: Value) -> Result<String, Setti
     let def = crate::agent::mcp::types::classify_server(&entry).ok_or_else(|| {
         SettingsError::InvalidMcpServer("need a `url` or a `command`".to_string())
     })?;
-    crate::agent::mcp::manager::authenticate_server(&name, &def)
-        .await
-        .map_err(SettingsError::McpAuthFailed)
+    // (T5/S3, edge E6) `authenticate_server` moved to `fulcrum-core` with `mcp`
+    // and the browser-opening step became an injected `OpenRequester`, because
+    // `crate::open` is `tauri` and cannot move. This is the seam's ONLY
+    // out-of-`agent/` call site, so it is the one file outside `agent/` this
+    // sub-step touches — the plan's acceptance line ("zero edits to the 20
+    // outside-`agent/` files") cannot survive a signature change on a function
+    // this file calls, and passing the desktop's own opener is the minimal edit
+    // that keeps the behaviour: the Settings page's Authenticate button still
+    // reaches `crate::open::open(url, None)`, the ONE External-open policy.
+    crate::agent::mcp::manager::authenticate_server(
+        &name,
+        &def,
+        crate::open::desktop_open_requester().as_ref(),
+    )
+    .await
+    .map_err(SettingsError::McpAuthFailed)
 }
 
 /// Test ONE Search provider: one canned query, reporting the hit count or the

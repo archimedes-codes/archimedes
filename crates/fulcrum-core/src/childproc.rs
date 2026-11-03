@@ -366,12 +366,15 @@ mod tests {
     /// rename).
     #[test]
     fn production_process_group_kill_lives_only_in_childproc() {
-        // T5/S2 repointed every path here at its OWN package: `sudo_exec.rs` and
-        // `interactive/mod.rs` stayed desktop, `tools/exec/bash.rs` moved with
-        // this file. A stale prefix would not be a wrong-file bug but a MISSING
-        // file — `production_region` panics on an unreadable path, so it fails
-        // loudly rather than reading as "0 sites, all clear".
-        const SUDO_EXEC: &str = "archimedes/agent/interactive/sudo_exec.rs";
+        // T5/S2 repointed every path here at its OWN package, and T5/S3 had to
+        // do it again: `interactive/` moved into the crate with S3, so both
+        // `interactive` paths below carry the `fulcrum-core/` label now. A stale
+        // prefix is not a wrong-file bug but a MISSING file — `production_region`
+        // panics on an unreadable path, so it fails loudly rather than reading as
+        // "0 sites, all clear". That is the property that makes this census the
+        // instructive contrast to the `fake_mcp_stdio` spawners (the status file's
+        // finding 3): a wrong root here is RED, not silently green.
+        const SUDO_EXEC: &str = "fulcrum-core/interactive/sudo_exec.rs";
         // The needle is the negative-pid SIGKILL itself — the syscall shape,
         // not a name that a wrapper could rename.
         const NEEDLE: &str = "libc::kill(-(pid as i32)";
@@ -383,7 +386,8 @@ mod tests {
             SUDO_EXEC,
             "fulcrum-core/tools/exec/bash.rs",
             "archimedes/agent/worker/client.rs",
-            "archimedes/agent/interactive/mod.rs",
+            // T5/S3: moved with `interactive`.
+            "fulcrum-core/interactive/mod.rs",
         ];
 
         let roots = source_roots();
@@ -613,19 +617,28 @@ mod tests {
     /// The shared cargo `target/` dir. From `crates/fulcrum-core` that is TWO
     /// levels up, NOT one — the trap T4 left and Step A-bis exists to close.
     ///
-    /// NO S2 FILE CONSUMES THIS, and that is a measured finding, not an
+    /// T5/S3 MOVED THIS HERE (`test_support::target_debug_dir`) and left a
+    /// one-line alias below. The reason is Step A-bis's own instruction — "fix
+    /// once, not eight times" — and S3 is where it stops being hypothetical: the
+    /// first consumers arrived (`mcp/stdio.rs`, `mcp/tool.rs`, `mcp/manager.rs`,
+    /// four `fake_mcp_stdio` spawners). A second definition of "where cargo
+    /// builds" inside the same crate is exactly the drift this helper exists to
+    /// prevent, so the census keeps its local `workspace_root()` (it needs the
+    /// ROOT, to walk two `src/` trees) and defers the `target/debug` half to the
+    /// shared one.
+    ///
+    /// NO S2 FILE CONSUMES THIS, and that was a measured finding, not an
     /// oversight: nothing in `{tools, web, boundary, policy, definition_permission,
     /// childproc, skills, agents, roots}` spawns a built binary (grep for
     /// `target/debug` / `CARGO_BIN_EXE` / `fake_worker` / `fake_mcp_stdio` across
-    /// the moved set returns only prose in doc comments). The fixture spawners
-    /// live in `mcp/` (S3) and `harness/` + `subagent.rs` (S5). It lands now
+    /// the moved set returns only prose in doc comments). It landed in S2 anyway
     /// because the pin below is what makes the resolution provably right BEFORE a
     /// consumer depends on it — the alternative is S3 discovering it mid-move.
     /// `#[cfg(test)]` for that reason: an ungated `pub(crate)` fn with no
     /// production caller is `dead_code`, which the gate's `-D warnings` rejects.
     #[cfg(test)]
     pub(crate) fn target_debug_dir() -> std::path::PathBuf {
-        workspace_root().join("target").join("debug")
+        crate::test_support::target_debug_dir()
     }
 
     /// The pin Step A-bis demands: `target_debug_dir()` resolves to the SAME
@@ -1059,10 +1072,14 @@ mod tests {
              stdin instead hangs on it until the 300 s bash timeout; see the module docs.",
         );
 
+        // T5/S3 repointed TWO of these four: `mcp/stdio.rs` and
+        // `interactive/sudo_exec.rs` are in the crate now. The label is not
+        // cosmetic — `region_of` PANICS when a labelled path names no file, so a
+        // stale entry is a red test rather than a file the census skipped.
         for runtime_child in [
-            "archimedes/agent/mcp/stdio.rs",
+            "fulcrum-core/mcp/stdio.rs",
             "archimedes/agent/worker/client.rs",
-            "archimedes/agent/interactive/sudo_exec.rs",
+            "fulcrum-core/interactive/sudo_exec.rs",
             "archimedes/commands/update.rs",
         ] {
             let found = mentions(region_of(runtime_child), "closed_stdin");

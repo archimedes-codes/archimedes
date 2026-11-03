@@ -69,6 +69,45 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     std::sync::Mutex::lock(&ENV_LOCK).unwrap_or_else(|p| p.into_inner())
 }
 
+/// The shared cargo `target/debug` directory — the ONE place in this crate that
+/// resolves it, and the reason T5/S2 put it here was so T5/S3 would not have to
+/// resolve it eight times.
+///
+/// # The trap
+///
+/// T4 re-rooted every fixture path to `env!("CARGO_MANIFEST_DIR")`, then its
+/// `.parent()`, then `target/debug/<bin>`. That was correct while the files lived
+/// in `src-tauri/` (parent = the repo root). Once a file moves to
+/// `crates/fulcrum-core`, `CARGO_MANIFEST_DIR` is `…/crates/fulcrum-core` and
+/// `.parent()` is `…/crates`, so the path names `crates/target/debug/<bin>` —
+/// which does not exist. A test that spawns it fails with ENOENT; a `let _ =`
+/// site fails quietly.
+///
+/// # Why the desktop's own pin cannot catch this
+///
+/// T4's `fixture_path_resolves_to_the_workspace_root_target` lives in
+/// `worker/client.rs`, which stays desktop through T8 — it keeps passing while
+/// every moved fixture path is broken. The pin that rules this helper lives in
+/// `childproc.rs` (`target_debug_dir_is_where_cargo_actually_builds`) and compares
+/// the resolution against `current_exe()`'s real location, so it cannot go green
+/// on a wrong level count.
+///
+/// # Consumers (T5/S3, measured)
+///
+/// `mcp/stdio.rs::fake_mcp_bin`, `mcp/tool.rs::fake_bin`, and three
+/// `fake_mcp_stdio` sites in `mcp/manager.rs`'s tests. None of those spawners
+/// carries a vacuity guard, which is why the pin above is the only thing standing
+/// between a wrong root and a silently-green suite.
+#[cfg(test)]
+pub(crate) fn target_debug_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("crates/fulcrum-core has a grandparent (the repo root)")
+        .join("target")
+        .join("debug")
+}
+
 /// (test only) The broadest rule path a test can name — the one root that
 /// really does contain every canonical absolute path ON THIS PLATFORM.
 ///

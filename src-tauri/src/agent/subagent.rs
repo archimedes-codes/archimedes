@@ -28,53 +28,18 @@ use crate::agent::types::mint_session_id;
 use crate::agent::worker::manager::WorkerManager;
 use crate::agent::worker::protocol::SubagentDispatchWire;
 
-/// Per-dispatch pi configuration for a subagent session (moved verbatim
-/// from `launch_wrapper.rs` — the wrapper script is deleted in this task;
-/// the flags are now passed directly to the `pi` spawn).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct LaunchConfig {
-    /// The agent file body (named agents); `None` for config-less dispatch.
-    pub system_prompt: Option<String>,
-    /// Resolved model ("provider/id" or "provider/id:<thinking>"); `None` = pi default.
-    pub model: Option<String>,
-    /// The thinking level from the OVERRIDE layer or the explicit tool-call
-    /// param — NEVER the frontmatter's own value, and never the model key's
-    /// `:<level>` suffix.
-    ///
-    /// This field is the TOP rung of the dispatch's thinking chain
-    /// (`subagent_flow.rs`: this > the model key's suffix >
-    /// `frontmatter_thinking`), so whatever lands in it outranks the suffix.
-    /// ADR 0066 put the `agentOverrides` thinking level here — the only layer
-    /// below the explicit param allowed to — and `resolve_agent_launch` writes
-    /// it only when the model that just resolved advertises the level, so a
-    /// demoted override never reaches a child (nor gets reported as effective,
-    /// ADR 0068). The frontmatter's `thinking` stays in
-    /// `frontmatter_thinking`, the LAST rung.
-    pub thinking: Option<String>,
-    /// The frontmatter's `thinking` (the dispatch resolves the thinking in
-    /// the doc-correct order: explicit > model-key `:<level>` suffix >
-    /// this — the frontmatter's `thinking` is the LAST rung). `None` for
-    /// a config-less dispatch.
-    pub frontmatter_thinking: Option<String>,
-    /// Tool allowlist (named agents with `tools`); `None` → `--exclude-tools subagent`.
-    pub tools: Option<Vec<String>>,
-    /// Frontmatter `permission` (issue #101's ruleset) as the definition
-    /// DECLARES it — a NARROWING layer only: the gate's strict-of-two merge
-    /// consumes it (task05b), so it can make a call MORE restricted than the
-    /// user's `filePolicy` would, never less. `None` → the file does not
-    /// speak about permissions (no narrowing). Crosses the wire inside
-    /// `SubagentDispatchWire.launch`; a config-less dispatch stays `None`.
-    ///
-    /// BOXED, and the box is load-bearing: an inline `Option<PermissionBlock>`
-    /// puts `LaunchConfig` at 144 bytes, which pushes the two wire enums that
-    /// carry it (`Outbound::SubagentDispatch` / `WorkerInboundEvent::
-    /// SubagentDispatch`, both in worker-owned files) over clippy's
-    /// `large_enum_variant` threshold — CI's `-D warnings` would fail on files
-    /// this task may not edit. `Box` is TRANSPARENT to serde, so the wire JSON
-    /// is byte-identical to the unboxed field the plan specifies; only Rust's
-    /// in-memory shape differs (task05b reads it through `Option::as_deref()`).
-    pub permission: Option<Box<crate::agent::definition_permission::PermissionBlock>>,
-}
+// T5/S3: `LaunchConfig` moved to `fulcrum_core::launch_config` — it is pure
+// data (six `Option` fields, its only non-`std` reference is
+// `definition_permission::PermissionBlock`, which moved in S2) while THIS file
+// cannot move until S5 because of the `WorkerManager` edge above. `interactive`
+// (S3) imports it, so the type had to move ahead of its neighbours; the E.1
+// wire-type pattern, not a seam. Re-exported HERE so every existing
+// `subagent::LaunchConfig` path — `bin/fake_worker.rs`, `commands/agents.rs`,
+// `harness/launch.rs`, `harness/dispatch.rs`, `worker/protocol.rs`,
+// `worker/dispatch.rs`, `worker/manager/tests/mod.rs`,
+// `tests/harness_dispatch_native.rs` — keeps resolving with zero edits. See the
+// crate module's docs for the full rationale.
+pub use fulcrum_core::launch_config::LaunchConfig;
 
 /// (issue #47) Whether a `subagent` call's `agentName` resolved against the
 /// discovered Agent definitions — the REPORT that `resolve_launch`'s

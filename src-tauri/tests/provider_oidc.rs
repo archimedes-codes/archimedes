@@ -1003,14 +1003,31 @@ fn the_constant_time_compare_is_imported_not_copy_pasted() {
     }
     // The callback file still OWNS the single definition (a move would silently
     // break the import and this lint's premise).
+    //
+    // T5/S3 MOVED that file: `mcp` is in `crates/fulcrum-core` now, so the path
+    // is the crate's, not `src-tauri`'s. Two things this lint must keep doing
+    // despite the move, and the reason it still can:
+    //   * it still READS the one definition (a cross-package read of source text
+    //     is fine — the desktop integration target reads files, not symbols, so
+    //     no package cycle is involved);
+    //   * it still FAILS LOUDLY if the file is unreadable, which is the vacuity
+    //     rule this suite applies to every census-style lint.
+    // The needle below changed from `pub(crate) fn` to `pub fn` for ONE reason:
+    // a package boundary erases `pub(crate)`, and `provider_auth/oidc.rs` (which
+    // STAYED desktop per the S3 RULING) imports this, so the narrower visibility
+    // would be an E0603 for it. That is visibility, not ownership — the "ONE
+    // definition, imported, never duplicated" claim below is unchanged and the
+    // `provider_auth` tree scan is untouched.
     let callback = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/agent/mcp/callback.rs"
+        "/../crates/fulcrum-core/src/mcp/callback.rs"
     ))
-    .expect("mcp/callback.rs is readable");
+    .expect("crates/fulcrum-core/src/mcp/callback.rs is readable");
     assert!(
-        callback.contains("pub(crate) fn constant_time_eq"),
-        "the ONE definition must stay in mcp/callback.rs (T5's file, read-only for T6)"
+        callback.contains("pub fn constant_time_eq"),
+        "the ONE definition must stay in mcp/callback.rs (T5's file, now in \
+         fulcrum-core; `pub` because a package boundary erases `pub(crate)` and \
+         the desktop's oidc.rs imports it)"
     );
     // And no OTHER file in the provider_auth tree grew a second one (the same
     // comment-stripping rule: a doc comment that NAMES the primitive is

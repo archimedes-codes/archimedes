@@ -58,3 +58,34 @@ pub(crate) mod roots;
 pub mod skills;
 pub mod tools;
 pub mod web;
+
+// ── T5/S3 — the one-way dependents: `interactive`, `codemode`, `mcp` ────────
+// `git mv`'d with every `mod`/`#[cfg(test)]` block verbatim. These three depend
+// on S2's cluster one-way (`mcp→tools` 1, `interactive→tools` 4) and nothing in
+// the crate depends on them for this step except the desktop `harness` (moves
+// S5) and the desktop `worker` (stays through T8).
+//
+// `provider_auth` is NOT here. The status file's S3 RULING measured the crate's
+// need at exactly ONE item — `provider_auth::headers::expand_map`, one call site
+// at `harness/provider/mod.rs:106` — and ZERO consumers for every other
+// submodule, so only `headers.rs` moved (as `provider_headers`, below). Two
+// seams the plan specified for the rest of that directory are CANCELLED with it:
+// the E5 refresh trait (`refresh.rs` stays, so `refresh.rs:31 → session` never
+// crosses) and the `ProviderSource` seam for `budget.rs` (same reason — its
+// `settings.json` read stays in the desktop, untouched).
+pub mod codemode;
+pub mod interactive;
+pub mod mcp;
+/// The one file that moved out of the desktop's `provider_auth/` directory.
+/// Named for what it IS — one file of that directory, not the directory — so the
+/// crate never looks like it owns `provider_auth`. The desktop's
+/// `agent/provider_auth/mod.rs` re-exports it AS `headers`, which is what keeps
+/// `crate::agent::provider_auth::headers::{expand_map, validate_base_url}`
+/// resolving at its current path for the consumers outside that directory
+/// (`session/mod.rs`, `commands/settings.rs`, `tests/provider_headers.rs`).
+pub mod provider_headers;
+
+/// `LaunchConfig` — the per-dispatch launch DTO, which moved ahead of the module
+/// it lives beside (`subagent.rs`, S5) because `interactive` (S3) imports it.
+/// Pure data; the E.1 wire-type pattern rather than a seam. See the module docs.
+pub mod launch_config;

@@ -11,7 +11,23 @@
 pub mod budget;
 pub mod cli_sso;
 pub mod gcloud;
-pub mod headers;
+// T5/S3: `headers.rs` MOVED to `crates/fulcrum-core/src/provider_headers.rs`.
+// It is the ONLY part of this directory the crate needs (`expand_map`, one call
+// site at `harness/provider/mod.rs:106`; every other submodule here has zero
+// crate-side consumers — the status file's S3 RULING), so the crate does not own
+// `provider_auth` and the crate-side module is named for the one file that
+// moved, not for this directory.
+//
+// A `pub use ... as headers` and NOT a `pub mod headers`: Rust resolves one
+// `mod` to one file on THIS package's disk, and that file is gone. This is the
+// same split-directory shape T5/S2 used for `agent/web.rs` — a path prefix whose
+// body now lives in another package. It keeps `crate::agent::provider_auth::
+// headers::{expand_map, validate_base_url}` resolving UNCHANGED for the consumers
+// OUTSIDE this directory that may not be edited: `session/mod.rs` (two
+// `validate_base_url` calls) and `tests/provider_headers.rs`. The `pub use
+// headers::{expand_map, validate_base_url};` further down then keeps resolving
+// too, because a re-export is a module path like any other.
+pub use fulcrum_core::provider_headers as headers;
 pub mod key_helper;
 pub mod litellm_oauth;
 pub mod oidc;

@@ -223,6 +223,41 @@ pub fn open(href: &str, cwd: Option<&Path>) -> Result<(), String> {
     }
 }
 
+/// The desktop's implementation of the crate's `fulcrum_core::mcp::OpenRequester`
+/// (T5/S3, edge E6).
+///
+/// # Why this type is here and the trait is in the crate
+///
+/// `mcp/manager.rs` moved to `fulcrum-core` in T5/S3 and this file did not: the
+/// plugin call below is `tauri`, and the crate compiling with no `tauri` in its
+/// graph is the master roadmap's own decoupling criterion. So the crate declares
+/// the need and the desktop satisfies it — the allowed direction, and the same
+/// shape as T3's `IpcRenderRequester` for `web::RenderRequester`.
+///
+/// # Why it is a unit struct over [`open`] and nothing more
+///
+/// Behaviour-identical by construction: the pre-seam MCP call site was
+/// `let _ = crate::open::open(url, None)` — the ONE External-open policy, with
+/// the scheme denylist, the drive-root/UNC guards and the `~` expansion all of
+/// which stay here. The MCP OAuth flow ignores the `Result` exactly as it did
+/// before (fire-and-forget; the authorization URL is in the OAuth error text).
+/// `cwd: None` is preserved verbatim: an OAuth authorization URL is absolute, and
+/// passing a cwd would give a relative href a resolution context the flow never
+/// had.
+pub struct DesktopOpenRequester;
+
+impl crate::agent::mcp::OpenRequester for DesktopOpenRequester {
+    fn open(&self, url: &str) -> Result<(), String> {
+        open(url, None)
+    }
+}
+
+/// The shared handle the MCP wiring passes around (a unit struct, so one
+/// allocation is all there is — and every site could equally construct its own).
+pub fn desktop_open_requester() -> std::sync::Arc<dyn crate::agent::mcp::OpenRequester> {
+    std::sync::Arc::new(DesktopOpenRequester)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +265,94 @@ mod tests {
 
     /// The cwd every relative-path row resolves against.
     const CWD: &str = "/home/u/proj";
+
+    /// (T5/S3, edge E6) The desktop-side half of the `OpenRequester` wiring pin.
+    ///
+    /// # Why a source lint, and what the crate-side test cannot see
+    ///
+    /// `mcp::manager::tests::the_auth_action_opens_the_browser_through_the_seam`
+    /// proves the manager CONSUMES the seam — it drives a real `authorization_code`
+    /// flow and fails if the injected requester is never called. It cannot see
+    /// whether the DESKTOP hands it a real opener, because the desktop's own
+    /// construction sites are outside that crate. And the failure mode there is
+    /// silent by design: `McpManager::new` defaults to `NoOpenRequester`, so a
+    /// construction site that forgets the second builder step still connects,
+    /// still lists tools, still reports `authenticated` — it just never opens a
+    /// browser, and the OAuth flow dies at its callback timeout.
+    ///
+    /// So this is the same shape as the repo's other wiring lints
+    /// (`harness/manager`'s `the_spawn_site_reports_through_the_shared_helper`,
+    /// `window_state_plugin_is_registered…`): read the source, require the call,
+    /// panic on an unreadable file so a moved file is RED rather than skipped.
+    ///
+    /// # The rule it enforces
+    ///
+    /// Every `McpManager::new(` in the desktop's `harness/loop.rs` must be
+    /// followed by `.with_open_requester(` before its closing `;`. Both sites are
+    /// required, and that is the point: `set_desktop_config` REPLACES the manager
+    /// built by `new`, so wiring only the first one leaves the production loop —
+    /// the one that actually runs with a packaged `mcpServers` map — on the
+    /// no-op default.
+    #[test]
+    fn every_desktop_mcp_manager_carries_the_open_requester() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent/harness/loop.rs");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        // CRLF-normalised, for the reason `tests/provider_oauth_flow.rs::crate_source`
+        // documents: a Windows checkout carries CRLF and a needle carrying a bare
+        // `\n` matches nothing there, which is how a structural pin goes red on
+        // `windows-latest` while green everywhere else.
+        let source = source.replace("\r\n", "\n");
+
+        // Scan CODE, not prose: the region is read line by line with comment
+        // lines dropped, for two reasons. (1) A `;` inside a doc comment (this
+        // very file's "it is `tauri`; this is one of the two sites") would end
+        // the region early and credit a site that is not wired — the fail-OPEN
+        // direction, which is the one this repo's whole census tradition refuses.
+        // (2) A `.with_open_requester(` named in a comment would likewise pass a
+        // site whose real code never calls it.
+        let code: Vec<(usize, String)> = source
+            .lines()
+            .enumerate()
+            .map(|(i, l)| (i + 1, l.to_string()))
+            .filter(|(_, l)| !l.trim_start().starts_with("//"))
+            .collect();
+
+        let ctor_lines: Vec<usize> = code
+            .iter()
+            .filter(|(_, l)| l.contains("McpManager::new("))
+            .map(|(n, _)| *n)
+            .collect();
+        assert_eq!(
+            ctor_lines.len(),
+            2,
+            "expected exactly 2 `McpManager::new(` construction sites in \
+             harness/loop.rs (`AgentLoop::new` + the `set_desktop_config` rebuild), \
+             found {ctor_lines:?} — a different count means this lint's premise moved, so \
+             either a site lost its wiring or a new one appeared that this lint does not read",
+        );
+
+        for (n, ctor_line) in ctor_lines.iter().enumerate() {
+            // The region runs from the constructor to the next one (or EOF), so a
+            // missing first wiring cannot be credited by the second site's call.
+            let stop = ctor_lines.get(n + 1).copied().unwrap_or(usize::MAX);
+            let wired: Vec<usize> = code
+                .iter()
+                .filter(|(line, text)| {
+                    *line > *ctor_line && *line < stop && text.contains(".with_open_requester(")
+                })
+                .map(|(line, _)| *line)
+                .collect();
+            assert!(
+                !wired.is_empty(),
+                "construction site #{} (`McpManager::new(` at harness/loop.rs:{ctor_line}) \
+                 never reaches `.with_open_requester(` — the manager would run on \
+                 `NoOpenRequester`, so the MCP `auth` action would silently never open a \
+                 browser and its OAuth flow would die at the callback timeout",
+                n + 1
+            );
+        }
+    }
 
     fn url(s: &str) -> Target {
         Target::Url(s.to_string())

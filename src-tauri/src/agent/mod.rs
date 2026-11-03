@@ -3,17 +3,16 @@
 //! manager.
 
 // T5/S2 moved `boundary`, `childproc`, `definition_permission`, `policy` and
-// `tools` into `crates/fulcrum-core`; their `pub mod` declarations are GONE and
-// the modules now arrive through the module-level `pub use fulcrum_core::{…}`
-// below. `web` is the one EXCEPTION and keeps its declaration: `web/render.rs`
-// stayed desktop (the Tauri webview), so `agent/web.rs` is a real desktop module
-// that declares `render` and re-exports the six that moved.
-pub mod codemode;
+// `tools` into `crates/fulcrum-core`; T5/S3 moved `interactive`, `codemode` and
+// `mcp`. Their `pub mod` declarations are GONE and the modules now arrive
+// through the module-level `pub use fulcrum_core::{…}` below. `web` is the one
+// EXCEPTION and keeps its declaration: `web/render.rs` stayed desktop (the Tauri
+// webview), so `agent/web.rs` is a real desktop module that declares `render` and
+// re-exports the six that moved. (`provider_auth` is the S3 case of the same
+// rule in reverse — it STAYED, except `headers.rs`; see `provider_auth/mod.rs`.)
 pub mod crashlog;
 pub mod errors;
 pub mod harness;
-pub mod interactive;
-pub mod mcp;
 mod normalize;
 mod permission;
 pub mod persist;
@@ -39,9 +38,25 @@ pub mod worker;
 // `agents.rs`) moved with it, so it stays crate-internal on both sides.
 //
 // `web` is NOT here — see `web.rs`.
+//
+// T5/S3 adds `codemode`, `interactive`, `mcp` (the one-way dependents on S2's
+// cluster). The module-level line is the load-bearing half for S3 too:
+// `harness/loop/codemode.rs` names `crate::agent::codemode::engine::
+// CODEMODE_MEMORY_LIMIT`, `harness/loop/tools.rs` names
+// `crate::agent::interactive::{sudo_run_flow, todo_apply}`, `commands/mcp.rs`
+// names `crate::agent::mcp::config::*` and `commands/settings.rs` names
+// `crate::agent::mcp::{types,manager,oauth}::*` — all module-qualified, so a
+// named-only block would leave every one dangling (the S1 measurement: 193 such
+// paths, 36 errors from deleting this line).
+//
+// `launch_config` is deliberately NOT in this list. `LaunchConfig` reached the
+// desktop through `subagent::LaunchConfig` and `agent::LaunchConfig` before S3,
+// and both paths still resolve — `subagent.rs` re-exports the crate type and the
+// named block below still names it. Adding a second public alias for one DTO
+// would be a third spelling of one type for no consumer.
 pub use fulcrum_core::{
-    agents, boundary, childproc, debuglog, definition_permission, events, fs_backend, hostenv, ids,
-    policy, skills, todo, tools, types,
+    agents, boundary, childproc, codemode, debuglog, definition_permission, events, fs_backend,
+    hostenv, ids, interactive, mcp, policy, skills, todo, tools, types,
 };
 
 pub use crate::types::SessionInfo;
