@@ -32,10 +32,13 @@ use super::support::*;
 use crate::agent::events::{CompactionReason, EventSink, RpcEvent};
 use crate::agent::harness::catalog::CompactionConfig;
 use crate::agent::harness::compact::Compactor;
+use crate::agent::harness::dispatch::{MockDispatcher, SubagentDispatcher};
 use crate::agent::harness::provider::{
-    ChatMessage, ChatRole, FinishReason, MessageContent, ProviderError, ProviderEvent, Usage,
+    ChatMessage, ChatRole, FinishReason, MessageContent, ProviderError, ProviderEvent, ToolCall,
+    Usage,
 };
 use crate::agent::harness::retry::RetryPolicy;
+use crate::agent::subagent::{SubagentCancel, SubagentMetrics, SubagentOutcome};
 
 /// The `cost_update` frames a run emitted, in order (the payloads WITH their
 /// envelope, so the pins can assert `sessionId` / `seq` / `event` alongside the
@@ -949,5 +952,514 @@ async fn a_compaction_whose_summary_reported_no_cost_emits_no_frame_at_all() {
     assert!(
         cost_frames(&events).is_empty(),
         "a `None` summary cost emits NOTHING — not a null, not a zero"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Fulcrum T2 follow-up — ONE WRITER PER STORE KEY: the parent folds its
+// children's money into its OWN accumulator.
+// ---------------------------------------------------------------------------
+//
+// THE DEFECT these pins exist for. Two producers used to write the SAME store
+// key (the parent's id): the parent's own `emit_cost_update` (from `cost_acc`)
+// and the Supervisor's roll-up frame in `finish_subagent`. A frame is a
+// SNAPSHOT and the store overwrites, so the last frame won — and the parent's
+// accumulator had never seen the child. Parent spends 0.003, child spends
+// 0.002, parent spends 0.006: the roll-up wrote 0.005 and the parent's next
+// frame overwrote it with 0.009. **The child's money was erased.** The old
+// delta wire ADDED, so it could not lose this; the totals wire made the loss
+// structural.
+//
+// The fix is not a second writer on the parent key — it is ONE writer: the
+// parent's loop. `harness/dispatch.rs` carries the child's `metrics.cost` out
+// of the outcome (loop state, never prompt text), `run_tool_batch` folds it
+// into `cost_acc` at the point the outcome is received, and the roll-up frame
+// is GONE. These tests are the loop-side proof; the absence of the second
+// writer is pinned where the removed frame used to be emitted
+// (`subagent_flow.rs`'s `rollup_tests`).
+
+/// The `subagent` tool call every fold fixture scripts (the params the
+/// advertised spec accepts — `task` only).
+fn subagent_tool_call(id: &str) -> ProviderEvent {
+    ProviderEvent::ToolCall(ToolCall {
+        id: id.to_string(),
+        name: "subagent".to_string(),
+        arguments: serde_json::json!({ "task": "delegate" }),
+    })
+}
+
+/// A `Completed` outcome carrying `cost` as the child's reported total (the
+/// `SubagentMetrics.cost: Option<f64>` hand-off, issue #107's spelling).
+fn completed_with_cost(cost: Option<f64>) -> SubagentOutcome {
+    SubagentOutcome::Completed {
+        output: "the answer".to_string(),
+        metrics: SubagentMetrics {
+            output: "the answer".to_string(),
+            input_tokens: 10,
+            output_tokens: 5,
+            cost,
+            duration_ms: 1,
+        },
+    }
+}
+
+/// Queue a canned outcome on a `MockDispatcher` (the loop's `SubagentWait`
+/// `select!` sees it the moment the dispatch pops it — the oneshot's value is
+/// buffered, so the sender may be dropped right after `send`).
+fn queue_outcome(dispatcher: &MockDispatcher, outcome: SubagentOutcome) {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    dispatcher.queue(rx, SubagentCancel::none());
+    tx.send(outcome).expect("the queued receiver is alive");
+}
+
+/// (THE MONEY-LOSS PIN) A parent that delegates must not lose its child's
+/// money: parent 0.003 → child 0.002 → parent 0.006 lands as `0.011`, never
+/// `0.009`.
+///
+/// This is the defect the totals wire introduced and the delta wire could not
+/// have: the parent's own frames are keyed to the parent, and so was the
+/// Supervisor's roll-up, so the two producers on one store key raced and the
+/// parent's accumulator — which never saw the child — wrote last. Under the
+/// one-writer contract the child's figure is folded into `cost_acc` when the
+/// loop receives the outcome, so the parent's NEXT frame already includes it
+/// and there is nothing left to overwrite.
+///
+/// The three figures are chosen so every reading is distinguishable: `0.009`
+/// (the parent's own two calls — the loss), `0.005` (the child's figure alone
+/// — the old roll-up's last-word), `0.003` (the first call), and `0.011` (the
+/// truth). Asserted against the EMITTER'S OWN sum expression, not a decimal
+/// literal, so the comparison is bitwise the accumulator's.
+#[tokio::test]
+async fn a_delegating_parents_total_keeps_its_childs_money() {
+    let events = Arc::new(StdMutex::new(Vec::new()));
+    let sink: Arc<dyn EventSink> = Arc::new(AllEventsSink {
+        events: events.clone(),
+    });
+    let (provider, _calls) = ScriptedProvider::new(vec![
+        // Call 1: the parent's own priced call, then the delegation.
+        Some(vec![
+            ProviderEvent::TextDelta("working".to_string()),
+            ProviderEvent::Usage(
+                Usage {
+                    input_tokens: 100,
+                    output_tokens: 10,
+                },
+                Some(0.003),
+            ),
+            subagent_tool_call("t1"),
+            ProviderEvent::Done(FinishReason::ToolCalls),
+        ]),
+        // Call 2: the parent's second priced call, AFTER the child returned.
+        Some(vec![
+            ProviderEvent::TextDelta("done".to_string()),
+            ProviderEvent::Usage(
+                Usage {
+                    input_tokens: 200,
+                    output_tokens: 20,
+                },
+                Some(0.006),
+            ),
+            ProviderEvent::Done(FinishReason::Stop),
+        ]),
+    ]);
+    let dispatcher = MockDispatcher::new();
+    queue_outcome(&dispatcher, completed_with_cost(Some(0.002)));
+    let (_space, mut loop_) = build_loop_with_dispatcher(
+        Box::new(provider),
+        mpsc::unbounded_channel().0,
+        Arc::new(StdMutex::new(CancellationToken::new())),
+        watch::channel(0u64).0,
+        RetryPolicy::new_with(5, Duration::from_millis(1)),
+        sink,
+        Some(Arc::new(dispatcher) as Arc<dyn SubagentDispatcher>),
+        vec![fake_model("m1")],
+        None,
+    );
+    loop_.handle_prompt(&text_prompt("go")).await;
+
+    let frames = cost_frames(&events);
+    assert_eq!(
+        frames.len(),
+        3,
+        "the parent's call, the fold at the outcome, the parent's next call — \
+         got {:?} (2 frames means the child's money was never folded in)",
+        frames
+            .iter()
+            .map(|f| f["payload"]["costUsd"].clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        frames[0]["payload"]["costUsd"].as_f64().expect("a number"),
+        0.003,
+        "the parent's own call lands on a zero accumulator"
+    );
+    assert_eq!(
+        frames[1]["payload"]["costUsd"].as_f64().expect("a number"),
+        0.003 + 0.002,
+        "the fold happens AT THE OUTCOME — the frame the parent emits when it \
+         receives its child already carries the child's money"
+    );
+    assert_eq!(
+        frames[2]["payload"]["costUsd"].as_f64().expect("a number"),
+        0.003 + 0.002 + 0.006,
+        "the parent's NEXT frame carries the session total INCLUDING the child \
+         — `0.009` is the money-loss bug (the accumulator never saw the child), \
+         `0.005` would be the retired roll-up's last word"
+    );
+    // ONE writer on the parent's store key: every frame that lands there is the
+    // parent's own emitter — the parent's session id, `source: "main"`. A second
+    // producer spelling the same key differently is the bug these pins retire.
+    for frame in &frames {
+        assert_eq!(
+            frame["sessionId"], "s1",
+            "every parent-keyed frame carries the parent's OWN session id"
+        );
+        assert_eq!(
+            frame["payload"]["source"], "main",
+            "and the parent's own label — the fold is the parent's money, not a \
+             separately-labelled second opinion on the same key"
+        );
+    }
+}
+
+/// The fold PERSISTS the child's money even when the parent makes no further
+/// priced call.
+///
+/// This is why the fold EMITS and not merely adds: a parent that delegates as
+/// its last act never writes another `cost_update`, so an add-only fold would
+/// leave the child's spend in memory and out of the row — and out of the figure
+/// under the parent's title. `#105`'s requirement ("the parent's STORED total
+/// includes its children") is bought by this frame, not by the removed roll-up.
+#[tokio::test]
+async fn a_childs_cost_is_folded_and_emitted_when_the_parent_makes_no_further_priced_call() {
+    let events = Arc::new(StdMutex::new(Vec::new()));
+    let sink: Arc<dyn EventSink> = Arc::new(AllEventsSink {
+        events: events.clone(),
+    });
+    let (provider, _calls) = ScriptedProvider::new(vec![
+        Some(vec![
+            ProviderEvent::TextDelta("working".to_string()),
+            ProviderEvent::Usage(
+                Usage {
+                    input_tokens: 100,
+                    output_tokens: 10,
+                },
+                Some(0.003),
+            ),
+            subagent_tool_call("t1"),
+            ProviderEvent::Done(FinishReason::ToolCalls),
+        ]),
+        // The tail call reports NO cost — so the fold's frame is the last frame
+        // this session ever emits.
+        Some(vec![
+            ProviderEvent::TextDelta("done".to_string()),
+            ProviderEvent::Usage(
+                Usage {
+                    input_tokens: 200,
+                    output_tokens: 20,
+                },
+                None,
+            ),
+            ProviderEvent::Done(FinishReason::Stop),
+        ]),
+    ]);
+    let dispatcher = MockDispatcher::new();
+    queue_outcome(&dispatcher, completed_with_cost(Some(0.002)));
+    let (_space, mut loop_) = build_loop_with_dispatcher(
+        Box::new(provider),
+        events_tx_for_fold_test(),
+        Arc::new(StdMutex::new(CancellationToken::new())),
+        watch::channel(0u64).0,
+        RetryPolicy::new_with(5, Duration::from_millis(1)),
+        sink,
+        Some(Arc::new(dispatcher) as Arc<dyn SubagentDispatcher>),
+        vec![fake_model("m1")],
+        None,
+    );
+    loop_.handle_prompt(&text_prompt("go")).await;
+
+    let frames = cost_frames(&events);
+    assert_eq!(
+        frames
+            .iter()
+            .map(|f| f["payload"]["costUsd"].clone())
+            .collect::<Vec<_>>(),
+        vec![serde_json::json!(0.003), serde_json::json!(0.005)],
+        "the fold's frame IS the last frame of the session — the child's money \
+         reaches the store even though the parent never prices again"
+    );
+}
+
+/// The `events` channel of the fold fixtures (nobody reads it — the assertion
+/// point is the sink). A named helper so the two-arg `mpsc::unbounded_channel()`
+/// inference does not depend on the surrounding call's argument order.
+fn events_tx_for_fold_test() -> mpsc::UnboundedSender<RpcEvent> {
+    mpsc::unbounded_channel().0
+}
+
+/// Two children on ONE parent accumulate MONOTONICALLY — the second child's
+/// money ADDS to the first child's, it does not replace it.
+///
+/// This is the case the retired roll-up provably could not express (its own
+/// docblock said so: "a parent with two children takes the second child's
+/// figure"). It is the direct consequence of there being ONE accumulator that
+/// spans a parent's own calls and its children's, and it is why the ruling said
+/// keep-the-roll-up-as-the-sole-writer was rejected rather than merely worse.
+#[tokio::test]
+async fn two_children_accumulate_into_one_parent_total() {
+    let events = Arc::new(StdMutex::new(Vec::new()));
+    let sink: Arc<dyn EventSink> = Arc::new(AllEventsSink {
+        events: events.clone(),
+    });
+    let (provider, _calls) = ScriptedProvider::new(vec![
+        // ONE batch, TWO delegations (the concurrent-subagents path).
+        Some(vec![
+            subagent_tool_call("t1"),
+            subagent_tool_call("t2"),
+            ProviderEvent::Done(FinishReason::ToolCalls),
+        ]),
+        Some(vec![
+            ProviderEvent::TextDelta("done".to_string()),
+            ProviderEvent::Done(FinishReason::Stop),
+        ]),
+    ]);
+    let dispatcher = MockDispatcher::new();
+    queue_outcome(&dispatcher, completed_with_cost(Some(0.002)));
+    queue_outcome(&dispatcher, completed_with_cost(Some(0.004)));
+    let (_space, mut loop_) = build_loop_with_dispatcher(
+        Box::new(provider),
+        events_tx_for_fold_test(),
+        Arc::new(StdMutex::new(CancellationToken::new())),
+        watch::channel(0u64).0,
+        RetryPolicy::new_with(5, Duration::from_millis(1)),
+        sink,
+        Some(Arc::new(dispatcher) as Arc<dyn SubagentDispatcher>),
+        vec![fake_model("m1")],
+        None,
+    );
+    loop_.handle_prompt(&text_prompt("go")).await;
+
+    let frames = cost_frames(&events);
+    assert_eq!(
+        frames.len(),
+        2,
+        "one fold frame per child, in the batch's tool-call order — got {frames:?}"
+    );
+    assert_eq!(
+        frames[0]["payload"]["costUsd"].as_f64().expect("a number"),
+        0.002,
+        "the first child folds onto a zero accumulator"
+    );
+    assert_eq!(
+        frames[1]["payload"]["costUsd"].as_f64().expect("a number"),
+        0.002 + 0.004,
+        "the SECOND child ADDS to the first — `0.004` alone is the retired \
+         roll-up's last-frame-wins, which lost the first child entirely"
+    );
+}
+
+/// A child that reported NO figure folds NOTHING — the fold reuses the
+/// emitter's frame-existence gate, so `None` adds nothing and emits nothing.
+///
+/// REGRESSION GUARD, and honest about it: it passes before the fold exists too
+/// (nothing emitted anything at all), so it is not a RED. What it forbids is
+/// the obvious shortcut — `metrics.cost.unwrap_or(0.0)` — which would put a
+/// phantom `$0.00` frame on the parent's key for a child that never cost
+/// anything, the exact manufacture the cost channel's whole contract exists to
+/// prevent (D5 / ADR 0082).
+#[tokio::test]
+async fn a_never_priced_child_contributes_no_fold_frame() {
+    let events = Arc::new(StdMutex::new(Vec::new()));
+    let sink: Arc<dyn EventSink> = Arc::new(AllEventsSink {
+        events: events.clone(),
+    });
+    let (provider, _calls) = ScriptedProvider::new(vec![
+        Some(vec![
+            ProviderEvent::TextDelta("working".to_string()),
+            ProviderEvent::Usage(
+                Usage {
+                    input_tokens: 100,
+                    output_tokens: 10,
+                },
+                Some(0.003),
+            ),
+            subagent_tool_call("t1"),
+            ProviderEvent::Done(FinishReason::ToolCalls),
+        ]),
+        Some(vec![
+            ProviderEvent::TextDelta("done".to_string()),
+            ProviderEvent::Done(FinishReason::Stop),
+        ]),
+    ]);
+    let dispatcher = MockDispatcher::new();
+    queue_outcome(&dispatcher, completed_with_cost(None));
+    let (_space, mut loop_) = build_loop_with_dispatcher(
+        Box::new(provider),
+        events_tx_for_fold_test(),
+        Arc::new(StdMutex::new(CancellationToken::new())),
+        watch::channel(0u64).0,
+        RetryPolicy::new_with(5, Duration::from_millis(1)),
+        sink,
+        Some(Arc::new(dispatcher) as Arc<dyn SubagentDispatcher>),
+        vec![fake_model("m1")],
+        None,
+    );
+    loop_.handle_prompt(&text_prompt("go")).await;
+
+    let frames = cost_frames(&events);
+    assert_eq!(
+        frames.len(),
+        1,
+        "exactly the parent's own frame — a child with no figure adds no frame \
+         (absence is spelled by NOT emitting, never by a `0.0` fold)",
+    );
+    assert_eq!(
+        frames[0]["payload"]["costUsd"].as_f64().expect("a number"),
+        0.003,
+        "the parent's own money, undiluted"
+    );
+}
+
+/// A DEAD child's money still folds.
+///
+/// ADR 0055's salvage rule in money form: a child that was reaped mid-work was
+/// still billed for it, and the `Failed` outcome carries REAL metrics. The
+/// retired roll-up claimed to honour this; the fold honours it on the ONE key
+/// that matters.
+#[tokio::test]
+async fn a_failed_childs_cost_still_folds_into_the_parent() {
+    let events = Arc::new(StdMutex::new(Vec::new()));
+    let sink: Arc<dyn EventSink> = Arc::new(AllEventsSink {
+        events: events.clone(),
+    });
+    let (provider, _calls) = ScriptedProvider::new(vec![
+        Some(vec![
+            subagent_tool_call("t1"),
+            ProviderEvent::Done(FinishReason::ToolCalls),
+        ]),
+        Some(vec![
+            ProviderEvent::TextDelta("done".to_string()),
+            ProviderEvent::Done(FinishReason::Stop),
+        ]),
+    ]);
+    let dispatcher = MockDispatcher::new();
+    queue_outcome(
+        &dispatcher,
+        SubagentOutcome::Failed {
+            reason: crate::agent::subagent::SubagentFailureReason::Unresponsive,
+            error: "unresponsive".to_string(),
+            output: "partial finding".to_string(),
+            metrics: SubagentMetrics {
+                output: "partial finding".to_string(),
+                input_tokens: 40,
+                output_tokens: 4,
+                cost: Some(0.00001243),
+                duration_ms: 100,
+            },
+        },
+    );
+    let (_space, mut loop_) = build_loop_with_dispatcher(
+        Box::new(provider),
+        events_tx_for_fold_test(),
+        Arc::new(StdMutex::new(CancellationToken::new())),
+        watch::channel(0u64).0,
+        RetryPolicy::new_with(5, Duration::from_millis(1)),
+        sink,
+        Some(Arc::new(dispatcher) as Arc<dyn SubagentDispatcher>),
+        vec![fake_model("m1")],
+        None,
+    );
+    loop_.handle_prompt(&text_prompt("go")).await;
+
+    let frames = cost_frames(&events);
+    assert_eq!(
+        frames.len(),
+        1,
+        "the dead child's money folds into exactly one parent frame, got {frames:?}"
+    );
+    assert_eq!(
+        frames[0]["payload"]["costUsd"].as_f64().expect("a number"),
+        0.00001243,
+        "the sub-cliff figure survives the fold intact (the same precision pin \
+         the parent's own frames carry)"
+    );
+    assert_eq!(frames[0]["sessionId"], "s1", "keyed to the PARENT loop");
+}
+
+/// The child's figure reaches the parent's LOOP STATE and never its PROMPT.
+///
+/// `dispatch.rs`'s doc gives the reason and it still stands: the parent reads
+/// its child's output, and the Client reads the child's usage off
+/// `subagent-closed`. Folding money must not smuggle a number into the text the
+/// model sees — a model that can see a price can reason about a price.
+#[tokio::test]
+async fn the_folded_figure_never_enters_the_parents_prompt() {
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let events = Arc::new(StdMutex::new(Vec::new()));
+    let sink: Arc<dyn EventSink> = Arc::new(AllEventsSink {
+        events: events.clone(),
+    });
+    let (provider, _calls) = ScriptedProvider::new(vec![
+        Some(vec![
+            subagent_tool_call("t1"),
+            ProviderEvent::Done(FinishReason::ToolCalls),
+        ]),
+        Some(vec![
+            ProviderEvent::TextDelta("done".to_string()),
+            ProviderEvent::Done(FinishReason::Stop),
+        ]),
+    ]);
+    let dispatcher = MockDispatcher::new();
+    queue_outcome(&dispatcher, completed_with_cost(Some(0.002)));
+    let (_space, mut loop_) = build_loop_with_dispatcher(
+        Box::new(provider),
+        events_tx,
+        Arc::new(StdMutex::new(CancellationToken::new())),
+        watch::channel(0u64).0,
+        RetryPolicy::new_with(5, Duration::from_millis(1)),
+        sink,
+        Some(Arc::new(dispatcher) as Arc<dyn SubagentDispatcher>),
+        vec![fake_model("m1")],
+        None,
+    );
+    loop_.handle_prompt(&text_prompt("go")).await;
+
+    // Precondition: the fold DID happen (otherwise "the prompt is clean" is a
+    // statement about a run that never carried money at all).
+    assert_eq!(
+        cost_frames(&events)
+            .last()
+            .expect("the fold emitted the parent's total")["payload"]["costUsd"]
+            .as_f64(),
+        Some(0.002),
+        "precondition: the child's 0.002 was folded"
+    );
+
+    // The tool result the parent's transcript — and the next model call's
+    // prompt — is built from is the child's output and NOTHING else.
+    let mut tool_texts: Vec<String> = Vec::new();
+    let mut wire = String::new();
+    while let Ok(ev) = events_rx.try_recv() {
+        if let RpcEvent::tool_execution_end { result, .. } = &ev {
+            tool_texts.push(serde_json::to_string(result).unwrap_or_default());
+        }
+        wire.push_str(&serde_json::to_string(&ev).unwrap_or_default());
+    }
+    assert_eq!(
+        tool_texts,
+        vec![serde_json::json!({
+            "content": [{ "type": "text", "text": "the answer" }],
+            "details": Value::Null,
+            // `isError` — `ToolResult` is `rename_all = "camelCase"` on the wire.
+            "isError": false,
+        })
+        .to_string()],
+        "the `subagent` tool result is the child's output byte-for-byte — no \
+         cost rides into the parent's prompt"
+    );
+    assert!(
+        !wire.contains("0.002") && !wire.contains("costUsd"),
+        "the folded figure never appears on the `RpcEvent` channel either \
+         (it is loop state + its own interactive-event frame): {wire}"
     );
 }

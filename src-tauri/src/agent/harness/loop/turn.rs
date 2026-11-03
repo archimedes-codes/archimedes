@@ -460,7 +460,8 @@ impl AgentLoop {
             .iter()
             .map(|tc| crate::agent::harness::tool_specs::unknown_param_error(&specs, tc))
             .collect();
-        let mut subagent_results: HashMap<usize, ToolResult> = if turn.is_cancelled() {
+        let mut subagent_results: HashMap<usize, (ToolResult, Option<f64>)> = if turn.is_cancelled()
+        {
             HashMap::new()
         } else {
             let me: &Self = self;
@@ -469,21 +470,22 @@ impl AgentLoop {
                 .enumerate()
                 .filter(|(idx, tc)| {
                     // A rejected call must never spawn a child (issue #93).
-                    // These futures run BEFORE the dispatch loop below, so the
-                    // rejection has to gate them HERE — a rejection that only
-                    // lives in the loop would have paid for the child it then
-                    // refused to report. Cancellation is not consulted here:
-                    // the whole batch is already behind `if turn.is_cancelled()`
-                    // above.
+                    // These futures run BEFORE the dispatch loop below, so
+                    // the rejection has to gate them HERE — a rejection that
+                    // only lives in the loop would have paid for the child
+                    // it then refused to report. Cancellation is not
+                    // consulted here: the whole batch is already behind `if
+                    // turn.is_cancelled()` above.
                     //
-                    // `idx` is the call's ORIGINAL index in `tool_calls` — it
-                    // comes from the `.enumerate()` BEFORE this filter and MUST
-                    // stay that. The dispatch loop below keys
+                    // `idx` is the call's ORIGINAL index in `tool_calls` —
+                    // it comes from the `.enumerate()` BEFORE this filter
+                    // and MUST stay that. The dispatch loop below keys
                     // `subagent_results.remove(&idx)` on the same original
                     // index; re-enumerating after this filter ("tidying" it
                     // into a 0-based position among the survivors) silently
                     // mis-keys every child result whenever a batch mixes
-                    // rejected and accepted `subagent` calls. Do not renumber.
+                    // rejected and accepted `subagent` calls. Do not
+                    // renumber.
                     param_errors.get(*idx).is_none_or(|err| err.is_none())
                         && crate::agent::harness::dispatch::is_enabled_subagent_call(
                             me.enabled_tools(),
@@ -506,7 +508,25 @@ impl AgentLoop {
                 match subagent_results.remove(&idx) {
                     // A child that ran (or that the `SubagentWait` select
                     // itself cancelled) keeps its own result — unchanged.
-                    Some(r) => r,
+                    //
+                    // Its MONEY, however, is handled here and nowhere else.
+                    // `fold_child_cost` adds the child's figure to THIS loop's
+                    // accumulator and emits the parent's new total, so the
+                    // parent's key has exactly ONE writer. The Supervisor used
+                    // to emit a second, parent-keyed roll-up frame for every
+                    // child; because a frame is a SNAPSHOT the two writers
+                    // raced, and the parent's next frame — whose accumulator
+                    // had never seen the child — erased the child's money
+                    // (0.003 + child 0.002 + 0.006 stored as 0.009). The fold
+                    // lives HERE rather than inside `dispatch_subagent` because
+                    // the futures above hold a SHARED borrow of the loop; this
+                    // loop is the only party that sees both its own calls and
+                    // its children's outcomes, so it is the only legal owner of
+                    // a total that spans both.
+                    Some((result, child_cost)) => {
+                        self.fold_child_cost(child_cost);
+                        result
+                    }
                     // CANCELLATION BEATS REJECTION: a call that never ran
                     // because the user stopped the turn must not be told to
                     // "fix the key and retry".

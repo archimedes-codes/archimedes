@@ -307,11 +307,22 @@ impl SubagentCancel {
 ///
 /// The cost mechanism is REAL as of issue #87, and it is **per model CALL, not
 /// per turn**: the child's own loop emits one `cost_update` frame for every
-/// provider call that reported a cost, the Supervisor's `SubagentCapture` sums
-/// those frames (see `worker/manager/subagent_flow.rs`), and this field carries
-/// that sum. The earlier text here claimed the suite "self-emits a per-turn
-/// `cost_update`" derived from a model `turn_end` usage; no such mechanism ever
-/// existed, and the grain was wrong besides — a turn spans several model calls.
+/// provider call that reported a cost, the Supervisor's `SubagentCapture` keeps
+/// the LAST of those frames (they carry totals — see
+/// `worker/manager/subagent_flow.rs`), and this field carries that figure. The
+/// earlier text here claimed the suite "self-emits a per-turn `cost_update`"
+/// derived from a model `turn_end` usage; no such mechanism ever existed, and
+/// the grain was wrong besides — a turn spans several model calls.
+///
+/// **Who spends this figure.** Two readers, and they do different jobs:
+/// - the Client, via `metrics_json` on `subagent-closed` — the child card's
+///   figure (issue #107's present-and-null rule);
+/// - the PARENT's loop, via `harness::dispatch::dispatch_subagent`, which folds
+///   `cost` into `AgentLoop::cost_acc` so the parent's own total includes its
+///   children (issue #105, Fulcrum T2's one-writer fix). That fold is the ONLY
+///   route by which a child's money reaches the parent's row: the Supervisor
+///   used to emit a second, parent-keyed `cost_update` frame here instead, and
+///   because a frame is a snapshot the parent's next frame erased it.
 ///
 /// **What `cost` says here:** it is an `Option<f64>`, so the field CAN tell the
 /// two states apart. `None` means **no call reported a cost** (a preflight
@@ -322,7 +333,8 @@ impl SubagentCancel {
 /// collapsed — a renderer prints nothing for the first and `$0.00` for the
 /// second (ADR 0082 / D5). The old `f64` field collapsed both into `0.0` at
 /// `unwrap_or(0.0)`; that collapse is what issue #107 removed, and the capture's
-/// `Option` now reaches the hand-off untouched.
+/// `Option` now reaches the hand-off untouched. The fold honours the same rule:
+/// `None` adds nothing and emits nothing, `Some(0.0)` is a figure and folds.
 ///
 /// `duration_ms` is always the wall clock (see the wire contract's metrics note).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

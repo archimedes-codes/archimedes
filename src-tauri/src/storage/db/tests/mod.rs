@@ -1374,8 +1374,9 @@ fn record_session_preserves_the_title() {
 /// A future column added to that list (or the cost moved into the INSERT
 /// column list with a `excluded.cost_usd` update) would silently zero a
 /// resumed session's total — the figure the user sees in the sidebar would
-/// reset under a reopen while the provider keeps billing, and the roll-up
-/// would then add the children's sums to a reset base. Mirrors
+/// reset under a reopen while the provider keeps billing, and since a parent's
+/// stored total now also carries its children's money (folded into the parent's
+/// accumulator), a reset base would drop that too. Mirrors
 /// `record_session_preserves_the_title` /
 /// `record_session_preserves_the_archived_flag` for the cost column.
 #[test]

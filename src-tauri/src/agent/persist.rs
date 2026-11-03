@@ -35,6 +35,17 @@
 //! The bound the old text leaned on ("no production call site replays history")
 //! is now moot rather than load-bearing: replaying history is survivable, since
 //! every frame restates the total.
+//!
+//! ONE PRODUCER OF THAT THREE NO LONGER EXISTS. The parent-keyed roll-up frame
+//! in `finish_subagent` was deleted in the follow-up commit: with the frame a
+//! snapshot and the write an overwrite, TWO writers on the parent's store key
+//! make the last frame win, and the parent's accumulator had never seen its
+//! child — so the parent's next frame erased the child's money. A child's cost
+//! now folds into the PARENT's own `cost_acc` (`AgentLoop::fold_child_cost`,
+//! fed by `harness::dispatch::dispatch_subagent`), so the parent's loop is the
+//! single writer of the parent's key and #105's "a parent's stored total
+//! includes its children" holds. What persists through THIS arm is unchanged:
+//! one frame, one overwrite, keyed to whatever session the frame names.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -421,6 +432,10 @@ mod tests {
         // NO `record_session`, NO `apply(StoreFrame)`: the row does not exist.
         assert!(db.session("sub-cold").unwrap().is_none());
 
+        // A CHILD's own frame (`is_subagent: true`), so `source: "main"` — the
+        // label every `AgentLoop` emits, including a child's. `"subagent"` is no
+        // longer producible anywhere: it was the deleted parent-keyed roll-up's
+        // label, and this frame is keyed to the CHILD, not the parent.
         p.apply_interactive_event(
             "sub-cold",
             true,
@@ -428,7 +443,7 @@ mod tests {
                 "sessionId": "sub-cold",
                 "seq": 0,
                 "event": "cost_update",
-                "payload": { "costUsd": 0.0000341, "source": "subagent" },
+                "payload": { "costUsd": 0.0000341, "source": "main" },
             }),
         );
 

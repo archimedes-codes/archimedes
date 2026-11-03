@@ -82,7 +82,15 @@ impl AgentLoop {
         // truth is `is_subagent_call` — the parallel batch + this dispatch
         // share it; a future third alias updates only that one place).
         if crate::agent::harness::dispatch::is_subagent_call(&tc.name) {
-            return self.dispatch_subagent(&tc.arguments, turn).await;
+            let (result, child_cost) = self.dispatch_subagent(&tc.arguments, turn).await;
+            // The child's money joins the session total HERE (the sequential
+            // path — `run_tool_batch`'s concurrent batch folds at its own
+            // consumption point). `dispatch_tool` is `&mut self`, so this is a
+            // legal writer for `cost_acc`; `dispatch_subagent` itself stays
+            // `&self` because the concurrent path calls it through a shared
+            // borrow inside the batch's futures.
+            self.fold_child_cost(child_cost);
+            return result;
         }
         match tc.name.as_str() {
             "bash" | "read" | "write" | "edit" | "find" | "grep" | "ls" | "list_skills"
@@ -198,11 +206,20 @@ impl AgentLoop {
 
     /// `subagent` dispatch — the thin wrapper that supplies the loop's
     /// fields; the dispatch flow itself lives in `harness::dispatch`.
+    ///
+    /// `&self`, NOT `&mut self`, and the child's cost comes back as the second
+    /// half of the return value rather than being folded here: the CONCURRENT
+    /// batch in `run_tool_batch` calls this through a shared borrow (`me`) so
+    /// several children can be in flight at once, and a `&mut self` fold inside
+    /// those futures is not expressible. The CALLER folds — `run_tool_batch` at
+    /// the point it consumes each outcome, `dispatch_tool` on the sequential
+    /// path — which is also where the fold's frame gets its order: one frame
+    /// per child, in the batch's tool-call order.
     pub(super) async fn dispatch_subagent(
         &self,
         params: &Value,
         turn: &CancellationToken,
-    ) -> ToolResult {
+    ) -> (ToolResult, Option<f64>) {
         crate::agent::harness::dispatch::dispatch_subagent(
             self.subagent.as_ref(),
             &crate::agent::harness::dispatch::SubagentParent {

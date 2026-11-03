@@ -2101,25 +2101,32 @@ async fn the_subagent_ui_lifecycle_events_fire_on_the_parent_sink() {
     );
 }
 
-/// (issue #107) A REAL-ZERO child, end to end: the `__subagent_cost_0__`
-/// fixture emits ONE child-keyed `cost_update` frame carrying `costUsd: 0.0`,
-/// so the Supervisor's `SubagentCapture` sums it to `Some(0.0)` — the spelling
-/// that is a FIGURE — and BOTH consequences of the `Option` hand-off are
-/// observable on real processes:
+/// (issue #107 → Fulcrum T2's follow-up) A REAL-ZERO child, end to end on real
+/// processes: the `__subagent_cost_0__` fixture emits ONE child-keyed
+/// `cost_update` frame carrying `costUsd: 0.0`, so the Supervisor's
+/// `SubagentCapture` holds `Some(0.0)` — the spelling that is a FIGURE — and the
+/// two consequences observable from the Supervisor are:
 ///
 /// 1. the `subagent-closed` hand-off carries the NUMBER `0.0`, not `null` (the
 ///    never-priced child of the test above proves the other half — the two are
 ///    NOT interchangeable);
-/// 2. a real-zero child CONTRIBUTES a parent-keyed `cost_update` frame: the
-///    roll-up gate is the `Option`, not a `> 0.0` value filter, so a real zero
-///    still reaches the parent's money (the spec's "`$0.00` for a real zero"
-///    claim, pinned Rust-side at the emitter).
+/// 2. the Supervisor contributes **NO parent-keyed `cost_update` frame** — the
+///    roll-up is deleted, because a second writer on the parent's store key
+///    loses the child's money to the parent's next frame. The parent's total is
+///    built by the parent's own loop (`AgentLoop::fold_child_cost`), pinned
+///    loop-side in `harness/loop/tests/cost.rs`.
 ///
-/// The frame is asserted on the `on_event` observation point (this harness's
-/// `on_event` collector — production's `on_event` is `SessionManager::
-/// route_event`, which persists the frame and re-emits the SAME payload to the
-/// parent's UI sink; the harness has no router, so the sink leg is the
-/// production-only half and the `route_event` write is pinned in `router.rs`).
+/// Point 2 is the half that CHANGED. What did NOT change is the child's own
+/// frame: it still rides the CHILD's stream, still CHILD-keyed, still
+/// `is_subagent: true`, and it still lands on the child's own row and its own
+/// card — asserted below, because "no roll-up" must not quietly become "the
+/// child's money vanished".
+///
+/// Both frame counts are asserted on the `on_event` observation point (this
+/// harness's `on_event` collector — production's `on_event` is `SessionManager::
+/// route_event`, which persists and re-emits; the harness has no router, so the
+/// sink leg is production-only and the `route_event` write is pinned in
+/// `router.rs`).
 ///
 /// (On the name: the plan's title for this test, kept verbatim. The "null
 /// metrics" half is NOT what it asserts — this child's hand-off is the NUMBER
@@ -2160,18 +2167,25 @@ async fn a_real_zero_child_emits_null_metrics_and_a_parent_costs_zero() {
         "the hand-off stays keyed to the CHILD"
     );
 
-    // 2. The roll-up: EXACTLY ONE parent-keyed `cost_update` frame. The child's
-    // OWN frame rides the same channel (the pump delivers a child's frames to
-    // the PARENT's id, flagged `is_subagent: true`, and keyed to the CHILD) —
-    // that is the no-double-count half: different store keys. The roll-up is the
-    // `is_subagent: false`, PARENT-keyed frame.
-    let got = wait_for_event(&events, "u2", |e| {
-        matches!(e, WorkerInboundEvent::SinkFrame { event, payload }
-            if event == "interactive-event"
-                && payload["event"] == "cost_update"
-                && payload["sessionId"] == "u2")
+    // 2. THE ONE-WRITER RULE, end to end: ZERO parent-keyed frames, ONE
+    // child-keyed frame. The child's OWN frame rides the same channel (the pump
+    // delivers a child's frames to the PARENT's id, flagged `is_subagent: true`,
+    // and keyed to the CHILD) — that frame is the child's money on the child's
+    // key and it SURVIVES this change untouched. What is gone is the second,
+    // `is_subagent: false`, PARENT-keyed roll-up the Supervisor used to add:
+    // two writers on the parent's key is the money-loss defect.
+    // THE barrier: read the log AFTER the `subagent-result-ack`, which the
+    // fixture emits when the `SubagentResult` frame arrives — and that frame is
+    // the LAST thing `finish_subagent` sends. So by the time the ack is visible,
+    // every emission that function makes (including the deleted roll-up, should
+    // it ever come back) is already in the log: the zero-count assertion below
+    // cannot pass by having looked too early. The child's own frame arrives
+    // during the stream, strictly before it, so one barrier covers both counts.
+    wait_for_event(&events, "u2", |e| {
+        matches!(e, WorkerInboundEvent::SinkFrame { event, .. } if event == "subagent-result-ack")
     })
     .await;
+    let got = collect_now(&events, "u2");
     let rollups: Vec<&WorkerInboundEvent> = got
         .iter()
         .filter(|(is_sub, e)| {
@@ -2191,33 +2205,18 @@ async fn a_real_zero_child_emits_null_metrics_and_a_parent_costs_zero() {
                     if event == "interactive-event" && payload["event"] == "cost_update")
         })
         .count();
-    assert_eq!(
-        rollups.len(),
-        1,
-        "a real-zero child contributes exactly ONE PARENT-keyed roll-up frame: {got:?}"
+    assert!(
+        rollups.is_empty(),
+        "a real-zero child contributes NO PARENT-keyed `cost_update` frame — \
+         the Supervisor is not a writer of the parent's money key (its roll-up \
+         was a second writer, and a snapshot frame from it was erased by the \
+         parent's next frame): {got:?}"
     );
     assert_eq!(
         child_frames, 1,
-        "the child's OWN frame is the other one (CHILD-keyed, `is_subagent: \
-         true`) — the two never share a store key: {got:?}"
-    );
-    let frame = match rollups[0] {
-        WorkerInboundEvent::SinkFrame { payload, .. } => payload.clone(),
-        _ => unreachable!("filtered above"),
-    };
-    assert_eq!(
-        frame["sessionId"], "u2",
-        "the roll-up is keyed to the PARENT, never the child"
-    );
-    assert_ne!(
-        frame["sessionId"], child_id,
-        "the roll-up must NOT re-key the child's money to the child"
-    );
-    assert_eq!(frame["payload"]["source"], "subagent");
-    assert_eq!(
-        frame["payload"]["costUsd"].as_f64(),
-        Some(0.0),
-        "a real zero IS a figure and its frame lands on the parent's money"
+        "the child's OWN frame is still there (CHILD-keyed, `is_subagent: \
+         true`) — deleting the roll-up must not delete the child's own money: \
+         {got:?}"
     );
 
     drop(sink_events);

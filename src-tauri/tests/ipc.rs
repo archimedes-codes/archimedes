@@ -944,9 +944,9 @@ async fn a_subagent_transcript_persists_as_a_hidden_ephemeral_row() {
             .expect("the parent cost read"),
         None,
         "the child's own money must NOT land on the delivery id's row — that id \
-         is the PARENT's, and the roll-up frame (keyed to the parent) would then \
-         overwrite it with the child's total, leaving the parent reporting a \
-         child's spend as its own"
+         is the PARENT's, and a parent-keyed snapshot frame carrying the child's \
+         total would leave the parent reporting a child's spend as its own (and \
+         the child's own row would then hold nothing)"
     );
 }
 
@@ -954,25 +954,29 @@ async fn a_subagent_transcript_persists_as_a_hidden_ephemeral_row() {
 //
 // HOW these tests drive a `cost_update` frame, and what that does and does not
 // prove. `fake_worker` has NO priced scenario — its canned turn emits no
-// `cost_update` frame and never calls a provider, so a real dispatch's
-// `SubagentMetrics.cost` is `0.0` and `finish_subagent`'s `> 0.0`
-// frame-existence gate suppresses the roll-up. Adding a priced fixture
-// scenario means editing `src/bin/fake_worker.rs`, which is outside this
-// task's files. So these tests inject the frame through
+// `cost_update` frame and never calls a provider, so neither a real main
+// session's loop nor a dispatched child produces one, and a real dispatch's
+// `SubagentMetrics.cost` is `None` (so the parent's fold emits nothing). Adding
+// a priced fixture scenario means editing `src/bin/fake_worker.rs`, which is
+// outside this task's files. So these tests inject the frame through
 // `WorkerManager::hooks()` — the app's OWN `SessionWorkerHooks`, built by the
 // same `SessionManagerBuilder::build` the production `setup_dirs` runs — which
-// is EXACTLY the call `finish_subagent` makes for the roll-up
-// (`hooks.on_event(parent, false, SinkFrame { … })`). Everything downstream of
-// that call is production code and production wiring: the router's gate,
-// `apply_interactive_event`, `Db::record_session_cost`, the `TauriSink`
-// re-emission, and the `list_sessions` / `resume_session` command surface.
-// What is NOT proven here is that `finish_subagent` builds that envelope —
-// `subagent_flow.rs`'s `rollup_tests` pin the frame's shape and that it now
-// travels through `on_event`, and the payload below is copied from it
-// byte-for-byte.
+// is the SAME call the production money path makes (`hooks.on_event(session,
+// is_subagent, SinkFrame { … })`: the Worker pump makes it for every frame a
+// session emits, and the parent's loop's own frames reach the router the same
+// way). Everything downstream of that call is production code and production
+// wiring: the router's gate, `apply_interactive_event`,
+// `Db::record_session_cost`, the `TauriSink` re-emission, and the
+// `list_sessions` / `resume_session` command surface.
+//
+// What is NOT proven here is who BUILDS the envelope: that is
+// `emit_cost_update` / `fold_child_cost` (`harness/loop/emit.rs`, pinned in
+// `harness/loop/tests/cost.rs`) — and, since the parent-keyed roll-up frame was
+// deleted, no frame is built by `finish_subagent` at all. The payload below is
+// copied from the emitter byte-for-byte.
 
-/// One `cost_update` `SinkFrame` payload in the shape `finish_subagent`'s
-/// roll-up emits (`sessionId` = the session the money belongs to).
+/// One `cost_update` `SinkFrame` payload in the shape `emit_cost_update` writes
+/// (`sessionId` = the session the money belongs to).
 fn cost_frame(session_id: &str, cost_usd: f64, source: &str) -> WorkerInboundEvent {
     WorkerInboundEvent::SinkFrame {
         event: "interactive-event".to_string(),
@@ -1236,17 +1240,37 @@ async fn a_resumed_session_is_handed_back_the_stored_cost() {
     );
 }
 
-/// (issue #105) THE ROLL-UP THROUGH THE REAL IPC SURFACE: a child's roll-up
-/// frame (the envelope `finish_subagent` emits, byte-for-byte) lands on the
-/// PARENT's row AND is still re-emitted to the UI verbatim exactly once — the
-/// end-to-end half of the link Task 2 could only assert at the router
-/// (`a_parent_keyed_cost_frame_from_the_router_writes_the_parents_row` defers
-/// to this). It runs against a REAL dispatched child (the `__subagent__`
-/// fixture — the child's own hidden row exists) so the two rows the roll-up
-/// must NOT confuse are both present, and the parent's STORED figure equals
-/// the figure under its own title.
+/// (issue #105, Fulcrum T2's one-writer form) THE PARENT'S MONEY THROUGH THE
+/// REAL IPC SURFACE: a parent-keyed `cost_update` frame — the envelope the
+/// parent's OWN loop emits, including the one `fold_child_cost` emits when a
+/// child returns — lands on the PARENT's row AND is re-emitted to the UI
+/// verbatim exactly once. This is the end-to-end half of the link the router
+/// test (`a_parent_keyed_cost_frame_from_the_router_writes_the_parents_row`)
+/// defers here. It runs against a REAL dispatched child (the `__subagent__`
+/// fixture — the child's own hidden row exists) so both rows the two keys must
+/// not confuse are present, and the parent's STORED figure equals the figure
+/// under its own title.
+///
+/// TWO things this test used to assert and no longer does, both because the
+/// parent-keyed ROLL-UP frame in `finish_subagent` is DELETED (a second writer
+/// on the parent's store key loses the child's money to the parent's next
+/// snapshot frame):
+/// - it no longer claims the frame below is what `finish_subagent` emits — it
+///   is now the envelope the PARENT's loop writes, `source: "main"`;
+/// - the real dispatch is asserted to write NOTHING to the parent's row, which
+///   is the absence checked end to end: the Supervisor adds no frame of its own.
+///
+/// The injected frame is still not production's EMISSION — `fake_worker` never
+/// calls a provider, so neither the parent's loop nor the child produces a real
+/// `cost_update` here. What IS production, downstream of the injection, is the
+/// whole money path the fold depends on: `hooks.on_event` → the router's
+/// `cost_update` gate → `apply_interactive_event` → `Db::record_session_cost` →
+/// the `TauriSink` re-emission → `list_sessions`. The emission itself is pinned
+/// loop-side (`a_delegating_parents_total_keeps_its_childs_money`) and the
+/// absence of the old second writer is pinned in `subagent_flow.rs`'s
+/// `rollup_tests`.
 #[tokio::test]
-async fn the_subagent_roll_up_lands_on_the_parents_row_and_still_re_emits() {
+async fn a_parent_keyed_cost_frame_lands_on_the_parents_row_and_still_re_emits() {
     let dirs = TestDirs::new();
     let _server = seed_default_model(&dirs).await;
     let app = build_app(&dirs);
@@ -1277,60 +1301,64 @@ async fn the_subagent_roll_up_lands_on_the_parents_row_and_still_re_emits() {
         .expect("the child id")
         .to_string();
 
-    // WHY the roll-up frame is injected below rather than produced by that
-    // real dispatch: the `fake_worker` fixture never calls a provider and
-    // emits no `cost_update` frame, so the dispatched child's
-    // `SubagentMetrics.cost` is `0.0` and `finish_subagent`'s `> 0.0`
-    // frame-existence gate correctly emits NO roll-up. Asserted here so the
-    // substitution is visible AT the assertion and not only in a comment.
+    // THE ABSENCE, end to end: a real delegation, from start to teardown,
+    // writes NOTHING to the parent's row. The fixture's child is never priced,
+    // so there is no figure to fold — but the load-bearing half is that the
+    // Supervisor added no frame of its own either. Under the deleted roll-up
+    // this assertion would still read `None` for a never-priced child, so the
+    // discriminating pin for the removal is `subagent_flow.rs`'s
+    // `finish_subagent_emits_no_parent_keyed_cost_frame`, which drives a child
+    // that DID spend; what this line guards is the wiring: the parent's row is
+    // written by the parent's frames and nothing else.
     let d = db(&app);
     assert_eq!(
         d.session_cost(&info.session_id)
             .expect("the parent cost read"),
         None,
-        "the fixture's child reported nothing, so the real dispatch rolled up \
-         nothing; the frame injected below is the envelope `finish_subagent` \
-         emits when the child DID spend (its shape and its new `on_event` \
-         route are pinned in `subagent_flow.rs`'s `rollup_tests`)"
+        "a real delegation writes no parent-keyed money frame of its own"
     );
 
-    // The roll-up, exactly as `finish_subagent` emits it: the PARENT's id,
-    // `is_subagent: false`, `source: "subagent"`, `seq: 0`.
+    // The frame the PARENT's loop emits for its own session — the envelope
+    // `emit_cost_update` writes, and the same envelope `fold_child_cost` emits
+    // with the child's figure already added in: the PARENT's id, `is_subagent:
+    // false`, `source: "main"`, `seq: 0`.
     let hooks = worker_manager(&app).hooks().clone();
     hooks.on_event(
         &info.session_id,
         false,
-        cost_frame(&info.session_id, 0.0000341, "subagent"),
+        cost_frame(&info.session_id, 0.0000341, "main"),
     );
 
     assert_eq!(
         d.session_cost(&info.session_id)
             .expect("the parent cost read"),
         Some(0.0000341),
-        "the roll-up writes the PARENT's row (the parent's stored figure now \
-         agrees with the figure under its own title)"
+        "the parent's own frame writes the PARENT's row (the parent's stored \
+         figure agrees with the figure under its own title — and when the frame \
+         came from the fold, that figure includes its children)"
     );
     assert_eq!(
         d.session_cost(&child_id).expect("the child cost read"),
         None,
-        "the roll-up is the PARENT's money — it must not touch the child's row"
+        "a parent-keyed frame is the PARENT's money — it must not touch the \
+         child's row"
     );
 
     // The UI half: the frame is re-emitted verbatim, exactly once.
-    let rollups: Vec<Value> = collector
+    let frames: Vec<Value> = collector
         .find("interactive-event")
         .into_iter()
         .filter(|f| f["event"] == "cost_update")
         .collect();
     assert_eq!(
-        rollups.len(),
+        frames.len(),
         1,
-        "the roll-up reaches the UI exactly once (persisting does not eat it)"
+        "the parent's frame reaches the UI exactly once (persisting does not eat it)"
     );
-    assert_eq!(rollups[0]["sessionId"], info.session_id.as_str());
-    assert_eq!(rollups[0]["seq"], json!(0));
-    assert_eq!(rollups[0]["payload"]["source"], "subagent");
-    assert_eq!(rollups[0]["payload"]["costUsd"], json!(0.0000341));
+    assert_eq!(frames[0]["sessionId"], info.session_id.as_str());
+    assert_eq!(frames[0]["seq"], json!(0));
+    assert_eq!(frames[0]["payload"]["source"], "main");
+    assert_eq!(frames[0]["payload"]["costUsd"], json!(0.0000341));
 
     // And it survives the close, on the list the frontend reads at boot.
     invoke_ok(
@@ -1354,7 +1382,7 @@ async fn the_subagent_roll_up_lands_on_the_parents_row_and_still_re_emits() {
     assert_eq!(
         row["costUsd"],
         json!(0.0000341),
-        "the parent's LISTED figure includes the child roll-up"
+        "the parent's LISTED figure is the total its own frames carried"
     );
 }
 

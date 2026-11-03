@@ -720,11 +720,14 @@ impl Db {
     ///
     /// Consequence of the move: the accumulator lives on the emitter
     /// (`AgentLoop::cost_acc`, seeded from this very column on `Resume` via
-    /// `StartEnv.cost_usd`) and in the child capture / parent roll-up
-    /// (`subagent_flow.rs`, whose roll-up frame now carries the child's final
-    /// total rather than a delta). A store that overwrites cannot tolerate a
-    /// producer that still sends deltas — all three producers moved in this one
-    /// commit.
+    /// `StartEnv.cost_usd`) and in the child capture (`subagent_flow.rs`, whose
+    /// figure rides the outcome to the PARENT's loop and is folded into that
+    /// loop's `cost_acc`). The emitter set is deliberately ONE PER STORE KEY:
+    /// the third producer this column used to have — a parent-keyed roll-up
+    /// frame written by the Supervisor — was deleted, because two writers on one
+    /// snapshot key make the last frame win and the parent's accumulator had
+    /// never seen the child, so the child's money was erased. See
+    /// `AgentLoop::fold_child_cost`.
     ///
     /// A `None` column becomes a figure on the first write; a stored `0.0` came
     /// from a call that reported a genuine zero (D5 / ADR 0082). The two are

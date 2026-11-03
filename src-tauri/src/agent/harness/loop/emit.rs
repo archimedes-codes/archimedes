@@ -229,6 +229,38 @@ impl AgentLoop {
         );
     }
 
+    /// Fold a CHILD's reported cost into THIS loop's total and emit the new
+    /// total (Fulcrum T2's one-writer fix; the money-loss defect's cure).
+    ///
+    /// WHY THE PARENT'S LOOP IS THE ONLY LEGAL WRITER OF ITS OWN KEY. Issue
+    /// #105 requires a parent's STORED total to include its children. Since the
+    /// frame became a snapshot, two writers on one key cannot both satisfy
+    /// that: the Supervisor's roll-up (`subagent_flow.rs`) and this loop's own
+    /// frames are both keyed to the parent, and the store OVERWRITES, so the
+    /// last frame won — and this loop's accumulator had never seen the child,
+    /// so its next frame erased the child's money (parent 0.003 → child 0.002 →
+    /// parent 0.006 stored `0.009`, not `0.011`). The delta wire ADDED, so it
+    /// hid this; the snapshot wire made it structural. One writer per key is
+    /// the only shape that is correct AND idempotent, and only the parent's
+    /// loop can be that writer: it is the only party that sees both its own
+    /// calls and its children's outcomes.
+    ///
+    /// WHY IT EMITS AND DOES NOT MERELY ADD: a parent whose last act is a
+    /// delegation makes no further priced call, so an add-only fold would keep
+    /// the child's money in memory and out of the row — #105's requirement
+    /// would hold only for parents that happen to spend again afterwards.
+    ///
+    /// The gate is the emitter's own: `None` (a child that never reported a
+    /// figure, or a dispatch that was cancelled before any outcome arrived)
+    /// adds nothing and emits nothing — never a phantom `$0.00` (D5). A child's
+    /// `Some(0.0)` IS a figure and still folds. The `source` stays `"main"`
+    /// because the frame states the PARENT's total, and the label is inert
+    /// anyway (ADR 0041) — a second label on this key would just be a second
+    /// writer wearing a different hat.
+    pub(super) fn fold_child_cost(&mut self, child_cost: Option<f64>) {
+        self.emit_cost_update(child_cost);
+    }
+
     /// Re-estimate the context size (the prompt-time / post-tool-batch
     /// metric). If the estimate MOVED, emits `context_usage_update`.
     ///

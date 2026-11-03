@@ -570,9 +570,19 @@ pub struct AgentLoop {
     ///
     /// Grain, since ADR 0082's own objection was partly a grain mistake: this is
     /// NOT a per-turn figure (a turn spans several model calls, and
-    /// `TurnAccumulator` is per call). It is per SESSION, and both producers
-    /// that feed it are session-scoped: `turn.rs`'s `Usage` arm and
-    /// `run_compaction`'s `Compacted` arm.
+    /// `TurnAccumulator` is per call). It is per SESSION, and it has THREE
+    /// producers, all session-scoped, all inside this loop: `turn.rs`'s `Usage`
+    /// arm, `run_compaction`'s `Compacted` arm, and `run_tool_batch`'s fold of a
+    /// child's cost (`AgentLoop::fold_child_cost`).
+    ///
+    /// ONE WRITER, on purpose (Fulcrum T2's follow-up). Since a frame carries a
+    /// TOTAL and the store overwrites, a second writer on the same store key
+    /// loses money — the Supervisor used to emit a parent-keyed roll-up frame
+    /// per child and the parent's next frame erased it. This loop is the only
+    /// writer of its own key because it is the only party that can see both its
+    /// own calls and its children's outcomes; that is what lets it satisfy
+    /// issue #105 ("a parent's stored total includes its children") without a
+    /// second producer.
     ///
     /// `+ 0.0` in `emit_cost_update` keeps a signed zero off the wire; this
     /// field is only ever written by that method and by `seed_cost`.
