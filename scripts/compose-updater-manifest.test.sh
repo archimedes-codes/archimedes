@@ -205,7 +205,7 @@ previous_manifest_state() {
 
 tag="v0.2.0"
 version="0.2.0"
-repo="danielcherubini/archimedes-desktop"
+repo="archimedes-codes/desktop"
 base_url="https://github.com/$repo/releases/download/$tag"
 five_keys='linux-x86_64 linux-x86_64-appimage linux-x86_64-deb windows-x86_64 windows-x86_64-nsis'
 

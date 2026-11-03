@@ -111,7 +111,7 @@ key in `tauri.conf.json` (`plugins.updater.pubkey`) before anything is
 installed; `requireSignedVersion` is on, so a manifest cannot announce a
 version newer than the one the signature binds. The client reads one manifest
 — `latest.json` at
-`https://github.com/danielcherubini/archimedes-desktop/releases/latest/download/latest.json`,
+`https://github.com/archimedes-codes/desktop/releases/latest/download/latest.json`,
 the published release's own download path — and that file carries one key per
 installed form (`windows-x86_64`, `windows-x86_64-nsis`, `linux-x86_64`,
 `linux-x86_64-appimage`, `linux-x86_64-deb`, and `darwin-*` once macOS
