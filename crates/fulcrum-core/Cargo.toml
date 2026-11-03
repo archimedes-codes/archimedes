@@ -3,3 +3,33 @@ name = "fulcrum-core"
 version = "0.11.0"
 edition = "2021"
 description = "The Fulcrum agent engine core — extracted from archimedes (T5-T8)"
+
+# The dependencies the T5/S1 leaf modules actually name — nothing else. Adding a
+# dependency the crate does not use is a silent widening of what the engine is
+# allowed to reach for, so each line below is justified by a `grep`-able use in
+# `src/`, and `tauri` / `tauri_plugin_*` / `archimedes_lib` / `rusqlite` are
+# deliberately ABSENT (the crate compiling without them is the master roadmap's
+# decoupling criterion).
+[dependencies]
+# `events.rs` (`RpcEvent`/`CompactionReason` derive), `ids.rs`, `todo.rs`,
+# `fs_backend.rs` (`FsError`'s serde tag).
+serde = { version = "1", features = ["derive"] }
+# `events.rs` (`Value` is the event payload type), `ids.rs` + `todo.rs` (tests).
+serde_json = "1"
+# `types.rs` + `ids.rs` (`mint_session_id`/`SessionId::mint`), `fs_backend.rs` (tests).
+uuid = { version = "1", features = ["v4"] }
+# `debuglog.rs:50` (`dirs::data_dir()` — the supervisor log's base dir).
+dirs = "6"
+# `fs_backend.rs:28` (`FsError`'s `thiserror::Error` derive).
+thiserror = "2"
+# `hostenv.rs` (`EnvPatch::apply` takes a `tokio::process::Command`).
+tokio = { version = "1", features = ["process"] }
+
+# The moved `#[cfg(test)]` blocks need more of `tokio` than the production code
+# does: `hostenv.rs:1050` is a `#[tokio::test]` (`macros` + `rt`). Test-build
+# features only — resolver 2 keeps this out of the desktop's graph.
+[dev-dependencies]
+tokio = { version = "1", features = ["process", "macros", "rt"] }
+
+# `hostenv.rs`'s Linux-only `scrub` internals use `std::os::unix::ffi` (in std, no
+# crate) — no target-gated dependency is needed for the S1 set.

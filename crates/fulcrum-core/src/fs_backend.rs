@@ -42,7 +42,11 @@ pub enum FsError {
 ///
 /// No read or write may ever touch a file that does not live under one of
 /// the `roots`. `roots[0]` is the join base for relative paths (the session
-/// `cwd`), so the ORDER matters — see [`crate::agent::boundary`].
+/// `cwd`), so the ORDER matters — see the desktop's `agent::boundary` (a plain
+/// reference, not an intra-doc link: `boundary` stays desktop until T5/S2, so
+/// `crate::agent::boundary` does not resolve from inside this crate and rustdoc
+/// reports it as an unresolved link — the compiler stays silent on doc links, so
+/// A.1's path rewrite cannot catch these).
 #[derive(Debug, Clone)]
 pub struct FsBackend {
     /// The allowed trees. `roots[0]` is what a RELATIVE path joins to; a
@@ -275,7 +279,17 @@ fn peel_to_existing(path: &Path) -> Result<Peel, FsError> {
 /// canonicalizes to itself, so passing a resolved path through here is a
 /// no-op — which is what makes it safe to call from a seam shared by callers
 /// that hand over raw paths and callers that hand over resolved ones.
-pub(crate) fn canonicalize_lenient(path: &Path) -> PathBuf {
+///
+/// `pub` (was `pub(crate)` before the T5/S1 move): `pub(crate)` means
+/// crate-private, and a package boundary erases it — the callers in
+/// `boundary.rs`, `policy.rs`, `harness/loop/gate.rs` and `tools/exec/access.rs`
+/// were crate-internal siblings while this file lived under `src-tauri/src/` and
+/// are a different package now. Same correction the T5 plan prescribes for
+/// `resolve_composed_model` (Step E.3): raise the visibility, re-export through
+/// `agent/mod.rs`, and the consumers stay untouched. `FsBackend::resolve` and
+/// `check_under_roots` stay `pub(crate)` — measured, nothing outside this file
+/// names them, so widening them would be surface for its own sake.
+pub fn canonicalize_lenient(path: &Path) -> PathBuf {
     match peel_to_existing(path) {
         Ok(peel) if peel.trailing.is_empty() => peel.canon,
         Ok(peel) => reapply(peel.canon, &peel.trailing),

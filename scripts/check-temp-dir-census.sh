@@ -157,15 +157,22 @@ sessions-log-test-	src-tauri/src/commands/sessions.rs
 history-	src-tauri/src/commands/history.rs
 files-cmd-test-	src-tauri/src/commands/files/tests/support.rs
 test-support-guard-	src-tauri/src/test_support.rs
+# T5/S1: `fulcrum-core`'s OWN copy of the scratch-dir guard — the crate cannot
+# reach `archimedes_lib::test_support` (that edge is the package cycle T5 severs),
+# so the crate mints under its own prefix. Same mechanism, same guard, one row.
+# Without this row a `fc-guard-*` dir reports as UNATTRIBUTED — which the header
+# defines as "NEW, which is exactly what this guard is for" — i.e. a correctly
+# guarded dir would read as a leak and invite someone to "fix" a test that is fine.
+fc-guard-	crates/fulcrum-core/src/test_support.rs
 session-cfg-	src-tauri/src/agent/session/mod.rs
 refresh-	src-tauri/src/agent/session/mod.rs
 router-todos-	src-tauri/src/agent/session/router.rs
 crashsel-	src-tauri/src/agent/session/router.rs
 crashlog-test-	src-tauri/src/agent/crashlog.rs
-debuglog-test-	src-tauri/src/agent/debuglog.rs
+debuglog-test-	crates/fulcrum-core/src/debuglog.rs
 perm-gate-	src-tauri/src/agent/permission.rs
 persist-test-	src-tauri/src/agent/persist.rs
-fsb-	src-tauri/src/agent/fs_backend.rs
+fsb-	crates/fulcrum-core/src/fs_backend.rs
 fs-backend-	src-tauri/tests/fs_backend.rs
 boundary-	src-tauri/src/agent/boundary.rs
 session-native-	src-tauri/tests/session_native.rs
