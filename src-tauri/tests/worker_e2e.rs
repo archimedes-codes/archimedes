@@ -273,6 +273,21 @@ fn sink_chunk_texts(evs: &[(String, bool, WorkerInboundEvent)]) -> Vec<String> {
         .collect()
 }
 
+/// The `compaction_end` events among the collected frames — the control-queue
+/// fence's observation point in `config_update_push_reaches_a_live_worker`.
+///
+/// This is the ONLY frame in this test's stream that a control command emits
+/// and nothing else can: `run_compaction` is reached from exactly one place
+/// (`run()`'s control arm), so one `compaction_end` here names the fence and
+/// nothing else.
+fn compaction_end_events(evs: &[(String, bool, WorkerInboundEvent)]) -> usize {
+    evs.iter()
+        .filter(
+            |(_, _, e)| matches!(e, WorkerInboundEvent::Event(ev) if ev.kind() == "compaction_end"),
+        )
+        .count()
+}
+
 /// Poll the transcript rows until `want` rows are persisted (bounded).
 /// The `native_messages` rows are written by the `TranscriptPersister`
 /// from the WORKER's store frames, which arrive on their own schedule —
@@ -1961,12 +1976,20 @@ fn sse_final(text: &str) -> String {
 /// # Why the ordering is deterministic (no sleeps, no races)
 ///
 /// `run()` applies a control command only BETWEEN turns, so the push must be
-/// applied before turn 2 begins or the assertion is a coin-flip. Turn 1 is the
-/// barrier: this test sends the second prompt only AFTER it has observed turn
-/// 1's `agent_settled`, so at that moment the prompt queue is empty and the
-/// loop is parked in its `select!` — the control branch is the only ready one,
-/// and the push is applied before the second prompt can be received. No
-/// timing assumption, no wall-clock guess.
+/// applied before turn 2 begins or the assertion is a coin-flip — and turn 1's
+/// `agent_settled` is NOT that barrier. The loop EMITS `agent_settled` from
+/// inside `handle_prompt` and only returns to its `select!` afterwards, so a
+/// `config-update` sent right after the settle can find the loop still inside
+/// the turn; by the time it parks, BOTH queues are non-empty and an unbiased
+/// `tokio::select!` picks between the control arm and the prompt arm at RANDOM
+/// — the prompt arm winning starts turn 2 under the OLD policy, which is the
+/// intermittent failure this barrier exists to kill.
+///
+/// The barrier is a CONTROL-QUEUE DRAIN FENCE (see the `send_compact` step
+/// below), not an observed turn event: the control channel is FIFO and the
+/// fence is the only ready arm while the prompt queue is empty, so observing
+/// the fence's reply PROVES the `config-update` ahead of it was already
+/// applied. No timing assumption, no wall-clock guess.
 // The `ENV_LOCK` is held across `await` points INTENTIONALLY — the Worker
 // CHILD reads `HOME` while this test awaits, and a sibling holds the same lock
 // with a MUTATED `HOME` (the `full_turn_real_worker_canned_provider` precedent
@@ -2086,6 +2109,54 @@ async fn config_update_push_reaches_a_live_worker() {
             None,
         )
         .expect("the config-update frame is written to the live worker's stdin");
+
+    // ── The fence: prove the push was APPLIED before turn 2 is allowed to start. ──
+    //
+    // Observing turn 1's `agent_settled` is NOT enough. The loop emits it from
+    // INSIDE `handle_prompt` and only returns to `run()`'s `select!` afterwards,
+    // so a `config-update` sent right after it can land while the loop is still
+    // in the turn. By the time the loop parks, BOTH the control queue and the
+    // prompt queue are non-empty, and `run()`'s `tokio::select!` has no `biased;`
+    // — it picks between the `control_queue` arm and the `prompt_queue` arm at
+    // RANDOM. When the prompt arm wins, turn 2 runs under the OLD all-`Allow`
+    // policy and the push lands mid-turn, after the gate already decided. That
+    // is the intermittent failure, and it is a property of the loop's
+    // arbitration, not of the push.
+    //
+    // The fence makes the ordering a FACT instead of a coin-flip, using only
+    // frames that already exist on the wire:
+    //   * the control channel is an ordered `mpsc`, and `WorkerCore::handle`
+    //     runs on the Worker's SINGLE sequential inbound loop, so a second
+    //     control frame written after the push is dequeued AFTER it;
+    //   * the prompt queue is EMPTY here (turn 2's prompt is deliberately sent
+    //     only after the fence), so the `control_queue` arm is the only ready
+    //     arm — no arbitration, no race;
+    //   * `run_compaction` is reached from exactly ONE place — `run()`'s control
+    //     arm — so its `compaction_end` can only mean "the control arm ran", and
+    //     by FIFO the `ConfigUpdate` ahead of it was applied first.
+    //
+    // `/compact` is the frame that produces that observable. It is a NO-OP on
+    // this transcript: the context is a few hundred tokens against a 128k
+    // window, so `split_for_compaction` finds an empty `older` head and
+    // `run_compaction` returns `Skipped` — NO provider call (the 4-mock script
+    // below is untouched, so a fence that DID send a request would starve turn
+    // 2 and fail loudly rather than silently) and NO transcript rewrite.
+    // `run()` emits `compaction_start` / `compaction_end` either way, and
+    // `Skipped` emits NO `agent_settled` — so turn 2's "two settles" barrier
+    // below still counts exactly the two real turns.
+    h.manager
+        .handle_for("e2e-push")
+        .expect("the session is attached")
+        .send_compact(None)
+        .expect("the fence frame is written to the live worker's stdin");
+    h.wait(Duration::from_secs(60), |evs| {
+        compaction_end_events(evs) >= 1
+    })
+    .await
+    .expect(
+        "the control-queue fence settles — the `config-update` queued \
+             AHEAD of it is applied (a timeout means the control arm never ran)",
+    );
 
     // ── Turn 2: the SAME read is now REFUSED, and never prompts. ──
     h.manager
