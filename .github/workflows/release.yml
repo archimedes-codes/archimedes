@@ -131,9 +131,10 @@ jobs:
           #     dropped from the release.
           # (b) The "Install the pinned Rust toolchain" step must gain
           #     `targets: aarch64-apple-darwin x86_64-apple-darwin` (see the
-          #     commented line inside that step). `src-tauri/rust-toolchain.toml`
-          #     deliberately lists no targets, so a cross-target that was never
-          #     installed fails the build — late, in the Rust compile.
+          #     commented line inside that step). The repo-root
+          #     `rust-toolchain.toml` deliberately lists no targets, so a
+          #     cross-target that was never installed fails the build — late, in
+          #     the Rust compile.
           # (c) Job-level `env:` CAN read `secrets`, so the notarization block
           #     lives at JOB level (quoted with the rows below), not in a step
           #     `if:`.
@@ -173,17 +174,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # No toolchain version named here on purpose: `src-tauri/rust-toolchain.toml`
-      # is the pin, and naming one in this step fights it (`rustup default`
-      # loses to the directory override, so the version installed would be
-      # the version NOT used — and its clippy/rustfmt would be installed
-      # onto a toolchain nothing runs). Run from `src-tauri/` so rustup reads
-      # the file, which also carries the `components` (a command-line
+      # No toolchain version named here on purpose: the repo-root
+      # `rust-toolchain.toml` is the pin, and naming one in this step fights it
+      # (`rustup default` loses to the directory override, so the version
+      # installed would be the version NOT used — and its clippy/rustfmt would be
+      # installed onto a toolchain nothing runs). Run from the repo root, where
+      # rustup reads that file (it resolves by upward search from any member too),
+      # and which also carries the `components` (a command-line
       # `--component` is ignored when no toolchain is named). `rustup
       # default` then makes the pin the default too, so a cargo step that
       # does not set `working-directory` still resolves the pinned compiler.
       - name: Install the pinned Rust toolchain
-        working-directory: src-tauri
         # bash on every OS: the Windows job's default shell is PowerShell,
         # which has no `cut`.
         shell: bash
@@ -199,7 +200,7 @@ jobs:
         #   targets: aarch64-apple-darwin x86_64-apple-darwin
 
       # Same cold-start evidence as ci.yml — run 38763849950 compiled 563 crates
-      # on Windows and 715 on Ubuntu because nothing caches `src-tauri/target`
+      # on Windows and 715 on Ubuntu because nothing caches the root `target/`
       # (the pnpm store is cached, the Rust tree is not) — and a release pays it
       # AGAIN on top, in the `release` profile plus tauri's bundling. The
       # release-profile deps are the expensive ones: they are compiled with
@@ -226,7 +227,7 @@ jobs:
       - name: Cache the Rust dependencies
         uses: Swatinem/rust-cache@v2 # latest major; current release v2.9.2
         with:
-          workspaces: src-tauri
+          workspaces: .
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -320,7 +321,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BUNDLE_DIR=src-tauri/target/release/bundle
+          BUNDLE_DIR=target/release/bundle
           if [ ! -d "$BUNDLE_DIR" ]; then
             echo "::error::no bundle directory at $BUNDLE_DIR — the build produced nothing"
             exit 1
@@ -345,7 +346,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BUNDLE_DIR=src-tauri/target/release/bundle
+          BUNDLE_DIR=target/release/bundle
           sigs=$(find "$BUNDLE_DIR" -type f -name '*.sig' 2>/dev/null | wc -l || true)
           if [ "$sigs" -ne 0 ]; then
             echo "::error::--no-sign was not honored: $sigs .sig file(s) were produced"

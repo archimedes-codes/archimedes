@@ -1,0 +1,5 @@
+[package]
+name = "fulcrum-core"
+version = "0.11.0"
+edition = "2021"
+description = "The Fulcrum agent engine core — extracted from archimedes (T5-T8)"

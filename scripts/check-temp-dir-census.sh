@@ -70,7 +70,7 @@
 # runs `cargo test` from the repo root; a census there needs a snapshot of its own
 # and is a separate decision. This is a CI gate plus a script you can run by hand:
 #   bash scripts/check-temp-dir-census.sh snapshot --state ~/.cache/census.txt
-#   (cd src-tauri && TMPDIR=/tmp cargo test)
+#   (TMPDIR=/tmp cargo test)
 #   bash scripts/check-temp-dir-census.sh verify   --state ~/.cache/census.txt
 #
 # BAR ENFORCED IN CI: `bash -n` on this file plus `check-temp-dir-census.test.sh`

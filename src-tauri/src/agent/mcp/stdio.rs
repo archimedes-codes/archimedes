@@ -382,14 +382,15 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// The `fake_mcp_stdio` test-double binary (built by `cargo test` —
-    /// the `CARGO_MANIFEST_DIR`/`target/debug` path, the `fake_pi`
-    /// pattern).
+    /// The `fake_mcp_stdio` test-double binary (built by `cargo test` — the
+    /// WORKSPACE ROOT's `target/debug`; the cargo root moved to the repo root
+    /// with the T4 `[workspace]`, so `CARGO_MANIFEST_DIR`'s parent is where
+    /// builds land now).
     fn fake_mcp_bin() -> PathBuf {
-        PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_mcp_stdio"
-        ))
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the src-tauri package has a parent (the repo root)")
+            .join("target/debug/fake_mcp_stdio")
     }
 
     /// A `StdioDef` pointing at the fake binary.

@@ -26,14 +26,14 @@ type EventLog = Arc<StdMutex<Vec<(String, bool, WorkerInboundEvent)>>>;
 type SinkMap = Arc<StdMutex<HashMap<String, Arc<CollectorSink>>>>;
 type SinkEvents = Arc<StdMutex<Vec<(String, Value)>>>;
 
-/// The `fake_worker` fixture (the `fake_mcp_stdio` convention — the
-/// `CARGO_MANIFEST_DIR`/`target/debug` path; `cargo test` builds the
-/// bin targets).
+/// The `fake_worker` fixture (the WORKSPACE ROOT's `target/debug` — the cargo root
+/// moved to the repo root with the T4 `[workspace]`; `cargo test` builds the bin
+/// targets).
 fn fixture_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/target/debug/fake_worker"
-    ))
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the src-tauri package has a parent (the repo root)")
+        .join("target/debug/fake_worker")
 }
 
 /// The test factory (the `WorkerFactory` seam — the `fake_worker`

@@ -749,11 +749,16 @@ mod tests {
     async fn lazy_connect_then_reuse() {
         // A stdio server (the fake binary) — the first `call_tool` connects,
         // the second reuses (no reconnect).
-        let bin = std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_mcp_stdio"
-        ));
-        let (manager, _dir) = manager_with(&stdio_server_json(bin), None);
+        // The WORKSPACE ROOT's `target/debug` — the cargo root moved to the repo
+        // root with the T4 `[workspace]`, so `CARGO_MANIFEST_DIR`'s parent is
+        // where builds land now.
+        let bin = {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("the src-tauri package has a parent (the repo root)");
+            root.join("target/debug/fake_mcp_stdio")
+        };
+        let (manager, _dir) = manager_with(&stdio_server_json(&bin), None);
         assert_eq!(manager.server_names(), vec!["a"]);
         // The first `call_tool` connects (lazy).
         let cancel = CancellationToken::new();
@@ -789,10 +794,15 @@ mod tests {
     async fn test_server_a_stdio_server_reports_the_tool_count() {
         // (ADR 0019) The Settings page's Test action: a one-shot connect +
         // `tools/list` (the fake binary — three canned tools).
-        let bin = std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_mcp_stdio"
-        ));
+        // The WORKSPACE ROOT's `target/debug` — the cargo root moved to the repo
+        // root with the T4 `[workspace]`, so `CARGO_MANIFEST_DIR`'s parent is
+        // where builds land now.
+        let bin = {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("the src-tauri package has a parent (the repo root)");
+            root.join("target/debug/fake_mcp_stdio")
+        };
         let def = ServerDef::Stdio(StdioDef {
             command: bin.display().to_string(),
             args: vec![],
@@ -829,11 +839,16 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn close_all_disconnects() {
-        let bin = std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_mcp_stdio"
-        ));
-        let (manager, _dir) = manager_with(&stdio_server_json(bin), None);
+        // The WORKSPACE ROOT's `target/debug` — the cargo root moved to the repo
+        // root with the T4 `[workspace]`, so `CARGO_MANIFEST_DIR`'s parent is
+        // where builds land now.
+        let bin = {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("the src-tauri package has a parent (the repo root)");
+            root.join("target/debug/fake_mcp_stdio")
+        };
+        let (manager, _dir) = manager_with(&stdio_server_json(&bin), None);
         let cancel = CancellationToken::new();
         manager
             .connect("a", &cancel, Duration::from_secs(5))
@@ -1952,11 +1967,16 @@ mod tests {
         // all: the two spawns would both need to borrow the manager mutably,
         // and the main task's `release` would be a borrow error while the holds
         // are outstanding. That is the compile-side half of the proof.
-        let bin = std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_mcp_stdio"
-        ));
-        let (manager, _dir) = manager_with(&two_stdio_server_json(bin), None);
+        // The WORKSPACE ROOT's `target/debug` — the cargo root moved to the repo
+        // root with the T4 `[workspace]`, so `CARGO_MANIFEST_DIR`'s parent is
+        // where builds land now.
+        let bin = {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("the src-tauri package has a parent (the repo root)");
+            root.join("target/debug/fake_mcp_stdio")
+        };
+        let (manager, _dir) = manager_with(&two_stdio_server_json(&bin), None);
         // Never touch the developer's real `mcp-auth.json` (both servers are
         // stdio, so nothing reads it — but the seam is the house rule).
         let manager =

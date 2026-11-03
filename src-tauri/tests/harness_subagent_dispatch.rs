@@ -56,17 +56,15 @@ fn parent_model() -> Model {
     }
 }
 
-/// The `fake_worker` fixture factory (the `WorkerFactory` seam — the
-/// `CARGO_MANIFEST_DIR`/`target/debug` convention; `cargo test` builds
-/// the bin targets).
+/// The `fake_worker` fixture factory (the `WorkerFactory` seam —
+/// `CARGO_BIN_EXE_fake_worker`, the compile-time path cargo hands an INTEGRATION
+/// target for a built bin; under the T4 root `[workspace]` it resolves inside the
+/// repo-root `target/`. Same idiom as `tests/worker_stderr.rs`).
 struct FakeWorkerFactory;
 
 impl WorkerFactory for FakeWorkerFactory {
     fn spawn(&self) -> Result<WorkerHandle, WorkerError> {
-        WorkerHandle::spawn(&std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_worker"
-        )))
+        WorkerHandle::spawn(&std::path::PathBuf::from(env!("CARGO_BIN_EXE_fake_worker")))
     }
 }
 

@@ -3050,13 +3050,14 @@ mod session_tests {
         }
     }
 
-    /// The `fake_worker` fixture path (the `CARGO_MANIFEST_DIR`/
-    /// `target/debug` convention — `cargo test` builds the bin targets).
+    /// The `fake_worker` fixture path (the WORKSPACE ROOT's `target/debug` —
+    /// the cargo root moved to the repo root with the T4 `[workspace]`;
+    /// `cargo test` builds the bin targets).
     fn fixture_path() -> std::path::PathBuf {
-        std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_worker"
-        ))
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the src-tauri package has a parent (the repo root)")
+            .join("target/debug/fake_worker")
     }
 
     /// Build the Worker-mediated manager (the ADR 0025 late-wire — the

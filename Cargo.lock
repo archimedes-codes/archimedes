@@ -1660,6 +1660,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fulcrum-core"
+version = "0.11.0"
+
+[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"

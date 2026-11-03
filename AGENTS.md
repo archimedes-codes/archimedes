@@ -8,26 +8,26 @@ and `docs/decisions/` for ADRs.
 
 ## Build & Testing
 
-Validation runs from two roots — the frontend from the repo root, the Rust
-backend from `src-tauri/`. A branch is ready to merge when all of these are
+Everything validates from the repo root — the frontend with `pnpm`, the Rust
+workspace with `cargo`. A branch is ready to merge when all of these are
 green:
 
 | What | Command | Where |
 |------|---------|-------|
 | Frontend unit tests | `pnpm test` | repo root |
 | Frontend type-check + build | `pnpm build` | repo root |
-| Rust tests | `cargo test` | `src-tauri/` |
-| Rust lint | `cargo clippy --all-targets` | `src-tauri/` (must be 0 warnings) |
-| Rust formatting | `cargo fmt --check` | `src-tauri/` |
+| Rust tests | `cargo test` | repo root (the workspace) |
+| Rust lint | `cargo clippy --all-targets` | repo root (must be 0 warnings) |
+| Rust formatting | `cargo fmt --all -- --check` | repo root |
 
-The Rust compiler is pinned in `src-tauri/rust-toolchain.toml`, so plain
-`cargo …` from `src-tauri/` is the pinned one — CI installs from that same
-file rather than naming a version. Do not float it: a newer rustc adds lints,
+The Rust compiler is pinned in the repo-root `rust-toolchain.toml`, so plain
+`cargo …` from the repo root (the workspace) is the pinned one — CI installs
+from that same file rather than naming a version. Do not float it: a newer rustc adds lints,
 and a lint CI hits that a local toolchain cannot see reddens `main`
 unreproducible.
 
 `@tauri-apps/cli` is pinned to the exact `tauri` version in
-`src-tauri/Cargo.lock` for the same reason: the CLI *is* the bundler that writes
+the repo-root `Cargo.lock` for the same reason: the CLI *is* the bundler that writes
 the AppImage/deb/dmg/NSIS artifacts, so a Rust-side Tauri bump must move it in
 the same commit. A floated CLI changes shipped output — desktop entries, bundle
 metadata — that no local build reproduces.
@@ -518,18 +518,21 @@ These are properties of the repo, not of any branch:
   the shipped ADR is `0089`. Do not derive the number from a plan or from `max+1` alone: the directory
   has gaps (0001–0089 holds 80 distinct numbers, so 9 are missing), so `max+1` avoids collisions but a
   gap-filler will not, and the check that matters is the `uniq -d` above run AFTER you pick, not before.
-- **A backgrounded `cargo` command with no `cd` in its subshell dies with `could not find Cargo.toml`,
-  and at exit 101 it is indistinguishable from a real test failure.** It masqueraded as the documented
-  `worker_e2e` flake above once. `sh -c` does not inherit your interactive cwd into a backgrounded
-  subshell, and `cargo test` run from the repo root (rather than `src-tauri/`) fails the same way for
-  the same reason — there is no `Cargo.toml` at the root of this repo. So always write
-  `cd src-tauri && cargo …` inside the command, and read the TEXT of a `cargo` failure before
-  concluding a test flaked: "could not find Cargo.toml" means the command never ran, and re-running it
-  to confirm a flake will simply fail again.
+- **Run cargo from the repository root — the workspace. A stray `cd src-tauri` no longer fails loudly;
+  it silently builds one member.** Before T4 this repo had no root `Cargo.toml`, so a backgrounded
+  `cargo` with no `cd` died with `could not find Cargo.toml` and, at exit 101, masqueraded as a real
+  test failure (`worker_e2e` flake, once). **That failure mode is gone and a quieter one replaced it:**
+  the repo root now holds the `[workspace]` manifest, so plain `cargo …` from the root is correct and
+  covers every member (`src-tauri` and `crates/fulcrum-core`). `cd src-tauri && cargo …` still WORKS —
+  it is a member — but it builds the MEMBER ALONE, so a `crates/` breakage passes it green. That is the
+  trap now: nothing errors, the command just checks less than you think. So write `cargo …` at the root,
+  and still read the TEXT of a `cargo` failure before concluding a test flaked: "could not find
+  Cargo.toml" means the command never ran, and re-running it to confirm a flake will simply fail again.
 - **Plans carry stale baselines within hours** on a busy branch: re-measure test
   counts at your own HEAD rather than trusting the plan's.
 - **Do not `git add -f` a file under `docs/roadmap/` to get it into a sibling worktree — `cp` it there.**
-  The directory is gitignored (`.gitignore:31`) and plan families are working memory: they belong
+  The directory is gitignored (`.gitignore:36`, the `docs/roadmap/` entry — locate by that string,
+  the number moves whenever a rule is added above it) and plan families are working memory: they belong
   on disk, not in a PR. But **an ignored, untracked file does not exist in another worktree** —
   measured: a fresh untracked `docs/roadmap/ZZ-probe-untracked.md` in the primary tree read
   ABSENT from both sibling worktrees, while a committed one read PRESENT in both. That is the
@@ -554,7 +557,7 @@ These are properties of the repo, not of any branch:
 - **`git check-ignore <path>` exits 1 for a path that is already TRACKED, and that
   reads exactly like "the ignore rule is gone".** Measured live: an agent verifying
   `docs/roadmap/` ran it, got exit 1, and reported "docs/roadmap/ is NOT gitignored" —
-  while `git check-ignore --no-index -v` prints `.gitignore:31:docs/roadmap/` and exits
+  while `git check-ignore --no-index -v` prints `.gitignore:36:docs/roadmap/` and exits
   0. The legacy tracked leftovers in that directory are in the index, so the naive form
   reports nothing for exactly those paths. The wrong conclusion is
   expensive here specifically: it makes the bullet above sound stale and the unrecoverable

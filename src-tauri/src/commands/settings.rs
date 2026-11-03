@@ -930,10 +930,14 @@ mod tests {
     async fn test_mcp_server_a_valid_stdio_entry_reports_the_tool_count() {
         // (ADR 0019) A valid stdio entry (the fake binary — three canned
         // tools) round-trips the count through the command.
-        let bin = std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_mcp_stdio"
-        ));
+        // The WORKSPACE ROOT's `target/debug` (the cargo root moved to the repo
+        // root with the T4 `[workspace]`).
+        let bin = {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("the src-tauri package has a parent (the repo root)");
+            root.join("target/debug/fake_mcp_stdio")
+        };
         let count = test_mcp_server(
             None,
             serde_json::json!({ "command": bin.display().to_string() }),

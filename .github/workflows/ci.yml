@@ -31,17 +31,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # No toolchain version named here on purpose: `src-tauri/rust-toolchain.toml`
-      # is the pin, and naming one in this step fights it (`rustup default`
-      # loses to the directory override, so the version installed would be
-      # the version NOT used — and its clippy/rustfmt would be installed
-      # onto a toolchain nothing runs). Run from `src-tauri/` so rustup reads
-      # the file, which also carries the `components` (a command-line
-      # `--component` is ignored when no toolchain is named). `rustup
+      # No toolchain version named here on purpose: the repo-root
+      # `rust-toolchain.toml` is the pin, and naming one in this step fights it
+      # (`rustup default` loses to the directory override, so the version
+      # installed would be the version NOT used — and its clippy/rustfmt would be
+      # installed onto a toolchain nothing runs). Run from the repo root, where
+      # rustup reads that file (it resolves by upward search from any member too),
+      # and which also carries the `components` (a command-line `--component` is
+      # ignored when no toolchain is named). `rustup
       # default` then makes the pin the default too, so a cargo step that
       # does not set `working-directory` still resolves the pinned compiler.
       - name: Install the pinned Rust toolchain
-        working-directory: src-tauri
         shell: bash
         run: |
           rustup toolchain install
@@ -53,7 +53,7 @@ jobs:
       # tree from scratch: run 38763849950 counted 563 crates compiled cold on
       # Windows and 715 on Ubuntu, which is most of what those job times
       # (windows 13.5 min, ubuntu 7.2, macos 7.6) spend. An empty runner image has
-      # no `~/.cargo/registry` and no `src-tauri/target`; this step gives the next
+      # no `~/.cargo/registry` and no root `target/`; this step gives the next
       # one both.
       #
       # Placed AFTER the toolchain step on purpose: the action hashes the ACTIVE
@@ -84,7 +84,7 @@ jobs:
       - name: Cache the Rust dependencies
         uses: Swatinem/rust-cache@v2 # latest major; current release v2.9.2
         with:
-          workspaces: src-tauri
+          workspaces: .
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -116,14 +116,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: cargo fmt
-        working-directory: src-tauri
         run: cargo fmt --all -- --check
 
       # `--all-targets` is the documented gate (AGENTS.md); without it the
       # integration tests under `src-tauri/tests/` are never linted and
       # lint-only breakage lands on main green.
       - name: cargo clippy
-        working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
 
       # #96 task 09's census guard, in three steps that only work TOGETHER and in
@@ -188,10 +186,9 @@ jobs:
         id: census_snapshot
         if: runner.os != 'windows'
         shell: bash
-        working-directory: src-tauri
         run: |
-          bash ../scripts/check-temp-dir-census.sh snapshot --state "$RUNNER_TEMP/archimedes-temp-census.txt"
-          echo "ARCHIMEDES_TEST_CENSUS_BASE=$(bash ../scripts/check-temp-dir-census.sh base)" >> "$GITHUB_ENV"
+          bash scripts/check-temp-dir-census.sh snapshot --state "$RUNNER_TEMP/archimedes-temp-census.txt"
+          echo "ARCHIMEDES_TEST_CENSUS_BASE=$(bash scripts/check-temp-dir-census.sh base)" >> "$GITHUB_ENV"
 
       # The crash-log leak guard (crash-log-hardening Task 7), in two halves: the
       # `cargo test` step below runs the suite with its data dir REDIRECTED into
@@ -239,7 +236,6 @@ jobs:
       # exhaustive — every OS in the matrix still runs the full Rust suite.
       - name: cargo test
         if: runner.os == 'linux'
-        working-directory: src-tauri
         env:
           XDG_DATA_HOME: ${{ runner.temp }}/archimedes-test-data
           ARCHIMEDES_TEST_DATA_DIR: ${{ runner.temp }}/archimedes-test-data
@@ -253,7 +249,6 @@ jobs:
       # this step ever turns slow, that is the first thing to look at.
       - name: cargo test (data dir redirected via HOME)
         if: runner.os == 'macos'
-        working-directory: src-tauri
         env:
           HOME: ${{ runner.temp }}/archimedes-test-data
           ARCHIMEDES_TEST_DATA_DIR: ${{ runner.temp }}/archimedes-test-data
@@ -264,7 +259,6 @@ jobs:
       # `src-tauri/src/agent/childproc.rs`, and nothing here.
       - name: cargo test (no data-dir redirect exists on Windows)
         if: runner.os == 'windows'
-        working-directory: src-tauri
         run: cargo test
 
       # The guard's second half. Re-exports the same path on THIS step, because
@@ -338,8 +332,7 @@ jobs:
       - name: Check the test suite left no temp directories
         if: steps.census_snapshot.outcome == 'success' && !cancelled()
         shell: bash
-        working-directory: src-tauri
-        run: bash ../scripts/check-temp-dir-census.sh verify --state "$RUNNER_TEMP/archimedes-temp-census.txt"
+        run: bash scripts/check-temp-dir-census.sh verify --state "$RUNNER_TEMP/archimedes-temp-census.txt"
 
       # The junit report exists for the one failure mode this workflow could not
       # answer: a single test failing ONCE, on a cold first run, with nothing to
@@ -457,12 +450,11 @@ jobs:
 
       # The rquickjs allocator guard, and the ONLY step in this job that needs a
       # compiler. Same toolchain rule as the matrix job: no version named here,
-      # `src-tauri/rust-toolchain.toml` is the pin, and the step runs with
-      # `working-directory: src-tauri` so rustup reads that file. `cargo tree`
+      # the repo-root `rust-toolchain.toml` is the pin, and the step runs from the
+      # repo root, where rustup reads that file. `cargo tree`
       # resolves manifests and builds nothing, so this owes no apt webkit install
       # and no dependency cache — there is no compilation to make redundant.
       - name: Install the pinned Rust toolchain
-        working-directory: src-tauri
         shell: bash
         run: |
           rustup toolchain install

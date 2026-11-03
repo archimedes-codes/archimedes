@@ -10,7 +10,12 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
-src-tauri/target
+# The shared workspace target dir. The cargo root is the repo root since T4 (the
+# root `Cargo.toml` holds the `[workspace]`), so `target/` lives here, not under
+# `src-tauri/`. `src-tauri/.gitignore` keeps its own `/target/` rule on purpose: a
+# stray `cd src-tauri && cargo build` (still legal — it is a member) recreates a
+# nested target dir, and that rule is what keeps it ignored.
+/target
 *.local
 
 # Editor directories and files

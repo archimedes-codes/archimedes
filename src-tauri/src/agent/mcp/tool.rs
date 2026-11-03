@@ -796,14 +796,15 @@ mod tests {
     use super::*;
 
     /// The `fake_mcp_stdio` test-double binary (built by `cargo test` — the
-    /// `CARGO_MANIFEST_DIR`/`target/debug` path).
+    /// WORKSPACE ROOT's `target/debug`; the cargo root moved to the repo root
+    /// with the T4 `[workspace]`).
     fn fake_bin() -> String {
-        std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_mcp_stdio"
-        ))
-        .display()
-        .to_string()
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the src-tauri package has a parent (the repo root)")
+            .join("target/debug/fake_mcp_stdio")
+            .display()
+            .to_string()
     }
 
     /// A temp `McpManager` over a temp config (the servers point at the fake

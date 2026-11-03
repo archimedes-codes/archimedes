@@ -1471,10 +1471,14 @@ async fn an_mcp_tool_call_round_trips_into_the_transcript() {
     let dir = crate::test_support::ScratchDir::in_env_temp("mcp-loop-test-", "roundtrip");
     // Stays: this makes a SUBDIR inside the guard's dir, not the root.
     std::fs::create_dir_all(dir.join(".pi")).unwrap();
-    let bin = std::path::Path::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/target/debug/fake_mcp_stdio"
-    ));
+    // The WORKSPACE ROOT's `target/debug` (the cargo root moved to the repo root
+    // with the T4 `[workspace]`).
+    let bin = {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the src-tauri package has a parent (the repo root)");
+        root.join("target/debug/fake_mcp_stdio")
+    };
     std::fs::write(
         dir.join(".pi/mcp.json"),
         serde_json::json!({
@@ -1553,10 +1557,14 @@ async fn a_stop_mid_mcp_call_cancels() {
     let dir = crate::test_support::ScratchDir::in_env_temp("mcp-loop-stop-", "cancel");
     // Stays: a SUBDIR inside the guard's dir, not the root.
     std::fs::create_dir_all(dir.join(".pi")).unwrap();
-    let bin = std::path::Path::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/target/debug/fake_mcp_stdio"
-    ));
+    // The WORKSPACE ROOT's `target/debug` (the cargo root moved to the repo root
+    // with the T4 `[workspace]`).
+    let bin = {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the src-tauri package has a parent (the repo root)");
+        root.join("target/debug/fake_mcp_stdio")
+    };
     std::fs::write(
         dir.join(".pi/mcp.json"),
         serde_json::json!({

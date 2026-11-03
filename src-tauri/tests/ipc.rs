@@ -83,13 +83,11 @@ impl WorkerFactory for FixtureFactory {
     }
 }
 
-/// The `fake_worker` fixture path (the `CARGO_MANIFEST_DIR`/
-/// `target/debug` convention — `cargo test` builds the bin targets).
+/// The `fake_worker` fixture path (`CARGO_BIN_EXE_fake_worker` — the compile-time
+/// path cargo gives an INTEGRATION target for a built bin; under the T4 root
+/// `[workspace]` that resolves inside the repo-root `target/`).
 fn fixture_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/target/debug/fake_worker"
-    ))
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_fake_worker"))
 }
 
 /// A temp config + data dir pair (the `settings.json` home + the

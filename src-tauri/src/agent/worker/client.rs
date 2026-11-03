@@ -1136,14 +1136,55 @@ mod tests {
         );
     }
 
-    /// The `fake_worker` fixture (the `fake_mcp_stdio` convention — the
-    /// `CARGO_MANIFEST_DIR`/`target/debug` path; `cargo test` builds the
-    /// bin targets).
+    /// The `fake_worker` fixture (the WORKSPACE ROOT's `target/debug` — the cargo
+    /// root moved from `src-tauri/` to the repo root with the T4 `[workspace]`, so
+    /// `CARGO_MANIFEST_DIR`'s parent is where builds land now; `cargo test` builds
+    /// the bin targets).
     pub fn fixture_path() -> std::path::PathBuf {
-        std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_worker"
-        ))
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the src-tauri package has a parent (the repo root)")
+            .join("target/debug/fake_worker")
+    }
+
+    /// T4's pin: the `fake_worker` fixture lives in the WORKSPACE root's
+    /// `target/`, not the member's. Once the repo root is the cargo root every
+    /// build writes to `<repo root>/target`, so the pre-T4 expression —
+    /// `concat!(env!("CARGO_MANIFEST_DIR"), "/target/debug/fake_worker")`,
+    /// which resolves under `src-tauri/target` — names a directory that
+    /// receives no build output anymore, and the fixture-spawning tests below
+    /// die on `SpawnFailed`.
+    #[test]
+    fn fixture_path_resolves_to_the_workspace_root_target() {
+        let p = fixture_path();
+        assert_eq!(
+            p.file_name().and_then(|s| s.to_str()),
+            Some("fake_worker"),
+            "still the fake_worker fixture"
+        );
+        let pkg_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(
+            p.starts_with(
+                pkg_root
+                    .parent()
+                    .expect("src-tauri has a parent: the repo root")
+            ),
+            "the fixture path resolves under the WORKSPACE root, not src-tauri/target: {p:?}"
+        );
+        // The half that actually discriminates. `starts_with(<repo root>)`
+        // alone cannot tell T4's expression from the stale one: `src-tauri/target`
+        // IS under the repo root, so the stale literal satisfies it too
+        // (measured at ad992563). The member's own `target/` is the pre-workspace
+        // location and is the only thing that must be rejected here.
+        assert!(
+            !p.starts_with(pkg_root.join("target")),
+            "the fixture resolves under the MEMBER's own target/ — the pre-workspace \
+             location no build writes to anymore: {p:?}"
+        );
+        assert!(
+            p.is_file(),
+            "the fixture must exist (SpawnFailed is the old literal's red): {p:?}"
+        );
     }
 
     /// A test `StartEnv` (a fake model the fixture's `SubagentDispatch`

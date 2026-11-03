@@ -23,17 +23,19 @@ use crate::agent::worker::client::{WorkerError, WorkerHandle, WorkerInboundEvent
 use crate::agent::worker::manager::{WorkerFactory, WorkerManager};
 use crate::agent::worker::protocol::{DesktopConfig, StartEnv, StartMode};
 
-/// The `fake_worker` fixture factory (the `WorkerFactory` seam — the
-/// `CARGO_MANIFEST_DIR`/`target/debug` convention; `cargo test` builds
-/// the bin targets).
+/// The `fake_worker` fixture factory (the `WorkerFactory` seam — the WORKSPACE
+/// ROOT's `target/debug`; the cargo root moved to the repo root with the T4
+/// `[workspace]`, and `cargo test` builds the bin targets).
 struct FakeWorkerFactory;
 
 impl WorkerFactory for FakeWorkerFactory {
     fn spawn(&self) -> Result<WorkerHandle, WorkerError> {
-        WorkerHandle::spawn(&std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_worker"
-        )))
+        WorkerHandle::spawn(
+            &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("the src-tauri package has a parent (the repo root)")
+                .join("target/debug/fake_worker"),
+        )
     }
 }
 
