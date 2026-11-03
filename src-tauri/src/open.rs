@@ -354,6 +354,184 @@ mod tests {
         }
     }
 
+    /// (T5/S5a, SEAM 2) The OTHER half of the wiring, which S3 could not write
+    /// because the wiring did not exist yet: the DESKTOP'S CALL SITE must hand
+    /// the loop the real opener.
+    ///
+    /// # What changed, and why this pin had to wait
+    ///
+    /// Until S5a, `AgentLoop::new` and `set_desktop_config` each called
+    /// `crate::open::desktop_open_requester()` THEMSELVES. That is the desktop's
+    /// own module reaching its own `open.rs`, so it compiled — and it was the
+    /// bug the S5 RULING names: `harness` moves into `fulcrum-core` in S5b,
+    /// `open.rs` cannot follow (it is `tauri`), and a crate file naming
+    /// `crate::open` does not fail any check until the boundary actually
+    /// crosses it. So the loop now TAKES the opener as a required argument and
+    /// the desktop's one production caller — `worker/core.rs`'s
+    /// `default_build_loop`, which stays desktop through T8 — supplies it.
+    ///
+    /// # Why a lint on top of a required argument
+    ///
+    /// Making the parameter required already turns FORGETTING it into a compile
+    /// error (`E0061`), which is the main answer to "is forgetting the opener at
+    /// the desktop call site caught, or silently defaulted?" — it is caught, and
+    /// `AgentLoop` has no `Default` and no builder that could fill it in.
+    /// But a caller CAN still pass `Arc::new(NoOpenRequester)` and compile: the
+    /// type is the same and the default is a legitimate value for a test. That
+    /// is the silent failure this lint closes, and it is exactly the failure
+    /// [`every_desktop_mcp_manager_carries_the_open_requester`] closes one level
+    /// down. The scan reads the PRODUCTION region only (everything before the
+    /// file's `#[cfg(test)]`), because the stub in the test module passes the
+    /// no-op opener ON PURPOSE — a test must never launch a browser.
+    ///
+    /// # Non-vacuity (measured)
+    ///
+    /// Replace `crate::open::desktop_open_requester(),` at
+    /// `worker/core.rs`'s production `AgentLoop::new(` with
+    /// `Arc::new(crate::agent::mcp::NoOpenRequester),` and this fails naming the
+    /// call site; the rest of the workspace still compiles green, which is
+    /// precisely why the lint is worth having.
+    #[test]
+    fn the_production_loop_caller_passes_the_desktop_opener() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent/worker/core.rs");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        let source = source.replace("\r\n", "\n");
+        let lines: Vec<&str> = source.lines().collect();
+
+        // The production region ends at the `#[cfg(test)]` that opens the test
+        // module. Exactly one, or this split is a guess.
+        let test_starts: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.trim_start() == "#[cfg(test)]")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            test_starts.len(),
+            1,
+            "expected exactly 1 `#[cfg(test)]` in worker/core.rs to split production \
+             from the stub fixtures, found {test_starts:?} — this lint cannot tell the \
+             production `AgentLoop::new(` from the stub's without that boundary",
+        );
+        let production = &lines[..test_starts[0]];
+        let code: Vec<(usize, &str)> = production
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (i + 1, *l))
+            // CODE, not prose — the same fail-OPEN reason
+            // `every_desktop_mcp_manager_carries_the_open_requester` gives: a doc
+            // comment naming `desktop_open_requester` must not credit a call site
+            // that never makes the call.
+            .filter(|(_, l)| !l.trim_start().starts_with("//"))
+            .collect();
+
+        let ctor_lines: Vec<usize> = code
+            .iter()
+            .filter(|(_, l)| l.contains("AgentLoop::new("))
+            .map(|(n, _)| *n)
+            .collect();
+        assert_eq!(
+            ctor_lines.len(),
+            1,
+            "expected exactly 1 production `AgentLoop::new(` in worker/core.rs (the \
+             `default_build_loop` call site — the S5 RULING's measurement), found \
+             {ctor_lines:?}: a second one would be an unwired loop this lint does not read",
+        );
+        let ctor = ctor_lines[0];
+        // The argument list runs to the first line that is just `);`.
+        let end = code
+            .iter()
+            .find(|(n, l)| *n > ctor && l.trim() == ");")
+            .map(|(n, _)| *n)
+            .unwrap_or_else(|| panic!("no closing `);` found for AgentLoop::new at {ctor}"));
+        let passed: Vec<usize> = code
+            .iter()
+            .filter(|(n, l)| {
+                *n > ctor && *n < end && l.contains("crate::open::desktop_open_requester()")
+            })
+            .map(|(n, _)| *n)
+            .collect();
+        assert!(
+            !passed.is_empty(),
+            "the production `AgentLoop::new(` at worker/core.rs:{ctor} does not pass \
+             `crate::open::desktop_open_requester()` — the loop would then carry \
+             `NoOpenRequester` for every session, so the MCP `auth` action would \
+             silently never open a browser and its OAuth flow would die at the \
+             callback timeout",
+        );
+        // And the no-op opener must be a TEST-ONLY choice in this file, so the
+        // split above is not quietly crediting the stub.
+        let test_region = &lines[test_starts[0]..];
+        assert!(
+            test_region.iter().any(|l| l.contains("NoOpenRequester")),
+            "expected the test region of worker/core.rs to inject `NoOpenRequester` \
+             (the stub's contract) — if that changed, re-check which region this \
+             lint's production half is reading",
+        );
+    }
+
+    /// (T5/S5a, SEAM 2) The boundary half: `harness/loop.rs` must no longer
+    /// CONSTRUCT the opener, because it is moving into a crate that cannot name
+    /// `open.rs`.
+    ///
+    /// This is the assertion S5b would otherwise have to make under time
+    /// pressure, and the one no compiler makes today: `harness` is still desktop,
+    /// so `crate::open::…` still compiles there. It is checked as an ABSENCE in
+    /// code plus a PRESENCE in the signature, so a half-done revert (take the
+    /// parameter, keep calling `crate::open`) is red rather than green.
+    ///
+    /// # Non-vacuity (measured)
+    ///
+    /// Restore `.with_open_requester(crate::open::desktop_open_requester())` at
+    /// either manager site in `harness/loop.rs` and this fails on the absence
+    /// half; delete the `open_requester: Arc<dyn OpenRequester>` parameter and it
+    /// fails on the presence half.
+    #[test]
+    fn the_harness_takes_the_opener_instead_of_constructing_it() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent/harness/loop.rs");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        let source = source.replace("\r\n", "\n");
+        let code: Vec<&str> = source
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect();
+        let joined = code.join("\n");
+
+        // (a) The ABSENCE: no code in this module reaches the desktop's opener.
+        // `crate::open` is the only spelling that would cross the boundary.
+        let offender = code
+            .iter()
+            .find(|l| l.contains("crate::open::"))
+            .map(|l| l.trim().to_string());
+        assert!(
+            offender.is_none(),
+            "harness/loop.rs constructs the opener itself at `{}` — this module moves \
+             into `fulcrum-core` in S5b and `open.rs` is `tauri`, so the crate would \
+             not compile. The opener must arrive through `AgentLoop::new`'s parameter \
+             and the `open_requester` field.",
+            offender.unwrap_or_default(),
+        );
+
+        // (b) The PRESENCE: the constructor TAKES it, and the rebuild reads it
+        // back off the field (the swap that S3's pin exists to catch).
+        assert!(
+            code.iter()
+                .any(|l| l.contains("open_requester: Arc<dyn OpenRequester>")),
+            "`AgentLoop::new` no longer takes the `OpenRequester` as a parameter — \
+             S3 wired the seam from the desktop side and S5a corrected it; reverting \
+             to construction inside `harness` is the boundary crossing this pin exists \
+             to catch",
+        );
+        assert!(
+            joined.contains(".with_open_requester(self.open_requester.clone())"),
+            "the `set_desktop_config` rebuild no longer re-wires the SAME injected \
+             opener — replacing the manager with a fresh default silently drops the \
+             opener from the loop that actually runs with a packaged `mcpServers` map",
+        );
+    }
+
     fn url(s: &str) -> Target {
         Target::Url(s.to_string())
     }

@@ -57,6 +57,10 @@ use fulcrum_core::seams::{Dispatcher, FulcrumPersistence, StoreError};
 
 use archimedes_lib::agent::harness::catalog::{Model, ModelCatalog};
 use archimedes_lib::agent::harness::store::DisplayRow;
+// `TrustSource` comes in through the DESKTOP's re-export path (the one
+// `harness/mod.rs` / `harness/loop.rs` / `worker/core.rs` import), so these
+// pins exercise the re-export seam as well as the impl.
+use archimedes_lib::agent::harness::trust::{SqliteTrustSource, TrustSource};
 use archimedes_lib::agent::subagent::{
     AgentNameResolution, SubagentFailureReason, SubagentMetrics, SubagentOutcome,
 };
@@ -616,6 +620,111 @@ fn resolve_composed_model_keeps_its_lookup_rules_after_the_move() {
     assert!(
         fulcrum_core::catalog::resolve_composed_model(&catalog, "tama/Qwen/Qwen3.8-27B:high")
             .is_none()
+    );
+}
+
+// ── Pin 5 (T5/S5a) — `SqliteTrustSource` satisfies the CRATE's `TrustSource` ──
+
+/// The trust split's instantiation pin (the S5 RULING's SEAM 1, enforced with
+/// the S4 RULING's rule: *"an impl nobody instantiates proves nothing"*).
+///
+/// `harness/trust.rs` SPLIT in S5a: the `TrustSource` trait and the pure
+/// `StaticTrustSource` moved to `fulcrum_core::trust`, and `SqliteTrustSource`
+/// stayed desktop because it holds a `storage::Db` the crate must never name
+/// (`rusqlite` is not in the crate's graph — Step B-bis — and reaching
+/// `crate::storage` would be the `fulcrum-core → archimedes_lib` edge that IS
+/// the package cycle T5 severs). So the desktop now holds an IMPLEMENTATION of
+/// a CRATE trait, exactly as `web/render.rs` holds the crate's
+/// `RenderRequester` impl and `open.rs` holds the crate's `OpenRequester` impl.
+///
+/// A green suite does not prove that impl exists: after the split the crate
+/// compiles with or without it, and the only things that DO lean on it are two
+/// `policy_gate.rs` fixtures coercing a `SqliteTrustSource` into
+/// `Arc<dyn TrustSource>` — test code, not a production call site. Hence the
+/// generic bound below, which cannot be monomorphised without the real impl,
+/// plus the `dyn` coercion, which additionally needs the trait to stay
+/// object-safe and its `Send + Sync` supertraits to hold for `Arc<Db>`.
+///
+/// **Non-vacuity (measured):** delete the `impl TrustSource for SqliteTrustSource`
+/// block in `src-tauri/src/agent/harness/trust.rs` and this fails with
+/// `E0277: the trait bound SqliteTrustSource: TrustSource is not satisfied` — at
+/// the bound, at the `dyn` coercion, and at
+/// [`sqlite_trust_source_reads_the_space_flag`]'s `Some(&SqliteTrustSource::new(db))`
+/// argument, where the same deletion breaks the relocated behaviour test too.
+/// Deleting the `pub use fulcrum_core::trust::{StaticTrustSource, TrustSource};`
+/// re-export instead reddens `harness/mod.rs`'s re-export line and
+/// `worker/core.rs`'s import — the re-export seam is the other half of the proof.
+#[test]
+fn sqlite_trust_source_satisfies_the_crate_trait() {
+    fn assert_trust_source<T: TrustSource>() {}
+    assert_trust_source::<SqliteTrustSource>();
+
+    // The desktop's OWN spelling of the trait (through `harness/trust.rs`'s
+    // re-export, which is what `harness/mod.rs`, `harness/loop.rs` and
+    // `worker/core.rs` import) IS the crate's trait: the identity function
+    // below only compiles if the two `dyn` types are the same type. A
+    // re-declared desktop trait would fail here, not at the call.
+    fn desktop_spelling_is_the_crate_trait(
+        v: &dyn archimedes_lib::agent::harness::trust::TrustSource,
+    ) -> &dyn fulcrum_core::trust::TrustSource {
+        v
+    }
+
+    // `SqliteTrustSource` behind the shape the loop actually holds.
+    let (dir, db) = temp_db("fulcrum-seams-trust-");
+    let obj: Arc<dyn fulcrum_core::trust::TrustSource> = Arc::new(SqliteTrustSource::new(db));
+    // Fail-closed through the seam: a path with no `spaces` row — and a path
+    // that cannot canonicalize — is untrusted when the call goes through the
+    // trait object, not merely when it goes through the concrete type.
+    assert!(
+        !desktop_spelling_is_the_crate_trait(obj.as_ref())
+            .is_trusted(std::path::Path::new("/definitely/missing/path")),
+        "the trait object fails closed"
+    );
+    drop(dir);
+}
+
+/// The `Db`-backed trust test that used to live in `harness/trust.rs`,
+/// relocated VERBATIM (S5 RULING: `trust.rs`'s `Db` tests CANNOT travel —
+/// `#[cfg(test)]` does not survive into an rlib and the crate cannot reach
+/// `storage::Db`). It lives here rather than in `permission_gate_db.rs`
+/// because it is the trust SPLIT's own proof: it is what makes
+/// [`sqlite_trust_source_satisfies_the_crate_trait`] an instantiated impl
+/// rather than a signature comparison.
+#[test]
+fn sqlite_trust_source_reads_the_space_flag() {
+    // The guard is FIRST and `cwd` is a plain `PathBuf` INTO it — the ordering
+    // the relocated permission fixture documents (Windows refuses to remove a
+    // dir holding an open file; POSIX cannot show a wrong order).
+    let dir = archimedes_lib::test_support::ScratchDir::in_env_temp("harness-trust-test-", "db");
+    let db = Arc::new(Db::open(&dir.join("t.db")).expect("db should open"));
+    let cwd = dir.join("workspace");
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    let source = SqliteTrustSource::new(db.clone());
+    // No `spaces` row yet → fail-closed `false`.
+    assert!(!source.is_trusted(&cwd));
+    db.upsert_space(&cwd.display().to_string(), false).unwrap();
+    assert!(!source.is_trusted(&cwd), "an untrusted row is `false`");
+    db.set_space_trusted(&cwd.display().to_string(), true)
+        .unwrap();
+    assert!(source.is_trusted(&cwd), "a trusted row is `true`");
+    // A nonexistent path canonicalize-fails → `false` (fail-closed).
+    assert!(!source.is_trusted(std::path::Path::new("/definitely/missing/path")));
+}
+
+/// The `StaticTrustSource` half moved to the crate, and the desktop's spelling
+/// still denotes it — so `worker/core.rs`'s `Arc<StaticTrustSource>` (the
+/// `config { trusted }` update + the `trust-space` flip) is unchanged.
+#[test]
+fn static_trust_source_is_the_crate_type_at_the_desktop_spelling() {
+    let desktop = archimedes_lib::agent::harness::trust::StaticTrustSource::new(false);
+    let crate_side: fulcrum_core::trust::StaticTrustSource = desktop;
+    crate_side.set(true);
+    let via_desktop: Arc<dyn fulcrum_core::trust::TrustSource> = Arc::new(crate_side);
+    assert!(
+        via_desktop.is_trusted(std::path::Path::new("/x")),
+        "the flip is visible through the crate trait"
     );
 }
 

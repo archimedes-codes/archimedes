@@ -327,6 +327,17 @@ pub fn default_build_loop(
             // The envelope's stamp (ADR 0049) — THE line that makes the fix
             // real: a Resume's loop mints ids its predecessor never used.
             env.incarnation.clone(),
+            // (T5/S5a, SEAM 2) THE desktop's opener, handed to the loop. This is
+            // the ONE production caller of `AgentLoop::new`, and the loop takes
+            // the opener rather than constructing it because `harness` moves into
+            // `fulcrum-core` in S5b while `open.rs` cannot (it is `tauri`). The
+            // argument is REQUIRED, so a caller that forgets it is a compile
+            // error (`E0061: this function takes 23 arguments but 22 were
+            // supplied`), not a silent `NoOpenRequester` default — and
+            // `open.rs`'s `the_production_loop_caller_passes_the_desktop_opener`
+            // pins that THIS site names `desktop_open_requester` rather than
+            // some other `Arc<dyn OpenRequester>` that would still compile.
+            crate::open::desktop_open_requester(),
         );
         let render_req: Arc<dyn crate::agent::web::RenderRequester> =
             Arc::new(IpcRenderRequester::new(
@@ -923,6 +934,12 @@ mod tests {
             RetryPolicy::new(),
             None,
             "t".to_string(),
+            // (T5/S5a, SEAM 2) The no-op opener: this stub builds a real
+            // `AgentLoop` but never drives the MCP `auth` action, and a test
+            // must never launch a real browser. The PRODUCTION path above
+            // passes `crate::open::desktop_open_requester()` instead — the
+            // distinction is what makes the stub a stub.
+            Arc::new(crate::agent::mcp::NoOpenRequester),
         );
         // The session initialization (the seam stub mirrors the
         // `build_loop` default's init steps — the SAME four arms, so the

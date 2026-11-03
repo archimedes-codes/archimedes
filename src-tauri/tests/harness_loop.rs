@@ -229,6 +229,12 @@ async fn build_harness_with_settings(
         // `default_build_loop` uses).
         None,
         "t".to_string(),
+        // (T5/S5a, SEAM 2) The opener is a REQUIRED argument now — the loop
+        // takes it instead of calling `crate::open::desktop_open_requester()`
+        // itself, because `harness` moves into `fulcrum-core` and `open.rs` is
+        // `tauri`. This fixture injects the NO-OP opener: no test here drives
+        // the MCP `auth` action and a test must never launch a real browser.
+        Arc::new(archimedes_lib::agent::mcp::NoOpenRequester),
     );
     // Only package when the test asked for a policy: `None` must leave the loop
     // on its inert packaged state (the layer that cannot speak), so the two

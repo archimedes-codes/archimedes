@@ -135,7 +135,7 @@ harness-loop-	src-tauri/tests/harness_loop.rs
 harness-store-test-	src-tauri/src/agent/harness/store.rs
 harness-store-	src-tauri/tests/harness_store.rs
 harness-compact-test-	src-tauri/src/agent/harness/compact.rs
-harness-trust-test-	src-tauri/src/agent/harness/trust.rs
+harness-trust-test-	src-tauri/tests/fulcrum_seams.rs
 harness-agent-def-e2e-cfg-	src-tauri/src/agent/harness/loop/tests/subagents.rs
 harness-list-agents-home-	src-tauri/src/agent/harness/loop/tests/tools_enabled.rs
 harness-resolve-launch-home-	src-tauri/src/agent/harness/launch.rs
@@ -204,7 +204,22 @@ router-todos-	src-tauri/src/agent/session/router.rs
 crashsel-	src-tauri/src/agent/session/router.rs
 crashlog-test-	src-tauri/src/agent/crashlog.rs
 debuglog-test-	crates/fulcrum-core/src/debuglog.rs
-perm-gate-	src-tauri/src/agent/permission.rs
+# T5/S5a: TWO rows repointed because the MINTER moved, not the prefix.
+# `harness-trust-test-` was minted in `src-tauri/src/agent/harness/trust.rs`; that
+# file's `Db` test could not follow the trait into the crate (`#[cfg(test)]` does
+# not survive into an rlib — A.4 — and the crate cannot reach `storage::Db`), so it
+# relocated to `tests/fulcrum_seams.rs`, which now mints BOTH `harness-trust-test-`
+# (the relocated trust test) and its own `fulcrum-seams-trust-` (the new
+# instantiation pin — covered by the `fulcrum-seams-` row above by longest-match).
+# `perm-gate-` was minted in `src-tauri/src/agent/permission.rs`; that whole module
+# moved to `crates/fulcrum-core/`, but its `Db` fixture could not move with it, so
+# the prefix's only remaining minter is the desktop target that inherited those
+# tests. A stale owner path still ATTRIBUTES the prefix (the table matches the
+# prefix, never the file) so nothing reddened — the point of repointing is that a
+# reader hunting a leak is sent to the file that actually mints it. Verified with
+# `grep -rn '"<prefix>"' src-tauri/src src-tauri/tests crates`, not against the
+# old table.
+perm-gate-	src-tauri/tests/permission_gate_db.rs
 persist-test-	src-tauri/src/agent/persist.rs
 fsb-	crates/fulcrum-core/src/fs_backend.rs
 fs-backend-	src-tauri/tests/fs_backend.rs

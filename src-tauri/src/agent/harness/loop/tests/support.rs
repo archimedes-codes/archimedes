@@ -368,6 +368,15 @@ pub(super) fn build_loop_with_sink(
         retry,
         config_dir.map(|p| p.to_path_buf()),
         "t".to_string(),
+        // (T5/S5a, SEAM 2) The opener is now a REQUIRED argument (the loop
+        // takes it instead of calling `crate::open` itself, which it cannot do
+        // once `harness` moves). A fixture injects the NO-OP opener: a unit
+        // test must never launch a real browser, and none of these tests drives
+        // the MCP `auth` action — the seam's own consumption is pinned inside
+        // the crate (`mcp::manager::tests::
+        // the_auth_action_opens_the_browser_through_the_seam`) and the
+        // desktop's wiring is pinned by `open.rs`'s two source lints.
+        Arc::new(crate::agent::mcp::NoOpenRequester),
     );
     (space, loop_, db)
 }
@@ -637,6 +646,9 @@ pub(super) fn build_loop_with_dispatcher(
         // (Fulcrum T3) No settings dir: the override layer arrives packaged.
         None,
         "t".to_string(),
+        // (T5/S5a, SEAM 2) The no-op opener — see the note in
+        // `build_loop_with_sink` for why a fixture injects `NoOpenRequester`.
+        Arc::new(crate::agent::mcp::NoOpenRequester),
     );
     // The PACKAGED ADR 0066 layer the parent loop hands to `resolve_launch` on
     // every dispatch (`loop/tools.rs` reads

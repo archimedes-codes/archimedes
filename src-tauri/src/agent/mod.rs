@@ -14,7 +14,6 @@ pub mod crashlog;
 pub mod errors;
 pub mod harness;
 mod normalize;
-mod permission;
 pub mod persist;
 pub mod provider_auth;
 mod session;
@@ -54,9 +53,21 @@ pub mod worker;
 // and both paths still resolve — `subagent.rs` re-exports the crate type and the
 // named block below still names it. Adding a second public alias for one DTO
 // would be a third spelling of one type for no consumer.
+//
+// T5/S5a adds `permission` (the module S2's scope named and S2's commit did not
+// move) and `trust` — the latter NOT in this list, because it is a SPLIT that
+// needs a real desktop module file: `harness/trust.rs` holds `SqliteTrustSource`
+// (a `storage::Db` cannot cross) and re-exports the two crate halves, so
+// `crate::agent::harness::trust::{TrustSource, StaticTrustSource,
+// SqliteTrustSource}` all still resolve at their pre-S5a path. `permission` has
+// no staying half at all, so the module alias alone is enough: the eight
+// desktop consumers (`worker/client.rs`, `worker/protocol.rs`, `worker/core.rs`,
+// `worker/manager/tests/mod.rs`, `session/mod.rs`, `harness/loop.rs`,
+// `harness/loop/gate.rs`, `harness/loop/tests/policy_gate.rs`) keep their
+// `crate::agent::permission::…` paths UNCHANGED.
 pub use fulcrum_core::{
     agents, boundary, childproc, codemode, debuglog, definition_permission, events, fs_backend,
-    hostenv, ids, interactive, mcp, policy, skills, todo, tools, types,
+    hostenv, ids, interactive, mcp, permission, policy, skills, todo, tools, types,
 };
 
 pub use crate::types::SessionInfo;

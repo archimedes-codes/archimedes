@@ -112,6 +112,23 @@ pub mod provider_types;
 pub mod seams;
 pub mod store_rows;
 pub mod subagent_types;
+// ── T5/S5a — the two production seams S5b's move depends on ─────────────────
+// `trust` is a SPLIT, not a move: the trait + the pure `StaticTrustSource`
+// are here, `SqliteTrustSource` stayed desktop (it holds a `storage::Db`,
+// which this crate must never name — `rusqlite` is not in its graph). The
+// desktop's `harness/trust.rs` implements the trait and re-exports both
+// spellings so every pre-S5a path resolves unchanged.
+//
+// `permission` is the module S2's scope named and S2's commit did not move
+// (`git show --name-status 27e367cd`: one rename, not two). It moves here
+// because `harness/loop.rs` and `harness/loop/gate.rs` name it and they move
+// in S5b, so it cannot stay desktop. Its production dependency on the
+// desktop was exactly ONE item — `harness::trust::TrustSource` — which is
+// why `trust` had to be split first. Its `Db`-backed tests relocated to
+// `src-tauri/tests/permission_gate_db.rs` (A.4: `#[cfg(test)]` does not
+// survive into an rlib, and the crate cannot reach `storage::Db` at all).
+pub mod permission;
+pub mod trust;
 pub mod wire;
 pub mod worker_types;
 

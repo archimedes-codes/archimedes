@@ -188,6 +188,9 @@ async fn build_harness(
         RetryPolicy::default(),
         None, // config_dir (no desktop MCP layer in the test)
         "t".to_string(),
+        // (T5/S5a, SEAM 2) The no-op opener — see the same note in
+        // `harness_loop.rs` for why a fixture injects `NoOpenRequester`.
+        Arc::new(archimedes_lib::agent::mcp::NoOpenRequester),
     );
     let task = tokio::spawn(loop_.run());
     // Reap the task on drop (the tests don't await it — the `events`

@@ -46,7 +46,7 @@ use crate::agent::harness::trust::TrustSource;
 use crate::agent::interactive::{
     CachedPassword, PendingInteractive, PendingSudo, RealSudoRunner, SudoRunner,
 };
-use crate::agent::mcp::McpManager;
+use crate::agent::mcp::{McpManager, OpenRequester};
 use crate::agent::normalize::{ThoughtState, TurnState};
 use crate::agent::permission::PendingPermissions;
 use crate::agent::policy::FilePolicy;
@@ -559,6 +559,27 @@ pub struct AgentLoop {
     /// `call_tool`s through it (every manager receiver is `&self`); a test
     /// swaps in a temp-config manager.
     pub mcp: Arc<McpManager>,
+    /// (T5/S5a, SEAM 2) The opener the MCP managers are built with — INJECTED
+    /// at construction, not constructed here.
+    ///
+    /// Why this is a field and not a call to `crate::open::desktop_open_requester()`
+    /// at each manager construction site: `harness` moves into `fulcrum-core` in
+    /// S5b, and `open.rs` cannot follow it (`tauri::Url` at `open.rs:26`,
+    /// `tauri_plugin_opener` at `:218,221`). S3 landed the `OpenRequester` seam in
+    /// the right place — the manager holds a trait object — but wired it from the
+    /// wrong side: the CALLER of the manager was the desktop's own `harness`, so
+    /// the crate would have named `crate::open` the moment `harness` moved. It
+    /// compiles today only because `harness` is still desktop, which is exactly
+    /// the class of breakage a boundary check cannot see until the boundary
+    /// crosses it. So the loop now CARRIES the opener its two manager
+    /// constructions need, and the desktop's one production caller
+    /// (`worker/core.rs`'s `default_build_loop`) supplies it.
+    ///
+    /// Not `pub`: the opener is wiring, not a knob. A test that wants to observe
+    /// an open injects its own requester onto the manager it swaps into
+    /// [`AgentLoop::mcp`] — which is what the crate's own
+    /// `the_auth_action_opens_the_browser_through_the_seam` does.
+    open_requester: Arc<dyn OpenRequester>,
     /// The subagent dispatch handle (a native parent spawns a native
     /// child — `SubagentDispatcher::dispatch`; `None` when the manager is
     /// absent).
@@ -636,7 +657,8 @@ pub struct AgentLoop {
 }
 
 impl AgentLoop {
-    // 22 args — kept; > default threshold 7 (no clippy.toml). A LoopParams
+    // 23 args (22 through T3, +1 for S5a's injected `open_requester`) — kept;
+    // > default threshold 7 (no clippy.toml). A LoopParams
     // collapse is out of F6's scope (the commit is the type pair, not the lint
     // allow). The permission cluster is computed INSIDE this constructor from
     // `space_cwd` + `config_dir`, never passed in, so extracting it into
@@ -670,6 +692,11 @@ impl AgentLoop {
         // mints is prefixed with it, so a Resume's new loop — whose counters
         // restart at 0 — cannot mint an id its predecessor already used.
         incarnation: String,
+        // (T5/S5a, SEAM 2) The opener BOTH MCP managers this constructor and
+        // [`AgentLoop::set_desktop_config`] build are wired with. TAKEN, not
+        // constructed — see the field's docs for why `crate::open` cannot be
+        // named from here once `harness` moves (S5b).
+        open_requester: Arc<dyn OpenRequester>,
     ) -> Self {
         let compactor = Compactor::new(catalog.compaction, model.context_window);
         let (control_tx, control_queue) = mpsc::channel(8);
@@ -681,10 +708,13 @@ impl AgentLoop {
         // is not consulted (the `settings.json` read that used to sit inside
         // `McpManager::new` is gone). The desktop layer arrives through
         // [`AgentLoop::set_desktop_config`] with the PACKAGED map, which is
-        // why the manager is rebuilt there: `AgentLoop::new`'s signature is
-        // frozen (two integration fixtures outside this task's file set call it
-        // positionally), so the envelope's values cannot be constructor
-        // arguments. `core.rs` calls the setter BEFORE `tokio::spawn(run())`,
+        // why the manager is rebuilt there: the envelope's values cannot be
+        // constructor arguments (`set_desktop_config`'s own docs explain why the
+        // five packaged fields are a setter). NOTE: the "signature is frozen"
+        // claim this comment used to rest on is NO LONGER TRUE — S5a added the
+        // `open_requester` parameter, which is a wiring dependency rather than an
+        // envelope value, and it propagated to exactly one production caller
+        // plus the fixtures (Step A.3; reported as a DEVIATION). `core.rs` calls the setter BEFORE `tokio::spawn(run())`,
         // so no server is ever connected through the interim manager and the
         // rebuild drops nothing (the same swap the loop's own tests perform on
         // the `pub` field).
@@ -694,10 +724,11 @@ impl AgentLoop {
                 space_cwd.clone(),
                 None,
             )
-            // (T5/S3, E6) The desktop's opener. `open.rs` cannot move (it is
-            // `tauri`), so the crate's manager takes it as a seam; this is one
-            // of the two sites that rebuild the manager.
-            .with_open_requester(crate::open::desktop_open_requester()),
+            // (T5/S3, E6 / T5/S5a, SEAM 2) The opener comes from the CALLER now
+            // (`AgentLoop::new`'s last argument), not from `crate::open` — this
+            // module moves into the crate in S5b and `open.rs` cannot follow it.
+            // One of the two sites that build the manager.
+            .with_open_requester(open_requester.clone()),
         );
         // (ADR 0030 / finding 6) The permission cluster — the frozen half
         // (boundary + guard list + default rules + `~`-expansion home, all from
@@ -743,6 +774,7 @@ impl AgentLoop {
             sink,
             todo_store,
             mcp,
+            open_requester,
             subagent,
             sudo,
             retry,
@@ -781,9 +813,9 @@ impl AgentLoop {
     /// `worker/core.rs`'s `default_build_loop` immediately after `AgentLoop::new`
     /// and BEFORE `tokio::spawn(loop.run())`, from the `StartEnv`.
     ///
-    /// A setter, not five more `new` parameters: `AgentLoop::new`'s 22-argument
-    /// signature is called positionally by two integration fixtures outside this
-    /// task's owned file set, and the additive rule that governs the wire side
+    /// A setter, not five more `new` parameters: `AgentLoop::new`'s signature is
+    /// called positionally by two integration fixtures outside this task's owned
+    /// file set, and the additive rule that governs the wire side
     /// governs here too — the loop starts on the SAME inert values an old
     /// envelope decodes to (no policy ⇒ all-`Allow`, no web ⇒ env-only, no
     /// override layer, no provider rows) and this call overwrites them.
@@ -817,11 +849,13 @@ impl AgentLoop {
                     self.space_cwd.clone(),
                     Some(&mcp_servers),
                 )
-                // (T5/S3, E6) The rebuilt manager carries the SAME opener — the
-                // swap replaces the manager, so an opener wired on the old one
-                // would be silently dropped here and the `auth` action would
-                // open nothing.
-                .with_open_requester(crate::open::desktop_open_requester()),
+                // (T5/S3, E6 / T5/S5a, SEAM 2) The rebuilt manager carries the
+                // SAME opener the loop was constructed with — the swap replaces
+                // the manager, so an opener wired on the old one would be
+                // silently dropped here and the `auth` action would open
+                // nothing. Read from the field, NOT from `crate::open`: this
+                // module moves into the crate in S5b.
+                .with_open_requester(self.open_requester.clone()),
             );
         }
     }
