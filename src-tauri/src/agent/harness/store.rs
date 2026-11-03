@@ -28,17 +28,15 @@ use std::sync::Arc;
 use crate::agent::harness::provider::{ChatMessage, ChatRole};
 use crate::storage::{Db, DbError};
 
-/// One display `messages`-table upsert (the `Db::record_message` shape).
-/// `Serialize` / `Deserialize` (ADR 0025 Task 2): the `DisplayUpsert` wire
-/// frame carries these verbatim (`IpcStore` → the Supervisor's persister).
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct DisplayRow {
-    pub kind: String,
-    pub message_key: String,
-    pub payload_json: serde_json::Value,
-    pub created_at: i64,
-}
-
+// (T5/S4, plan Step B-bis / E1) `DisplayRow` MOVED to `fulcrum_core::store_rows`.
+// It is a field type of `StoreFrame::Display`, and `StoreFrame` is a wire type the
+// crate must own (edge E1: `persist.rs:56` consumes it), so leaving this here would
+// have made a crate type name a desktop type — the package cycle, arriving through
+// a field. Re-exported so `crate::agent::harness::store::DisplayRow`,
+// `harness::DisplayRow` and `harness::store::DisplayRow` all keep resolving
+// (normalize.rs:16, the `Store` trait's `persist_display`, the `Outbound` frame,
+// and the desktop tests that build rows by hand).
+pub use fulcrum_core::store_rows::DisplayRow;
 /// The transcript persistence seam (ADR 0025): `SqliteStore` (the current
 /// `SessionStore`, unchanged behavior) / `NoopStore` (tests) / `IpcStore`
 /// (Task 2 — the Worker: frames every call over the protocol; the

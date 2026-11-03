@@ -2626,20 +2626,23 @@ impl SessionManager {
     }
 }
 
-/// Resolve a composed model key (`"<provider>/<id>"` — the catalog / config
-/// option key form) to a `Model` (the first `/` split — model ids themselves
-/// contain `/`). `None` when the key is malformed or unknown. `pub(crate)` so
-/// the `dispatch_native` driver resolves a `launch.model` override (the
-/// `:<level>` suffix is stripped by the caller BEFORE calling this — this
-/// function does not split it).
-pub(crate) fn resolve_composed_model(catalog: &ModelCatalog, key: &str) -> Option<Model> {
-    let key = ModelKey::parse(key)?;
-    catalog
-        .models
-        .iter()
-        .find(|m| m.provider == key.provider && m.id == key.id)
-        .cloned()
-}
+// (T5/S4, plan Step E.3 / edge E4) `resolve_composed_model` MOVED to
+// `fulcrum_core::catalog`. It was the one crate→desktop edge that a seam would
+// have been silly for: the body is `ModelKey::parse` plus a `find` over a vec,
+// with zero desktop references in it — so the function moves and the edge
+// disappears rather than being mediated. Its one harness call site is
+// `harness/launch.rs:173` (`resolve_agent_launch`'s soft model rung); the two
+// `harness/model_key.rs` mentions are prose about the first-`/` rule, and the
+// rest are desktop (`session/mod.rs` itself, `worker/manager/subagent_flow.rs`).
+//
+// Re-exported at the SAME path so all 8 pre-existing `resolve_composed_model`
+// call sites compile untouched — `session/mod.rs`'s own three plus
+// `resolve_native_model` use the bare name, and `subagent_flow.rs:14` imports it
+// from `crate::agent::session`. Note the visibility change the move forces
+// (Step A.3): it was `pub(crate)`, and a package boundary erases that, so the
+// crate declares it `pub`. That widens the CRATE's surface by one pure lookup;
+// the desktop's surface is unchanged, since `session` is a private `mod`.
+pub use fulcrum_core::catalog::resolve_composed_model;
 
 /// The remembered thinking level for a model (ADR 0015): the map entry,
 /// `Some` only when the model's `thinking_levels` is non-empty AND

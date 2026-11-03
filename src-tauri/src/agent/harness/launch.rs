@@ -170,7 +170,7 @@ pub(crate) fn resolve_agent_launch(
         let bare = ModelRef::parse(candidate)
             .map(|r| r.key.to_string())
             .unwrap_or_else(|| candidate.to_string());
-        crate::agent::session::resolve_composed_model(catalog, &bare)
+        fulcrum_core::catalog::resolve_composed_model(catalog, &bare)
     };
     let soft = |candidate: &str| resolve(candidate).is_some();
     // The rungs, in order: the explicit param (NEVER degraded — see above), the

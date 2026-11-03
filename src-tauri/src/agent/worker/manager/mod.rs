@@ -492,3 +492,45 @@ impl WorkerManager {
         }
     }
 }
+
+// ── T5/S4 — the crate's subagent-dispatch seam, implemented (plan Step E.2) ───
+//
+// THE SECOND INSTANTIATION PIN OF S4. `fulcrum_core::seams::Dispatcher` exists
+// because `SubagentSessionManager` (moving in S5) currently holds an
+// `Arc<WorkerManager>` — edge E2, `subagent.rs:28` — and the crate cannot import
+// `archimedes_lib` to keep holding it. After S5 the manager holds
+// `Arc<dyn Dispatcher>` and this block is what makes that resolve back here.
+//
+// The proof S4 asks for is that this COMPILES, not that it runs: both bodies are a
+// one-line delegation to the inherent method of the same name, so there is no new
+// behaviour to test — the behaviour is `dispatch_subagent_to`'s and
+// `cancel_subagent`'s, already covered by `worker_e2e.rs` and the manager's own
+// tests. `src-tauri/tests/fulcrum_seams.rs` asserts the instantiation and records
+// the deletion that reddens it.
+//
+// Exactly TWO methods, matching the trait: the plain `dispatch_subagent` above is
+// NOT exposed through the seam, because nothing in the crate's set calls it (it is
+// the `Outbound::SubagentDispatch` route that answers a requesting Worker rather
+// than a oneshot) — the S3 RULING's standing instruction is to stop writing seam
+// methods with no caller.
+impl fulcrum_core::seams::Dispatcher for WorkerManager {
+    fn dispatch_subagent_to(
+        &self,
+        parent_session_id: &str,
+        wire: fulcrum_core::worker_types::SubagentDispatchWire,
+        child_session_id: String,
+        outcome: tokio::sync::oneshot::Sender<fulcrum_core::subagent_types::SubagentOutcome>,
+    ) {
+        WorkerManager::dispatch_subagent_to(
+            self,
+            parent_session_id,
+            wire,
+            child_session_id,
+            outcome,
+        );
+    }
+
+    fn cancel_subagent(&self, child_session_id: &str) {
+        WorkerManager::cancel_subagent(self, child_session_id);
+    }
+}

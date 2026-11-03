@@ -12,14 +12,33 @@ pub mod compact;
 pub mod dispatch;
 pub(crate) mod launch;
 pub mod r#loop;
-pub mod model_key;
 pub mod prompt;
 pub mod provider;
 pub mod retry;
 pub mod store;
 pub mod tool_specs;
 pub mod trust;
-pub mod wire;
+
+// ── T5/S4 — three harness leaves moved to `fulcrum-core` (module-level re-export) ──
+//
+// These three `mod` declarations are GONE and the modules now arrive as aliases.
+// Why they moved at all: Step E.4 moves `resolve_composed_model` into the crate to
+// sever edge E4, and a package boundary checks SIGNATURES, not bodies — its
+// `(catalog: &ModelCatalog, key: &str) -> Option<Model>` pulled `Model`/
+// `ModelCatalog` across, and those reach for `ModelKey` (their `From` impl) and
+// `WireApi` (the `selectable` predicate), so both had to come too. `catalog` keeps
+// its declaration because it is a SPLIT: the data types moved, the network
+// discovery did not (it calls this crate's provider transport).
+//
+// The ALIASES are load-bearing, not tidiness. `provider/mod.rs` and `catalog.rs`
+// use the same trick one level down (`pub use fulcrum_core::provider_types as
+// types`), which is why the five provider modules that stayed desktop needed
+// ZERO edits: `super::types::ChatMessage` and `super::overflow::…` still resolve,
+// to the crate. Here, `pub use fulcrum_core::{model_key, wire}` keeps
+// `crate::agent::harness::model_key::ModelKey` (`session/naming.rs:30`) and
+// `crate::agent::harness::WireApi` (the STAYING `config.rs:24`, which the plan
+// names as a required re-export target) compiling untouched.
+pub use fulcrum_core::{model_key, wire};
 
 pub use catalog::{
     discover_models, merge_catalog, CompactionConfig, DiscoveredMeta, Model, ModelCatalog,

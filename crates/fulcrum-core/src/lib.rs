@@ -89,3 +89,42 @@ pub mod provider_headers;
 /// it lives beside (`subagent.rs`, S5) because `interactive` (S3) imports it.
 /// Pure data; the E.1 wire-type pattern rather than a seam. See the module docs.
 pub mod launch_config;
+
+// ── T5/S4 — the seams, and the types they need in order to be DECLARED ──────
+// S4 moves no module bodies. It defines the crate's two traits (`seams`) and
+// moves the DATA they must name — which turned out to be more than the plan's
+// list, because a package boundary checks signatures rather than bodies:
+// `resolve_composed_model`'s signature drags `Model`/`ModelCatalog` (and their
+// `ModelKey`/`WireApi` references) across for E4, and `StartEnv`'s fields drag
+// `ChatMessage`, the config DTOs, `DisplayRow` and `AgentNameResolution` across
+// for E1/E3. None of it is S5 arriving early: `harness`'s loop, launch, dispatch,
+// prompt, providers and stores are all still desktop, and every file that moved
+// has ZERO production edges to them (measured, and recorded per module).
+//
+// `catalog` is a SPLIT, not a move — the data types here, the network discovery
+// desktop — the same shape §2c applied to `config.rs`.
+pub mod catalog;
+pub mod clock;
+pub mod config_types;
+pub mod model_key;
+pub mod provider_overflow;
+pub mod provider_types;
+pub mod seams;
+pub mod store_rows;
+pub mod subagent_types;
+pub mod wire;
+pub mod worker_types;
+
+/// The crate's seam traits, re-exported at the root so the desktop can name them
+/// without reaching into the module (`fulcrum_core::{Dispatcher, FulcrumPersistence,
+/// StoreError}`). `mcp::OpenRequester` is NOT here — it stayed beside its only
+/// consumer in S3, and moving its spelling now would churn three working call
+/// sites for nothing.
+/// The crate's boundary pins (Step C's `load_settings` grep, the §2c-bis pin, and
+/// the S4 gate's "no `tauri` reference" test). `#[cfg(test)]` because they are
+/// tests over the crate's own source and manifest — nothing at runtime needs them,
+/// and the module names the forbidden identifiers in its own scan strings.
+#[cfg(test)]
+mod boundary_pins;
+
+pub use seams::{Dispatcher, FulcrumPersistence, StoreError};

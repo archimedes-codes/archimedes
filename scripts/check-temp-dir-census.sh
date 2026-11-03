@@ -190,6 +190,14 @@ archimedes-childproc-kill-test-	crates/fulcrum-core/src/childproc.rs
 # defines as "NEW, which is exactly what this guard is for" — i.e. a correctly
 # guarded dir would read as a leak and invite someone to "fix" a test that is fine.
 fc-guard-	crates/fulcrum-core/src/test_support.rs
+# T5/S4: the seam instantiation pins (`cargo test` integration target). Three pins
+# each open a real SQLite file, so three prefixes; ONE row covers them all because
+# longest-wins makes the shared `fulcrum-seams-` the match for each. The prefixes
+# are written as LITERAL strings at the call sites rather than built with
+# `format!` — the minter scans (`.test.sh` 18c / 18c(2)) grep for literal
+# `in_env_temp("<prefix>"` text, and an interpolated prefix is invisible to them,
+# which would take this file out of the corpus those two cases certify.
+fulcrum-seams-	src-tauri/tests/fulcrum_seams.rs
 session-cfg-	src-tauri/src/agent/session/mod.rs
 refresh-	src-tauri/src/agent/session/mod.rs
 router-todos-	src-tauri/src/agent/session/router.rs

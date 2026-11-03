@@ -12,12 +12,27 @@
 
 pub mod anthropic;
 pub mod openai;
-mod overflow;
 pub mod responses;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod transport;
-pub mod types;
+
+// ── T5/S4 — `types.rs` and `overflow.rs` moved to `fulcrum-core` ──────────────
+//
+// Both moved because `StartEnv.transcript` is an `Option<Vec<ChatMessage>>` and
+// `StoreFrame`'s sibling wire types embed it, so E1 could not be severed without
+// it; `provider_types.rs` in turn calls `provider_overflow::is_context_overflow_text`
+// in production (`parse_error_chunk`, the ONE classifier of the three wires), so
+// the two moved together. `Provider`/`ModelRequest`/`ProviderError` came as part of
+// the same file — moving half a module is not a thing.
+//
+// ALIASED rather than re-exported by name, deliberately: `transport.rs`,
+// `openai.rs`, `anthropic.rs`, `responses.rs` and `test_util.rs` all STAY desktop
+// through S5 and every one of them imports `super::types::…` (and `transport.rs`
+// imports `super::overflow::…`). The alias keeps all five compiling with ZERO
+// edits — the S1 lesson (re-export the MODULE, not just named symbols: deleting
+// one module-level line there cost 36 errors) applied to a split module.
+pub use fulcrum_core::{provider_overflow as overflow, provider_types as types};
 
 pub use anthropic::{normalize_anthropic_base_url, normalize_wire_base_url, AnthropicProvider};
 pub use openai::OpenAiCompatibleProvider;
@@ -26,6 +41,11 @@ pub use types::{
     ChatMessage, ChatRole, FinishReason, MessageContent, ModelOptions, ModelRequest, Provider,
     ProviderError, ProviderEvent, ToolCall, ToolCallDelta, ToolSpec, Usage,
 };
+// (T5/S4, Step A.3) The two `pub(crate)` free functions and the two `pub(super)`
+// wire shapes in the moved file are now `pub`, because a package boundary erases
+// both visibilities and the STAYING `openai.rs`/`anthropic.rs`/`responses.rs` name
+// all four. Re-exported through the alias so their import sites did not change.
+pub use types::{cost_usd_from_usage, parse_error_chunk, WireToolCall};
 
 /// Build the `Provider` for a `Model` (the `api` discriminator — ADR
 /// 0024; the `SessionManager`'s default factory + the tests).

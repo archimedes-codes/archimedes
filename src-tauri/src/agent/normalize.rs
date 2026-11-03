@@ -800,15 +800,20 @@ pub(crate) fn compute_display_rows(
     }
 }
 
-/// The current unix time in milliseconds (the `DisplayRow` `created_at`
-/// stamp — the `Db::now_ms` mirror; the `SqliteStore`'s `db.record_message`
-/// re-stamps it at write time, so the two are the same value in practice).
-pub(crate) fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+// (T5/S4, Step B-bis) The second private clock is GONE. This was a `pub(crate)`
+// byte-identical copy of `storage/db.rs`'s private `now_ms()`; both now name the
+// ONE definition in `fulcrum_core::clock`, so the `DisplayRow::created_at` stamped
+// here and the `created_at` the store writes for the same row cannot drift — the
+// "hidden second clock source" the Step B-bis ruling names as the failure mode of
+// leaving the duplicate in place.
+//
+// A re-export rather than a call through `Arc<dyn FulcrumPersistence>` because
+// THIS file has no store in scope at the stamp sites — it builds `DisplayRow`s and
+// hands them to the caller, which is the whole reason `normalize` needs a clock at
+// all. When `normalize` moves to the crate in S5 the trait method is there for it
+// to prefer if the call sites change; the point B-bis actually enforces is that
+// there is exactly ONE body, and there is.
+pub(crate) use fulcrum_core::clock::now_ms;
 
 #[cfg(test)]
 use std::sync::Arc;

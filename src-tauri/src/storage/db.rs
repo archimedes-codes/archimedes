@@ -16,9 +16,35 @@ use std::sync::Mutex as StdMutex;
 use rusqlite::{params, Connection, Row, Transaction};
 use serde::{Deserialize, Serialize};
 
+// T5/S4 (plan Step B-bis): the ROW TYPES moved to `fulcrum-core`, because the
+// crate's `FulcrumPersistence` trait returns them and a crate cannot name a type
+// that lives in `archimedes_lib`. They are pure serde data (8 and 6 `pub` fields,
+// zero `rusqlite` references) — the SQL stayed here with `SESSION_COLUMNS` /
+// `MESSAGE_COLUMNS` and the row mappers. Re-imported (desktop→crate, the allowed
+// direction) so `crate::storage::SessionRow` and every other existing spelling
+// resolves unchanged.
+pub use fulcrum_core::store_rows::{MessageRow, SessionRow};
+
+use fulcrum_core::seams::{FulcrumPersistence, StoreError};
+// (T5/S4, Step B-bis) The clock moved to `fulcrum_core::clock` — this file's
+// private copy and `agent/normalize.rs`'s `pub(crate)` copy were byte-identical
+// duplicates, and the trait's `now_ms` would have been a third. Importing the
+// one definition (rather than a one-line wrapper) leaves NO second body to drift:
+// the timestamps this file writes and the `DisplayRow.created_at` the crate
+// stamps are the same clock by construction.
+use fulcrum_core::clock::now_ms;
+
 use crate::types::SessionInfo;
 
 /// Errors surfaced by the persistence layer.
+///
+/// Stays desktop, and STAYS THREE-VARIANT: `Sqlite(#[from] rusqlite::Error)` is
+/// why `DbError` could not move to the crate at all (Step B-bis), and the desktop
+/// keeps needing the variant — `agent/errors.rs:171` matches on it to build the
+/// IPC error envelope. The crate sees only the two variants its own errors can
+/// be; see the `impl From<DbError> for StoreError` below and
+/// `fulcrum_core::StoreError`'s docs for the measurement that makes collapsing
+/// the third admissible.
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
     #[error("sqlite error: {0}")]
@@ -29,48 +55,38 @@ pub enum DbError {
     Json(#[from] serde_json::Error),
 }
 
-/// A row from the `sessions` table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionRow {
-    /// The ACP session id (primary key).
-    pub id: String,
-    pub cwd: String,
-    /// Unix milliseconds.
-    pub created_at: i64,
-    pub title: Option<String>,
-    /// The negotiated `agent_capabilities`, serialized (camelCase).
-    pub capabilities_json: String,
-    /// The desktop's archived flag (ADR 0016): `true` hides the session from
-    /// its Space group into the Archived section; the transcript is kept.
-    pub archived: bool,
-    /// The session's last known context usage (`{"used": n, "window": n}` —
-    /// the `context_usage_update` frame's values: the provider's
-    /// `input_tokens` vs the model's window), persisted on every frame so a
-    /// CLOSED session's context survives (the frontend's store drops it on
-    /// close — the row is the source of truth for the stored session's bar).
-    /// `None` until the first frame (a fresh session with no usage yet).
-    pub context_usage_json: Option<String>,
-    /// The ephemeral-subagent flag (ADR 0025 §3): `true` for a subagent
-    /// session (hidden from `list_sessions` — `is_subagent = 0` filter).
-    /// `false` for a main session.
-    pub is_subagent: bool,
-    /// The session's provider-reported running cost in USD (issue #105): the
-    /// LAST `cost_update` frame's CUMULATIVE total, stored by
-    /// `record_session_cost` (a snapshot write since Fulcrum T2) so a CLOSED
-    /// session keeps its figure (the frontend's store drops its entry on close —
-    /// the row is the source of truth for the stored figure) and a RESUMED
-    /// session continues its total instead of restarting it (the row is seeded
-    /// back into the loop via `StartEnv.cost_usd`).
-    ///
-    /// `None` means NO model call ever reported a cost — which is NOT the same
-    /// as `Some(0.0)`, a call that reported a genuine zero. The renderer prints
-    /// nothing for the first and `$0.00` for the second; collapsing them is the
-    /// D5 defect this column exists to avoid (ADR 0082). The column therefore
-    /// has no `DEFAULT` (see the migration in `Db::open`).
-    pub cost_usd: Option<f64>,
-    /// The session's title generation stage (0 = untitled, 1 = stage 1 title, 2 = stage 2 / settled title).
-    pub title_stage: i64,
+/// The `DbError → StoreError` map the seam runs through (Step B-bis):
+/// `Sqlite(_) → Io`, `Io → Io`, `Json → Json`.
+///
+/// The mapping is a LOSS, so it is licensed only by the measurement recorded on
+/// `StoreError`: no code inside the crate ever matches `Sqlite` — the crate-side
+/// sites CONSTRUCT `Json` (`harness/store.rs:220`) or `Io` (`worker/store.rs:62`,
+/// which stays desktop through T8 anyway), and the single `match` on
+/// `DbError::Sqlite` is `agent/errors.rs:171`, which is desktop-only and keeps the
+/// full `DbError`. A SQLite failure that reaches the engine surfaces as
+/// `"io error: sqlite error: …"`; today the only crate-side consumer of a
+/// persistence error is `TranscriptPersister`, which `eprintln!`s it and
+/// continues, so nothing branches on the distinction.
+///
+/// Kept as a `From` impl rather than inlined per method so a future need to tell
+/// a locked database from a missing disk has ONE place to add a `Sqlite` variant —
+/// and does not get `rusqlite` into the crate by accident.
+impl From<DbError> for StoreError {
+    fn from(e: DbError) -> Self {
+        match e {
+            // Stringified through `DbError`'s OWN `Display`, not the bare
+            // `rusqlite::Error`, so the sentence keeps its `sqlite error: `
+            // prefix and degrades to "io error: sqlite error: …" rather than
+            // silently dropping which layer failed. `io::Error::other` is the
+            // constructor for "an error that is not an OS errno" and preserves
+            // the wrapped value's `Display`.
+            DbError::Sqlite(inner) => {
+                StoreError::Io(std::io::Error::other(format!("sqlite error: {inner}")))
+            }
+            DbError::Io(e) => StoreError::Io(e),
+            DbError::Json(e) => StoreError::Json(e),
+        }
+    }
 }
 
 /// The ONE `sessions` SELECT list every `SessionRow` read uses, as a const
@@ -133,23 +149,6 @@ fn session_row_from(row: &Row<'_>) -> rusqlite::Result<SessionRow> {
         cost_usd: row.get(8)?,
         title_stage: row.get(9)?,
     })
-}
-
-/// A row from the `messages` table.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MessageRow {
-    pub id: i64,
-    pub session_id: String,
-    /// `'user' | 'agent-text' | 'agent-thought' | 'tool-call' | 'diff'`.
-    pub kind: String,
-    /// `ContentChunk.messageId` for agent-text; the tool call id for
-    /// tool-call rows; `NULL` otherwise.
-    pub message_key: Option<String>,
-    /// The message body, serialized (camelCase).
-    pub payload_json: String,
-    /// Unix milliseconds.
-    pub created_at: i64,
 }
 
 /// The ONE `messages` SELECT list every `MessageRow` read uses, as a const
@@ -1267,12 +1266,127 @@ impl Db {
     }
 }
 
-/// The current unix time in milliseconds.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+// ── T5/S4 — the crate's persistence seam, implemented (plan Steps B + B-bis) ──
+//
+// THE INSTANTIATION THAT IS S4'S GATE. The S4 ruling is explicit that a
+// surface-comparison test which never builds this impl is void, so this block —
+// not any test — is the proof that the trait's SHAPE is right: every method below
+// must type-check against the INHERENT method it delegates to, with the real
+// argument and return types. `src-tauri/tests/fulcrum_seams.rs` then makes that
+// proof observable and records the deletion that reddens it.
+//
+// Every body is one delegation plus the `DbError → StoreError` map. No SQL and no
+// error-handling policy is re-implemented here — the transaction boundaries, the
+// `QueryReturnedNoRows` arms and the deliberate silent no-ops all stay in the
+// inherent methods above — which is what makes the seam behaviour-identical by
+// construction rather than by argument.
+//
+// Method resolution: the trait signatures are deliberately IDENTICAL to the
+// inherent ones, and Rust prefers inherent methods, so the qualified calls below
+// reach the SQLite code and cannot recurse into the trait. They are written
+// `Db::method(self, …)` rather than `self.method(…)` so that stays true even if a
+// future edit renames a trait method and shadows nothing.
+impl FulcrumPersistence for Db {
+    fn insert_native_message(
+        &self,
+        session_id: &str,
+        seq: i64,
+        role: &str,
+        content_json: &str,
+    ) -> Result<(), StoreError> {
+        Db::insert_native_message(self, session_id, seq, role, content_json)?;
+        Ok(())
+    }
+
+    fn replace_native_messages(
+        &self,
+        session_id: &str,
+        rows: &[(i64, String, String)],
+    ) -> Result<(), StoreError> {
+        Db::replace_native_messages(self, session_id, rows)?;
+        Ok(())
+    }
+
+    fn record_session_context_usage(
+        &self,
+        session_id: &str,
+        used: u64,
+        window: u64,
+    ) -> Result<(), StoreError> {
+        Db::record_session_context_usage(self, session_id, used, window)?;
+        Ok(())
+    }
+
+    fn record_session_cost(&self, session_id: &str, total: f64) -> Result<(), StoreError> {
+        Db::record_session_cost(self, session_id, total)?;
+        Ok(())
+    }
+
+    fn record_session_todos(
+        &self,
+        session_id: &str,
+        todos: Option<&str>,
+    ) -> Result<(), StoreError> {
+        Db::record_session_todos(self, session_id, todos)?;
+        Ok(())
+    }
+
+    fn session(&self, session_id: &str) -> Result<Option<SessionRow>, StoreError> {
+        Ok(Db::session(self, session_id)?)
+    }
+
+    fn load_native_messages(&self, session_id: &str) -> Result<Vec<String>, StoreError> {
+        Ok(Db::load_native_messages(self, session_id)?)
+    }
+
+    fn messages_for(&self, session_id: &str) -> Result<Vec<MessageRow>, StoreError> {
+        Ok(Db::messages_for(self, session_id)?)
+    }
+
+    fn session_cost(&self, session_id: &str) -> Result<Option<f64>, StoreError> {
+        Ok(Db::session_cost(self, session_id)?)
+    }
+
+    fn session_todos(&self, session_id: &str) -> Result<Option<String>, StoreError> {
+        Ok(Db::session_todos(self, session_id)?)
+    }
+
+    fn record_session(&self, info: &SessionInfo) -> Result<(), StoreError> {
+        Db::record_session(self, info)?;
+        Ok(())
+    }
+
+    fn list_sessions(&self, include_archived: bool) -> Result<Vec<SessionRow>, StoreError> {
+        Ok(Db::list_sessions(self, include_archived)?)
+    }
+
+    fn set_space_trusted(&self, path: &str, trusted: bool) -> Result<bool, StoreError> {
+        Ok(Db::set_space_trusted(self, path, trusted)?)
+    }
+
+    fn upsert_space(&self, path: &str, default_trusted: bool) -> Result<(), StoreError> {
+        Db::upsert_space(self, path, default_trusted)?;
+        Ok(())
+    }
+
+    fn record_message(
+        &self,
+        session_id: &str,
+        kind: &str,
+        message_key: Option<&str>,
+        payload_json: &str,
+    ) -> Result<(), StoreError> {
+        Db::record_message(self, session_id, kind, message_key, payload_json)?;
+        Ok(())
+    }
+
+    /// The clock, delegating to the ONE definition (see the `now_ms` import
+    /// above). The trait method exists so a crate caller holding
+    /// `Arc<dyn FulcrumPersistence>` reaches the shared clock instead of minting
+    /// its own; a `Db` carries no time of its own to read.
+    fn now_ms(&self) -> i64 {
+        now_ms()
+    }
 }
 
 /// The single key form of a `spaces` row (ADR 0010): the canonical path.
