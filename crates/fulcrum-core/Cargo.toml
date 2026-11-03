@@ -4,32 +4,120 @@ version = "0.11.0"
 edition = "2021"
 description = "The Fulcrum agent engine core — extracted from archimedes (T5-T8)"
 
-# The dependencies the T5/S1 leaf modules actually name — nothing else. Adding a
+# The dependencies the crate's sources actually name — nothing else. Adding a
 # dependency the crate does not use is a silent widening of what the engine is
 # allowed to reach for, so each line below is justified by a `grep`-able use in
 # `src/`, and `tauri` / `tauri_plugin_*` / `archimedes_lib` / `rusqlite` are
 # deliberately ABSENT (the crate compiling without them is the master roadmap's
-# decoupling criterion).
+# decoupling criterion; `rusqlite` stays out because `DbError` cannot move —
+# Step B-bis).
 [dependencies]
 # `events.rs` (`RpcEvent`/`CompactionReason` derive), `ids.rs`, `todo.rs`,
-# `fs_backend.rs` (`FsError`'s serde tag).
+# `fs_backend.rs` (`FsError`'s serde tag), `boundary.rs`, `policy.rs`,
+# `skills.rs`/`agents.rs` (`SkillInfo`/`AgentDefinition` derive),
+# `web/config.rs` (`WebSettings`' serde — the DTO T5/S2 moved per plan §2c),
+# `web/providers/*` (the provider wire DTOs).
 serde = { version = "1", features = ["derive"] }
-# `events.rs` (`Value` is the event payload type), `ids.rs` + `todo.rs` (tests).
+# `events.rs` (`Value` is the event payload type), `ids.rs` + `todo.rs` (tests),
+# `tools/exec/*` (tool params/results are `serde_json::Value`),
+# `web/providers/*` (provider JSON), `harness`-adjacent tool specs.
 serde_json = "1"
-# `types.rs` + `ids.rs` (`mint_session_id`/`SessionId::mint`), `fs_backend.rs` (tests).
+# `types.rs` + `ids.rs` (`mint_session_id`/`SessionId::mint`), `fs_backend.rs`
+# (tests), `test_support.rs` (the scratch-dir uuid), `tools/sandbox` +
+# `tools/exec/tests` (fixture dir names), `roots.rs` (tests).
 uuid = { version = "1", features = ["v4"] }
-# `debuglog.rs:50` (`dirs::data_dir()` — the supervisor log's base dir).
+# `debuglog.rs:50` (`dirs::data_dir()` — the supervisor log's base dir),
+# `skills.rs`/`agents.rs`/`roots.rs` (`home_dir()` — the harness's OWN
+# `$HOME/.agents` root, NOT the desktop's `settings.json`; T3's invariant is
+# about the desktop config file and this is a different config root).
 dirs = "6"
-# `fs_backend.rs:28` (`FsError`'s `thiserror::Error` derive).
+# `fs_backend.rs:28` (`FsError`'s `thiserror::Error` derive),
+# `web/net.rs` (`NetError`'s `#[from] reqwest::Error`).
 thiserror = "2"
-# `hostenv.rs` (`EnvPatch::apply` takes a `tokio::process::Command`).
-tokio = { version = "1", features = ["process"] }
+# The engine spawns and confines children: `tools/exec/bash.rs` + `search.rs`
+# (`fd`/`rg`), `childproc.rs` (the one `Command` constructor),
+# `hostenv.rs` (`EnvPatch::apply` takes a `tokio::process::Command`),
+# `web/net.rs` (`tokio::net::TcpStream` for the DNS-rebind-safe connect),
+# `tools/exec/tests/bash.rs` (`tokio::runtime::Builder`). Feature set mirrors the
+# desktop's so feature unification keeps ONE copy of `tokio` in the graph.
+tokio = { version = "1", features = [
+    "process",
+    "io-util",
+    "io-std",
+    "sync",
+    "macros",
+    "time",
+    "net",
+    "rt",
+] }
+# `tools/types.rs` (`CancellationToken` on `ToolCtx`), `web/net.rs`,
+# `web/tools.rs` — the cancel handle every tool call carries.
+tokio-util = "0.7"
+# The `exec_find` fallback when `fd` is not installed (walk the cwd tree):
+# `tools/exec/search.rs`.
+walkdir = "2"
+# base64 for the `read` tool's image content blocks (`tools/exec/fs_tools.rs`):
+# pi's `ImageContent` = `{type:"image", data, mimeType}`, `data` is base64.
+base64 = "0.22"
+# The web subsystem's HTTP client (`web/net.rs`, `web/providers/*`). Same
+# feature choices as the desktop, for the same reason: `rustls-tls` with default
+# features OFF avoids a system-OpenSSL build dependency (and keeps `openssl-sys`
+# out of a crate meant to build anywhere), `stream` provides the `bytes_stream`
+# `web/net.rs:336` consumes, `json` the request bodies.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "stream",
+    "json",
+] }
+# `url` — the web subsystem parses URLs for the SSRF checks (`web/net.rs`), the
+# extractors (`web/extract/*`) and the providers (`web/providers/*`).
+url = "2"
+# `BoxStream`/`StreamExt` for the streaming body reads (`web/net.rs:1`,
+# `web/providers/registry.rs:203` `try_join_all`).
+futures-util = "0.3"
+# The `#[async_trait]` on the Search provider trait and its six implementations
+# (`web/providers/*`).
+async-trait = "0.1"
+# The HTML→markdown pipeline: `web/extract/article.rs`,
+# `web/providers/duckduckgo.rs`.
+dom_query = "0.28"
+# DuckDuckGo's own client (`web/providers/duckduckgo.rs`) — one of the five
+# Search providers, so it is engine functionality, not a desktop extra.
+ddgs = "0.1"
+# PDF body extraction (`web/extract/pdf.rs`).
+pdf-extract = "0.12"
+# `web/extract/*` (the markdown normalisers, the YouTube caption parser),
+# `web/tools.rs` (the summary shaping), `web/providers/common.rs`.
+regex = "1"
+# The DNS-rebind IP classification in `web/net.rs` (`is_blocked_ip` over
+# `IpNet` ranges).
+ipnet = "2"
+# The cache-bust jitter in `web/cache.rs`.
+rand = "0.9"
 
-# The moved `#[cfg(test)]` blocks need more of `tokio` than the production code
-# does: `hostenv.rs:1050` is a `#[tokio::test]` (`macros` + `rt`). Test-build
-# features only — resolver 2 keeps this out of the desktop's graph.
+# `libc` on ALL unix, matching the desktop's own gate and for the same reason:
+# `childproc.rs`'s process-group kill (`kill(-(pid as i32), SIGKILL)`) and
+# `setpgid` are `#[cfg(unix)]`, not Linux-only, and `tools/sandbox.rs`'s
+# `libc::stat` probe is `cfg(target_os = "linux")`.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# The moved `#[cfg(test)]` blocks need more than the production graph:
+# `tempfile` (`roots.rs`'s walk-up fixtures), `wiremock` (the web subsystem's
+# canned HTTP providers — 38 uses across `web/*` tests), and `tokio`'s
+# `test-util` + `macros`/`rt` for `#[tokio::test]` (153 of them).
+# Test-build features only — resolver 2 keeps this out of the desktop's graph.
 [dev-dependencies]
-tokio = { version = "1", features = ["process", "macros", "rt"] }
-
-# `hostenv.rs`'s Linux-only `scrub` internals use `std::os::unix::ffi` (in std, no
-# crate) — no target-gated dependency is needed for the S1 set.
+tempfile = "3"
+wiremock = "0.6"
+tokio = { version = "1", features = [
+    "process",
+    "io-util",
+    "io-std",
+    "sync",
+    "macros",
+    "time",
+    "net",
+    "rt",
+    "test-util",
+] }

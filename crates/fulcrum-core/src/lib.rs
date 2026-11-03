@@ -29,3 +29,32 @@ pub mod ids;
 pub mod test_support;
 pub mod todo;
 pub mod types;
+
+// ── T5/S2 — the `{tools, web, boundary}` cluster + its co-residents ──────────
+// `git mv`'d with every `mod`/`#[cfg(test)]` block verbatim. The cluster is ONE
+// unit because `tools ↔ web` and `tools ↔ boundary` are genuine 2-cycles (no
+// member compiles alone); `skills`/`agents`/`roots` ride with it because
+// `boundary.rs` imports both `skills::{user_roots,space_roots}` and
+// `agents::{user_roots,space_roots}`, `tools/types.rs` names `skills::SkillScope`,
+// and both of those reach `roots::space_roots_in` — an S2 without them does not
+// compile (the status file's MAJOR finding #2).
+//
+// `web/` is the SPLIT directory: the crate owns `cache`, `config`, `extract`,
+// `net`, `providers`, `tools` and NOT `render` (the Tauri webview stays
+// desktop). See `src-tauri/src/agent/web.rs` for the desktop half and why the
+// two cannot be one module tree.
+pub mod agents;
+pub mod boundary;
+pub mod childproc;
+pub mod definition_permission;
+pub mod policy;
+// `pub(crate)`, NOT `pub`: `roots` is the shared walk-up helper behind
+// `skills::space_roots`/`agents::space_roots` and NOTHING outside the crate names
+// it (measured: `crate::roots::space_roots_in` appears only in `skills.rs:241`
+// and `agents.rs:254`, both of which moved here). The desktop declared it
+// `pub(crate) mod roots` too, so this preserves the original surface rather than
+// widening it across the package boundary.
+pub(crate) mod roots;
+pub mod skills;
+pub mod tools;
+pub mod web;

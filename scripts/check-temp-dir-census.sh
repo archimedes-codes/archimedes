@@ -127,8 +127,8 @@ usage() {
 attribution_table() {
   # prefix <TAB> owner
   cat <<'TABLE'
-exec-skill-esc-	src-tauri/src/agent/tools/exec/tests/skills.rs
-exec-	src-tauri/src/agent/tools/exec/tests/support.rs
+exec-skill-esc-	crates/fulcrum-core/src/tools/exec/tests/skills.rs
+exec-	crates/fulcrum-core/src/tools/exec/tests/support.rs
 harness-subagent-	src-tauri/tests/harness_subagent_dispatch.rs
 harness-loop-test-	src-tauri/src/agent/harness/loop/tests/support.rs
 harness-loop-	src-tauri/tests/harness_loop.rs
@@ -144,20 +144,42 @@ mcp-loop-	src-tauri/src/agent/harness/loop/tests/turn_lifecycle.rs
 mcp-	src-tauri/src/agent/mcp/config.rs
 db-	src-tauri/src/storage/db.rs
 archimedes-cmd-agents-	src-tauri/src/commands/agents.rs
-archimedes-agents-	src-tauri/src/agents.rs
-archimedes-skills-	src-tauri/src/skills.rs
+archimedes-agents-	crates/fulcrum-core/src/agents.rs
+archimedes-skills-	crates/fulcrum-core/src/skills.rs
 archimedes-sudo-	src-tauri/src/agent/interactive/sudo_exec.rs
 archimedes-canonical-	src-tauri/tests/storage.rs
 archimedes-native-mig-	src-tauri/tests/storage.rs
 archimedes-spaces-	src-tauri/tests/storage.rs
 archimedes-storage-test-	src-tauri/tests/storage.rs
 archimedes-trusted-	src-tauri/tests/storage.rs
-archimedes-sandbox-	src-tauri/src/agent/tools/sandbox.rs
+archimedes-sandbox-	crates/fulcrum-core/src/tools/sandbox/tests/mod.rs
 sessions-log-test-	src-tauri/src/commands/sessions.rs
 history-	src-tauri/src/commands/history.rs
 files-cmd-test-	src-tauri/src/commands/files/tests/support.rs
 test-support-guard-	src-tauri/src/test_support.rs
-# T5/S1: `fulcrum-core`'s OWN copy of the scratch-dir guard — the crate cannot
+# T5/S2: the six rows above repointed at `crates/fulcrum-core/...` because the
+# `{tools, web, boundary}` cluster + `skills`/`agents` MOVED. A stale owner path
+# still ATTRIBUTES the prefix correctly (the census matches the PREFIX, never the
+# file), so nothing reddened — but it sends a reader chasing a leak to a file that
+# no longer mints it, which is the whole point of the table. Verified against
+# `grep '"<prefix>"'` in both packages, not against the old table.
+#
+# T5/S2 also RELOCATED one test: `the_prompt_catalog_and_the_list_skills_catalog_
+# agree` moved out of the crate's `exec/tests/skills.rs` into
+# `src-tauri/tests/skill_catalog_drift.rs` (it drives `harness::prompt`, which
+# stays desktop until S5). It mints through its OWN `temp_cwd` with the prefix
+# `skill-catalog-`, deliberately NOT `exec-`: two files minting one prefix would
+# blame the wrong one. That makes it a NEW minter, so it needs a NEW row —
+# otherwise its dirs report UNATTRIBUTED, which the header defines as "NEW, which
+# is exactly what this guard is for", and a correctly-guarded dir reads as a leak.
+skill-catalog-	src-tauri/tests/skill_catalog_drift.rs
+# T5/S2 found these TWO rows missing — both minters existed at `$BASE` and
+# neither was in the table, so their dirs reported UNATTRIBUTED on every run
+# (a pre-existing gap, recorded rather than silently absorbed). Both files moved
+# in S2, so the rows are written against their NEW paths.
+policy-rules-	crates/fulcrum-core/src/policy.rs
+archimedes-childproc-kill-test-	crates/fulcrum-core/src/childproc.rs
+# T5/S2: `fulcrum-core`'s OWN copy of the scratch-dir guard — the crate cannot
 # reach `archimedes_lib::test_support` (that edge is the package cycle T5 severs),
 # so the crate mints under its own prefix. Same mechanism, same guard, one row.
 # Without this row a `fc-guard-*` dir reports as UNATTRIBUTED — which the header
@@ -174,7 +196,7 @@ perm-gate-	src-tauri/src/agent/permission.rs
 persist-test-	src-tauri/src/agent/persist.rs
 fsb-	crates/fulcrum-core/src/fs_backend.rs
 fs-backend-	src-tauri/tests/fs_backend.rs
-boundary-	src-tauri/src/agent/boundary.rs
+boundary-	crates/fulcrum-core/src/boundary.rs
 session-native-	src-tauri/tests/session_native.rs
 worker-e2e-	src-tauri/tests/worker_e2e.rs
 worker-stdin-	src-tauri/tests/worker_stdin.rs

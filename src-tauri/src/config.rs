@@ -185,19 +185,16 @@ fn default_subagent_dead_bound_secs() -> u64 {
 /// The `web_search` / `fetch_content` configuration (the settings' `web`
 /// block). Every field is optional; an unset key means "this Search provider
 /// is not available" (or, for `defaultProvider`/`proxy`, "auto"/"none").
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
-pub struct WebSettings {
-    pub brave_api_key: String,
-    pub tavily_api_key: String,
-    pub perplexity_api_key: String,
-    /// The self-hosted SearXNG instance base URL.
-    pub searxng_url: String,
-    /// `"auto"` (default) or one of `brave|tavily|perplexity|searxng|duckduckgo`.
-    pub default_provider: String,
-    /// An explicit proxy URL. Empty = fall back to `HTTPS_PROXY`/`HTTP_PROXY`.
-    pub proxy: String,
-}
+///
+/// (Fulcrum T5/S2) This DTO lives in `fulcrum-core` now — the §2c config SPLIT:
+/// the value types move, `load_settings` stays, because `load_settings` IS the
+/// T3 disk boundary and moving it would put the desktop's settings loader inside
+/// the engine. The crate needs the TYPE because `web::config::WebConfig::
+/// from_web_settings` — the one entry the Worker's per-turn refresh and the
+/// Supervisor's `test_search_provider` both use — takes it. Pure serde data,
+/// zero desktop logic, so the re-export below keeps `crate::config::WebSettings`
+/// resolving for all 20 pre-existing call sites with no edits.
+pub use fulcrum_core::web::config::WebSettings;
 
 /// (ADR 0066 / 0067) One agent's override — the VALUE of
 /// `Settings::agent_overrides`.

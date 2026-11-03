@@ -1,12 +1,20 @@
 pub mod agent;
-pub mod agents;
+// T5/S2: `skills.rs`, `agents.rs` and `roots.rs` moved to `fulcrum-core` (they
+// are inside the `{tools, web, boundary}` closure — `boundary.rs` imports both
+// `skills::{user_roots,space_roots}` and `agents::{user_roots,space_roots}`).
+// These are RE-EXPORTS at the crate root rather than `pub mod` declarations, so
+// every pre-existing `crate::skills::…` / `crate::agents::…` path inside the
+// desktop and every `archimedes_lib::skills::…` path in `tests/` keeps resolving
+// with ZERO edits — the same Step A.2 mechanism `agent/mod.rs` uses. `roots`
+// stays crate-internal on BOTH sides (its only two callers moved with it), so it
+// is absent here exactly as it was `pub(crate)` before.
+pub use agent::agents;
 pub mod attention;
 pub mod commands;
 pub mod config;
 pub mod navigation_guard;
 pub mod open;
-pub(crate) mod roots;
-pub mod skills;
+pub use agent::skills;
 pub mod storage;
 #[doc(hidden)]
 pub mod test_support;

@@ -42,16 +42,15 @@ pub enum FsError {
 ///
 /// No read or write may ever touch a file that does not live under one of
 /// the `roots`. `roots[0]` is the join base for relative paths (the session
-/// `cwd`), so the ORDER matters — see the desktop's `agent::boundary` (a plain
-/// reference, not an intra-doc link: `boundary` stays desktop until T5/S2, so
-/// `crate::agent::boundary` does not resolve from inside this crate and rustdoc
-/// reports it as an unresolved link — the compiler stays silent on doc links, so
-/// A.1's path rewrite cannot catch these).
+/// `cwd`), so the ORDER matters — see [`crate::boundary`] (T5/S2 moved
+/// `boundary` into this crate, so the S1-era plain-text reference — written when
+/// `crate::agent::boundary` could not resolve from here — is a real intra-doc
+/// link again).
 #[derive(Debug, Clone)]
 pub struct FsBackend {
     /// The allowed trees. `roots[0]` is what a RELATIVE path joins to; a
     /// path is in bounds when it is under ANY root. Empty = nothing is in
-    /// bounds (fail closed — see [`FsBackend::resolve`]).
+    /// bounds (fail closed — see `resolve`).
     pub roots: Vec<PathBuf>,
 }
 
@@ -234,7 +233,7 @@ fn reapply(base: PathBuf, trailing: &[std::ffi::OsString]) -> PathBuf {
 /// would land the caller outside wherever `canon` points. `resolve` rejects
 /// that (its probe); a non-I/O caller whose only move is a string comparison
 /// cannot be fooled into an UNSAFE allow by it — see
-/// [`crate::agent::tools::exec::protected_refusal_text`], the one caller that
+/// [`crate::tools::exec::protected_refusal_text`], the one caller that
 /// leans on this without the probe.
 fn peel_to_existing(path: &Path) -> Result<Peel, FsError> {
     let mut ancestor = path.to_path_buf();

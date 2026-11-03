@@ -2,11 +2,14 @@
 //! drive the session lifecycle, the interactive channel, the subagent
 //! manager.
 
-pub mod boundary;
-pub mod childproc;
+// T5/S2 moved `boundary`, `childproc`, `definition_permission`, `policy` and
+// `tools` into `crates/fulcrum-core`; their `pub mod` declarations are GONE and
+// the modules now arrive through the module-level `pub use fulcrum_core::{…}`
+// below. `web` is the one EXCEPTION and keeps its declaration: `web/render.rs`
+// stayed desktop (the Tauri webview), so `agent/web.rs` is a real desktop module
+// that declares `render` and re-exports the six that moved.
 pub mod codemode;
 pub mod crashlog;
-pub mod definition_permission;
 pub mod errors;
 pub mod harness;
 pub mod interactive;
@@ -14,22 +17,32 @@ pub mod mcp;
 mod normalize;
 mod permission;
 pub mod persist;
-pub mod policy;
 pub mod provider_auth;
 mod session;
 pub mod subagent;
-pub mod tools;
 pub mod web;
 pub mod worker;
 
-// ── T5/S1 re-export seam (ADR 0091, Step A.2) ────────────────────────────────
-// The seven leaf modules moved to `crates/fulcrum-core`. Re-exporting the MODULE
-// (not just its symbols) is what keeps every module-qualified consumer path —
+// ── T5/S1 + T5/S2 re-export seam (ADR 0091, Step A.2) ───────────────────────
+// The leaf modules (S1) and the `{tools, web, boundary}` cluster + its
+// co-residents (S2) moved to `crates/fulcrum-core`. Re-exporting the MODULE (not
+// just its symbols) is what keeps every module-qualified consumer path —
 // `crate::agent::fs_backend::canonicalize_lenient(..)`,
-// `crate::agent::debuglog::log(..)`, `archimedes_lib::agent::events::RpcEvent` —
-// compiling with ZERO edits outside `agent/`; the named `pub use`s below keep the
-// bare-symbol imports (`use crate::agent::{EventSink, FsBackend, ..}`) working too.
-pub use fulcrum_core::{debuglog, events, fs_backend, hostenv, ids, todo, types};
+// `crate::agent::tools::exec::access::rule_deny_text(..)`,
+// `crate::skills::home_dir()` — compiling with ZERO edits outside `agent/`; the
+// named `pub use`s below keep the bare-symbol imports working too.
+//
+// `skills` and `agents` are in this list so `src-tauri/src/lib.rs` can re-export
+// them at the CRATE root (`crate::skills::…`, `archimedes_lib::agents::…`)
+// without a `pub mod` of their own. `roots` is deliberately absent: it was
+// `pub(crate)` on the desktop and its only two callers (`skills.rs`,
+// `agents.rs`) moved with it, so it stays crate-internal on both sides.
+//
+// `web` is NOT here — see `web.rs`.
+pub use fulcrum_core::{
+    agents, boundary, childproc, debuglog, definition_permission, events, fs_backend, hostenv, ids,
+    policy, skills, todo, tools, types,
+};
 
 pub use crate::types::SessionInfo;
 pub use definition_permission::{
