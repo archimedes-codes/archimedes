@@ -314,6 +314,29 @@ pub struct StartEnv {
     /// Session cannot write the same display row. Minted per envelope — ONE
     /// stamp per `Start`.
     pub incarnation: String,
+    /// (Fulcrum T2) The session's ALREADY-STORED cost total in USD, so a resumed
+    /// loop continues the figure instead of restarting it at zero.
+    ///
+    /// The `Resume`-seeding half of the cumulative-cost contract: `cost_update`
+    /// frames now carry the session's CUMULATIVE total, which the loop computes
+    /// from its own `cost_acc` accumulator. A fresh loop's accumulator starts at
+    /// `0.0`, so without this field a resumed session's first frame would read
+    /// `0 + first_call` — and since `Db::record_session_cost` is now a SNAPSHOT
+    /// overwrite, that smaller figure would REPLACE the stored total (the retired
+    /// delta-sum merely added, so a lost base was invisible). ADR 0082 rejected a
+    /// loop-side total precisely because "a re-incarnation or `Resume` rebuilds
+    /// the loop with no memory of the old figure"; the answer is to hand the
+    /// figure back to each incarnation instead of asking it to remember.
+    ///
+    /// ADDITIVE and camelCase like every other field on this struct
+    /// (`costUsd`): `#[serde(default)]` so a Supervisor that predates the field
+    /// still decodes — `None` means "no stored figure", which seeds `0.0`. The
+    /// `permission` field above is the same additive template.
+    ///
+    /// Set ONLY on the resume path, via [`StartEnv::with_seed_cost`]; a fresh
+    /// session and a fresh child carry `None`.
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
 }
 
 impl StartEnv {
@@ -349,7 +372,27 @@ impl StartEnv {
             subagent_enabled,
             system_prompt,
             incarnation: crate::agent::types::mint_incarnation(),
+            // A constructor-built `StartEnv` is a FRESH session (or a fresh
+            // child): nothing is stored yet, so there is nothing to seed. The
+            // resume path opts in via [`StartEnv::with_seed_cost`] instead of
+            // widening this signature — `from_parts` is a 13-parameter
+            // positional constructor with fourteen call sites, and T3 appends
+            // its own trailing parameters to it after this field lands.
+            cost_usd: None,
         }
+    }
+
+    /// Attach the session's stored cost total to an already-built `StartEnv`
+    /// (Fulcrum T2). The resume path's only edit of this struct.
+    ///
+    /// Deliberately a builder and NOT a fourteenth `from_parts` parameter: the
+    /// positional constructor has fourteen call sites (nine in `src/`, five in
+    /// `tests/`), and T3 appends five config fields to that same list — two
+    /// tasks re-plumbing one signature in the same wave is how a positional
+    /// argument lands in the wrong slot. A field-placeholder builder cannot.
+    pub fn with_seed_cost(mut self, total: Option<f64>) -> Self {
+        self.cost_usd = total;
+        self
     }
 }
 
@@ -653,6 +696,15 @@ mod tests {
             // file's block into a different ruleset.
             permission: Some(test_permission_block()),
             incarnation: "a3f9c1".to_string(),
+            // (Fulcrum T2) A NON-`None` seed ON PURPOSE: this literal is the
+            // payload `every_inbound_variant_round_trips` encodes and DECODES,
+            // so the resume-seed field is on the round-trip in both directions.
+            // The camelCase WIRE NAME is pinned separately and byte-wise by
+            // `the_start_env_carries_the_stored_cost_as_cost_usd` — a field on a
+            // `rename_all = "camelCase"` struct that a hand-written line spells
+            // `cost_usd` decodes to `None` SILENTLY, so a round-trip alone does
+            // not pin the spelling.
+            cost_usd: Some(0.5),
         }))
     }
 
@@ -717,6 +769,78 @@ mod tests {
             }
             other => panic!("expected Config, got {other:?}"),
         }
+    }
+
+    /// (Fulcrum T2) The `StartEnv`'s resume-seed field: its WIRE NAME is
+    /// `costUsd`, it is ADDITIVE (a line without the key decodes to `None`), and
+    /// `with_seed_cost` is the only writer.
+    ///
+    /// Why a byte-level pin rather than the round-trip alone: `StartEnv` carries
+    /// `rename_all = "camelCase"`, but the nested `Model` / `ModelCatalog` it
+    /// embeds carry NO `rename_all` — so a hand-written `start` line that spells
+    /// its own keys camelCase fails to decode, and BOTH sides of the wire drop a
+    /// bad line permissively without an error. A test that hand-wrote such a line
+    /// would pass vacuously. The line below is therefore derived from an ENCODED
+    /// frame by string surgery, so the only thing this test changes is the key
+    /// it is pinning.
+    #[test]
+    fn the_start_env_carries_the_stored_cost_as_cost_usd() {
+        let line = encode_inbound(&start_inbound());
+        assert!(
+            line.contains(r#""costUsd":0.5"#),
+            "the resume seed rides the wire as camelCase `costUsd`: {line}"
+        );
+        assert!(
+            !line.contains("cost_usd"),
+            "no snake_case spelling of the seed key ever reaches the wire: {line}"
+        );
+
+        // The additive direction: an OLD supervisor's `start` with the key
+        // removed still decodes, and reads `None` (=> the loop seeds 0.0).
+        let old = line.replace(r#","costUsd":0.5"#, "");
+        assert_ne!(old, line, "the rewrite happened");
+        match decode_inbound(&old).expect("a `start` without the seed key decodes") {
+            Inbound::Start(env) => assert_eq!(
+                env.cost_usd, None,
+                "a missing seed key is `None`, never a fabricated zero-becomes-figure"
+            ),
+            other => panic!("expected `Start`, got {other:?}"),
+        }
+
+        // The trap, armed: the SAME key spelled snake_case is not an error and
+        // not a seed — it is silently `None`, because `StartEnv` is camelCase.
+        // This is why the assertion above is on the serialised line.
+        let misnamed = line.replace(r#""costUsd":0.5"#, r#""cost_usd":0.5"#);
+        match decode_inbound(&misnamed).expect("a misnamed key does not break the decode") {
+            Inbound::Start(env) => assert_eq!(
+                env.cost_usd, None,
+                "a snake_case `cost_usd` is an UNKNOWN key to this struct — the \
+                 silent-drop direction, documented so nobody hand-writes one"
+            ),
+            other => panic!("expected `Start`, got {other:?}"),
+        }
+
+        // `from_parts` (every fresh session and every fresh child) seeds `None`;
+        // `with_seed_cost` is the resume path's setter.
+        assert_eq!(
+            test_env().cost_usd,
+            None,
+            "a constructor-built env carries no stored figure"
+        );
+        assert_eq!(
+            test_env().with_seed_cost(Some(0.125)).cost_usd,
+            Some(0.125),
+            "`with_seed_cost` sets it verbatim"
+        );
+        // A snapshot builder SETS, it does not add — a second call cannot
+        // compound a seed the way the retired delta-sum could.
+        assert_eq!(
+            test_env()
+                .with_seed_cost(Some(0.125))
+                .with_seed_cost(Some(0.25))
+                .cost_usd,
+            Some(0.25)
+        );
     }
 
     /// Every `Inbound` variant round-trips through `encode_line` +

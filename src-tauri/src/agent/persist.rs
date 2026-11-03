@@ -15,25 +15,26 @@
 //! message_key)` for `messages`), so a replayed frame never duplicates
 //! a row.
 //!
-//! THE ONE EXCEPTION: `cost_update`. That arm is not an upsert but an
-//! INCREMENT (`Db::record_session_cost` ADDS the frame's delta to the
-//! stored figure), because cost is a per-call DELTA and every other
-//! persisted field here is a whole-state snapshot that can be
-//! overwritten. So the promise above is FALSE for it: re-delivering one
-//! `cost_update` DOUBLES the stored figure. The wire gives frames no
-//! identity to dedupe on — `emit_cost_update` hardcodes `"seq": 0` — so
-//! there is nothing to key an idempotent write on. That is accepted, not
-//! overlooked: the doubling is PINNED rather than prevented, by
-//! `a_replayed_cost_frame_doubles_the_stored_figure` (`db.rs`), which
-//! must be DELETED rather than adjusted if a future change ever makes
-//! the write idempotent. The exposure is bounded by `emit_cost_update`'s
-//! production call sites — today `turn.rs`'s `Usage` arm and `loop.rs`'s
-//! `run_compaction` (the compaction summary's own call), neither of which
-//! is a Resume-replay path — so a `Resume` cannot re-emit history.
-//! Deliberately not stated as a count: the `CONTEXT.md` Cost channel
-//! entry's rule is that a count here goes stale the moment a third emitter
-//! lands (the stale claim is issue #110's defect class); the bound that
-//! matters is that no call site replays history, which neither site does.
+//! `cost_update` USED to be the one exception to that promise and no longer
+//! is (Fulcrum T2, amending ADR 0082's limit 7). It was an INCREMENT
+//! (`Db::record_session_cost` ADDED the frame's delta), so re-delivering one
+//! frame DOUBLED the stored figure — accepted, not overlooked, and PINNED by
+//! `a_replayed_cost_frame_doubles_the_stored_figure` (`db.rs`), whose own
+//! docblock said it must be DELETED rather than adjusted the day the write
+//! became idempotent. That day is this commit: the frame now carries the
+//! session's CUMULATIVE TOTAL, `record_session_cost` OVERWRITES with it, and
+//! the promise above is true for this arm too. Nothing was deduped — the wire
+//! still hardcodes `"seq": 0` and a frame still carries no identity; a snapshot
+//! simply does not need one. The pin's replacement is
+//! `a_replayed_cost_frame_overwrites_to_the_same_figure`.
+//!
+//! What moved instead of being fixed is the ACCUMULATOR, and it moved to each
+//! producer: `AgentLoop::cost_acc` (seeded from the stored row on `Resume`),
+//! the subagent capture, and the parent roll-up — all three in this one commit,
+//! because a snapshot store cannot tolerate a producer that still sends deltas.
+//! The bound the old text leaned on ("no production call site replays history")
+//! is now moot rather than load-bearing: replaying history is survivable, since
+//! every frame restates the total.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -186,8 +187,10 @@ impl TranscriptPersister {
                 // "no figure" and writes NOTHING — the same discipline the
                 // child's capture holds (`a_child_that_reported_no_cost_reports_no_cost`:
                 // *"a non-number `costUsd` must not become money"*). Coercing
-                // one to `0.0` would both render a phantom `$0.00` (D5 / ADR
-                // 0082) and corrupt the accumulator, which sums deltas.
+                // one to `0.0` would render a phantom `$0.00` (D5 / ADR 0082)
+                // and — since the write is now a SNAPSHOT — would also OVERWRITE
+                // a session's real stored total with a zero, which is a worse
+                // failure than the summing store this arm used to write into.
                 let Some(cost) = payload
                     .get("payload")
                     .and_then(|p| p.get("costUsd"))

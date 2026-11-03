@@ -555,6 +555,28 @@ pub struct AgentLoop {
     /// since (the `Compactor`'s anchor + trailing tail). One number for the
     /// bar and the trigger — never the sum of every call's prompt.
     last_context_tokens: u64,
+    /// The session's CUMULATIVE provider-reported cost in USD — the value every
+    /// `cost_update` frame carries (Fulcrum T2, amending ADR 0082's "deltas, not
+    /// totals").
+    ///
+    /// Why the accumulator lives HERE when ADR 0082 argued it must not: that
+    /// argument was against a total that a `Resume` or a Worker re-incarnation
+    /// would silently reset ("a fresh loop has no memory of the old figure").
+    /// The fix is not to move the total somewhere else — it is to SEED it from
+    /// the row that does outlive the loop: `sessions.cost_usd` →
+    /// `StartEnv.cost_usd` → `default_build_loop`'s `(StartMode::Resume, _)` arm
+    /// → [`AgentLoop::seed_cost`]. The loop's total therefore outlives no
+    /// incarnation; it is re-loaded each time.
+    ///
+    /// Grain, since ADR 0082's own objection was partly a grain mistake: this is
+    /// NOT a per-turn figure (a turn spans several model calls, and
+    /// `TurnAccumulator` is per call). It is per SESSION, and both producers
+    /// that feed it are session-scoped: `turn.rs`'s `Usage` arm and
+    /// `run_compaction`'s `Compacted` arm.
+    ///
+    /// `+ 0.0` in `emit_cost_update` keeps a signed zero off the wire; this
+    /// field is only ever written by that method and by `seed_cost`.
+    cost_acc: f64,
 }
 
 impl AgentLoop {
@@ -656,7 +678,25 @@ impl AgentLoop {
             compactor,
             turn_control: TurnControl::default(),
             last_context_tokens: 0,
+            cost_acc: 0.0,
         }
+    }
+
+    /// Seed the session's cost accumulator with the figure already stored for
+    /// this session (Fulcrum T2's Resume-seaming seam).
+    ///
+    /// Called by `worker/core.rs`'s `default_build_loop` on the
+    /// `(StartMode::Resume, _)` arm with `StartEnv.cost_usd`, which the
+    /// Supervisor read off the `sessions.cost_usd` row. Without it a resumed
+    /// session's first `cost_update` frame would restart at `0 + first_call` and
+    /// the snapshot write would then OVERWRITE the stored total with a smaller
+    /// figure — a loss the old delta-summing store hid (it added instead of
+    /// replacing), so a bad seed was merely wrong rather than destructive.
+    ///
+    /// Sets, never adds: the accumulator starts at `0.0` in `new`, so one call
+    /// per loop is the contract, and a second call cannot compound.
+    pub fn seed_cost(&mut self, total: f64) {
+        self.cost_acc = total;
     }
 
     pub fn set_render_requester(
@@ -1224,8 +1264,11 @@ impl AgentLoop {
                 self.emit_context_usage();
                 // Issue #106: the summary call's own provider figure reaches
                 // the cost channel through the SAME emitter the turn's `Usage`
-                // arm uses — one frame, this call's DELTA, keyed to
-                // `self.session_id` by the emitter. A `None` cost emits nothing
+                // arm uses — one frame, keyed to `self.session_id` by the
+                // emitter. Since Fulcrum T2 the emitter ADDS this figure to the
+                // session accumulator and frames the new TOTAL, so the
+                // summariser's money joins the turn figures it followed instead
+                // of standing alone. A `None` cost adds nothing and emits nothing
                 // (the emitter's own gate), never a phantom `$0.00`. Emitted
                 // HERE, inside the arm, so no other outcome can carry it and no
                 // early exit can skip it.

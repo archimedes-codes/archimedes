@@ -1363,10 +1363,11 @@ fn record_session_preserves_the_title() {
     );
 }
 
-/// A re-`record_session` (the resume re-record) never resets the accumulated
+/// A re-`record_session` (the resume re-record) never resets the stored
 /// `cost_usd` — the `ON CONFLICT … DO UPDATE` branch touches only `cwd` /
 /// `capabilities_json` / `is_subagent`, so a session that has spent money
-/// keeps its figure across a resume.
+/// keeps its figure across a resume. The seeded figures below are TOTALS (the
+/// snapshot contract since Fulcrum T2), so the pin reads the LAST total.
 ///
 /// This is load-bearing and was pinned only in prose: `record_session`'s doc
 /// and `record_session_cost`'s both lean on the DO UPDATE list being narrow.
@@ -1385,8 +1386,11 @@ fn record_session_preserves_the_cost() {
     let session = title_session("sess-1");
     db.record_session(&session)
         .expect("record_session should succeed");
-    // The accumulated figure (two frames' worth, so the assertion is not
-    // accidentally pinning "one write" rather than "no clobber").
+    // The stored figure (two frames' worth of TOTALS, so the assertion is not
+    // accidentally pinning "one write" rather than "no clobber"). Under the
+    // snapshot contract each call overwrites with the session's running total,
+    // so the row ends on the LAST total — `0.00002` — not the sum the old
+    // delta pair added to (`0.00003243`).
     db.record_session_cost("sess-1", 0.00001243)
         .expect("record_session_cost should succeed");
     db.record_session_cost("sess-1", 0.00002)
@@ -1399,8 +1403,8 @@ fn record_session_preserves_the_cost() {
             .expect("session should succeed")
             .expect("the row exists")
             .cost_usd,
-        Some(0.00003243),
-        "a re-record never resets the accumulated cost"
+        Some(0.00002),
+        "a re-record never resets the stored cost total"
     );
     // And through the LIST read the sidebar / resume path actually uses.
     let all = db
@@ -1409,8 +1413,8 @@ fn record_session_preserves_the_cost() {
     assert_eq!(all.len(), 1);
     assert_eq!(
         all[0].cost_usd,
-        Some(0.00003243),
-        "the figure survives a re-record on the list read too"
+        Some(0.00002),
+        "the last total survives a re-record on the list read too"
     );
 }
 
@@ -1914,12 +1918,16 @@ fn record_session_todos_roundtrips_and_clears() {
     assert_eq!(db.session_todos("nonexistent").unwrap(), None);
 }
 
-/// A `cost_update` frame's per-call delta ADDS to the stored figure
-/// (issue #105): two frames of `0.0001` accumulate to `0.0002`, and the
-/// first frame turns the row's `NULL` ("never reported") into a figure.
+/// A `cost_update` frame's TOTAL is stored as-is (issue #105; snapshot contract
+/// per Fulcrum T2's amendment of ADR 0082's limit 7): the stored figure EQUALS
+/// the last frame's cumulative total, and the first frame turns the row's
+/// `NULL` ("never reported") into a figure.
 ///
-/// The accumulation happens in Rust (`stored.unwrap_or(0.0) + delta`), not
-/// in a SQL `COALESCE`, so the `NULL` handling is visible at the write site.
+/// Superseded shape: this pin used to assert `0.0001 + 0.0001 = 0.0002` because
+/// the wire carried per-call DELTAS and the Supervisor summed them. The frames
+/// now carry the running total, so the second frame of the pair below is
+/// `0.0002` as a TOTAL and the store's job is only to keep the newest snapshot —
+/// which is why the accumulation now happens on the emitter, not here.
 #[test]
 fn a_cost_frame_accumulates_into_the_stored_figure() {
     let dir = crate::test_support::ScratchDir::in_env_temp("db-cost-test-", "scratch");
@@ -1941,20 +1949,22 @@ fn a_cost_frame_accumulates_into_the_stored_figure() {
     // Before any frame: no figure at all (NOT a zero).
     assert_eq!(db.session_cost("s1").unwrap(), None);
 
-    // One frame: `NULL + delta = delta` — the first frame creates the figure.
+    // One frame: the first TOTAL lands verbatim — the first frame creates the
+    // figure out of the row's `NULL`.
     db.record_session_cost("s1", 0.0001).unwrap();
     let after_one = db.session_cost("s1").unwrap().expect("a figure exists");
     assert!(
         (after_one - 0.0001).abs() < 1e-12,
-        "the first frame stores its own delta, got {after_one}"
+        "the first frame stores its own total, got {after_one}"
     );
 
-    // A second frame ADDS to it (the wire carries DELTAS, never totals).
-    db.record_session_cost("s1", 0.0001).unwrap();
+    // The second frame carries the CUMULATIVE total (`0.0002` = the same two
+    // calls the old delta pair summed to) and the row reads exactly that.
+    db.record_session_cost("s1", 0.0002).unwrap();
     let after_two = db.session_cost("s1").unwrap().expect("a figure exists");
     assert!(
         (after_two - 0.0002).abs() < 1e-12,
-        "two frames accumulate to their sum, got {after_two}"
+        "the row holds the LAST frame's total, got {after_two}"
     );
 
     // The stored figure is the row's own column — `session()` and
@@ -1964,13 +1974,13 @@ fn a_cost_frame_accumulates_into_the_stored_figure() {
     let stored = row.cost_usd.expect("the row carries the figure");
     assert!(
         (stored - 0.0002).abs() < 1e-12,
-        "`session()` reads the accumulated figure, got {stored}"
+        "`session()` reads the last total, got {stored}"
     );
     let listed = db.list_sessions(true).expect("list_sessions").remove(0);
     let listed = listed.cost_usd.expect("the listed row carries the figure");
     assert!(
         (listed - 0.0002).abs() < 1e-12,
-        "`list_sessions()` reads the accumulated figure, got {listed}"
+        "`list_sessions()` reads the last total, got {listed}"
     );
 }
 
@@ -2023,22 +2033,23 @@ fn a_null_cost_and_a_real_zero_are_different() {
     assert_eq!(listed.cost_usd, Some(0.0), "`list_sessions()` agrees");
 }
 
-/// A REPLAYED `cost_update` frame DOUBLES the stored figure.
+/// A REPLAYED `cost_update` frame OVERWRITES the stored figure to the SAME
+/// value — it cannot double (Fulcrum T2, amending ADR 0082's limit 7).
 ///
-/// THIS TEST PINS A HAZARD, NOT A FEATURE (plan Trap 2). The increment is
-/// deliberately non-idempotent because the wire gives a frame nothing to
-/// dedupe on — `emit_cost_update` hardcodes `"seq": 0`, so a re-delivered
-/// frame is indistinguishable from a second priced call. Prevention was
-/// rejected as out of scope; VISIBILITY is the requirement, so the doubling
-/// is asserted rather than hidden.
+/// This is the replacement for `a_replayed_cost_frame_doubles_the_stored_figure`,
+/// which that test's own docblock and `persist.rs`'s module doc both said must
+/// be DELETED — not adjusted — the moment the write became idempotent. It did:
+/// a frame now carries the session's CUMULATIVE total, so the write is a
+/// snapshot `UPDATE … SET cost_usd = ?2` and re-delivering the same frame is a
+/// no-op by construction, with nothing to dedupe on.
 ///
-/// **If a future change makes this idempotent, this test must be DELETED,
-/// not adjusted.** An adjusted assertion would hide the fact that the
-/// hazard was designed away, and the plan's honest-limits section (and
-/// `persist.rs`'s module doc, which names `cost_update` as the one
-/// non-idempotent arm) would need rewriting in the same change.
+/// The shape of the assertion is what makes it a pin rather than a tautology:
+/// it asserts the SECOND read equals the FIRST (a snapshot), and it asserts the
+/// value is the frame's own total and NOT `2 × frame` — the increment this
+/// method used to perform would satisfy the first reading of "still a figure"
+/// while failing both.
 #[test]
-fn a_replayed_cost_frame_doubles_the_stored_figure() {
+fn a_replayed_cost_frame_overwrites_to_the_same_figure() {
     let dir = crate::test_support::ScratchDir::in_env_temp("db-cost-test-", "scratch");
     let path = dir.join("t.db");
     let db = Db::open(&path).expect("db should open");
@@ -2058,19 +2069,40 @@ fn a_replayed_cost_frame_doubles_the_stored_figure() {
     let frame = 0.0000341;
     db.record_session_cost("s1", frame).unwrap();
     let once = db.session_cost("s1").unwrap().expect("a figure exists");
-
-    // The SAME frame delivered twice: the figure doubles. Loudly.
+    // Arm the doubling check BEFORE the replay: under the retired increment the
+    // stored figure after the second write is `2 × frame`, so the delta below
+    // is ~`frame` and this fails for the reason the pin exists to catch — a
+    // replay that GROWS the figure. (A `twice == once` assertion alone would
+    // also fail on a float wobble; this one names the growth.)
     db.record_session_cost("s1", frame).unwrap();
     let twice = db.session_cost("s1").unwrap().expect("a figure exists");
+    let growth = twice - once;
     assert!(
-        (twice - once * 2.0).abs() < 1e-12,
-        "a replayed frame doubles the stored figure (the pinned hazard): \
-         once={once}, twice={twice}"
+        growth.abs() < 1e-12,
+        "a replayed TOTAL frame must leave the figure exactly where it was; \
+         the stored figure grew by {growth} (the retired increment would grow \
+         it by a whole frame, {frame}): once={once}, twice={twice}"
     );
     assert!(
-        twice > once,
-        "the hazard is a GROWTH, not a no-op — if this ever reads equal, \
-         idempotency was added and this test must be deleted, not adjusted"
+        (twice - frame).abs() < 1e-12,
+        "the stored figure IS the frame's total, not `2 × frame` \
+         (the retired increment): got {twice}, frame={frame}"
+    );
+
+    // A LATER, larger total replaces the earlier one — the store tracks the
+    // newest snapshot, it does not remember the highest.
+    db.record_session_cost("s1", 0.00009).unwrap();
+    let moved = db.session_cost("s1").unwrap().expect("a figure exists");
+    assert!(
+        (moved - 0.00009).abs() < 1e-12,
+        "a newer total replaces the older snapshot, got {moved}"
+    );
+    // And a replay of THAT frame is a no-op too.
+    db.record_session_cost("s1", 0.00009).unwrap();
+    let replayed = db.session_cost("s1").unwrap().expect("a figure exists");
+    assert!(
+        (replayed - 0.00009).abs() < 1e-12,
+        "the second replay is also a no-op, got {replayed}"
     );
 }
 

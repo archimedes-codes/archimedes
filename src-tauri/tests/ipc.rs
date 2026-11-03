@@ -943,8 +943,10 @@ async fn a_subagent_transcript_persists_as_a_hidden_ephemeral_row() {
         d.session_cost(&info.session_id)
             .expect("the parent cost read"),
         None,
-        "the child's own deltas must NOT land on the delivery id's row — the \
-         roll-up adds the child's SUM on top, so writing both double-counts"
+        "the child's own money must NOT land on the delivery id's row — that id \
+         is the PARENT's, and the roll-up frame (keyed to the parent) would then \
+         overwrite it with the child's total, leaving the parent reporting a \
+         child's spend as its own"
     );
 }
 
@@ -990,6 +992,13 @@ fn cost_frame(session_id: &str, cost_usd: f64, source: &str) -> WorkerInboundEve
 /// figure has — projects it back out as `costUsd`. The frames are also still
 /// re-emitted to the UI exactly once each (persisting must not eat the live
 /// frame).
+///
+/// The two injected frames are TWO TOTALS (`0.00001243` then `0.00002`), not
+/// two deltas: since Fulcrum T2 every `cost_update` frame carries the session's
+/// CUMULATIVE figure, so the row reads the LAST total. Under the retired
+/// increment this scenario asserted the sum `0.00003243`; against a snapshot
+/// store that reading is impossible, and the sum is exactly the number a replay
+/// used to manufacture.
 #[tokio::test]
 async fn a_stored_cost_survives_a_close_and_a_list() {
     let dirs = TestDirs::new();
@@ -1007,8 +1016,17 @@ async fn a_stored_cost_survives_a_close_and_a_list() {
         .await,
     );
 
-    // Two priced frames (the loop emits one per priced call).
+    // Two frames (the loop emits one per priced call, each carrying the
+    // session's total AFTER that call: the first call cost 0.00001243, the
+    // second brought the session to 0.00002).
     let hooks = worker_manager(&app).hooks().clone();
+    hooks.on_event(
+        &info.session_id,
+        false,
+        cost_frame(&info.session_id, 0.00001243, "main"),
+    );
+    // Re-deliver the FIRST frame before the second lands: a replay is now a
+    // no-op, and the UI must still see it (persistence is a side effect).
     hooks.on_event(
         &info.session_id,
         false,
@@ -1020,13 +1038,14 @@ async fn a_stored_cost_survives_a_close_and_a_list() {
         cost_frame(&info.session_id, 0.00002, "main"),
     );
 
-    // The UI still gets BOTH frames verbatim (the persistence arm is a
-    // side effect, not a replacement).
+    // The UI still gets ALL THREE frames verbatim (the persistence arm is a
+    // side effect, not a replacement) — including the replay, which the store
+    // absorbs silently.
     let frames = collector.find("interactive-event");
     assert_eq!(
         frames.len(),
-        2,
-        "each priced frame is still re-emitted to the UI exactly once"
+        3,
+        "each frame (replay included) is still re-emitted to the UI exactly once"
     );
     assert!(
         frames
@@ -1044,7 +1063,7 @@ async fn a_stored_cost_survives_a_close_and_a_list() {
     )
     .await;
 
-    // The boot fetch: the CLOSED session's row carries the SUMMED figure.
+    // The boot fetch: the CLOSED session's row carries the LAST TOTAL.
     let rows = invoke_ok(
         &webview,
         "list_sessions",
@@ -1061,8 +1080,10 @@ async fn a_stored_cost_survives_a_close_and_a_list() {
         .as_f64()
         .expect("a priced session's list row carries costUsd");
     assert!(
-        (stored - 0.00003243).abs() < 1e-12,
-        "the listed costUsd is the summed figure, got {stored}"
+        (stored - 0.00002).abs() < 1e-12,
+        "the listed costUsd is the last frame's TOTAL, got {stored} \
+         (0.00003243 would be the retired delta-sum, and 0.00004483 would be \
+         that sum plus the replay)"
     );
     // The row itself agrees (the same column, read without the projection).
     let d = db(&app);
@@ -1072,7 +1093,7 @@ async fn a_stored_cost_survives_a_close_and_a_list() {
         .expect("the row exists");
     let raw = raw.cost_usd.expect("the column carries the figure");
     assert!(
-        (raw - 0.00003243).abs() < 1e-12,
+        (raw - 0.00002).abs() < 1e-12,
         "the projection reports the stored column, not a recomputed figure"
     );
 }

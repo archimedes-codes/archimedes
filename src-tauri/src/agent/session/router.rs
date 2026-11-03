@@ -1099,10 +1099,13 @@ mod tests {
     /// subagent's frames arrive under the PARENT's delivery id (`pump.rs`'s
     /// `delivery_id`) with the CHILD's id only in the payload's `sessionId`.
     /// So this test also pins WHICH row the child's money lands on — the
-    /// child's. Getting that wrong is not cosmetic: the child's per-call
-    /// deltas would accumulate on the parent's row and `finish_subagent`'s
-    /// roll-up would add the child's sum a second time, double-counting every
-    /// child in the parent's stored figure.
+    /// child's. Getting that wrong is not cosmetic, and since Fulcrum T2 the
+    /// failure mode has changed SHAPE: the frames carry TOTALS and the write
+    /// overwrites, so a child's figure routed to the parent's delivery id would
+    /// not accumulate onto the parent — it would REPLACE the parent's own total
+    /// with the child's, silently losing the parent's money (and the roll-up
+    /// would then overwrite it again with the child's total, so the parent's row
+    /// would end up reporting a child's spend as its own).
     #[test]
     fn a_subagent_cost_frame_persists_but_a_subagent_todo_frame_still_does_not() {
         let (main_sid, sub_sid) = ("main-session", "sub-session");
@@ -1132,7 +1135,31 @@ mod tests {
             db.session_cost(main_sid).unwrap(),
             None,
             "the child's money must NOT land on the delivery id's row — that id \
-             is the PARENT's, and the roll-up would add the child's sum again on top"
+             is the PARENT's, and the roll-up would overwrite it with the child's \
+             figure on top"
+        );
+
+        // A LATER frame from the same child carries the child's NEW total, and
+        // the child's row reads exactly that — the stored figure EQUALS the last
+        // frame's total (the snapshot contract), where the retired increment
+        // would have read the sum `0.00003243`.
+        manager.route_event(
+            main_sid,
+            true,
+            WorkerInboundEvent::SinkFrame {
+                event: "interactive-event".to_string(),
+                payload: serde_json::json!({
+                    "sessionId": sub_sid,
+                    "seq": 0,
+                    "event": "cost_update",
+                    "payload": { "costUsd": 0.00002, "source": "main" },
+                }),
+            },
+        );
+        assert_eq!(
+            db.session_cost(sub_sid).unwrap(),
+            Some(0.00002),
+            "the child's row tracks the LAST total, not the sum of its frames"
         );
 
         manager.route_event(
@@ -1166,11 +1193,13 @@ mod tests {
         let frames = emitted.lock().unwrap();
         assert_eq!(
             frames.len(),
-            2,
-            "both frames are still re-emitted to the UI verbatim"
+            3,
+            "every frame is still re-emitted to the UI verbatim (two cost frames \
+             and one todo frame)"
         );
         assert_eq!(frames[0].1["event"], "cost_update");
-        assert_eq!(frames[1].1["event"], "todos_update");
+        assert_eq!(frames[1].1["event"], "cost_update");
+        assert_eq!(frames[2].1["event"], "todos_update");
     }
 
     /// A COLD child's first cost frame — the row does not exist yet — still
@@ -1192,11 +1221,13 @@ mod tests {
     /// the write off the delivery id (`session_id`) instead of extracting the
     /// payload's id, the money would land on the parent's row — and here it
     /// would ALSO create the parent's `cost_usd` before the parent had spent
-    /// anything, so `finish_subagent`'s roll-up would add the child's sum a
-    /// second time on top. And if the row-ensure were dropped for this path,
-    /// `record_session_cost`'s silent no-op on a missing row would discard the
-    /// child's first figure without a sound — the child's card would show a
-    /// cost its row never had.
+    /// anything, so the parent's row would carry a child's figure as its own
+    /// total (and `finish_subagent`'s roll-up would then overwrite it with the
+    /// child's total again — the parent's own money never recoverable, since the
+    /// snapshot write leaves no trace of what it replaced). And if the row-ensure
+    /// were dropped for this path, `record_session_cost`'s silent no-op on a
+    /// missing row would discard the child's first figure without a sound — the
+    /// child's card would show a cost its row never had.
     #[test]
     fn a_childs_first_cost_frame_under_the_parents_delivery_id_creates_and_writes_the_childs_row() {
         let (main_sid, sub_sid) = ("parent-cold", "child-cold");
@@ -1237,14 +1268,15 @@ mod tests {
         assert_eq!(
             db.session_cost(sub_sid).unwrap(),
             Some(0.00001243),
-            "the child's first figure lands on the CHILD's row, not into the void"
+            "the child's first total lands on the CHILD's row, not into the void \
+             (a first frame's total IS that call's figure — the loop started at zero)"
         );
         assert_eq!(
             db.session_cost(main_sid).unwrap(),
             None,
             "the delivery id is the PARENT's: nothing of the child's money may \
-             touch its row (that id has no figure yet, and the roll-up would \
-             then add the child's sum again on top of it)"
+             touch its row (that id has no figure yet, and a snapshot write would \
+             leave the parent reporting a child's spend as its own)"
         );
 
         let frames = emitted.lock().unwrap();
@@ -1298,7 +1330,26 @@ mod tests {
             db.session_cost(main_sid).unwrap(),
             Some(0.0000341),
             "the roll-up writes the PARENT's row — without this the parent's \
-             stored figure disagrees with its displayed one"
+             stored figure disagrees with its displayed one. The stored figure \
+             EQUALS the frame's total (the frame carries the child's TOTAL and \
+             the write is a snapshot, so nothing is added to it here)"
+        );
+        // Re-delivering the SAME roll-up frame leaves the parent's row exactly
+        // where it was — the property the whole change exists to buy, proven on
+        // the third producer (the roll-up), not just on the main emitter.
+        manager.route_event(
+            main_sid,
+            false,
+            WorkerInboundEvent::SinkFrame {
+                event: "interactive-event".to_string(),
+                payload: rollup.clone(),
+            },
+        );
+        assert_eq!(
+            db.session_cost(main_sid).unwrap(),
+            Some(0.0000341),
+            "a replayed roll-up overwrites to the SAME figure — the doubling \
+             ADR 0082's limit 7 pinned is gone at this producer too"
         );
         assert_eq!(
             db.session_cost(sub_sid).unwrap(),
@@ -1306,7 +1357,7 @@ mod tests {
             "the roll-up is keyed to the parent: the child's row must stay clean"
         );
         let frames = emitted.lock().unwrap();
-        assert_eq!(frames.len(), 1, "the frame still reaches the UI");
+        assert_eq!(frames.len(), 2, "both deliveries still reach the UI");
         assert_eq!(frames[0].0, "interactive-event");
         assert_eq!(
             frames[0].1, rollup,

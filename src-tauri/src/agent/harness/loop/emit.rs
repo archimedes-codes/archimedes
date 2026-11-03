@@ -177,8 +177,8 @@ impl AgentLoop {
         );
     }
 
-    /// Emit one `cost_update` frame (issue #87, T09): the provider's cost for
-    /// the model call whose `Usage` event is being handled.
+    /// Emit one `cost_update` frame (issue #87, T09; the VALUE's meaning is
+    /// Fulcrum T2's): the session's CUMULATIVE cost in USD after this call.
     ///
     /// DIRECT on the sink, like `emit_context_usage` — this is an
     /// **interactive-event**, NOT an `RpcEvent` (D5 + the grounding's §8.5): the
@@ -188,29 +188,43 @@ impl AgentLoop {
     /// phantom event. The envelope is the `todos_update` shape.
     ///
     /// THE CONTRACT (shared with the frontend task, pinned in both plans):
-    /// - **A `None` cost emits NOTHING at all.** Absence is the wire spelling of
-    ///   "no figure"; the phantom `$0.00` is created by *emitting a zero*, so the
-    ///   only defence is not to emit. Rust never puts `null` on this bus.
-    /// - **The value is ONE call's DELTA, never a running total.** The frontend
-    ///   store sums the frames, so re-emitting a total would double-count — and
-    ///   a Worker re-incarnation / `Resume` (which rebuilds this loop with no
-    ///   memory of the old figure) would make that unrecoverable. Hence there is
-    ///   deliberately no accumulator on `AgentLoop`.
+    /// - **A `None` cost emits NOTHING at all, and adds nothing.** Absence is
+    ///   the wire spelling of "no figure"; the phantom `$0.00` is created by
+    ///   *emitting a zero*, so the only defence is not to emit. Rust never puts
+    ///   `null` on this bus. The accumulator is left untouched in that case, so
+    ///   an unpriced call cannot dilute the total the next frame carries.
+    /// - **The value is the session's RUNNING TOTAL** (Fulcrum T2, reversing
+    ///   ADR 0082's "deltas, not totals"). This method owns the accumulator: it
+    ///   adds `cost` to `self.cost_acc` and emits the NEW total. Every consumer
+    ///   — the frontend store (`combineSessionCost`, now last-frame-wins) and the
+    ///   Supervisor's `Db::record_session_cost` (now an overwrite) — replaces
+    ///   rather than sums, so a re-delivered frame cannot double the figure.
+    ///   That is what closes ADR 0082's **limit 7**, whose stated blocker was
+    ///   "a frame carries no identity to dedupe on": a snapshot needs no
+    ///   identity. The `Resume` objection that ADR 0082 used to reject a loop-side
+    ///   total is answered by [`AgentLoop::seed_cost`], which reloads the stored
+    ///   figure into `cost_acc` when the loop is rebuilt.
     /// - **`-0.0` is normalised here.** `c + 0.0` maps `-0.0 -> +0.0` and leaves
     ///   a real `0.0` untouched, so the bus never carries a signed zero (which
     ///   the frontend would render as `$0.00`, since JS treats `-0 === 0`). This
     ///   is NOT the `!= 0.0` filter that would eat a legitimate `Some(0.0)` — a
-    ///   real zero is still a figure and still gets its frame.
-    pub(super) fn emit_cost_update(&self, cost: Option<f64>) {
+    ///   real zero is still a figure and still gets its frame. The normalisation
+    ///   is applied to the TOTAL, so a `-0.0` figure cannot leak a signed zero
+    ///   through the accumulator either, and a session whose first figure is
+    ///   `-0.0` still gets its `+0.0` frame.
+    pub(super) fn emit_cost_update(&mut self, cost: Option<f64>) {
+        // The frame-existence gate and the accumulator's `None` arm are the
+        // SAME decision: no figure reported, nothing to add, no frame.
         let Some(cost) = cost else { return };
-        let cost = cost + 0.0;
+        self.cost_acc += cost;
+        let total = self.cost_acc + 0.0;
         self.sink.emit(
             "interactive-event",
             json!({
                 "sessionId": self.session_id,
                 "seq": 0,
                 "event": "cost_update",
-                "payload": { "costUsd": cost, "source": "main" },
+                "payload": { "costUsd": total, "source": "main" },
             }),
         );
     }

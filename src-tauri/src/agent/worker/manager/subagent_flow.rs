@@ -105,18 +105,29 @@ pub struct SubagentCapture {
     /// `outputTokens` fields — the MAX across the frames: a turn's
     /// usage is cumulative per message, the last is the largest).
     usage: StdMutex<(u64, u64)>,
-    /// The child's **cost** accumulation (issue #87, T09): the SUM of the
-    /// `costUsd` figures on the child's own `cost_update` interactive-event
-    /// frames. `None` until a priced frame arrives — the distinction between
-    /// "no call reported a cost" and "a call reported zero" is preserved HERE
-    /// and carried through the `SubagentMetrics.cost: Option<f64>` hand-off
-    /// (issue #107) — no `unwrap_or(0.0)`, no named follow-up, not a decision
-    /// to invent money.
+    /// The child's **cost** figure (issue #87, T09; the grain is Fulcrum T2's):
+    /// the LAST `costUsd` seen on the child's own `cost_update` interactive-event
+    /// frames — which since T2 IS the child's CUMULATIVE TOTAL, because the
+    /// child's loop accumulates and emits totals. `None` until a priced frame
+    /// arrives — the distinction between "no call reported a cost" and "a call
+    /// reported zero" is preserved HERE and carried through the
+    /// `SubagentMetrics.cost: Option<f64>` hand-off (issue #107) — no
+    /// `unwrap_or(0.0)`, no named follow-up, not a decision to invent money.
     ///
-    /// A SUM, deliberately NOT a `max` like the token fields next door: a
-    /// turn's token usage is cumulative per message (so the last frame is the
-    /// largest), but money accumulates across calls — copying the `max` rule
-    /// here would report one call's cost for a ten-call child.
+    /// LAST FRAME WINS, deliberately NOT a sum (the shape this field had until
+    /// T2) and NOT the `max` the token fields next door use. The reason is the
+    /// grain of the frame, not a preference: a `cost_update` frame now carries a
+    /// TOTAL, so summing the frames sums the same money twice — a four-call
+    /// child's frames `0.001 / 0.0017 / 0.0024 / 0.0031` would have summed to
+    /// `0.0082` for a child that spent `0.0031`, and the parent's row (a SNAPSHOT
+    /// store now) would have taken that inflated figure as its own. `max` would
+    /// be right for the well-ordered case and wrong for a replay that arrives
+    /// out of order or a provider that re-reports a smaller figure; last-wins is
+    /// what "the newest report of the total" means, and it is the same rule the
+    /// frontend store and the DB write moved to. The token fields keep `max`
+    /// because their frames really are cumulative-per-message snapshots of a
+    /// monotonic counter — money's frames are snapshots of a total the emitter
+    /// owns.
     cost: StdMutex<Option<f64>>,
     /// (issue #122) Did the child announce ANY tool call? Set on the first
     /// `tool_execution_start` the pump feeds.
@@ -161,9 +172,10 @@ impl SubagentCapture {
     ///   and a `message_retracted` frame (ADR 0048) which ERASES the Abandoned
     ///   attempt's text for the `messageId` it names.
     /// - `interactive-event` — the child's own `cost_update` frames (issue #87,
-    ///   T09), whose `payload.costUsd` sums into this capture's cost. Without
-    ///   this branch a child's money reached the parent's Supervisor and was
-    ///   dropped ON THE FLOOR here, which is why `SubagentMetrics.cost` was a
+    ///   T09), whose `payload.costUsd` is the child's CUMULATIVE TOTAL and
+    ///   REPLACES this capture's figure (last-frame-wins since Fulcrum T2).
+    ///   Without this branch a child's money reached the parent's Supervisor and
+    ///   was dropped ON THE FLOOR here, which is why `SubagentMetrics.cost` was a
     ///   hardcoded `0.0` and why the roadmap's "rolls up through the existing
     ///   path" was false.
     pub fn observe_sink_frame(&self, event: &str, payload: &Value) {
@@ -189,7 +201,12 @@ impl SubagentCapture {
                     // can never carry a signed zero onto the wire.
                     let cost = cost + 0.0;
                     let mut held = self.cost.lock().unwrap_or_else(|p| p.into_inner());
-                    *held = Some(held.unwrap_or(0.0) + cost);
+                    // LAST FRAME WINS — the frame carries the child's running
+                    // TOTAL, so it REPLACES the figure (T2; the retired code
+                    // added). A frame that fails the filter above leaves the
+                    // held figure ALONE: a malformed frame is not a report of
+                    // zero and must never erase a real total.
+                    *held = Some(cost);
                 }
             }
             return;
@@ -317,9 +334,10 @@ impl SubagentCapture {
         self.usage().1
     }
 
-    /// The child's summed cost (`None` when NO frame carried a figure — a
+    /// The child's cost TOTAL (`None` when NO frame carried a figure — a
     /// different state from `Some(0.0)`, which means a call reported a real
-    /// zero). Issue #87, T09.
+    /// zero). Issue #87, T09; the figure is the child's CUMULATIVE TOTAL since
+    /// Fulcrum T2 (the field's doc gives the last-frame-wins reason).
     pub fn cost_usd(&self) -> Option<f64> {
         *self.cost.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -1300,8 +1318,11 @@ pub(crate) async fn finish_subagent(
             }
         }
     }
-    // (issue #87, T09) THE SUBAGENT ROLL-UP: the child's summed cost, emitted
-    // as ONE `cost_update` DELTA keyed to the PARENT.
+    // (issue #87, T09) THE SUBAGENT ROLL-UP: the child's cost figure, emitted
+    // as ONE `cost_update` frame keyed to the PARENT. Since Fulcrum T2 that
+    // figure is the child's CUMULATIVE TOTAL (the capture is last-frame-wins over
+    // the child's own total-bearing frames), not a sum of per-call deltas — which
+    // is what makes it safe to land on a parent row that is now a SNAPSHOT store.
     //
     // Why it must be emitted HERE rather than by the parent's loop: the parent
     // loop structurally cannot know a child's cost — `dispatch.rs` discards the
@@ -1310,9 +1331,17 @@ pub(crate) async fn finish_subagent(
     // include children; a store-side sum can, provided the figure reaches the
     // store at all. This is that route.
     //
-    // Why there is no double count: the child's OWN frames are keyed to the
-    // CHILD id (they feed the child's own card), and this one is keyed to the
-    // PARENT — different store keys, and different `sessions` rows.
+    // Why there is no double count, under the snapshot store this frame now
+    // lands on: the child's OWN frames are keyed to the CHILD id (they feed the
+    // child's own card and the child's own row), and this one is keyed to the
+    // PARENT — different store keys, and different `sessions` rows. And because
+    // `record_session_cost` OVERWRITES with the frame's total, a re-delivered
+    // roll-up rewrites the SAME figure instead of adding a second copy: the
+    // double count the delta wire could not prevent is structurally impossible
+    // here. What the snapshot contract does cost is stated at
+    // `the_rollup_carries_the_childs_final_total_not_a_sum_of_its_frames`: a
+    // parent with two children takes the second child's figure, because no single
+    // accumulator spans a parent's own calls and its children's.
     //
     // It goes through `hooks.on_event` as a `SinkFrame` — i.e. through
     // `SessionManager::route_event` — and NOT straight to the parent's Tauri
@@ -1525,13 +1554,21 @@ mod tests {
         );
     }
 
-    /// A child's money accumulates ACROSS calls — a SUM, not the `max` the
-    /// neighbouring token fields use. A turn's token usage is cumulative per
-    /// message (so the largest frame wins), but money is spent per call, and
-    /// copying the `max` rule here would report one call's cost for a
-    /// ten-call child. This pin is what discriminates the two rules.
+    /// A child's frames are **last-frame-wins** — the capture holds the child's
+    /// CUMULATIVE TOTAL, not a sum (Fulcrum T2, amending ADR 0082's "deltas not
+    /// totals").
+    ///
+    /// Superseded shape: this pin used to discriminate SUM vs `max` (two frames
+    /// `0.001` / `0.002` had to read `0.003`, and a `max` copy of the neighbouring
+    /// token rule would read `0.002`). The frames moved to totals, so the child's
+    /// LAST frame already IS the total and summing them would report `0.003` for a
+    /// child that spent `0.002` — and the parent's row, now a SNAPSHOT store,
+    /// would take that inflated figure as its own. The rule that survives
+    /// unchanged is the one that made the old pin non-tautological: the two
+    /// numbers differ, so neither "first frame wins" nor "sum" nor "max" is
+    /// satisfiable by accident — `0.002` is the only reading that is last-wins.
     #[test]
-    fn a_child_cost_frame_accumulates_across_calls() {
+    fn a_child_cost_frame_is_the_childs_running_total_last_frame_wins() {
         let capture = SubagentCapture::new();
         capture.observe_sink_frame(
             "interactive-event",
@@ -1543,9 +1580,26 @@ mod tests {
         );
         let cost = capture.cost_usd().expect("two priced frames were observed");
         assert!(
-            (cost - 0.003).abs() < f64::EPSILON,
-            "the child's cost is the SUM of its frames (0.001 + 0.002), got {cost} — \
-             a `max` copy of the token rule would report 0.002"
+            (cost - 0.002).abs() < f64::EPSILON,
+            "the child's figure is the LAST frame (its running total), got {cost} — \
+             0.003 would be the retired SUM and 0.001 a first-frame-wins bug"
+        );
+    }
+
+    /// A replayed child frame changes nothing (the same idempotency the DB write
+    /// gained, at the capture seam): the child's total is a snapshot, so a
+    /// duplicate frame is not a second spend.
+    #[test]
+    fn a_replayed_child_frame_does_not_move_the_captured_total() {
+        let capture = SubagentCapture::new();
+        let frame = child_cost_frame("child-1", json!(0.0000341));
+        capture.observe_sink_frame("interactive-event", &frame);
+        let once = capture.cost_usd().expect("a figure was captured");
+        capture.observe_sink_frame("interactive-event", &frame);
+        let twice = capture.cost_usd().expect("still a figure");
+        assert_eq!(
+            once, twice,
+            "a re-delivered total frame is a no-op at the capture, too"
         );
     }
 
@@ -1598,7 +1652,7 @@ mod tests {
     /// A `-0.0` the child reports is normalised to `+0.0` at the capture's parse
     /// seam, so the roll-up can never carry a signed zero onto the wire (the
     /// emitter-side normalisation covers the loop's own frames; this covers the
-    /// sum). A real zero stays a real figure.
+    /// captured total). A real zero stays a real figure.
     #[test]
     fn a_negative_zero_child_cost_is_normalised_to_positive_zero() {
         let capture = SubagentCapture::new();
@@ -1873,13 +1927,20 @@ mod rollup_tests {
     }
 
     /// The roll-up frame is keyed to the **PARENT**, never to the child — which
-    /// is what makes it additive rather than a double count. The child's OWN
+    /// is what keeps a child's money out of the child's own row. The child's OWN
     /// frames carry the CHILD id (pinned loop-side by
     /// `a_priced_call_emits_one_cost_update_frame_carrying_that_calls_cost`,
     /// where the envelope's `sessionId` is the emitting loop's own id), so the
-    /// two land in DIFFERENT store keys and the parent's sum gains the child's
-    /// money exactly once. Also pins the envelope, the `source`, and that the
+    /// two land in DIFFERENT store keys and different `sessions` rows — the
+    /// parent's row gets the child's figure once, and the child's own row keeps
+    /// its own. Also pins the envelope, the `source`, and that the
     /// `subagent-closed` hand-off still carries the same figure.
+    ///
+    /// The VALUE here is a literal `SubagentMetrics.cost` — since Fulcrum T2 read
+    /// it as the child's TOTAL (T08's measured band, which four priced calls
+    /// accumulated to) rather than as a sum of deltas. The distinction between
+    /// "total" and "sum" is pinned where it can actually be seen, in
+    /// `the_rollup_carries_the_childs_final_total_not_a_sum_of_its_frames`.
     #[tokio::test]
     async fn the_rollup_frame_is_keyed_to_the_parent_not_the_child() {
         let events = Arc::new(StdMutex::new(Vec::new()));
@@ -1898,7 +1959,8 @@ mod rollup_tests {
                     output: "done".to_string(),
                     input_tokens: 10,
                     output_tokens: 2,
-                    // T08's measured band: four priced calls summed.
+                    // T08's measured band, which four priced calls of that
+                    // deployment accumulated TO (a total, not a delta).
                     cost: Some(0.0000341),
                     duration_ms: 5,
                 },
@@ -1924,11 +1986,12 @@ mod rollup_tests {
         assert_eq!(
             frames[0]["payload"]["costUsd"].as_f64().expect("a number"),
             0.0000341,
-            "the child's summed cost, whole (the sub-cliff figure survives the wire)"
+            "the child's TOTAL, whole (the sub-cliff figure survives the wire)"
         );
 
         // The `subagent-closed` hand-off still fires, still CHILD-keyed, with
-        // the SAME figure — the roll-up is an addition, not a relocation.
+        // the SAME figure — the roll-up frame is an ADDITION to the parent's
+        // channel, not a relocation of the child's hand-off.
         let closed = {
             let held = events.lock().unwrap_or_else(|p| p.into_inner());
             held.iter()
@@ -2009,6 +2072,83 @@ mod rollup_tests {
         assert_eq!(
             frames[0]["payload"]["costUsd"].as_f64().expect("a number"),
             0.00001243
+        );
+    }
+
+    /// A child that spent several calls rolls up its FINAL TOTAL, not a sum of
+    /// its frames.
+    ///
+    /// The discriminating half of the roll-up rewrite. The sibling
+    /// `the_rollup_frame_is_keyed_to_the_parent_not_the_child` seeds
+    /// `SubagentMetrics.cost` with a literal, so it cannot tell a total-bearing
+    /// roll-up from a delta-bearing one — this one drives a real
+    /// `SubagentCapture` through TWO cumulative frames (`0.001` then `0.0017`),
+    /// so a capture that still SUMMED would roll up `0.0027` and a capture that
+    /// read the FIRST frame would roll up `0.001`. `0.0017` is the child's total.
+    ///
+    /// Why the parent's row cannot now double-count, reasoned where the code
+    /// stands: the roll-up frame's value is the CHILD's total and its key is the
+    /// PARENT, and `Db::record_session_cost` OVERWRITES the parent row with
+    /// whatever the frame carries. A re-delivered roll-up therefore rewrites the
+    /// same figure. What it genuinely cannot express is a parent with TWO
+    /// children — the second child's roll-up replaces the first child's figure
+    /// rather than adding to it. That is the price of the snapshot contract on
+    /// this producer and it is recorded, not hidden: the parent's own main-session
+    /// total is owned by the parent's loop (`AgentLoop::cost_acc`), which knows
+    /// nothing about children (`dispatch.rs` discards the metrics), so no single
+    /// accumulator spans both. Under the retired delta wire the parent's row summed
+    /// children and could not lose one, but it doubled on every replay — ADR 0082's
+    /// limit 7. Both readings are incomplete; the totals one is the one the plan
+    /// chose and the one the DB now assumes. A replayed roll-up cannot inflate the
+    /// parent, which is the property T2 exists to buy.
+    #[tokio::test]
+    async fn the_rollup_carries_the_childs_final_total_not_a_sum_of_its_frames() {
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        let collector = Arc::new(RecordingSink {
+            events: events.clone(),
+        });
+        let state = state_with(collector);
+        let capture = Arc::new(SubagentCapture::new());
+        // Two CUMULATIVE frames from the child's own loop: 0.001, then 0.0017.
+        for total in [0.001, 0.0017] {
+            capture.observe_sink_frame(
+                "interactive-event",
+                &json!({
+                    "sessionId": "child-5",
+                    "seq": 0,
+                    "event": "cost_update",
+                    "payload": { "costUsd": total, "source": "main" },
+                }),
+            );
+        }
+        let outcome = failed_with_salvage(
+            crate::agent::subagent::SubagentFailureReason::Unresponsive,
+            "unresponsive".to_string(),
+            &capture,
+            100,
+        );
+        finish_subagent(
+            &state,
+            "child-5",
+            "parent-1",
+            &wire(),
+            outcome,
+            &SubagentOutcomeSink::Oneshot(Arc::new(StdMutex::new(None))),
+        )
+        .await;
+
+        let frames = rollups(&events);
+        assert_eq!(frames.len(), 1, "exactly ONE roll-up frame per child");
+        assert_eq!(
+            frames[0]["sessionId"], "parent-1",
+            "still keyed to the parent"
+        );
+        assert_eq!(frames[0]["payload"]["source"], "subagent");
+        assert_eq!(
+            frames[0]["payload"]["costUsd"].as_f64().expect("a number"),
+            0.0017,
+            "the child's FINAL total — 0.0027 would be the retired sum, 0.001 a \
+             first-frame reading"
         );
     }
 

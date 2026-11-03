@@ -55,12 +55,13 @@ pub struct SessionRow {
     /// session (hidden from `list_sessions` — `is_subagent = 0` filter).
     /// `false` for a main session.
     pub is_subagent: bool,
-    /// The session's provider-reported running cost in USD (issue #105):
-    /// the SUM of every `cost_update` frame's per-call delta, accumulated by
-    /// `record_session_cost` so a CLOSED session keeps its figure (the
-    /// frontend's store drops its entry on close — the row is the source of
-    /// truth for the stored figure) and a RESUMED session continues its total
-    /// instead of restarting it.
+    /// The session's provider-reported running cost in USD (issue #105): the
+    /// LAST `cost_update` frame's CUMULATIVE total, stored by
+    /// `record_session_cost` (a snapshot write since Fulcrum T2) so a CLOSED
+    /// session keeps its figure (the frontend's store drops its entry on close —
+    /// the row is the source of truth for the stored figure) and a RESUMED
+    /// session continues its total instead of restarting it (the row is seeded
+    /// back into the loop via `StartEnv.cost_usd`).
     ///
     /// `None` means NO model call ever reported a cost — which is NOT the same
     /// as `Some(0.0)`, a call that reported a genuine zero. The renderer prints
@@ -699,30 +700,41 @@ impl Db {
         Ok(found)
     }
 
-    /// Add one call's cost to the session's running figure (issue #105).
+    /// Store the session's cost TOTAL in USD (issue #105; the snapshot contract
+    /// is Fulcrum T2's amendment of ADR 0082's limit 7).
     ///
-    /// NOT an upsert and NOT idempotent: this ADDS `delta` to whatever is
-    /// stored, so a re-delivered frame doubles the figure. That is a property
-    /// of the wire, not an oversight — `cost_update` frames carry no identity
-    /// (`emit_cost_update` sends `"seq": 0`), so there is nothing to dedupe
-    /// on. Bounded today by `emit_cost_update`'s production call sites
-    /// (`turn.rs`'s `Usage` arm and `loop.rs`'s `run_compaction`), so a
-    /// Resume cannot re-emit history; stated as a bound, not a count — a
-    /// count goes stale the moment a third emitter lands (#110). Pinned by
-    /// `a_replayed_cost_frame_doubles_the_stored_figure`,
-    /// which must be DELETED — not adjusted — if idempotency is ever added.
+    /// A SNAPSHOT WRITE, and therefore IDEMPOTENT: `total` is the session's
+    /// CUMULATIVE figure as the emitter computed it, and this overwrites the
+    /// column with it. Re-delivering the same `cost_update` frame writes the
+    /// same number and changes nothing — no dedupe, no identity, no
+    /// read-modify-write. The superseded contract here was an INCREMENT
+    /// (`stored.unwrap_or(0.0) + delta`), which doubled on a replay; ADR 0082
+    /// recorded that doubling as **limit 7** — accepted, bounded, and pinned by
+    /// `a_replayed_cost_frame_doubles_the_stored_figure`, whose own docblock and
+    /// `persist.rs`'s module doc both said it "must be DELETED — not adjusted"
+    /// if idempotency was ever added. T2 added idempotency by moving the total
+    /// to the WIRE (every `cost_update` frame now carries the running total, so
+    /// the frame that has no identity no longer needs one), so that pin is
+    /// deleted in this same commit and `a_replayed_cost_frame_overwrites_to_the_same_figure`
+    /// replaces it.
     ///
-    /// `NULL + x = x`: the first frame turns "never reported" into a figure.
-    /// A `None` column and a stored `0.0` therefore both accumulate correctly
-    /// and the distinction is only ever lost by a frame existing — which is
-    /// exactly when it should be lost (D5 / ADR 0082).
+    /// Consequence of the move: the accumulator lives on the emitter
+    /// (`AgentLoop::cost_acc`, seeded from this very column on `Resume` via
+    /// `StartEnv.cost_usd`) and in the child capture / parent roll-up
+    /// (`subagent_flow.rs`, whose roll-up frame now carries the child's final
+    /// total rather than a delta). A store that overwrites cannot tolerate a
+    /// producer that still sends deltas — all three producers moved in this one
+    /// commit.
     ///
-    /// The read-modify-write holds the connection lock ONCE. The sibling
-    /// methods lock per statement, but they are single writes; splitting this
-    /// SELECT and its UPDATE across two locks would let a frame that lands in
-    /// the gap be read as absent by the second read and lose its increment.
-    /// The lock is released before anything is printed or returned — nothing
-    /// slow (and no `eprintln!`) ever runs under it.
+    /// A `None` column becomes a figure on the first write; a stored `0.0` came
+    /// from a call that reported a genuine zero (D5 / ADR 0082). The two are
+    /// still different values in the column — a snapshot never collapses
+    /// absence into zero, because a frame that does not exist never reaches
+    /// here at all.
+    ///
+    /// One statement, one lock. There is deliberately NO `SELECT` before the
+    /// `UPDATE`: a snapshot needs nothing read, and the read-modify-write this
+    /// replaced existed only to compute a sum.
     ///
     /// A missing session row is a silent no-op returning `Ok(())` (the same
     /// shape `record_session_todos` has, pinned there by
@@ -732,27 +744,13 @@ impl Db {
     /// subagent's first `cost_update` can arrive before any `StoreFrame` has
     /// created its row, so `apply_interactive_event` calls `ensure_session_row`
     /// before reaching here. Do not "fix" this into an error.
-    pub fn record_session_cost(&self, id: &str, delta: f64) -> Result<(), DbError> {
-        let guard = self.conn.lock().expect("db mutex poisoned");
-        // The row's current figure. `QueryReturnedNoRows` means the session has
-        // no row at all — a no-op, NOT a row we create (see the doc above).
-        let stored: Option<f64> = {
-            let mut stmt = guard.prepare("SELECT cost_usd FROM sessions WHERE id = ?1")?;
-            match stmt.query_row(params![id], |row| row.get::<_, Option<f64>>(0)) {
-                Ok(val) => val,
-                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
-                Err(e) => return Err(e.into()),
-            }
-        };
-        // The arithmetic is deliberately in RUST, not a SQL
-        // `COALESCE(cost_usd, 0) + ?2`: the `NULL`-means-absence rule is the
-        // whole point of the column, and `unwrap_or(0.0)` puts that rule where
-        // a reader (and a test) can see it.
-        let next = stored.unwrap_or(0.0) + delta;
-        guard.execute(
+    pub fn record_session_cost(&self, id: &str, total: f64) -> Result<(), DbError> {
+        self.conn.lock().expect("db mutex poisoned").execute(
             "UPDATE sessions SET cost_usd = ?2 WHERE id = ?1",
-            params![id, next],
+            params![id, total],
         )?;
+        // A missing row matches zero rows and `execute` reports `Ok(0)`, which
+        // this discards — the silent no-op Trap 1 requires (see the doc above).
         Ok(())
     }
 

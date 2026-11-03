@@ -1,11 +1,19 @@
-//! Issue #87 (T09): a priced model call emits exactly one `cost_update`
-//! `interactive-event` DELTA frame, and nothing else about the turn changes.
+//! Issue #87 (T09) / Fulcrum T2: a priced model call emits exactly one
+//! `cost_update` `interactive-event` frame, and nothing else about the turn
+//! changes.
 //!
 //! The wire contract (D5, shared with the frontend task): the frame is
 //! `{ sessionId, seq: 0, event: "cost_update", payload: { costUsd, source } }`
 //! emitted DIRECTLY on the sink — it is an interactive-event, NOT an
-//! `RpcEvent`. Every frame is ONE model call's cost (a delta); the frontend
-//! store sums them, so Rust holds no accumulator and never emits a total.
+//! `RpcEvent`.
+//!
+//! **`costUsd` is the session's CUMULATIVE TOTAL, not one call's delta** (Fulcrum
+//! T2, amending ADR 0082's "deltas, not totals" and its limit 7). The loop owns
+//! the running figure (`AgentLoop::cost_acc`, seeded from `sessions.cost_usd` on
+//! `Resume`), every consumer OVERWRITES with the last frame instead of summing,
+//! and a re-delivered frame therefore cannot double the stored figure. The
+//! numbers below are chosen so the accumulation is visible: the second frame of
+//! every pair is the SUM, never the second call's own figure.
 //!
 //! The fixture is the `context_usage.rs` shape with one correction: the sink
 //! must be `AllEventsSink`, not `TestSink` — `TestSink` records only
@@ -62,13 +70,18 @@ fn session_update_frames(events: &StdMutex<Vec<(String, Value)>>) -> Vec<Value> 
 /// `{ costUsd, source }`).
 ///
 /// The script carries TWO priced `Usage`s so the "exactly one frame PER CALL"
-/// half is checkable in the same run, and the second one is at a REAL measured
-/// magnitude (T08's probe P1: `0.000011662`) rather than a convenient one. That
-/// second assertion is not redundant with the first: every other pin in this
-/// file sits above the `$0.00005` formatter cliff, so nothing else here would
-/// notice a truncation or a float→string→float narrowing at sub-`0.0001`
-/// magnitudes. The formatter is the frontend's problem; the WIRE must not be
-/// where the precision is lost.
+/// half is checkable in the same run, and the FIRST one is at a REAL measured
+/// magnitude (T08's probe P1: `0.000011662`) rather than a convenient one.
+///
+/// Fulcrum T2 moved the frame's VALUE from delta to total, and that moved which
+/// frame carries the precision probe: on a fresh loop (accumulator seeded to
+/// `0.0`) the FIRST frame IS the first call's figure, so the exact sub-cliff
+/// round-trip assertion lives on `frames[0]` now. The SECOND frame carries the
+/// running total, so it is asserted against the EXPRESSION the emitter computes
+/// (`0.0042 + 0.000011662`), not a decimal literal — a literal would put the
+/// test one ulp away from the accumulator's own sum and could fail for a reason
+/// that has nothing to do with the contract. Keeping the probe on `frames[1]`
+/// at `0.000011662` would be simply wrong under totals.
 #[tokio::test]
 async fn a_priced_call_emits_one_cost_update_frame_carrying_that_calls_cost() {
     let events = Arc::new(StdMutex::new(Vec::new()));
@@ -77,20 +90,22 @@ async fn a_priced_call_emits_one_cost_update_frame_carrying_that_calls_cost() {
     });
     let (provider, _calls) = ScriptedProvider::new(vec![Some(vec![
         ProviderEvent::TextDelta("hi".to_string()),
-        ProviderEvent::Usage(
-            Usage {
-                input_tokens: 1000,
-                output_tokens: 50,
-            },
-            Some(0.0042),
-        ),
-        // A SECOND priced call's figure, at T08's measured magnitude.
+        // FIRST priced call, at T08's measured sub-cliff magnitude — so the
+        // first frame IS that figure on a loop seeded to zero.
         ProviderEvent::Usage(
             Usage {
                 input_tokens: 1100,
                 output_tokens: 60,
             },
             Some(0.000011662),
+        ),
+        // The SECOND priced call: its frame carries the running total.
+        ProviderEvent::Usage(
+            Usage {
+                input_tokens: 1000,
+                output_tokens: 50,
+            },
+            Some(0.0042),
         ),
         ProviderEvent::Done(FinishReason::Stop),
     ])]);
@@ -119,10 +134,6 @@ async fn a_priced_call_emits_one_cost_update_frame_carrying_that_calls_cost() {
     assert_eq!(first["sessionId"], "s1", "the loop's own session id");
     assert_eq!(first["seq"], 0, "the same convention as `todos_update`");
     assert_eq!(first["event"], "cost_update");
-    assert_eq!(
-        first["payload"]["costUsd"], 0.0042,
-        "the provider's per-call figure, not a total"
-    );
     assert_eq!(first["payload"]["source"], "main");
     assert!(
         first["payload"].get("sessionId").is_none(),
@@ -139,18 +150,33 @@ async fn a_priced_call_emits_one_cost_update_frame_carrying_that_calls_cost() {
         "the inner payload is EXACTLY {{costUsd, source}} — the pinned field set"
     );
 
-    // The real magnitude, round-tripped EXACTLY. Asserted on the serialised
-    // number re-parsed (what the frontend actually receives), so a narrowing at
-    // the `json!` seam is caught here and nowhere else.
-    let wire = serde_json::to_string(&frames[1]["payload"]["costUsd"]).expect("serialisable");
+    // The real magnitude, round-tripped EXACTLY — asserted on the FIRST frame,
+    // which on a loop seeded to zero IS the sub-cliff figure. Asserted on the
+    // serialised number re-parsed (what the frontend actually receives), so a
+    // narrowing at the `json!` seam is caught here and nowhere else. Every
+    // other pin in this file sits above the `$0.00005` formatter cliff, so
+    // nothing else here would notice a truncation or a float→string→float
+    // narrowing at sub-`0.0001` magnitudes. The formatter is the frontend's
+    // problem; the WIRE must not be where the precision is lost.
+    let wire = serde_json::to_string(&frames[0]["payload"]["costUsd"]).expect("serialisable");
     let round_trip: f64 = serde_json::from_str(&wire).expect("a JSON number");
     assert_eq!(
         round_trip, 0.000011662,
         "the sub-cliff figure survives the wire intact (serialised as {wire})"
     );
     assert_eq!(
+        frames[0]["payload"]["costUsd"].as_f64().expect("a number"),
+        0.000011662,
+        "the first frame carries the first call's figure (the accumulator started at 0.0)"
+    );
+
+    // The SECOND frame is the RUNNING TOTAL — asserted against the expression
+    // the emitter adds, so the comparison is bitwise the emitter's own.
+    assert_eq!(
         frames[1]["payload"]["costUsd"].as_f64().expect("a number"),
-        0.000011662
+        0.0042 + 0.000011662,
+        "the second frame carries the accumulated session total, not the \
+         second call's own delta"
     );
 }
 
@@ -207,21 +233,26 @@ async fn a_call_without_a_cost_emits_no_cost_update_frame_at_all() {
     );
 }
 
-/// Two priced calls emit TWO DELTAS — the second frame carries the SECOND
-/// call's cost, never the running sum.
+/// Two priced calls emit TWO TOTALS — the second frame carries the SUM, never
+/// the second call's own figure.
 ///
-/// This is the falsifier for "emit a cumulative total into a summing store",
-/// which is the double-count trap the frontend cannot recover from across a
-/// Worker re-incarnation. The store's sum IS the cumulative figure; Rust must
-/// never pre-sum it.
+/// This is the falsifier for the contract FLIPPED by Fulcrum T2. It used to pin
+/// the opposite (`0.0020`, "a running total here would double-count in the
+/// summing frontend store"). The store no longer sums — `combineSessionCost` is
+/// last-frame-wins and `Db::record_session_cost` is an overwrite — so a frame
+/// that carried a per-call delta would now UNDER-report, and the total is what
+/// every consumer needs. The discriminating numbers are still the whole point:
+/// `0.0010` then `0.0020` sums to `0.0030`, a value neither call carries on its
+/// own, so the assertion cannot be satisfied by an emitter that forwards the
+/// figure it was handed.
 #[tokio::test]
-async fn two_priced_calls_emit_two_deltas_never_a_running_total() {
+async fn two_priced_calls_emit_running_totals_and_never_a_bare_delta() {
     let events = Arc::new(StdMutex::new(Vec::new()));
     let sink: Arc<dyn EventSink> = Arc::new(AllEventsSink {
         events: events.clone(),
     });
-    // Two SEPARATE prompts = two model calls on ONE loop (the session-
-    // accumulator temptation), each with its own figure.
+    // Two SEPARATE prompts = two model calls on ONE loop (the session
+    // accumulator is the loop's own field, and it survives a turn boundary).
     let (provider, _calls) = ScriptedProvider::new(vec![
         Some(vec![
             ProviderEvent::TextDelta("one".to_string()),
@@ -261,16 +292,69 @@ async fn two_priced_calls_emit_two_deltas_never_a_running_total() {
     loop_.handle_prompt(&text_prompt("second")).await;
 
     let frames = cost_frames(&events);
-    assert_eq!(frames.len(), 2, "one delta per priced call");
+    assert_eq!(frames.len(), 2, "one total frame per priced call");
     assert_eq!(
         frames[0]["payload"]["costUsd"].as_f64().expect("a number"),
-        0.0010
+        0.0010,
+        "the first frame is the first call's figure (the loop started at zero)"
     );
     assert_eq!(
         frames[1]["payload"]["costUsd"].as_f64().expect("a number"),
-        0.0020,
-        "the SECOND call's own cost — a running total (0.0030) here would \
-         double-count in the summing frontend store"
+        0.0010 + 0.0020,
+        "the SECOND frame is the session's running total — `0.0030`, not the \
+         second call's own `0.0020` (a delta here would UNDER-report against a \
+         store that overwrites)"
+    );
+}
+
+/// A `Resume` continues the stored figure instead of restarting at zero.
+///
+/// This is the loop-side half of the Resume-seeding seam (`sessions.cost_usd` →
+/// `StartEnv.cost_usd` → `default_build_loop` → `AgentLoop::seed_cost`). ADR
+/// 0082 rejected a loop-side total because "a re-incarnation or `Resume`
+/// rebuilds the loop with no memory of the old figure" — T2's answer is that the
+/// figure is re-LOADED each time from the row that outlives the loop, so the
+/// first frame of a resumed session must be `stored + first_call`, never
+/// `0 + first_call`. Without `seed_cost` this frame reads `0.0009`.
+#[tokio::test]
+async fn a_seeded_loop_continues_the_stored_total_instead_of_restarting_at_zero() {
+    let events = Arc::new(StdMutex::new(Vec::new()));
+    let sink: Arc<dyn EventSink> = Arc::new(AllEventsSink {
+        events: events.clone(),
+    });
+    let (provider, _calls) = ScriptedProvider::new(vec![Some(vec![
+        ProviderEvent::TextDelta("hi".to_string()),
+        ProviderEvent::Usage(
+            Usage {
+                input_tokens: 100,
+                output_tokens: 10,
+            },
+            Some(0.0009),
+        ),
+        ProviderEvent::Done(FinishReason::Stop),
+    ])]);
+    let (_space, mut loop_) = build_loop_with_dispatcher(
+        Box::new(provider),
+        mpsc::unbounded_channel().0,
+        Arc::new(StdMutex::new(CancellationToken::new())),
+        watch::channel(0u64).0,
+        RetryPolicy::new_with(5, Duration::from_millis(1)),
+        sink,
+        None,
+        vec![fake_model("m1")],
+        None,
+    );
+    // The seam `default_build_loop` calls on the `(StartMode::Resume, _)` arm,
+    // with the figure read off the row.
+    loop_.seed_cost(0.0025);
+    loop_.handle_prompt(&text_prompt("hello")).await;
+
+    let frames = cost_frames(&events);
+    assert_eq!(frames.len(), 1, "one frame for the one priced call");
+    assert_eq!(
+        frames[0]["payload"]["costUsd"].as_f64().expect("a number"),
+        0.0025 + 0.0009,
+        "a resumed session's first frame continues the stored total"
     );
 }
 
@@ -480,7 +564,7 @@ async fn an_abandoned_attempt_that_delivered_a_usage_still_emits_its_cost() {
     assert_eq!(
         frames.len(),
         2,
-        "two billed attempts, two deltas — the abandoned attempt's money is not forfeited"
+        "two billed attempts, two frames — the abandoned attempt's money is not forfeited"
     );
     assert_eq!(
         frames[0]["payload"]["costUsd"].as_f64().expect("a number"),
@@ -490,8 +574,9 @@ async fn an_abandoned_attempt_that_delivered_a_usage_still_emits_its_cost() {
     );
     assert_eq!(
         frames[1]["payload"]["costUsd"].as_f64().expect("a number"),
-        0.0009,
-        "the settled attempt's own cost follows, still a delta"
+        0.0007 + 0.0009,
+        "the settled attempt's figure lands on the RUNNING TOTAL (the emission \
+         point is unchanged; only the VALUE the frame carries moved)"
     );
 }
 
@@ -554,16 +639,24 @@ async fn a_negative_zero_cost_emits_positive_zero() {
 }
 
 /// The compaction summariser's own call reaches the cost channel like any
-/// other priced call (issue #106).
+/// other priced call (issue #106), and under Fulcrum T2 its figure lands on the
+/// SESSION TOTAL rather than as a bare per-call delta.
 ///
-/// Before this change `compact.rs::summarize` swallowed the provider's
-/// `Usage` event in its catch-all arm, so a compaction's money was invisible:
-/// the figure under-stated by one summariser call per compaction (ADR 0082
-/// limit 2, follow-up F2). `summarize` now reads the cost off the stream and
-/// returns it, and `AgentLoop::run_compaction` emits it through the SAME
-/// `emit_cost_update` the turn's `Usage` arm uses — one frame, the summary
-/// call's own DELTA, keyed to the loop's own session id (no child id, no
-/// synthetic id), `"source": "main"` (the label is inert — ADR 0041).
+/// Before #106 `compact.rs::summarize` swallowed the provider's `Usage` event in
+/// its catch-all arm, so a compaction's money was invisible: the figure
+/// under-stated by one summariser call per compaction (ADR 0082 limit 2,
+/// follow-up F2). `summarize` now reads the cost off the stream and returns it,
+/// and `AgentLoop::run_compaction` emits it through the SAME `emit_cost_update`
+/// the turn's `Usage` arm uses — one frame, keyed to the loop's own session id
+/// (no child id, no synthetic id), `"source": "main"` (the label is inert —
+/// ADR 0041).
+///
+/// This fixture is a FRESH loop (accumulator seeded to `0.0`), so the total and
+/// the summary call's own figure coincide at `0.0042`. That is not a vacuous
+/// pass: it pins that the compaction arm does not emit the session total PLUS a
+/// second copy of its own figure, and the sibling
+/// `a_priced_compaction_adds_its_figure_to_the_sessions_running_total` below
+/// separates the two readings.
 #[tokio::test]
 async fn a_priced_compaction_emits_one_cost_update_frame_carrying_that_calls_cost() {
     let events = Arc::new(StdMutex::new(Vec::new()));
@@ -661,7 +754,113 @@ async fn a_priced_compaction_emits_one_cost_update_frame_carrying_that_calls_cos
     assert_eq!(frame["event"], "cost_update");
     assert_eq!(
         frame["payload"]["costUsd"], 0.0042,
-        "the summary call's own per-call DELTA, never a total"
+        "the summary call's figure on a fresh (seeded-0) loop IS the session total"
+    );
+}
+
+/// A compaction's figure joins the calls that came BEFORE it in the same loop.
+///
+/// The turn arm and the compaction arm share ONE accumulator, so this is the
+/// pin that the compaction frame is a TOTAL and not a second, independent
+/// per-call delta — the case the fresh-loop fixture above cannot distinguish.
+/// A child of the same seam that summed only its own arm would read `0.0042`
+/// here instead of `0.0054`.
+#[tokio::test]
+async fn a_priced_compaction_adds_its_figure_to_the_sessions_running_total() {
+    let events = Arc::new(StdMutex::new(Vec::new()));
+    let sink: Arc<dyn EventSink> = Arc::new(AllEventsSink {
+        events: events.clone(),
+    });
+    // ONE script serves both model calls: the turn's own (which reports a
+    // priced `Usage` and settles) and the summary call the compaction drives.
+    let (provider, _calls) = ScriptedProvider::new(vec![Some(vec![
+        ProviderEvent::TextDelta("the summary".to_string()),
+        ProviderEvent::Usage(
+            Usage {
+                input_tokens: 1000,
+                output_tokens: 50,
+            },
+            Some(0.0042),
+        ),
+        ProviderEvent::Done(FinishReason::Stop),
+    ])]);
+    let (_space, mut loop_) = build_loop_with_dispatcher(
+        Box::new(provider),
+        mpsc::unbounded_channel().0,
+        Arc::new(StdMutex::new(CancellationToken::new())),
+        watch::channel(0u64).0,
+        RetryPolicy::new_with(5, Duration::from_millis(1)),
+        sink,
+        None,
+        vec![fake_model("m1")],
+        None,
+    );
+    // First: a normal priced turn, so the accumulator is no longer zero.
+    loop_.handle_prompt(&text_prompt("hello")).await;
+    assert_eq!(
+        cost_frames(&events)
+            .last()
+            .expect("the turn emitted its cost frame")["payload"]["costUsd"]
+            .as_f64(),
+        Some(0.0042),
+        "precondition: the turn's frame put 0.0042 on the accumulator"
+    );
+
+    // Then: a real compaction on the same loop (the fixture seam the fresh-loop
+    // compaction pins use).
+    loop_.compactor = Compactor::new(
+        CompactionConfig {
+            keep_recent_tokens: 1,
+            ..Default::default()
+        },
+        128_000,
+    );
+    loop_.load_transcript(vec![
+        ChatMessage {
+            role: ChatRole::User,
+            content: MessageContent::Text("u1".to_string()),
+            tool_call_id: None,
+            tool_calls: None,
+        },
+        ChatMessage {
+            role: ChatRole::Assistant,
+            content: MessageContent::Text("a1".to_string()),
+            tool_call_id: None,
+            tool_calls: None,
+        },
+        ChatMessage {
+            role: ChatRole::User,
+            content: MessageContent::Text("u2".to_string()),
+            tool_call_id: None,
+            tool_calls: None,
+        },
+        ChatMessage {
+            role: ChatRole::Assistant,
+            content: MessageContent::Text("a2".to_string()),
+            tool_call_id: None,
+            tool_calls: None,
+        },
+    ]);
+    assert_eq!(
+        loop_
+            .run_compaction(
+                CompactionReason::Threshold,
+                false,
+                None,
+                &CancellationToken::new()
+            )
+            .await,
+        CompactionRan::Compacted,
+        "precondition: the compaction really ran"
+    );
+
+    let frames = cost_frames(&events);
+    assert_eq!(frames.len(), 2, "the turn's frame, then the compaction's");
+    assert_eq!(
+        frames[1]["payload"]["costUsd"].as_f64().expect("a number"),
+        0.0042 + 0.0042,
+        "the summary call's figure ADDS to the session total — the two arms \
+         share one accumulator"
     );
 }
 

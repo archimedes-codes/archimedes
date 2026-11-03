@@ -369,6 +369,17 @@ pub fn default_build_loop(
                 // re-estimated on the loaded context).
                 let messages = env.transcript.clone().unwrap_or_default();
                 loop_.load_transcript(messages);
+                // (Fulcrum T2) The cost seed, next to the transcript seed:
+                // `cost_update` frames carry the session's CUMULATIVE total and
+                // `Db::record_session_cost` OVERWRITES with it, so a resumed
+                // loop that started its accumulator at zero would publish
+                // `0 + first_call` and REPLACE the stored total with a smaller
+                // figure. The Supervisor read the row into `StartEnv.cost_usd`;
+                // `None` (an old envelope, or a session that never had a figure)
+                // seeds `0.0` — the same value a fresh loop starts on, and not a
+                // fabricated `Some(0.0)` because the seed is a plain `f64` field
+                // on the loop that only a FRAME can turn into a stored figure.
+                loop_.seed_cost(env.cost_usd.unwrap_or(0.0));
             }
             (StartMode::Fresh | StartMode::FreshChild, Some(sp)) => {
                 // A Supervisor-computed message — a child's
@@ -875,6 +886,14 @@ mod tests {
             (StartMode::Resume, _) => {
                 let messages = env.transcript.clone().unwrap_or_default();
                 loop_.load_transcript(messages);
+                // (Fulcrum T2) The SAME line the production `default_build_loop`
+                // applies — this stub's whole contract is that its four arms
+                // mirror production's one-for-one, so an arm that grows there
+                // grows here. A no-op for every stub-built env (`from_parts`
+                // seeds `cost_usd: None` → `0.0`, the value `new` starts on),
+                // and a stub resume test that hands a seed now reads the same
+                // totals production would.
+                loop_.seed_cost(env.cost_usd.unwrap_or(0.0));
             }
             (StartMode::Fresh | StartMode::FreshChild, Some(sp)) => {
                 loop_.prepend_system(sp.clone());

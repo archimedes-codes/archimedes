@@ -239,13 +239,16 @@ impl AgentLoop {
                                 usage: acc.usage_value(),
                                 assistant_message_event: Value::Object(Default::default()),
                             });
-                            // Issue #87: the provider's per-call cost rides the
-                            // SAME event, so it is emitted HERE — where usage
-                            // already accumulates — and NOT at a settle point.
-                            // An attempt that reported a `Usage` and then died
-                            // was still billed, and its money must not be
-                            // forfeited by a turn that never settles.
-                            // `None` emits nothing (see `emit_cost_update`).
+                            // Issue #87: the provider's cost rides the SAME
+                            // event, so it is emitted HERE — where usage already
+                            // accumulates — and NOT at a settle point. An attempt
+                            // that reported a `Usage` and then died was still
+                            // billed, and its money must not be forfeited by a
+                            // turn that never settles. EMISSION POINT UNCHANGED
+                            // by Fulcrum T2; what changed is the VALUE: this
+                            // passes the call's figure to the emitter, which adds
+                            // it to the session accumulator and frames the new
+                            // TOTAL. `None` adds nothing and emits nothing.
                             self.emit_cost_update(cost);
                         }
                         ProviderEvent::Done(f) => acc.finish = Some(f),

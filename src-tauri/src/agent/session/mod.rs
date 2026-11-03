@@ -1504,6 +1504,18 @@ impl SessionManager {
             // path passes a definition). The per-agent layer governs CHILDREN.
             None,
         );
+        // (Fulcrum T2) The resume seed: the stored `sessions.cost_usd` figure
+        // rides the envelope so the Worker's fresh `AgentLoop` CONTINUES the
+        // session's total instead of restarting at zero. Gated on `is_resume`
+        // rather than applied unconditionally: a fresh session's `cost_usd` is
+        // `None` by construction (the match above), and `None` here must stay
+        // "this session has never had a figure" rather than become a seed call
+        // that reads as though there were one (D5 / ADR 0082).
+        let env = if is_resume {
+            env.with_seed_cost(cost_usd)
+        } else {
+            env
+        };
         // SPAWN the Worker (a spawn failure → the command returns an error — the
         // visible session error, NO in-process fallback — ADR 0025).
         wm.attach(&session_id, &env)
