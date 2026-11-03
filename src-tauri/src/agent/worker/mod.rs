@@ -5,7 +5,8 @@
 //! The Tauri runtime NEVER starts in a Worker (`main` checks the flag
 //! before the Tauri init). The Worker: installs the crash-logging
 //! panic hook (tag `"worker"`), builds the `WorkerCore`, emits
-//! `Ready`, then observes three things concurrently — the `events_rx`
+//! `hello` (the protocol version) then `Ready` (the binary version),
+//! then observes three things concurrently — the `events_rx`
 //! pump task (each `RpcEvent` → an `Outbound::Event` frame on stdout),
 //! the crash-watch task (the loop `JoinHandle` — `Err` (a panic — the
 //! hook already wrote the crash log) → a best-effort `WorkerError`
@@ -32,8 +33,8 @@ pub use manager::{
     DEFAULT_SUBAGENT_DEAD_BOUND,
 };
 pub use protocol::{
-    decode_inbound, decode_outbound, encode_inbound, encode_outbound, Inbound, Outbound,
-    ProtoError, StartEnv, StartMode, StoreFrame, SubagentDispatchWire,
+    decode_inbound, decode_outbound, encode_inbound, encode_outbound, stamp_outbound, Inbound,
+    Outbound, ProtoError, StartEnv, StartMode, StoreFrame, SubagentDispatchWire, PROTOCOL_VERSION,
 };
 pub use sink::IpcEventSink;
 pub use store::IpcStore;
@@ -77,9 +78,32 @@ pub async fn run_worker_inner() {
     let mut pump_done = false;
     let mut crash_ok = false;
 
+    // The per-session frame cursor (Fulcrum T1) — the `frameSeq` a later
+    // task's `attach { afterSeq }` replay reads. ONE counter per Worker,
+    // shared by every writer (the main loop, the pump task, the
+    // crash-watch task), RESET on each `Start` so numbering is per-session
+    // and begins at 1. The pre-session frames (`hello`, `ready`) are NOT
+    // stamped and never touch it.
+    let frame_seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    // The handshake, in order: `hello` (the protocol version) then
+    // `ready` (the binary version). Both go through the UNSTAMPED helper:
+    // they precede `Start`, so there is no session to number yet. The
+    // ordering is safe because no other producer can write before the loop
+    // starts — the pump / crash tasks spawn only after a `Start`, and
+    // `outbound_rx` stays empty until the core runs — so `hello` is line 1
+    // and `ready` is line 2.
+    write_frame_unstamped(
+        &stdout,
+        &Outbound::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+        },
+    )
+    .await;
     // The `Ready` frame (the binary version — emitted at startup,
     // BEFORE `Start`).
-    write_frame(
+    write_frame_unstamped(
         &stdout,
         &Outbound::Ready {
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -102,8 +126,15 @@ pub async fn run_worker_inner() {
             // stdin EOF / a read failure) — exit 0, the clean-EOF path.
             msg = inbound_rx.recv() => {
                 let Some(msg) = msg else { break };
+                // A new session begins: the cursor restarts at 1 for this
+                // session (the per-session monotonic guarantee T2's replay
+                // reads). Reset BEFORE `handle` runs, so the frames the
+                // `Start` itself produces are numbered from 1.
+                if let Inbound::Start(_) = &msg {
+                    frame_seq.store(0, std::sync::atomic::Ordering::SeqCst);
+                }
                 for frame in core.handle(msg).await {
-                    write_frame(&stdout, &frame).await;
+                    write_frame(&stdout, &frame_seq, &frame).await;
                 }
                 // The `Close` — the Worker is done (exit 0; the `closed`
                 // condition decides exit — the Supervisor does NOT close
@@ -124,6 +155,7 @@ pub async fn run_worker_inner() {
                 // state across loop iterations).
                 if let Some((events_rx, task)) = core.take_pump() {
                     let pump_stdout = stdout.clone();
+                    let pump_seq = frame_seq.clone();
                     let pump_done_tx = pump_done_tx.take().expect(
                         "the pump sender is taken once",
                     );
@@ -131,7 +163,7 @@ pub async fn run_worker_inner() {
                         let mut rx = events_rx;
                         while let Some(event) = rx.recv().await {
                             let frame = Outbound::Event { event };
-                            let line = encode_outbound(&frame);
+                            let line = stamp_outbound(&pump_seq, &frame);
                             let mut w = pump_stdout.lock().await;
                             if w.write_all(line.as_bytes()).await.is_err()
                                 || w.flush().await.is_err()
@@ -146,6 +178,7 @@ pub async fn run_worker_inner() {
                         drop(pump_done_tx.send(()));
                     });
                     let crash_stdout = stdout.clone();
+                    let crash_seq = frame_seq.clone();
                     let crash_ok_tx = crash_ok_tx.take().expect(
                         "the crash-watch sender is taken once",
                     );
@@ -174,7 +207,7 @@ pub async fn run_worker_inner() {
                                     message: e.to_string(),
                                     backtrace: None,
                                 };
-                                let line = encode_outbound(&frame);
+                                let line = stamp_outbound(&crash_seq, &frame);
                                 let mut w = crash_stdout.lock().await;
                                 let _ = w.write_all(line.as_bytes()).await;
                                 let _ = w.flush().await;
@@ -193,7 +226,7 @@ pub async fn run_worker_inner() {
                 // loop runs — NOT only after a `handle` returns).
                 match frame {
                     Some(f) => {
-                        write_frame(&stdout, &f).await;
+                        write_frame(&stdout, &frame_seq, &f).await;
                     }
                     None => break, // the core's sender is gone.
                 }
@@ -284,13 +317,33 @@ where
         });
 }
 
-/// Write one outbound frame to stdout (the shared writer — the pump
-/// task and the main loop serialize on the `Mutex`).
+/// Write one outbound frame to stdout, stamped with the next `frameSeq`
+/// (the shared writer — the pump task and the main loop serialize on the
+/// `Mutex`; the cursor is the shared `frame_seq`).
 async fn write_frame(
+    stdout: &std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+    frame_seq: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    frame: &Outbound,
+) {
+    let line = stamp_outbound(frame_seq, frame);
+    write_line(stdout, &line).await;
+}
+
+/// Write one outbound frame to stdout with NO `frameSeq` — the two
+/// pre-session handshake frames (`hello`, `ready`). They are emitted
+/// before any `Start`, so there is no session to number; keeping them
+/// unstamped also keeps the cursor at 1 for the first real frame.
+async fn write_frame_unstamped(
     stdout: &std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
     frame: &Outbound,
 ) {
     let line = encode_outbound(frame);
+    write_line(stdout, &line).await;
+}
+
+/// The one stdout write (both writers above — the error is a lost
+/// Supervisor, which the loop's own exit conditions observe).
+async fn write_line(stdout: &std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>, line: &str) {
     let mut w = stdout.lock().await;
     if w.write_all(line.as_bytes()).await.is_err() || w.flush().await.is_err() {
         eprintln!("worker: stdout write failed (the Supervisor is gone?)");

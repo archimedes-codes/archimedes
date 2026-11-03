@@ -175,6 +175,15 @@ pub struct WorkerHandle {
     /// frame / the process exit before `ready` is an error — the
     /// `exited` watch races it).
     ready: watch::Sender<Option<String>>,
+    /// The protocol-version handshake (Fulcrum T1) — the read task
+    /// publishes the `protocolVersion` from the `hello` frame, the first
+    /// line the Worker writes. A SEPARATE watch from `ready`, because the
+    /// two answer different questions: `ready` is "which build is this"
+    /// (the BINARY version) and this is "which wire does it speak".
+    /// Deliberately NOT routed as a `WorkerInboundEvent` (a 12th variant
+    /// would force every consumer, including `session/router.rs`'s
+    /// exhaustive `route_event`, to account for a frame the UI never sees).
+    protocol_version: watch::Sender<Option<u32>>,
     /// The response round-trips (request `id` → oneshot resolved when
     /// the matching `permission-response` / `interactive-response` is
     /// sent — the `PermissionOutcome` / `Value` delivery proof).
@@ -193,6 +202,7 @@ impl Clone for WorkerHandle {
             stdin_tx: self.stdin_tx.clone(),
             events_tx: self.events_tx.clone(),
             ready: self.ready.clone(),
+            protocol_version: self.protocol_version.clone(),
             round_trips: self.round_trips.clone(),
             exited: self.exited.clone(),
         }
@@ -351,6 +361,7 @@ impl WorkerHandle {
         // `UnboundedSender`'s receiver drops; `send_inbound_frame`
         // checks it directly for the deterministic error).
         let (ready_tx, _ready_rx) = watch::channel(None);
+        let (protocol_version_tx, _protocol_version_rx) = watch::channel(None);
         let (exited_tx, _exited_rx) = watch::channel(None);
         // The stdin writer task (drains `stdin_tx` → line writes,
         // `flush` per line — the unbounded channel never fails; a
@@ -390,6 +401,7 @@ impl WorkerHandle {
         let (events_tx, _events_keepalive) = tokio::sync::broadcast::channel(256);
         let events_tx2 = events_tx.clone();
         let ready_tx2 = ready_tx.clone();
+        let protocol_version_tx2 = protocol_version_tx.clone();
         let exited_tx2 = exited_tx.clone();
         let child_task = child.clone();
         tokio::spawn(async move {
@@ -419,6 +431,18 @@ impl WorkerHandle {
                                 continue;
                             }
                         };
+                        // The `hello` handshake (Fulcrum T1): the protocol
+                        // version lands on its own watch BEFORE routing,
+                        // because `route_outbound` deliberately drops the
+                        // frame (it is not a `WorkerInboundEvent`).
+                        // `send_replace` for the reason in the `ready` note
+                        // below — the receiver is subscribed after `spawn`.
+                        if let Outbound::Hello {
+                            protocol_version, ..
+                        } = &frame
+                        {
+                            protocol_version_tx2.send_replace(Some(*protocol_version));
+                        }
                         let Some(evt) = route_outbound(frame) else {
                             continue; // an unknown `type` — permissive.
                         };
@@ -473,6 +497,7 @@ impl WorkerHandle {
             stdin_tx,
             events_tx,
             ready: ready_tx,
+            protocol_version: protocol_version_tx,
             round_trips: std::sync::Arc::new(Mutex::new(HashMap::new())),
             exited: exited_tx,
         })
@@ -500,6 +525,53 @@ impl WorkerHandle {
                     Ok(code) => Err(WorkerError {
                         kind: WorkerErrorKind::Io(format!(
                             "the worker exited before ready (code {code:?})"
+                        )),
+                    }),
+                    Err(_) => Err(WorkerError {
+                        kind: WorkerErrorKind::ReadyTimeout,
+                    }),
+                }
+            }
+            _ = tokio::time::sleep(timeout) => Err(WorkerError {
+                kind: WorkerErrorKind::ReadyTimeout,
+            }),
+        }
+    }
+
+    /// The protocol-version handshake (Fulcrum T1 — the bounded twin of
+    /// `wait_ready`): the `protocolVersion` the Worker published in its
+    /// `hello` frame, the FIRST line it writes.
+    ///
+    /// A SEPARATE method from `wait_ready` rather than an extra return
+    /// value on it, because `wait_ready` answers "which build is this" and
+    /// has ≈20 callers (including the `worker_stderr` / `ipc` /
+    /// `worker_e2e` integration tests) whose contract must not move. The
+    /// two watches are set by the same read task off two consecutive lines,
+    /// so a Worker that answered `wait_ready` has almost always answered
+    /// this one already — but it is raced independently, because "the
+    /// handshake is at line 2" is a wire property this API must not assume.
+    pub async fn wait_protocol_version(&self, timeout: Duration) -> Result<u32, WorkerError> {
+        let mut version_rx = self.protocol_version.subscribe();
+        let mut exited_rx = self.exited.subscribe();
+        tokio::select! {
+            r = version_rx.wait_for(|v| v.is_some()) => match r {
+                // `(*v)` with NO `clone` — the deliberate divergence from
+                // `wait_ready` below, whose payload is a `String`. This one
+                // is `Copy`.
+                Ok(v) => Ok((*v).expect("the `is_some` predicate just held")),
+                // The sender is gone (the read task died without
+                // publishing — treat as a timeout, the `wait_ready` shape).
+                Err(_) => Err(WorkerError {
+                    kind: WorkerErrorKind::ReadyTimeout,
+                }),
+            },
+            r = exited_rx.wait_for(|v| v.is_some()) => {
+                // The process exited before the `hello` frame (a crash /
+                // an early exit — the negotiation never happened).
+                match r {
+                    Ok(code) => Err(WorkerError {
+                        kind: WorkerErrorKind::Io(format!(
+                            "the worker exited before the protocol handshake (code {code:?})"
                         )),
                     }),
                     Err(_) => Err(WorkerError {
@@ -815,10 +887,19 @@ fn clamp_placeholder_row(role: &str, content_json: String) -> String {
 
 /// Route one `Outbound` frame into the `WorkerInboundEvent` vocabulary
 /// (the 4 store-frame variants → `Store(StoreFrame::…)`; the control
-/// frames verbatim; `Unknown` → `None` — the surface is unversioned,
-/// an unknown `type` is ignored, never an error).
+/// frames verbatim; `Hello` → `None` — it lands on the `protocol_version`
+/// watch in the read task instead; `Unknown` → `None` — an unknown
+/// `type` is ignored, never an error, so a newer Worker cannot wedge an
+/// older Supervisor).
 fn route_outbound(frame: Outbound) -> Option<WorkerInboundEvent> {
     Some(match frame {
+        // The version-negotiation opener is NOT routed as a
+        // `WorkerInboundEvent` — it lands on the `protocol_version`
+        // watch in the read task instead (adding a 12th variant here
+        // would force every `WorkerInboundEvent` consumer, including
+        // `session/router.rs`'s exhaustive `route_event`, to account for
+        // a frame the UI never sees).
+        Outbound::Hello { .. } => return None,
         Outbound::Ready { version, .. } => WorkerInboundEvent::Ready { version },
         Outbound::Event { event } => WorkerInboundEvent::Event(event),
         Outbound::TranscriptInsert {
@@ -898,8 +979,9 @@ fn route_outbound(frame: Outbound) -> Option<WorkerInboundEvent> {
             message,
             backtrace: _,
         } => WorkerInboundEvent::WorkerError { code, message },
-        // The surface is unversioned — an unknown outbound type is
-        // ignored (never an error).
+        // A newer Worker's frame this build predates — ignored, never an
+        // error (the permissive-decoder contract; the overall surface is
+        // negotiated on the `hello` frame, handled above).
         Outbound::Unknown { .. } => return None,
     })
 }
@@ -907,6 +989,7 @@ fn route_outbound(frame: Outbound) -> Option<WorkerInboundEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::worker::protocol::PROTOCOL_VERSION;
 
     // ── (issue #122) the store-row belt ────────────────────────────────
 
@@ -1115,7 +1198,9 @@ mod tests {
         events
     }
 
-    /// `spawn` + the `ready` handshake (the version).
+    /// `spawn` + the `ready` handshake (the version), and the `hello`
+    /// handshake (the protocol version) — the two watches coexist, each
+    /// carrying its own axis (binary version vs wire version).
     #[tokio::test]
     async fn spawn_and_wait_ready_returns_the_version() {
         let handle = spawn_fixture().expect("the fixture binary exists (cargo test built it)");
@@ -1124,6 +1209,42 @@ mod tests {
             .await
             .expect("the ready handshake completes");
         assert!(!version.is_empty(), "the ready frame carries the version");
+        // The protocol version arrives on its OWN watch, off the `hello`
+        // line that precedes `ready` — proving the two handshakes do not
+        // disturb each other.
+        let protocol_version = handle
+            .wait_protocol_version(Duration::from_secs(10))
+            .await
+            .expect("the hello handshake completes");
+        assert_eq!(
+            protocol_version, PROTOCOL_VERSION,
+            "the fixture's `hello` advertises the current protocol version"
+        );
+        handle.send_close().expect("close encodes");
+        let code = handle.exited().await;
+        assert_eq!(code, Some(0), "close → exit 0");
+    }
+
+    /// The `hello` frame's `protocolVersion` reaches
+    /// `wait_protocol_version` through the client's read task (the frame
+    /// is NOT routed as a `WorkerInboundEvent`, so this watch is the only
+    /// way it surfaces — a route arm that swallowed it before the watch
+    /// write would show up here and nowhere else).
+    #[tokio::test]
+    async fn wait_protocol_version_reports_the_fixture_hello_version() {
+        let handle = spawn_fixture().expect("the fixture binary exists");
+        handle
+            .wait_ready(Duration::from_secs(10))
+            .await
+            .expect("ready");
+        let observed = handle
+            .wait_protocol_version(Duration::from_secs(10))
+            .await
+            .expect("the `hello` frame is observed by the read task");
+        assert_eq!(
+            observed, PROTOCOL_VERSION,
+            "the client reports the version the fixture negotiated"
+        );
         handle.send_close().expect("close encodes");
         let code = handle.exited().await;
         assert_eq!(code, Some(0), "close → exit 0");

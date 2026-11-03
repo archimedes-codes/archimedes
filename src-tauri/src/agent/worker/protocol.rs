@@ -17,9 +17,33 @@
 //! Decoding is **permissive of unknown `type`s**: the decoder parses the
 //! line as `Value` first, routes by `type`, and deserializes known types
 //! into their variants; an unknown `type` becomes `Unknown { raw }`
-//! (never an error — the surface is unversioned).
+//! (never an error — a peer may speak a NEWER surface than this build,
+//! and forward-compatibility is the whole reason the decoder routes by
+//! hand instead of deserializing the enum directly).
+//!
+//! The surface is nevertheless **negotiated**, not assumed: a Worker
+//! opens with `Outbound::Hello`, carrying [`PROTOCOL_VERSION`], before
+//! anything else (Fulcrum T1). Permissive decoding and an explicit
+//! version are complementary — the version tells a peer WHEN it is
+//! out of step, the permissive decoder decides WHETHER a given frame is
+//! survivable. An unknown `type` is thus never a silent contract
+//! violation on a KNOWN version; it is a future frame on a version this
+//! build already agreed to tolerate.
 
 use serde_json::Value;
+
+/// The version of THIS stdio wire (the `hello` frame's `protocolVersion`).
+///
+/// Bumped only on a BREAKING wire change — a frame shape an older
+/// Supervisor cannot read. An ADDITIVE frame (a new `type`, a new optional
+/// field) does NOT bump it: the decoder is permissive by design, so an
+/// older peer ignores what it does not know.
+///
+/// Distinct from `Outbound::Ready`'s `version` (and `hello`'s own
+/// `clientVersion`), which is the BINARY version — `CARGO_PKG_VERSION`.
+/// Two different axes: one says "which build", the other says "which
+/// protocol".
+pub const PROTOCOL_VERSION: u32 = 1;
 
 /// The session-start mode (the `start` envelope's `mode` field): WHICH
 /// prompt this session starts from, and the FIRST half of every arm of
@@ -119,6 +143,21 @@ pub enum Inbound {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum Outbound {
+    /// The version-negotiation opener — emitted at startup, BEFORE
+    /// `Ready` and BEFORE `Start`. The surface was deliberately
+    /// unversioned until Fulcrum T1: a Worker and a Supervisor of
+    /// different builds could only discover that by failing.
+    ///
+    /// `protocol_version` is the WIRE version ([`PROTOCOL_VERSION`]);
+    /// `client_version` is the BINARY version (the `Ready.version`
+    /// analogue, restated here so a peer can identify the build from the
+    /// very first line). One-sided by design: the Worker initiates, the
+    /// Supervisor (same binary today) needs no reply yet.
+    #[serde(rename = "hello", rename_all = "camelCase")]
+    Hello {
+        protocol_version: u32,
+        client_version: String,
+    },
     /// Emitted at startup, BEFORE `Start` (`session_id: None`).
     #[serde(rename = "ready", rename_all = "camelCase")]
     Ready {
@@ -403,9 +442,61 @@ fn encode_line<T: serde::Serialize>(msg: &T) -> String {
     )
 }
 
+/// Encode one outbound frame AND stamp it with the next `frameSeq` — the
+/// per-session transport cursor (Fulcrum T1). Returns the JSONL line.
+///
+/// WHY THIS LIVES BELOW THE CODEC AND NOT INSIDE THE ENUM (three
+/// reasons, all measured, not stylistic):
+///
+/// 1. `RpcEvent` has 279 construction sites (≈200 of them byte-pinned in
+///    round-trip tests). A cursor field on the event type would rewrite
+///    all of them and redden every pin. There are 3–4 WRITER sites — this
+///    helper is called from those.
+/// 2. The `Outbound` variants have ≈100–130 construction sites for the
+///    same reason, and the codec round-trip tests deliberately test
+///    `encode_outbound`/`decode_outbound` with NO stamping — they stay
+///    green because the cursor never enters the enum.
+/// 3. The shape is a FLAT SIBLING field, not a nested envelope: `payload`
+///    is already a field of `SinkFrame` / `PermissionRequest` /
+///    `InteractiveRequest` / `FetchRenderRequest`, so nesting under a new
+///    `payload` collides.
+///
+/// The name is `frameSeq` and NOT `seq`, because `seq` is already taken
+/// three ways: the transcript-row `seq` on `TranscriptInsert` /
+/// `StoreFrame::Insert`, the inner `"seq": 0` Tauri-payload stub on the
+/// `interactive-event` frames, and `SubagentLiveness.seq` (Supervisor-side,
+/// never on the wire). This is the FOURTH namespace and T2 depends on the
+/// distinction — hence the two pin tests that stamp a `TranscriptInsert`
+/// and an `interactive-event` frame.
+///
+/// `seq` is the shared per-session counter (`fetch_add(1) + 1` → 1-based,
+/// monotonic, reset to 0 on each `Start`). The pre-session frames
+/// (`hello`, `ready`) go through `encode_outbound` instead and carry NO
+/// `frameSeq` — numbering begins with the first post-`Start` frame at 1.
+///
+/// Injection is `to_value` → insert → `to_string`, so the `type`
+/// discriminator and every existing field stay byte-identical. No `Outbound`
+/// variant carries a `frameSeq` field, so there is no collision on any
+/// variant, and `decode_outbound` ignores the injected key (no
+/// `deny_unknown_fields`), which is what keeps the typed reads working.
+pub fn stamp_outbound(seq: &std::sync::atomic::AtomicU64, frame: &Outbound) -> String {
+    let mut v = serde_json::to_value(frame).expect("the protocol types are always encodable");
+    let next = seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    v.as_object_mut()
+        .expect("a tagged frame serializes to an object")
+        .insert("frameSeq".to_string(), serde_json::json!(next));
+    format!(
+        "{}\n",
+        serde_json::to_string(&v).expect("the stamped frame is always encodable")
+    )
+}
+
 /// Decode one inbound line. PERMISSIVE of unknown `type`s (the
-/// `Unknown { raw }` variant — never an error: the surface is
-/// unversioned).
+/// `Unknown { raw }` variant — never an error: a newer Supervisor may
+/// send a frame this Worker's build predates, and dropping one line
+/// beats killing a session. Negotiation of the OVERALL surface happens
+/// once, on the Worker's `hello` frame — permissiveness is what happens
+/// INSIDE an agreed version, not a substitute for having one).
 pub fn decode_inbound(line: &str) -> Result<Inbound, ProtoError> {
     let value: Value = serde_json::from_str(line).map_err(|e| ProtoError::Json(e.to_string()))?;
     let ty = value
@@ -431,8 +522,15 @@ pub fn decode_inbound(line: &str) -> Result<Inbound, ProtoError> {
 }
 
 /// Decode one outbound line. PERMISSIVE of unknown `type`s (the
-/// `Unknown { raw }` variant — never an error: the surface is
-/// unversioned).
+/// `Unknown { raw }` variant — never an error: a newer Worker may emit a
+/// frame this Supervisor's build predates). The overall surface IS
+/// versioned — the Worker's `hello` frame carries [`PROTOCOL_VERSION`]
+/// before any other frame — and this permissiveness is deliberately
+/// narrow: a `type` in the allow-list below whose payload does NOT fit
+/// is a hard error, never a silent `Unknown`. Adding a variant here
+/// without adding it to that allow-list is the failure mode
+/// `decode_outbound_routes_a_hello_line_to_the_hello_variant` exists to
+/// catch.
 pub fn decode_outbound(line: &str) -> Result<Outbound, ProtoError> {
     let value: Value = serde_json::from_str(line).map_err(|e| ProtoError::Json(e.to_string()))?;
     let ty = value
@@ -440,7 +538,8 @@ pub fn decode_outbound(line: &str) -> Result<Outbound, ProtoError> {
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     match ty {
-        "ready"
+        "hello"
+        | "ready"
         | "event"
         | "transcript-insert"
         | "transcript-replace"
@@ -906,6 +1005,15 @@ mod tests {
             "params": { "command": "apt install ripgrep", "reason": "search" }
         });
         let cases = vec![
+            // The version-negotiation opener (Fulcrum T1). The list is
+            // enumerated BY HAND, so a new variant nobody added here is an
+            // untested coverage hole — the codec would round-trip it
+            // silently broken (e.g. a `rename` typo that decodes to
+            // `Unknown`) and every test would stay green.
+            Outbound::Hello {
+                protocol_version: PROTOCOL_VERSION,
+                client_version: "0.1.0".to_string(),
+            },
             Outbound::Ready {
                 version: "0.1.0".to_string(),
                 session_id: None,
@@ -1164,6 +1272,35 @@ mod tests {
         }
     }
 
+    /// `decode_outbound` routes a `hello` line to its variant (the
+    /// version-negotiation opener). The failure mode this pins: the
+    /// decoder is PERMISSIVE, so a `hello` type missing from the
+    /// explicit allow-list is silently dropped as `Unknown { raw }` —
+    /// a green suite that never saw the handshake.
+    #[test]
+    fn decode_outbound_routes_a_hello_line_to_the_hello_variant() {
+        // The binary version comes from the crate (the same value the
+        // Worker stamps), never a hardcoded copy that drifts on bump.
+        let line = format!(
+            r#"{{"type":"hello","protocolVersion":{},"clientVersion":"{}"}}"#,
+            PROTOCOL_VERSION,
+            env!("CARGO_PKG_VERSION")
+        );
+        match decode_outbound(&line).expect("the `hello` line decodes") {
+            Outbound::Hello {
+                protocol_version,
+                client_version,
+            } => {
+                assert_eq!(protocol_version, 1);
+                assert_eq!(client_version, env!("CARGO_PKG_VERSION"));
+            }
+            other => panic!(
+                "`hello` must decode to `Outbound::Hello`, got {other:?} \
+                 (the `decode_outbound` type allow-list is missing `hello`)"
+            ),
+        }
+    }
+
     /// `decode_inbound` routes a `fetch-render-response` line to its variant.
     #[test]
     fn decode_inbound_routes_a_fetch_render_response_line_to_its_variant() {
@@ -1183,8 +1320,9 @@ mod tests {
     }
 
     /// An unknown `type` line decodes to the `Unknown` variant (NEVER an
-    /// error — the surface is unversioned), on both sides; the raw line
-    /// is preserved.
+    /// error — a peer may emit a frame this build predates; see the
+    /// `decode_outbound` doc for how that squares with the `hello`
+    /// version negotiation), on both sides; the raw line is preserved.
     #[test]
     fn unknown_type_decodes_to_the_unknown_variant_never_an_error() {
         let line = r#"{"type": "brand-new-event", "foo": 1, "bar": "baz"}"#;
@@ -1207,6 +1345,102 @@ mod tests {
             decode_inbound(no_type).expect("no type is never an error"),
             Inbound::Unknown { .. }
         ));
+    }
+
+    /// `stamp_outbound` stamps a FLAT sibling `frameSeq` beside the
+    /// `type` discriminator and counts monotonically from 1 (the writer's
+    /// per-session cursor — Fulcrum T1; T10's `attach { afterSeq }` reads
+    /// exactly this field).
+    #[test]
+    fn stamp_outbound_adds_a_monotonic_frame_seq_beside_the_type() {
+        use std::sync::atomic::AtomicU64;
+        let seq = AtomicU64::new(0);
+        let mut lines = Vec::new();
+        for n in 0..3 {
+            let line = stamp_outbound(
+                &seq,
+                &Outbound::SinkFrame {
+                    event: format!("session-update-{n}"),
+                    payload: serde_json::json!({ "sessionId": "s1" }),
+                },
+            );
+            assert!(line.ends_with('\n'), "one JSONL line per frame");
+            lines.push(line);
+        }
+        for (i, line) in lines.iter().enumerate() {
+            let expected = format!(r#""frameSeq":{}"#, i + 1);
+            assert!(
+                line.contains(&expected),
+                "frame {i} carries the 1-based cursor {expected}: {line}"
+            );
+            assert!(
+                line.contains(r#""type":"sink-frame""#),
+                "the sibling insert never disturbs the `type` discriminator: {line}"
+            );
+        }
+        // The cursor is FLAT (a sibling of `type`), not nested under the
+        // frame's own `payload` field — nesting collides with the
+        // `payload` that `SinkFrame` / `PermissionRequest` /
+        // `InteractiveRequest` / `FetchRenderRequest` already carry.
+        let v: serde_json::Value = serde_json::from_str(lines[0].trim()).expect("valid JSON");
+        assert_eq!(v["frameSeq"], 1, "flat sibling, not nested");
+        assert_eq!(v["event"], "session-update-0");
+        assert_eq!(v["payload"]["sessionId"], "s1");
+    }
+
+    /// The cursor does NOT collide with the transcript-row `seq` — the
+    /// two namespaces coexist on one frame.
+    #[test]
+    fn stamp_outbound_does_not_collide_with_the_transcript_row_seq() {
+        use std::sync::atomic::AtomicU64;
+        let seq = AtomicU64::new(0);
+        let line = stamp_outbound(
+            &seq,
+            &Outbound::TranscriptInsert {
+                session_id: "s".to_string(),
+                seq: 5,
+                role: "user".to_string(),
+                content_json: "{}".to_string(),
+            },
+        );
+        let v: serde_json::Value = serde_json::from_str(line.trim()).expect("valid JSON");
+        assert_eq!(v["seq"], 5, "the transcript ROW seq is untouched");
+        assert_eq!(v["frameSeq"], 1, "the transport cursor is a separate field");
+        assert_eq!(v["type"], "transcript-insert");
+        // And it still decodes through the typed reader (the injected
+        // field is invisible: no `deny_unknown_fields` on `Outbound`).
+        match decode_outbound(&line).expect("an injected field does not break the decode") {
+            Outbound::TranscriptInsert { seq: row_seq, .. } => assert_eq!(row_seq, 5),
+            other => panic!("expected `TranscriptInsert`, got {other:?}"),
+        }
+    }
+
+    /// The cursor does NOT touch the INNER `"seq": 0` Tauri-payload stub
+    /// on an `interactive-event` frame — the third `seq` in the repo, and
+    /// the one T2 depends on staying at 0 while the cursor climbs.
+    #[test]
+    fn stamp_outbound_leaves_the_inner_interactive_event_seq_zero_untouched() {
+        use std::sync::atomic::AtomicU64;
+        let seq = AtomicU64::new(0);
+        let line = stamp_outbound(
+            &seq,
+            &Outbound::SinkFrame {
+                event: "interactive-event".to_string(),
+                payload: serde_json::json!({
+                    "sessionId": "s",
+                    "seq": 0,
+                    "event": "todos_update",
+                    "payload": { "source": "main", "todos": [] }
+                }),
+            },
+        );
+        let v: serde_json::Value = serde_json::from_str(line.trim()).expect("valid JSON");
+        assert_eq!(v["payload"]["seq"], 0, "the INNER payload seq stays 0");
+        assert_eq!(v["frameSeq"], 1, "the OUTER cursor is a different level");
+        assert!(
+            line.contains(r#""seq":0"#),
+            "the inner stub is byte-identical on the wire: {line}"
+        );
     }
 
     /// A KNOWN `type` with a malformed payload IS an error (permissive
