@@ -397,12 +397,19 @@ mod tests {
         );
     }
 
-    /// The negative cases are the point, though only `A3F9C1` is a case the
-    /// `len() == 6` + `u32::from_str_radix(_, 16)` check this replaces was
-    /// actually BLIND to — the length clause already caught the 7-char, 5-char
-    /// and empty ones, and the radix parse already rejected `abcdefg`. The rest
-    /// are kept so that a future "simplify it back" that drops EITHER half of
-    /// this predicate reddens something here.
+    /// The negative cases are the point — and they had to be CHOSEN to cover
+    /// each clause, not merely to be near-misses. Measured (T8/S8.1, when this
+    /// helper was duplicated into `fulcrum-core`): with the original six cases,
+    /// dropping the `is_ascii_digit()|a..=f` clause reddened NOTHING, because
+    /// the only non-hex entry was `abcdefg`, which is SEVEN chars and so the
+    /// `len() == 6` clause caught it first; and dropping the `== to_lowercase()`
+    /// clause was covered only by `A3F9C1`. So the doc used to claim "a future
+    /// simplify-back that drops EITHER half reddens something" while two of the
+    /// three halves were unguarded. `system` / `retrac` are six lowercase
+    /// NON-hex characters — the one shape nothing else here produced, and the
+    /// only thing that makes the byte-set clause load-bearing.
+    /// (`A3F9C1` remains the one case the `len() == 6` +
+    /// `u32::from_str_radix(_, 16)` check this replaces was actually BLIND to.)
     #[test]
     fn the_stamp_shape_rejects_everything_a_radix_parse_admits() {
         for ok in ["a3f9c1", "000000", "ffffff", "dead01"] {
@@ -413,7 +420,9 @@ mod tests {
             "+a3f9c1", // a signed number — parses, not an id
             "a3f9c",   // five chars
             "a3f9c10", // seven chars
-            "abcdefg", // not hex (`g`)
+            "abcdefg", // not hex (`g`), but SEVEN chars — the length clause wins
+            "system",  // six lowercase NON-hex — ONLY the byte-set clause rejects
+            "retrac",  // as above, and it ends in a hex digit, so `a..=f` alone
             "",        // the EMPTY stamp `TurnState::default()` carries
         ] {
             assert!(!is_incarnation_stamp(bad), "{bad} is NOT a stamp");
