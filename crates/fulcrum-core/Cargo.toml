@@ -29,7 +29,11 @@ uuid = { version = "1", features = ["v4"] }
 # `debuglog.rs:50` (`dirs::data_dir()` — the supervisor log's base dir),
 # `skills.rs`/`agents.rs`/`roots.rs` (`home_dir()` — the harness's OWN
 # `$HOME/.agents` root, NOT the desktop's `settings.json`; T3's invariant is
-# about the desktop config file and this is a different config root).
+# about the desktop config file and this is a different config root). T7/S7.1
+# adds two more, both the SAME kind of platform dir and NEITHER the desktop
+# settings file: `provider_auth/store.rs:153` (`data_dir()` — the
+# `provider-auth.json` path, ruling R3) and `provider_auth/gcloud.rs:130`
+# (`home_dir()` — the Google ADC file, read-only).
 dirs = "6"
 # `fs_backend.rs:28` (`FsError`'s `thiserror::Error` derive),
 # `web/net.rs` (`NetError`'s `#[from] reqwest::Error`).
@@ -51,26 +55,39 @@ tokio = { version = "1", features = [
     "rt",
 ] }
 # `tools/types.rs` (`CancellationToken` on `ToolCtx`), `web/net.rs`,
-# `web/tools.rs` — the cancel handle every tool call carries.
+# `web/tools.rs` — the cancel handle every tool call carries. T7/S7.1 adds the
+# two OAuth flows' cancel handle (`provider_auth/litellm_oauth.rs:40`,
+# `provider_auth/oidc.rs:39`), which the desktop used to be the only holder of.
 tokio-util = "0.7"
 # The `exec_find` fallback when `fd` is not installed (walk the cwd tree):
 # `tools/exec/search.rs`.
 walkdir = "2"
 # base64 for the `read` tool's image content blocks (`tools/exec/fs_tools.rs`):
 # pi's `ImageContent` = `{type:"image", data, mimeType}`, `data` is base64.
+# T7/S7.1 adds two more justifications: the OAuth/OIDC PKCE encoders
+# (`provider_auth/litellm_oauth.rs`, `provider_auth/oidc.rs`) base64url-encode
+# the challenge and the random `state`/`nonce` with `URL_SAFE_NO_PAD`, and
+# `provider_auth/cli_sso.rs` base64url-DECODES a JWT payload to read its `exp`.
 base64 = "0.22"
 # The web subsystem's HTTP client (`web/net.rs`, `web/providers/*`). Same
 # feature choices as the desktop, for the same reason: `rustls-tls` with default
 # features OFF avoids a system-OpenSSL build dependency (and keeps `openssl-sys`
 # out of a crate meant to build anywhere), `stream` provides the `bytes_stream`
-# `web/net.rs:336` consumes, `json` the request bodies.
+# `web/net.rs:336` consumes, `json` the request bodies. T7/S7.1 adds the token
+# exchanges (`provider_auth/gcloud.rs`'s ADC refresh POST,
+# `provider_auth/oidc.rs`'s + `provider_auth/litellm_oauth.rs`'s token and
+# discovery requests) and `resolve_bearer_at`'s `&reqwest::Client` parameter —
+# all crate-side, none of them reading a file.
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
     "stream",
     "json",
 ] }
 # `url` — the web subsystem parses URLs for the SSRF checks (`web/net.rs`), the
-# extractors (`web/extract/*`) and the providers (`web/providers/*`).
+# extractors (`web/extract/*`) and the providers (`web/providers/*`). T7/S7.1
+# adds `provider_auth/litellm_oauth.rs:144` (validating a `base_url` before a
+# gateway header can attach to it) and `provider_auth/gcloud.rs`'s
+# `form_urlencoded` parse of the captured token POST (a test-side assertion).
 url = "2"
 # `BoxStream`/`StreamExt` for the streaming body reads (`web/net.rs:1`,
 # `web/providers/registry.rs:203` `try_join_all`).
@@ -92,11 +109,18 @@ regex = "1"
 # The DNS-rebind IP classification in `web/net.rs` (`is_blocked_ip` over
 # `IpNet` ranges).
 ipnet = "2"
-# The cache-bust jitter in `web/cache.rs`.
+# The cache-bust jitter in `web/cache.rs`. T7/S7.1 adds the PKCE `verifier` and
+# the OAuth `state`/`nonce` entropy (`provider_auth/oidc.rs`,
+# `provider_auth/litellm_oauth.rs`) — CSRF/anti-replay randomness, not jitter.
 rand = "0.9"
 # The MCP OAuth 2.1 client's PKCE S256 challenge (`mcp/oauth.rs:137`,
-# `sha2::Sha256::digest(verifier)`) — moved with `mcp` in T5/S3. Version matches
-# the desktop's, which still needs it for `provider_auth`'s own OAuth paths.
+# `sha2::Sha256::digest(verifier)`) — moved with `mcp` in T5/S3. T7/S7.1 adds the
+# provider OAuth/OIDC PKCE challenge (`provider_auth/oidc.rs`,
+# `provider_auth/litellm_oauth.rs`). Version matches the desktop's; note the
+# desktop's own `sha2`/`rand` lines are now UNUSED by its code (measured at this
+# commit: `grep -rn '\bsha2::\|\brand::' src-tauri/src` is empty) because the
+# OAuth paths that needed them moved here — dropping those two manifest lines is
+# a separate cleanup, deliberately NOT taken inside a move commit.
 sha2 = "0.10"
 # The codemode QuickJS sandbox (`codemode/engine.rs`), moved with `codemode` in
 # T5/S3.

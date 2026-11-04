@@ -66,24 +66,27 @@ pub mod web;
 // in S5) and the desktop `worker` (S8.1 opened that directory — see the T8
 // block at the bottom of this file).
 //
-// `provider_auth` is NOT here. The status file's S3 RULING measured the crate's
-// need at exactly ONE item — `provider_auth::headers::expand_map`, one call site
-// at `harness/provider/mod.rs:106` — and ZERO consumers for every other
-// submodule, so only `headers.rs` moved (as `provider_headers`, below). Two
-// seams the plan specified for the rest of that directory are CANCELLED with it:
-// the E5 refresh trait (`refresh.rs` stays, so `refresh.rs:31 → session` never
-// crosses) and the `ProviderSource` seam for `budget.rs` (same reason — its
-// `settings.json` read stays in the desktop, untouched).
+// `provider_auth` is HERE now (T7/S7.1) — see the module's own docs and the
+// block below. The S3 RULING that kept it out measured the crate's need at one
+// item (`headers::expand_map`) and zero consumers for every other submodule;
+// that was true of T5's consumers and false of T9's daemon, which must
+// authenticate providers itself (`status.md` RE-SCOPE). The seam S3 cancelled
+// with it (`ProviderSource`) returns in S7.2, because `budget.rs` — the file
+// whose `load_settings` read justified it — is the one file of that directory
+// still desktop at this commit.
 pub mod codemode;
 pub mod interactive;
 pub mod mcp;
-/// The one file that moved out of the desktop's `provider_auth/` directory.
-/// Named for what it IS — one file of that directory, not the directory — so the
-/// crate never looks like it owns `provider_auth`. The desktop's
-/// `agent/provider_auth/mod.rs` re-exports it AS `headers`, which is what keeps
+/// The one file that moved out of the desktop's `provider_auth/` directory
+/// BEFORE T7 did the rest of it. Named for what it IS — one file of that
+/// directory, not the directory — because when it moved (T5/S3) it was the ONLY
+/// part the crate needed, and the crate did not own `provider_auth`. That is no
+/// longer the reason for the name (T7/S7.1 owns six more files under
+/// `provider_auth`, above), but the name stays: renaming it would churn the
+/// desktop's `pub use ... as headers` alias and every
 /// `crate::agent::provider_auth::headers::{expand_map, validate_base_url}`
-/// resolving at its current path for the consumers outside that directory
-/// (`session/mod.rs`, `commands/settings.rs`, `tests/provider_headers.rs`).
+/// spelling in `session/mod.rs`, `commands/settings.rs` and
+/// `tests/provider_headers.rs` for zero behavioural gain.
 pub mod provider_headers;
 
 /// `LaunchConfig` — the per-dispatch launch DTO, which moved ahead of the module
@@ -171,6 +174,25 @@ pub mod normalize;
 pub mod persist;
 pub mod subagent;
 
+// ── T7/S7.1 — the provider credential machinery (6 files + 3 free functions) ─
+// `store`, `key_helper`, `gcloud`, `cli_sso`, `litellm_oauth`, `oidc` and the
+// `mod.rs` trio (`gcloud_token_auth_enabled`, `resolve_bearer`,
+// `resolve_bearer_at`) moved by `git mv` into `provider_auth/`. The desktop
+// keeps THREE files of that directory — `refresh.rs` (it holds
+// `tauri::AppHandle` + `session::SessionManager`), `budget.rs` (still reads
+// `load_settings`; the `ProviderSource` seam that frees it is S7.2) and
+// `headers.rs` (moved in S3 as `provider_headers`, above) — and its
+// `agent/provider_auth/mod.rs` is a re-export shell that declares the two
+// staying modules and re-exports this one, so every desktop spelling resolves
+// with ZERO edits to `refresh.rs` and `budget.rs`.
+//
+// `gcloud.rs:8` names `src-tauri/tests/provider_gcloud_adc.rs` in a `//!` line.
+// That is a DOC mention of a desktop TEST path, not a code edge: the crate never
+// names `tauri`, `rusqlite` or `archimedes_lib` here, and
+// `boundary_pins::no_code_names_the_desktop_ui_framework` strips comments
+// before it scans, which is what makes that line legal rather than lucky.
+pub mod provider_auth;
+
 // ── T8 — the Worker engine (S8.1 → S8.3, bottom-up on dependency) ───────────
 // S8.1 took the three files nothing else in `worker/` compiles without: the wire
 // vocabulary (`protocol`) and the two Worker-side trait implementations
@@ -193,9 +215,9 @@ pub mod subagent;
 // supplying the two injected arguments itself. That hand-off (desktop → crate)
 // is the direction ADR 0091 allows; the reverse is what the boundary pins catch.
 //
-// `provider_auth` REMAINS absent from this crate (it is T7's, minus `headers`,
-// which S3 moved as `provider_headers`). `worker` is no longer absent: this line
-// is where it arrived.
+// `provider_auth` is no longer absent either — T7/S7.1 moved six of its files
+// (declared above, in the T7 block). `worker` is no longer absent: this line is
+// where it arrived.
 //
 // T8/S8.5 EXTRACTION RESULT (the dry-run T8b consumes). The crate was copied OUT
 // of the workspace and built as its own package: it COMPILES standalone,

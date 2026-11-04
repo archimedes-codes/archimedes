@@ -220,6 +220,25 @@ debuglog-test-	crates/fulcrum-core/src/debuglog.rs
 # `grep -rn '"<prefix>"' src-tauri/src src-tauri/tests crates`, not against the
 # old table.
 perm-gate-	src-tauri/tests/permission_gate_db.rs
+# T7/S7.1: TWO NEW rows for the minters that moved with `provider_auth` into the
+# crate. Both prefixes had NO row before this commit (verified: grepping the table
+# for `gcloud-adc-` and `-t2a-keyhelper` at `$BASE` `f488e8dd` is EMPTY), so their
+# dirs reported UNATTRIBUTED on every run — the pre-existing gap the S2 note above
+# records twice. These are ADDITIONS, not repoints.
+#
+# ⚠️ BOTH PREFIXES ARE DUAL-MINTED after this move, and `attribute()` is
+# longest-prefix with ONE row per prefix, so the table CANNOT name both minters:
+#   * `gcloud-adc-` mints in `crates/fulcrum-core/src/provider_auth/gcloud.rs`
+#     (moved here in S7.1, 8 call sites) AND in
+#     `src-tauri/tests/provider_gcloud_adc.rs` (stayed desktop, 8 call sites);
+#   * `-t2a-keyhelper` mints ONLY in the crate (its single minter moved).
+# Each row therefore points at the file the MOVED code mints, and attribution is
+# BEST-EFFORT: the census only decides where a reader hunting a leak is SENT,
+# never whether the leak is caught — a leaked dir fails either way. If a
+# `gcloud-adc-*` leak is ever reported, check BOTH files before believing the
+# blame line.
+gcloud-adc-	crates/fulcrum-core/src/provider_auth/gcloud.rs
+-t2a-keyhelper	crates/fulcrum-core/src/provider_auth/key_helper.rs
 persist-test-	src-tauri/src/agent/persist.rs
 fsb-	crates/fulcrum-core/src/fs_backend.rs
 fs-backend-	src-tauri/tests/fs_backend.rs
