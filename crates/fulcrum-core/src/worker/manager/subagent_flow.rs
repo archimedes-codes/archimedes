@@ -5,19 +5,17 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
-use crate::agent::events::RpcEvent;
-use crate::agent::harness::prompt::build_child_system_message;
-use crate::agent::harness::provider::openai::content_is_effectively_empty;
-use crate::agent::harness::r#loop::tool_specs;
-use crate::agent::harness::{ModelKey, ModelRef};
-use crate::agent::is_bookkeeping_message_id;
-use crate::agent::session::resolve_composed_model;
-use crate::agent::subagent::{SubagentFailureReason, SubagentMetrics, SubagentOutcome};
-use crate::agent::types::mint_session_id;
-use crate::agent::worker::client::WorkerHandle;
-use crate::agent::worker::protocol::{
-    DesktopConfig, Inbound, StartEnv, StartMode, SubagentDispatchWire,
-};
+use crate::catalog::resolve_composed_model;
+use crate::events::RpcEvent;
+use crate::harness::prompt::build_child_system_message;
+use crate::harness::provider::openai::content_is_effectively_empty;
+use crate::harness::r#loop::tool_specs;
+use crate::harness::{ModelKey, ModelRef};
+use crate::normalize::is_bookkeeping_message_id;
+use crate::subagent::{SubagentFailureReason, SubagentMetrics, SubagentOutcome};
+use crate::types::mint_session_id;
+use crate::worker::client::WorkerHandle;
+use crate::worker::protocol::{DesktopConfig, Inbound, StartEnv, StartMode, SubagentDispatchWire};
 
 use super::pump::start_pump;
 use super::registry::{reap_worker, ManagerState};
@@ -1823,10 +1821,10 @@ mod tests {
 #[cfg(test)]
 mod rollup_tests {
     use super::*;
-    use crate::agent::events::EventSink;
-    use crate::agent::worker::client::{WorkerError, WorkerErrorKind, WorkerInboundEvent};
-    use crate::agent::worker::manager::registry::ManagerState;
-    use crate::agent::worker::manager::{ClosureHooks, WorkerFactory};
+    use crate::events::EventSink;
+    use crate::worker::client::{WorkerError, WorkerErrorKind, WorkerInboundEvent};
+    use crate::worker::manager::registry::ManagerState;
+    use crate::worker::manager::{ClosureHooks, WorkerFactory};
 
     /// A sink that records every `(name, payload)` it is given.
     struct RecordingSink {
@@ -1847,7 +1845,7 @@ mod rollup_tests {
     struct NeverSpawns;
 
     impl WorkerFactory for NeverSpawns {
-        fn spawn(&self) -> Result<crate::agent::worker::client::WorkerHandle, WorkerError> {
+        fn spawn(&self) -> Result<crate::worker::client::WorkerHandle, WorkerError> {
             Err(WorkerError {
                 kind: WorkerErrorKind::SpawnFailed,
             })
@@ -1888,15 +1886,15 @@ mod rollup_tests {
         )
     }
 
-    fn wire() -> crate::agent::worker::protocol::SubagentDispatchWire {
-        crate::agent::worker::protocol::SubagentDispatchWire {
+    fn wire() -> crate::worker::protocol::SubagentDispatchWire {
+        crate::worker::protocol::SubagentDispatchWire {
             id: "d1".to_string(),
             parent_session_id: "parent-1".to_string(),
             parent_cwd: "/tmp".to_string(),
             parent_enabled_tools: Vec::new(),
             agent_name: "tester".to_string(),
-            name_resolution: crate::agent::subagent::AgentNameResolution::Matched,
-            launch: crate::agent::subagent::LaunchConfig::default(),
+            name_resolution: crate::subagent::AgentNameResolution::Matched,
+            launch: crate::subagent::LaunchConfig::default(),
             task: "t".to_string(),
             model_key: "fake/m1".to_string(),
         }
@@ -2002,7 +2000,7 @@ mod rollup_tests {
             }),
         );
         let outcome = failed_with_salvage(
-            crate::agent::subagent::SubagentFailureReason::Unresponsive,
+            crate::subagent::SubagentFailureReason::Unresponsive,
             "unresponsive".to_string(),
             &capture,
             100,

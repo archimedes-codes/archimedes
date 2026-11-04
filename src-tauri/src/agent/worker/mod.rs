@@ -21,13 +21,15 @@
 //!
 //! `protocol.rs`, `store.rs` and `sink.rs` moved to
 //! `crates/fulcrum-core/src/worker/` in S8.1; `core.rs` and `dispatch.rs` (and
-//! `run_worker_inner` itself) moved in S8.2. They are re-exported here BOTH as
-//! modules and by name, because module-qualified spellings outnumber named ones
-//! (the S1 measurement, and the reason S1–S5b kept this shape): `client.rs`,
-//! `manager/**` (still desktop until S8.3), `session/mod.rs`,
-//! `bin/fake_worker.rs` and 11 integration targets all address
-//! `…::agent::worker::protocol::…` / `…::WorkerCore` / `…::IpcDispatcher`, and
-//! every one of them compiles with ZERO edits.
+//! `run_worker_inner` itself) moved in S8.2; `client.rs` and the whole
+//! `manager/` directory moved in S8.3, so **this file declares NO modules at
+//! all** — every `worker/` file is crate-owned now. They are re-exported here
+//! BOTH as modules and by name, because module-qualified spellings outnumber
+//! named ones (the S1 measurement, and the reason S1–S5b kept this shape):
+//! `session/mod.rs`, `lib.rs`, `commands/**`, `bin/fake_worker.rs` and the 11
+//! integration targets all address `…::agent::worker::protocol::…` /
+//! `…::worker::client::WorkerHandle` / `…::WorkerManager`, and every one of them
+//! compiles with ZERO edits. S8.4 leaves this file as it is minus the wrapper.
 //!
 //! The ONE thing defined here is the `run_worker_inner()` wrapper. It is not
 //! leftover — it is the boundary. The crate's `run_worker_inner` takes the two
@@ -44,29 +46,22 @@
 //! `crate::open` (it is `tauri`), so the "the desktop hands its real opener to
 //! the crate" assertion lives here — desktop → crate is the legal direction.
 
-// The S8.1/S8.2 re-export shell. Module aliases first (the spellings that carry
+// The S8.1/S8.2/S8.3 re-export shell. Module aliases first (the spellings that carry
 // the traffic), then the named surface — the exact list this file exported
 // before the moves, so nothing downstream had to be touched.
-pub use fulcrum_core::worker::{core, dispatch, protocol, sink, store};
+pub use fulcrum_core::worker::{client, core, dispatch, manager, protocol, sink, store};
 pub use fulcrum_core::worker::{
     decode_inbound, decode_outbound, default_build_loop, encode_inbound, encode_outbound,
-    spawn_stdin_reader, stamp_outbound, Inbound, IpcDispatcher, IpcEventSink, IpcStore,
-    LoopControl, LoopHandles, Outbound, ProtoError, WorkerCore, PROTOCOL_VERSION,
+    spawn_stdin_reader, stamp_outbound, ClosureHooks, Inbound, IpcDispatcher, IpcEventSink,
+    IpcStore, LoopControl, LoopHandles, Outbound, ProtoError, SubagentCapture, WorkerCore,
+    WorkerError, WorkerErrorKind, WorkerFactory, WorkerHandle, WorkerHooks, WorkerInboundEvent,
+    WorkerManager, DEFAULT_SUBAGENT_DEAD_BOUND, PROTOCOL_VERSION,
 };
 // The five S4 wire DATA types this file used to re-export through `protocol`
 // (which re-exports them from `fulcrum_core::worker_types`); the names must stay
 // reachable at `crate::agent::worker::{…}` for `persist.rs` / `subagent.rs` /
 // the integration tests.
 pub use protocol::{StartEnv, StartMode, StoreFrame, SubagentDispatchWire};
-
-pub mod client;
-pub mod manager;
-
-pub use client::{WorkerError, WorkerErrorKind, WorkerHandle, WorkerInboundEvent};
-pub use manager::{
-    ClosureHooks, SubagentCapture, WorkerFactory, WorkerHooks, WorkerManager,
-    DEFAULT_SUBAGENT_DEAD_BOUND,
-};
 
 /// The Worker main — the desktop's zero-argument spelling of the crate's
 /// parameterised `run_worker_inner` (S8.2's seam; deleted by S8.4 when

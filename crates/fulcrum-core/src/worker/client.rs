@@ -8,9 +8,10 @@
 //!
 //! The `exe` PATH is a PARAMETER: production callers pass
 //! `std::env::current_exe()` (the self-exec); tests/e2e pass the
-//! `fake_worker` fixture path (the `CARGO_MANIFEST_DIR`/`target/debug`
-//! convention — a no-arg `current_exe()`-only version would point at
-//! the test-harness binary under `cargo test` — wrong).
+//! `fake_worker` fixture path — since S8.3 resolved through
+//! `test_support::target_debug_dir()`, the crate's ONE two-levels-up `target/`
+//! resolver (a no-arg `current_exe()`-only version would point at the
+//! test-harness binary under `cargo test` — wrong).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -20,14 +21,14 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::agent::debuglog;
-use crate::agent::events::RpcEvent;
-use crate::agent::harness::catalog::Model;
-use crate::agent::harness::provider::openai::EMPTY_CONTENT_SANITISE_PLACEHOLDER;
-use crate::agent::hostenv::EnvPatch;
-use crate::agent::permission::PermissionOutcome;
-use crate::agent::tools::ImageRef;
-use crate::agent::worker::protocol::{
+use crate::debuglog;
+use crate::events::RpcEvent;
+use crate::harness::catalog::Model;
+use crate::harness::provider::openai::EMPTY_CONTENT_SANITISE_PLACEHOLDER;
+use crate::hostenv::EnvPatch;
+use crate::permission::PermissionOutcome;
+use crate::tools::ImageRef;
+use crate::worker::protocol::{
     decode_outbound, encode_inbound, Inbound, Outbound, StartEnv, StoreFrame, SubagentDispatchWire,
 };
 
@@ -255,11 +256,11 @@ where
 /// was never spawned; it is called by production `spawn`, so it needs no `cfg`
 /// and no `allow`.
 fn build_command(exe: &std::path::Path) -> tokio::process::Command {
-    build_command_with(exe, crate::agent::hostenv::for_child())
+    build_command_with(exe, crate::hostenv::for_child())
 }
 
 /// [`build_command`] with the patch as an argument (production passes exactly
-/// [`for_child`](crate::agent::hostenv::for_child); the parameter exists
+/// [`for_child`](crate::hostenv::for_child); the parameter exists
 /// because that cached patch is EMPTY under `cargo test` — its gate needs this
 /// exe under `$APPDIR`, and under cargo it is `target/debug/deps/<hash>`).
 ///
@@ -275,11 +276,11 @@ fn build_command(exe: &std::path::Path) -> tokio::process::Command {
 /// pollution then stays INSIDE the Worker and never reaches the user's
 /// commands, because those sites scrub again on their own.
 ///
-/// The constructor is `crate::agent::childproc`'s — it owns the child's Windows
+/// The constructor is `crate::childproc`'s — it owns the child's Windows
 /// console window policy (`CREATE_NO_WINDOW`); the Worker's JSONL stdin is a
 /// Runtime pipe and stays untouched.
 fn build_command_with(exe: &std::path::Path, patch: &EnvPatch) -> tokio::process::Command {
-    let mut cmd = crate::agent::childproc::command(exe);
+    let mut cmd = crate::childproc::command(exe);
     cmd.arg("--worker");
     // The self-exec inherits the GUI process' tainted env IN FULL: inside an
     // AppImage `current_exe()` resolves THROUGH the mount (`/proc/<pid>/exe` →
@@ -672,10 +673,10 @@ impl WorkerHandle {
     /// this replaces could never beat either).
     pub fn send_config_update(
         &self,
-        file_policy: Option<crate::agent::policy::FilePolicy>,
-        web: Option<crate::config::WebSettings>,
+        file_policy: Option<crate::policy::FilePolicy>,
+        web: Option<crate::web::config::WebSettings>,
         agent_overrides: Option<
-            std::collections::HashMap<String, crate::config::AgentOverrideFields>,
+            std::collections::HashMap<String, crate::config_types::AgentOverrideFields>,
         >,
     ) -> Result<(), WorkerError> {
         self.send_inbound_frame(Inbound::ConfigUpdate {
@@ -849,13 +850,13 @@ impl WorkerHandle {
     /// belt-and-braces half, not the group half.
     ///
     /// The syscall itself lives in
-    /// [`crate::agent::childproc::kill_process_group`] (one owner for the
+    /// [`crate::childproc::kill_process_group`] (one owner for the
     /// process-group kill — ADR 0080's amendment).
     pub async fn kill(&self) -> Result<(), WorkerError> {
         let mut guard = self.child.lock().await;
         #[cfg(unix)]
         {
-            crate::agent::childproc::kill_process_group(self.pid, &mut guard).await;
+            crate::childproc::kill_process_group(self.pid, &mut guard).await;
         }
         #[cfg(not(unix))]
         {
@@ -1019,7 +1020,7 @@ fn route_outbound(frame: Outbound) -> Option<WorkerInboundEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::worker::protocol::PROTOCOL_VERSION;
+    use crate::worker::protocol::PROTOCOL_VERSION;
 
     // ── (issue #122) the store-row belt ────────────────────────────────
 
@@ -1040,11 +1041,11 @@ mod tests {
              the row stays valid JSON with its `role` intact"
         );
         // It still parses as a `ChatMessage`, and its content is now empty.
-        let parsed: crate::agent::harness::provider::ChatMessage =
+        let parsed: crate::harness::provider::ChatMessage =
             serde_json::from_str(&clamped).expect("the clamped row is a valid row");
         assert_eq!(
             parsed.content,
-            crate::agent::harness::provider::MessageContent::Text(String::new()),
+            crate::harness::provider::MessageContent::Text(String::new()),
             "the clamped row round-trips to an empty `Text`"
         );
     }
@@ -1136,24 +1137,55 @@ mod tests {
         );
     }
 
-    /// The `fake_worker` fixture (the WORKSPACE ROOT's `target/debug` — the cargo
-    /// root moved from `src-tauri/` to the repo root with the T4 `[workspace]`, so
-    /// `CARGO_MANIFEST_DIR`'s parent is where builds land now; `cargo test` builds
-    /// the bin targets).
+    /// The `fake_worker` fixture — resolved through the crate's ONE
+    /// `target/debug` resolver.
+    ///
+    /// **S8.3 RE-POINTED this, and the old body was not merely ugly, it was
+    /// wrong.** It read
+    /// `PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().join("target/debug/fake_worker")`,
+    /// which was correct while this file lived in `src-tauri/` — one level under
+    /// the repo root, so `.parent()` WAS the workspace root that owns `target/`.
+    /// This crate sits TWO levels under the root, so the same expression names
+    /// `<root>/crates/target/debug/fake_worker`: a directory no build ever writes
+    /// to. Every fixture-spawning test in this module (and all 30 in
+    /// `manager/tests`) dies on `SpawnFailed(Io(ENOENT))` — measured at this
+    /// commit before the re-point, `spawn_and_wait_ready_returns_the_version`
+    /// failed with `spawn the worker: No such file or directory (os error 2)`.
+    ///
+    /// `test_support::target_debug_dir()` walks up TWO levels and is the single
+    /// resolver S2 established for exactly this (the same fix `mcp/stdio.rs`,
+    /// `mcp/tool.rs` and `mcp/manager.rs` carry). It is `pub(crate) +
+    /// #[cfg(test)]`, which reaches this module — both are crate-internal test
+    /// code. `childproc::target_debug_dir_is_where_cargo_actually_builds` pins it
+    /// against `current_exe()`, so a wrong level count cannot go green there, and
+    /// the equality + `current_exe()` asserts below pin THIS helper to it.
+    ///
+    /// `CARGO_BIN_EXE_fake_worker` is NOT an option here: cargo sets it only for
+    /// integration-test targets, never inside a lib's `#[cfg(test)]` (T4's
+    /// two-shape rule), which is why the manifest-derived resolver is the only
+    /// correct form at this depth.
     pub fn fixture_path() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("the src-tauri package has a parent (the repo root)")
-            .join("target/debug/fake_worker")
+        crate::test_support::target_debug_dir().join("fake_worker")
     }
 
-    /// T4's pin: the `fake_worker` fixture lives in the WORKSPACE root's
-    /// `target/`, not the member's. Once the repo root is the cargo root every
-    /// build writes to `<repo root>/target`, so the pre-T4 expression —
-    /// `concat!(env!("CARGO_MANIFEST_DIR"), "/target/debug/fake_worker")`,
-    /// which resolves under `src-tauri/target` — names a directory that
-    /// receives no build output anymore, and the fixture-spawning tests below
-    /// die on `SpawnFailed`.
+    /// T4's pin, REWRITTEN in S8.3 — the old form was VACUOUS for the exact
+    /// failure it existed to catch.
+    ///
+    /// T4 asserted two things: `p.starts_with(pkg_root.parent())` and
+    /// `!p.starts_with(pkg_root.join("target"))`. Both hold for the BROKEN
+    /// post-move path: `<root>/crates/target/debug/fake_worker` starts with
+    /// `<root>/crates` (this crate's manifest parent) and does not start with
+    /// `<root>/crates/fulcrum-core/target`. Measured at this commit with the old
+    /// body in place: **both asserts passed** and only the `is_file()` witness
+    /// failed — so a pin that trusted them would have printed "verified" while
+    /// ~45 fixture-spawning tests hit ENOENT.
+    ///
+    /// What discriminates now:
+    ///   1. EQUALITY against the crate's one resolver (the shape, not a prefix);
+    ///   2. the same directory `current_exe()` proves cargo actually builds into
+    ///      — the `childproc` discipline, so a wrong LEVEL count fails even on a
+    ///      machine where a stray `crates/target/` happened to exist;
+    ///   3. `is_file()`, the existence witness (the RED the old body produced).
     #[test]
     fn fixture_path_resolves_to_the_workspace_root_target() {
         let p = fixture_path();
@@ -1162,25 +1194,31 @@ mod tests {
             Some("fake_worker"),
             "still the fake_worker fixture"
         );
-        let pkg_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        assert!(
-            p.starts_with(
-                pkg_root
-                    .parent()
-                    .expect("src-tauri has a parent: the repo root")
-            ),
-            "the fixture path resolves under the WORKSPACE root, not src-tauri/target: {p:?}"
+        // (1) The equality half — the ONLY resolver, two levels up.
+        assert_eq!(
+            p,
+            crate::test_support::target_debug_dir().join("fake_worker"),
+            "the fixture must resolve through the crate's ONE two-levels-up \
+             resolver, not a manifest-parent guess"
         );
-        // The half that actually discriminates. `starts_with(<repo root>)`
-        // alone cannot tell T4's expression from the stale one: `src-tauri/target`
-        // IS under the repo root, so the stale literal satisfies it too
-        // (measured at ad992563). The member's own `target/` is the pre-workspace
-        // location and is the only thing that must be rejected here.
-        assert!(
-            !p.starts_with(pkg_root.join("target")),
-            "the fixture resolves under the MEMBER's own target/ — the pre-workspace \
-             location no build writes to anymore: {p:?}"
+        // (2) The load-bearing half: compare against where cargo BUILT this test
+        // binary. A lib test lives in `target/debug/deps/`, so its grandparent is
+        // the `target/debug` the fixture must live in. The old manifest-parent
+        // body resolved to `<root>/crates/target/debug` and fails HERE, on any
+        // machine, with or without a stray directory on disk.
+        let exe = std::env::current_exe().expect("a test binary has a path");
+        let built_into = exe
+            .parent()
+            .and_then(|deps| deps.parent())
+            .expect("the test binary sits under target/debug/deps");
+        assert_eq!(
+            p.parent(),
+            Some(built_into),
+            "the fixture resolves to {p:?}, but cargo built THIS test binary into \
+             {built_into:?} — a fixture path that is not a sibling of the built \
+             binaries spawns ENOENT (`crates/target/…` is exactly that)"
         );
+        // (3) The existence witness (the RED the pre-S8.3 body produced).
         assert!(
             p.is_file(),
             "the fixture must exist (SpawnFailed is the old literal's red): {p:?}"
@@ -1190,8 +1228,8 @@ mod tests {
     /// A test `StartEnv` (a fake model the fixture's `SubagentDispatch`
     /// `model_key` — `fake/m1` — resolves against).
     pub fn test_env(session_id: &str, enabled_tools: Option<Vec<String>>) -> StartEnv {
-        use crate::agent::harness::catalog::{Model, ModelCatalog};
-        use crate::agent::worker::protocol::StartMode;
+        use crate::harness::catalog::{Model, ModelCatalog};
+        use crate::worker::protocol::StartMode;
 
         fn model(id: &str) -> Model {
             Model {
@@ -1710,16 +1748,16 @@ mod tests {
     /// untouched.
     ///
     /// The patch is injected through the seam instead of read from
-    /// [`for_child`](crate::agent::hostenv::for_child): under `cargo test`
+    /// [`for_child`](crate::hostenv::for_child): under `cargo test`
     /// `current_exe()` is `target/debug/deps/<hash>`, the production gate is
     /// closed, and that patch is EMPTY on every host — a test built on it
     /// could not fail. The fabricated host in
-    /// [`fixtures`](crate::agent::hostenv::fixtures) is what makes a real patch
+    /// [`fixtures`](crate::hostenv::fixtures) is what makes a real patch
     /// flow through this seam.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_worker_self_spawn_gets_a_scrubbed_command() {
-        use crate::agent::hostenv::fixtures;
+        use crate::hostenv::fixtures;
         use std::ffi::{OsStr, OsString};
 
         let patch = fixtures::tainted_patch();

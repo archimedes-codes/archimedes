@@ -32,7 +32,8 @@
 //!
 //! `CREATE_NO_WINDOW` is documented as ignored for a child that is not a
 //! console application, so the two sites that spawn **our own exe** — the
-//! `--worker` self-exec (`src/agent/worker/client.rs`) and the updater relaunch
+//! `--worker` self-exec (`worker/client.rs`, in this crate since T8/S8.3) and the
+//! updater relaunch
 //! (`src/commands/update.rs`) — could never pop a window in the shipped build,
 //! where the exe is GUI-subsystem. They still route through here, for two
 //! reasons: in a *debug* build the attribute is off and the exe is
@@ -385,7 +386,11 @@ mod tests {
             SELF,
             SUDO_EXEC,
             "fulcrum-core/tools/exec/bash.rs",
-            "archimedes/agent/worker/client.rs",
+            // T8/S8.3: `worker/client.rs` moved into this crate, so its census
+            // label changed root (`archimedes/` → `fulcrum-core/`). A stale
+            // prefix here is a RED, not a skip — `region_of_labeled` panics when
+            // a labelled path names no file.
+            "fulcrum-core/worker/client.rs",
             // T5/S3: moved with `interactive`.
             "fulcrum-core/interactive/mod.rs",
         ];
@@ -641,29 +646,38 @@ mod tests {
         crate::test_support::target_debug_dir()
     }
 
-    /// The pin Step A-bis demands: `target_debug_dir()` resolves to the SAME
-    /// directory the desktop's `worker/client.rs::fixture_path()` resolves to.
+    /// The pin Step A-bis demands: `target_debug_dir()` resolves to the directory
+    /// cargo ACTUALLY builds into, proved against `current_exe()`.
     ///
-    /// # Why the desktop's own pin cannot catch the drift
+    /// # Why the pin had to live in the crate (and what S8.3 changed)
     ///
-    /// T4's `fixture_path_resolves_to_the_workspace_root_target` lives in
-    /// `worker/client.rs`, which STAYS desktop through T8. After a move it keeps
-    /// passing while every moved fixture path is broken — the green suite does
-    /// not look at the moved side. So the assertion has to live in the crate.
+    /// T4's `fixture_path_resolves_to_the_workspace_root_target` used to live in
+    /// the desktop's `worker/client.rs`, which S5 assumed would stay desktop
+    /// through T8 — so it would keep passing while every moved fixture path was
+    /// broken. **T8/S8.3 moved that file, and the assumption turned out to be the
+    /// wrong half:** the moved helper resolved to `<root>/crates/target/debug/…`
+    /// and its two `starts_with` asserts PASSED on the broken path (measured — the
+    /// RED came only from the `is_file()` witness). `client.rs` now carries an
+    /// equality + `current_exe()` pin of its own, so the drift this pin was written
+    /// to catch has a second witness.
     ///
-    /// # How it compares, given the crate cannot call `fixture_path()`
+    /// This pin stays because it guards the RESOLVER, not one caller: every crate
+    /// fixture spawner (`mcp/stdio.rs`, `mcp/tool.rs`, `mcp/manager.rs`,
+    /// `worker/client.rs`, `worker/manager/tests`) derives from
+    /// `target_debug_dir()`, and comparing against `current_exe()` is the one
+    /// comparison that cannot go green on a wrong LEVEL count.
     ///
-    /// `fixture_path()` is `pub fn` inside a `#[cfg(test)] mod tests`, so it is
-    /// invisible across the package boundary (A.4: the cfg, not the visibility).
-    /// Comparing the two directly is therefore impossible, and a text-level
-    /// "does the desktop still spell it the same way" check would be a lint on
-    /// prose. Instead both sides are pinned to the ONE fact they must agree on:
-    /// they both name cargo's real `target/debug`. That directory is observable
-    /// at runtime from `current_exe()` — the test binary IS
-    /// `target/debug/deps/<name>-<hash>`, cargo put it there — so walking up twice
-    /// from it gives the ground truth, no manifest arithmetic involved. If the
-    /// crate's TWO-level resolution drifts to ONE level (`crates/target/debug`),
-    /// it stops equaling the ground truth and this reddens.
+    /// # How it compares
+    ///
+    /// The ground truth is `current_exe()`: the test binary IS
+    /// `target/debug/deps/<name>-<hash>`, cargo put it there, so walking up twice
+    /// from it gives the real `target/debug` with NO manifest arithmetic involved.
+    /// If the crate's TWO-level resolution drifts to ONE level
+    /// (`crates/target/debug`), it stops equaling the ground truth and this
+    /// reddens. Since S8.3 the crate CAN call `worker/client.rs::fixture_path()`
+    /// directly (same package, both `#[cfg(test)]`) and does — in that module's
+    /// own equality pin — so this pin is now the resolver-level half of a pair
+    /// rather than the only witness.
     ///
     /// # Verified non-vacuous
     ///
@@ -691,13 +705,12 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
         );
 
-        // The desktop half of the agreement, stated as the fact rather than
-        // re-derived from a file the crate must not read: `worker/client.rs`'s
-        // `fixture_path()` is `CARGO_MANIFEST_DIR.parent()/target/debug/<bin>`
-        // from `src-tauri/`, i.e. `<workspace root>/target/debug/<bin>` — the same
-        // directory `claimed` just resolved to, reached from a DIFFERENT member.
-        // That both members land on one `target/` is a workspace property, and
-        // this is the crate-side witness that it still holds after the move.
+        // The existence witness. It used to carry a different job: while
+        // `worker/client.rs` was desktop, this was the crate-side half of a
+        // two-member agreement that both packages land on ONE `target/`. S8.3
+        // moved that file, so the agreement is now intra-crate and this assert is
+        // simply the cheap "a resolution that names a directory no build writes to
+        // is wrong on any host that has run a build" check.
         assert!(
             claimed.is_dir(),
             "the resolved {claimed:?} is a real directory — cargo writes build output \
@@ -1078,7 +1091,8 @@ mod tests {
         // stale entry is a red test rather than a file the census skipped.
         for runtime_child in [
             "fulcrum-core/mcp/stdio.rs",
-            "archimedes/agent/worker/client.rs",
+            // T8/S8.3: moved into this crate — the label follows the file.
+            "fulcrum-core/worker/client.rs",
             "fulcrum-core/interactive/sudo_exec.rs",
             "archimedes/commands/update.rs",
         ] {

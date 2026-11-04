@@ -2633,12 +2633,16 @@ impl SessionManager {
 // disappears rather than being mediated. Its one harness call site is
 // `harness/launch.rs:173` (`resolve_agent_launch`'s soft model rung); the two
 // `harness/model_key.rs` mentions are prose about the first-`/` rule, and the
-// rest are desktop (`session/mod.rs` itself, `worker/manager/subagent_flow.rs`).
+// rest are desktop (`session/mod.rs` itself), while
+// `worker/manager/subagent_flow.rs` moved into the crate in T8/S8.3 and imports it
+// as `crate::catalog::resolve_composed_model`.
 //
 // Re-exported at the SAME path so all 8 pre-existing `resolve_composed_model`
 // call sites compile untouched — `session/mod.rs`'s own three plus
-// `resolve_native_model` use the bare name, and `subagent_flow.rs:14` imports it
-// from `crate::agent::session`. Note the visibility change the move forces
+// `resolve_native_model` use the bare name. (Until T8/S8.3, `subagent_flow.rs`
+// was the eighth consumer and imported it from `crate::agent::session`; it is in
+// the crate now and takes the crate path directly, so this re-export serves the
+// desktop's own call sites only.) Note the visibility change the move forces
 // (Step A.3): it was `pub(crate)`, and a package boundary erases that, so the
 // crate declares it `pub`. That widens the CRATE's surface by one pure lookup;
 // the desktop's surface is unchanged, since `session` is a private `mod`.

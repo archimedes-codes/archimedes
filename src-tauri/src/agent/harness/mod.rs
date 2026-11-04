@@ -33,7 +33,8 @@
 //! measurement: 193 module-qualified consumer paths, 36 errors from deleting one
 //! such line). `commands/agents.rs` names `harness::launch::{override_layer,
 //! resolve_agent_launch, OverrideSource, OverrideLayer}`,
-//! `worker/manager/subagent_flow.rs` names `harness::r#loop::tool_specs`, and
+//! `worker/manager/subagent_flow.rs` named `harness::r#loop::tool_specs` until
+//! T8/S8.3 moved it into the crate (where it spells `crate::harness::…`), and
 //! `commands/settings.rs` names `harness::{tool_specs, Model}` — all
 //! module-qualified.
 

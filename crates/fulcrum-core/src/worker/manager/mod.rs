@@ -48,11 +48,11 @@ pub(crate) use subagent_flow::{
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::agent::debuglog;
-use crate::agent::events::EventSink;
-use crate::agent::subagent::SubagentOutcome;
-use crate::agent::worker::client::{WorkerError, WorkerHandle, WorkerInboundEvent};
-use crate::agent::worker::protocol::{StartEnv, SubagentDispatchWire};
+use crate::debuglog;
+use crate::events::EventSink;
+use crate::subagent::SubagentOutcome;
+use crate::worker::client::{WorkerError, WorkerHandle, WorkerInboundEvent};
+use crate::worker::protocol::{StartEnv, SubagentDispatchWire};
 
 /// The default **Dead bound** (ADR 0055): 30 min of UNEXPLAINED SILENCE **as the
 /// Supervisor OBSERVES it**. It is the most a **Subagent session** may go with no
@@ -72,7 +72,9 @@ pub const DEFAULT_SUBAGENT_DEAD_BOUND: std::time::Duration =
 
 /// The Worker spawn seam (the test injection point): production is
 /// `WorkerHandle::spawn(std::env::current_exe().as_path())`; tests are
-/// the `fake_worker` binary (the manifest-dir path convention).
+/// the `fake_worker` binary (resolved through `test_support::target_debug_dir()`
+/// — the crate's two-levels-up `target/` resolver; since S8.3 this module lives in
+/// `fulcrum-core`, so the manifest-parent convention it used to name is wrong here).
 pub trait WorkerFactory: Send + Sync {
     fn spawn(&self) -> Result<WorkerHandle, WorkerError>;
 }
@@ -425,10 +427,10 @@ impl WorkerManager {
     pub fn mirror_stored_desktop_config(
         &self,
         session_id: &str,
-        file_policy: Option<&crate::agent::policy::FilePolicy>,
-        web: Option<&crate::config::WebSettings>,
+        file_policy: Option<&crate::policy::FilePolicy>,
+        web: Option<&crate::web::config::WebSettings>,
         agent_overrides: Option<
-            &std::collections::HashMap<String, crate::config::AgentOverrideFields>,
+            &std::collections::HashMap<String, crate::config_types::AgentOverrideFields>,
         >,
     ) {
         let mut map = self.state.workers.lock().unwrap_or_else(|p| p.into_inner());
@@ -495,7 +497,8 @@ impl WorkerManager {
 
 // ── T5/S4 — the crate's subagent-dispatch seam, implemented (plan Step E.2) ───
 //
-// THE SECOND INSTANTIATION PIN OF S4. `fulcrum_core::seams::Dispatcher` exists
+// THE SECOND INSTANTIATION PIN OF S4. `crate::seams::Dispatcher` (the crate's
+// own name for `fulcrum_core::seams::Dispatcher` from inside the package) exists
 // because `SubagentSessionManager` (moving in S5) currently holds an
 // `Arc<WorkerManager>` — edge E2, `subagent.rs:28` — and the crate cannot import
 // `archimedes_lib` to keep holding it. After S5 the manager holds
@@ -513,13 +516,13 @@ impl WorkerManager {
 // the `Outbound::SubagentDispatch` route that answers a requesting Worker rather
 // than a oneshot) — the S3 RULING's standing instruction is to stop writing seam
 // methods with no caller.
-impl fulcrum_core::seams::Dispatcher for WorkerManager {
+impl crate::seams::Dispatcher for WorkerManager {
     fn dispatch_subagent_to(
         &self,
         parent_session_id: &str,
-        wire: fulcrum_core::worker_types::SubagentDispatchWire,
+        wire: crate::worker_types::SubagentDispatchWire,
         child_session_id: String,
-        outcome: tokio::sync::oneshot::Sender<fulcrum_core::subagent_types::SubagentOutcome>,
+        outcome: tokio::sync::oneshot::Sender<crate::subagent_types::SubagentOutcome>,
     ) {
         WorkerManager::dispatch_subagent_to(
             self,

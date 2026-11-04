@@ -4,26 +4,35 @@
 //! Moved from `src-tauri/src/agent/worker/` in T8 (S8.1–S8.4); the desktop
 //! keeps a re-export shell at `src-tauri/src/agent/worker/mod.rs`, so every
 //! `archimedes_lib::agent::worker::…` spelling — the 11 two-sided integration
-//! targets, `bin/fake_worker.rs`, `session/mod.rs`, and the files still desktop
-//! (`client.rs`, `core.rs`, `dispatch.rs`, `manager/**`, until their own
-//! sub-steps) — resolves with zero edits.
+//! targets, `bin/fake_worker.rs` and `session/mod.rs` — resolves with zero
+//! edits. After S8.3 the whole `worker/` tree lives HERE; the desktop's shell
+//! declares no modules at all, only re-exports plus the one `run_worker_inner()`
+//! wrapper S8.4 deletes.
 //!
 //! S8.1 moved the LEAF of the dependency closure: the wire vocabulary
 //! (`protocol`), and the two Worker-side trait implementations (`store`,
 //! `sink`). Everything else in the desktop's `worker/` depends on these three
 //! and nothing in the crate yet needs anything they do not already reach. S8.2
 //! added the composition point (`core` + `dispatch`) and moved `run_worker_inner`
-//! here with the two injected seams; `client`/`manager` arrive in S8.3 and the
-//! final `run_worker` shim in S8.4.
+//! here with the two injected seams; S8.3 added the Supervisor-side half
+//! (`client` + the whole `manager/` directory); the final `run_worker` shim
+//! arrives in S8.4.
 
+pub mod client;
 pub mod core;
 pub mod dispatch;
+pub mod manager;
 pub mod protocol;
 pub mod sink;
 pub mod store;
 
+pub use client::{WorkerError, WorkerErrorKind, WorkerHandle, WorkerInboundEvent};
 pub use core::{default_build_loop, LoopControl, LoopHandles, WorkerCore};
 pub use dispatch::IpcDispatcher;
+pub use manager::{
+    ClosureHooks, SubagentCapture, WorkerFactory, WorkerHooks, WorkerManager,
+    DEFAULT_SUBAGENT_DEAD_BOUND,
+};
 pub use protocol::{
     decode_inbound, decode_outbound, encode_inbound, encode_outbound, stamp_outbound, Inbound,
     Outbound, ProtoError, PROTOCOL_VERSION,

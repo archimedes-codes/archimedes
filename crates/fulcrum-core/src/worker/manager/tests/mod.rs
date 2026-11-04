@@ -5,18 +5,16 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::sync::watch;
 
-use crate::agent::events::EventSink;
-use crate::agent::harness::catalog::{Model, ModelCatalog};
-use crate::agent::subagent::{
-    AgentNameResolution, LaunchConfig, SubagentFailureReason, SubagentOutcome,
-};
-use crate::agent::worker::client::{WorkerError, WorkerHandle, WorkerInboundEvent};
-use crate::agent::worker::manager::{
+use crate::events::EventSink;
+use crate::harness::catalog::{Model, ModelCatalog};
+use crate::subagent::{AgentNameResolution, LaunchConfig, SubagentFailureReason, SubagentOutcome};
+use crate::worker::client::{WorkerError, WorkerHandle, WorkerInboundEvent};
+use crate::worker::manager::{
     feed_capture, finish_subagent, note_liveness_event, note_liveness_frame, note_liveness_gate,
     SubagentCapture, SubagentDrive, SubagentLiveness, SubagentOutcomeSink, WorkerFactory,
     WorkerManager,
 };
-use crate::agent::worker::protocol::{StartEnv, StartMode, SubagentDispatchWire};
+use crate::worker::protocol::{StartEnv, StartMode, SubagentDispatchWire};
 
 /// The test logging type aliases (the `clippy::type_complexity`
 /// bound — the `Arc<StdMutex<...>>` shapes are repeated across
@@ -26,14 +24,55 @@ type EventLog = Arc<StdMutex<Vec<(String, bool, WorkerInboundEvent)>>>;
 type SinkMap = Arc<StdMutex<HashMap<String, Arc<CollectorSink>>>>;
 type SinkEvents = Arc<StdMutex<Vec<(String, Value)>>>;
 
-/// The `fake_worker` fixture (the WORKSPACE ROOT's `target/debug` — the cargo root
-/// moved to the repo root with the T4 `[workspace]`; `cargo test` builds the bin
-/// targets).
+/// The `fake_worker` fixture — resolved through the crate's ONE `target/debug`
+/// resolver (S8.3, the same re-point `worker/client.rs::fixture_path` carries).
+///
+/// The old body derived the root from `env!("CARGO_MANIFEST_DIR").parent()`,
+/// which was right in `src-tauri/` (one level under the root) and is WRONG here:
+/// this crate is TWO levels down, so that expression names
+/// `<root>/crates/target/debug/fake_worker`, which no build writes to. All 30
+/// tests in this module spawn the fixture, so every one of them would fail with
+/// `SpawnFailed(Io(ENOENT))`. `test_support::target_debug_dir()` walks up TWO
+/// levels and is pinned against `current_exe()` by
+/// `childproc::target_debug_dir_is_where_cargo_actually_builds`; the equality +
+/// `current_exe()` asserts in `fixture_root_is_where_cargo_actually_builds` pin
+/// THIS helper to it, so a wrong level count fails loudly rather than silently
+/// green.
 fn fixture_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    crate::test_support::target_debug_dir().join("fake_worker")
+}
+
+/// The vacuity guard this module did not have (the lesson `childproc.rs`
+/// teaches: a fixture spawner with no guard is a spawner that fails quietly).
+///
+/// Three halves, because a single `starts_with(<some root>)` is satisfied by the
+/// broken path too — `client.rs`'s original pin proved that by passing on
+/// `<root>/crates/target/debug/fake_worker`:
+///   1. EQUALITY against the crate's one resolver (not a prefix);
+///   2. the directory `current_exe()` proves cargo actually built into, so the
+///      claim is measured against reality and not against another guess;
+///   3. `is_file()`, the existence witness.
+#[test]
+fn fixture_root_is_where_cargo_actually_builds() {
+    let p = fixture_path();
+    assert_eq!(
+        p,
+        crate::test_support::target_debug_dir().join("fake_worker"),
+        "the fixture must resolve through the crate's ONE two-levels-up resolver"
+    );
+    let exe = std::env::current_exe().expect("a test binary has a path");
+    let built_into = exe
         .parent()
-        .expect("the src-tauri package has a parent (the repo root)")
-        .join("target/debug/fake_worker")
+        .and_then(|deps| deps.parent())
+        .expect("the test binary sits under target/debug/deps");
+    assert_eq!(
+        p.parent(),
+        Some(built_into),
+        "the fixture resolves to {p:?}, but cargo built THIS test binary into \
+         {built_into:?} — a fixture path that is not a sibling of the built \
+         binaries spawns ENOENT (`crates/target/…` is exactly that)"
+    );
+    assert!(p.is_file(), "the fixture must exist: {p:?}");
 }
 
 /// The test factory (the `WorkerFactory` seam — the `fake_worker`
@@ -866,7 +905,7 @@ fn the_subagent_capture_captures_the_final_text_from_the_sink_frames() {
     );
     // The usage accumulation (the `message_update` `usage` field —
     // the metrics' token fields).
-    capture.observe_event(&crate::agent::events::RpcEvent::message_update {
+    capture.observe_event(&crate::events::RpcEvent::message_update {
         usage: serde_json::json!({ "inputTokens": 10, "outputTokens": 5 }),
         assistant_message_event: serde_json::json!({}),
     });
@@ -962,8 +1001,8 @@ fn liveness_view(manager: &WorkerManager, child_id: &str) -> (u64, Vec<String>) 
 
 /// A canned `tool_execution_start` (the ANNOUNCE frame the pump sees while
 /// the Provider still streams the `toolCall`).
-fn tool_start(tool_call_id: &str) -> crate::agent::events::RpcEvent {
-    crate::agent::events::RpcEvent::tool_execution_start {
+fn tool_start(tool_call_id: &str) -> crate::events::RpcEvent {
+    crate::events::RpcEvent::tool_execution_start {
         tool_call_id: tool_call_id.to_string(),
         tool_name: "bash".to_string(),
         args: serde_json::json!({ "command": "ls" }),
@@ -971,8 +1010,8 @@ fn tool_start(tool_call_id: &str) -> crate::agent::events::RpcEvent {
 }
 
 /// A canned `tool_execution_end` (the close of one announced call).
-fn tool_end(tool_call_id: &str) -> crate::agent::events::RpcEvent {
-    crate::agent::events::RpcEvent::tool_execution_end {
+fn tool_end(tool_call_id: &str) -> crate::events::RpcEvent {
+    crate::events::RpcEvent::tool_execution_end {
         tool_call_id: tool_call_id.to_string(),
         tool_name: "bash".to_string(),
         result: serde_json::json!({ "content": [], "isError": false }),
@@ -1047,7 +1086,7 @@ fn the_liveness_set_tracks_announced_and_closed_tool_calls() {
 
     // A DRIVING turn emits plenty of frames that are neither boundary —
     // they advance the liveness clock and leave the set alone.
-    let turn = crate::agent::events::RpcEvent::turn_start;
+    let turn = crate::events::RpcEvent::turn_start;
     feed_capture(&manager.state, "live1", |capture, liveness| {
         note_liveness_event(liveness, &turn);
         capture.observe_event(&turn);
@@ -1915,7 +1954,7 @@ async fn a_gate_whose_tool_closed_without_an_answer_is_still_closed() {
         parent_enabled_tools: vec!["bash".to_string()],
         agent_name: "tester".to_string(),
         name_resolution: AgentNameResolution::Matched,
-        launch: crate::agent::subagent::LaunchConfig::default(),
+        launch: crate::subagent::LaunchConfig::default(),
         task: "the parked task".to_string(),
         model_key: "fake/m1".to_string(),
     };
@@ -1972,7 +2011,7 @@ async fn an_answered_gates_card_is_not_closed_again_at_teardown() {
         .expect("the child handle is reachable")
         .send_permission_response(
             "p1",
-            &crate::agent::permission::PermissionOutcome::Selected {
+            &crate::permission::PermissionOutcome::Selected {
                 option_id: "allow".to_string(),
                 value: None,
             },
