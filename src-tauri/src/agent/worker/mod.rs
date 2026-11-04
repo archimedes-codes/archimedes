@@ -16,14 +16,42 @@
 //! the inbound frame stream (the `spawn_stdin_reader` THREAD reads the
 //! lines → `decode_inbound` → `core.handle` → the outbound frames to
 //! stdout). Exit 0 when the core is closed or stdin hits EOF.
+//!
+//! # T8/S8.1 — this file is now a RE-EXPORT SHELL for the moved wire leaf
+//!
+//! `protocol.rs`, `store.rs` and `sink.rs` moved to
+//! `crates/fulcrum-core/src/worker/` in S8.1. They are re-exported here BOTH
+//! as modules and by name, because module-qualified spellings outnumber named
+//! ones (the S1 measurement, and the reason S1–S5b kept this shape):
+//! `client.rs`, `core.rs`, `dispatch.rs`, `manager/**` (still desktop until
+//! S8.2/S8.3), `session/mod.rs`, `bin/fake_worker.rs` and 11 integration
+//! targets all address `…::agent::worker::protocol::…` / `…::IpcStore` /
+//! `…::IpcEventSink`, and every one of them compiles with ZERO edits.
+//!
+//! `client`, `core`, `dispatch` and `manager` stay REAL desktop declarations
+//! below — S8.1 does not touch them (S8.2 takes `core`/`dispatch`, S8.3 takes
+//! `client`/`manager/**`), and they still import `crate::agent::worker::{
+//! protocol, store, sink}`, which resolves through this block.
+//! `run_worker_inner` stays defined here until S8.2 moves it.
 
 pub mod client;
 pub mod core;
 pub mod dispatch;
 pub mod manager;
-pub mod protocol;
-pub mod sink;
-pub mod store;
+
+// The S8.1 re-export shell. Module aliases first (the spellings that carry the
+// traffic), then the named surface — the exact list this file exported before
+// the move, so nothing downstream had to be touched.
+pub use fulcrum_core::worker::{
+    decode_inbound, decode_outbound, encode_inbound, encode_outbound, stamp_outbound, Inbound,
+    IpcEventSink, IpcStore, Outbound, ProtoError, PROTOCOL_VERSION,
+};
+pub use fulcrum_core::worker::{protocol, sink, store};
+// The five S4 wire DATA types this file used to re-export through `protocol`
+// (which re-exports them from `fulcrum_core::worker_types`); the names must stay
+// reachable at `crate::agent::worker::{…}` for `persist.rs` / `subagent.rs` /
+// the integration tests.
+pub use protocol::{StartEnv, StartMode, StoreFrame, SubagentDispatchWire};
 
 pub use client::{WorkerError, WorkerErrorKind, WorkerHandle, WorkerInboundEvent};
 pub use core::{default_build_loop, LoopControl, LoopHandles, WorkerCore};
@@ -32,12 +60,6 @@ pub use manager::{
     ClosureHooks, SubagentCapture, WorkerFactory, WorkerHooks, WorkerManager,
     DEFAULT_SUBAGENT_DEAD_BOUND,
 };
-pub use protocol::{
-    decode_inbound, decode_outbound, encode_inbound, encode_outbound, stamp_outbound, Inbound,
-    Outbound, ProtoError, StartEnv, StartMode, StoreFrame, SubagentDispatchWire, PROTOCOL_VERSION,
-};
-pub use sink::IpcEventSink;
-pub use store::IpcStore;
 
 use std::io::BufRead;
 

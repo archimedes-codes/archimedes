@@ -32,30 +32,23 @@
 
 use serde_json::Value;
 
-// ── T5/S4 — the wire DATA types moved to `fulcrum_core::worker_types` ─────────
+// ── T5/S4 + T8/S8.1 — this file and its DATA types are now ONE crate ─────────
 //
-// Plan Steps E.1/E.3 (edges E1 and E3). The crate must be able to NAME these
-// types — `agent/persist.rs:56` consumes `StoreFrame`, `agent/subagent.rs:29`
-// builds `SubagentDispatchWire`, and the crate's `Dispatcher` trait takes one —
-// and a crate cannot name a type that lives in `archimedes_lib`. `StartEnv`,
-// `StartMode` and `DesktopConfig` came with them because `Inbound::Start(Box<
-// StartEnv>)` and `Inbound::ConfigUpdate` speak the same vocabulary; splitting one
-// enum's variants across two packages is not something serde can do.
+// S4 moved the wire DATA (`StoreFrame`, `SubagentDispatchWire`, `StartEnv`,
+// `StartMode`, `DesktopConfig`) into `crate::worker_types` because the crate had
+// to NAME them — `persist.rs` consumes `StoreFrame`, `subagent.rs` builds
+// `SubagentDispatchWire`, the crate's `Dispatcher` trait takes one — while this
+// file was still desktop, and a crate cannot name a type that lives in the
+// desktop package. S8.1 moved this file INTO the crate, so the re-export below is
+// now crate-internal (`crate::worker_types`, not the package-spelled path — a
+// crate cannot import itself by name; that is a cycle, and the compiler says so).
 //
-// What stayed is the Worker's TRAVEL rather than its DATA: `Inbound`/`Outbound`,
-// the codec (`encode_*`/`decode_*`/`stamp_outbound`), `ProtoError` and
-// `PROTOCOL_VERSION` remain here with `worker/**`, which moves in T8. Nothing in
-// the crate names those — the crate builds a `StoreFrame` and the desktop frames
-// it — which is why the cut lands here and why it is not a cycle.
-//
-// Re-exported so EVERY existing spelling keeps resolving with zero edits:
-// `crate::agent::worker::protocol::*`, `crate::agent::worker::*` (via the named
-// block in `worker/mod.rs`), and `archimedes_lib::agent::worker::protocol::*` in
-// the two-sided integration tests. That unchanged-compiling surface IS the E1/E3
-// proof the S4 ruling asks for — a serde-identical move of a wire type has no
-// runtime behaviour left to test, so the proof is the ~200 call sites that did not
-// need touching.
-pub use fulcrum_core::worker_types::{
+// The re-export STAYS a `pub use` for one reason: the surface. Every existing
+// spelling of these five names still routes through this module — the desktop's
+// re-export shell at `src-tauri/src/agent/worker/mod.rs` re-exports them from
+// here, and the two-sided integration tests name them at that path. Dropping the
+// `pub` would break them for no gain.
+pub use crate::worker_types::{
     DesktopConfig, StartEnv, StartMode, StoreFrame, SubagentDispatchWire,
 };
 
@@ -88,11 +81,11 @@ pub enum Inbound {
     #[serde(rename = "prompt", rename_all = "camelCase")]
     Prompt {
         text: String,
-        images: Vec<crate::agent::tools::ImageRef>,
+        images: Vec<crate::tools::ImageRef>,
     },
     #[serde(rename = "config", rename_all = "camelCase")]
     Config {
-        model: Option<crate::agent::harness::catalog::Model>,
+        model: Option<crate::harness::catalog::Model>,
         thinking: Option<String>,
         /// Clear the loop's thinking level to "the model's default" (no
         /// `reasoning_effort` on the request). Distinct from `thinking: None`,
@@ -137,12 +130,12 @@ pub enum Inbound {
     #[serde(rename = "config-update", rename_all = "camelCase")]
     ConfigUpdate {
         #[serde(default)]
-        file_policy: Option<crate::agent::policy::FilePolicy>,
+        file_policy: Option<crate::policy::FilePolicy>,
         #[serde(default)]
-        web: Option<crate::config::WebSettings>,
+        web: Option<crate::web::config::WebSettings>,
         #[serde(default)]
         agent_overrides:
-            Option<std::collections::HashMap<String, crate::config::AgentOverrideFields>>,
+            Option<std::collections::HashMap<String, crate::config_types::AgentOverrideFields>>,
     },
     #[serde(rename = "abort")]
     Abort,
@@ -164,14 +157,14 @@ pub enum Inbound {
     #[serde(rename = "permission-response", rename_all = "camelCase")]
     PermissionResponse {
         id: String,
-        outcome: crate::agent::permission::PermissionOutcome,
+        outcome: crate::permission::PermissionOutcome,
     },
     #[serde(rename = "interactive-response", rename_all = "camelCase")]
     InteractiveResponse { id: String, value: Value },
     #[serde(rename = "subagent-result", rename_all = "camelCase")]
     SubagentResult {
         id: String,
-        outcome: crate::agent::subagent::SubagentOutcome,
+        outcome: crate::subagent::SubagentOutcome,
     },
     #[serde(rename = "fetch-render-response", rename_all = "camelCase")]
     FetchRenderResponse { id: String, value: Value },
@@ -210,9 +203,7 @@ pub enum Outbound {
     /// Supervisor's INTERNAL bookkeeping (settle detection,
     /// `pending_turn` resolution, the debug log) — NOT the UI.
     #[serde(rename = "event", rename_all = "camelCase")]
-    Event {
-        event: crate::agent::events::RpcEvent,
-    },
+    Event { event: crate::events::RpcEvent },
     // The persistence frames (the `Store` seam over IPC — `IpcStore`
     // emits these; the Supervisor's `TranscriptPersister` applies them).
     /// `Store::insert_message` — the provider transcript rows (system
@@ -234,7 +225,7 @@ pub enum Outbound {
     #[serde(rename = "display-upsert", rename_all = "camelCase")]
     DisplayUpsert {
         session_id: String,
-        rows: Vec<crate::agent::harness::store::DisplayRow>,
+        rows: Vec<crate::harness::store::DisplayRow>,
     },
     /// `Store::record_context_usage` — the `sessions.context_usage_json`
     /// write.
@@ -291,8 +282,8 @@ pub enum Outbound {
         /// turn is cancelled — and that `eprintln!` is visible only under
         /// `ARCHIMEDES_DEBUG`, which is why the self-exec pin above, not the
         /// log, is what keeps this consequence unpayable.
-        name_resolution: crate::agent::subagent::AgentNameResolution,
-        launch: crate::agent::subagent::LaunchConfig,
+        name_resolution: crate::subagent::AgentNameResolution,
+        launch: crate::subagent::LaunchConfig,
         task: String,
         model_key: String,
     },
@@ -484,10 +475,10 @@ pub fn decode_outbound(line: &str) -> Result<Outbound, ProtoError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::harness::catalog::{Model, ModelCatalog};
-    use crate::agent::harness::provider::{ChatMessage, ChatRole, MessageContent};
-    use crate::agent::permission::PermissionOutcome;
-    use crate::agent::subagent::{
+    use crate::harness::catalog::{Model, ModelCatalog};
+    use crate::harness::provider::{ChatMessage, ChatRole, MessageContent};
+    use crate::permission::PermissionOutcome;
+    use crate::subagent::{
         AgentNameResolution, LaunchConfig, SubagentFailureReason, SubagentMetrics, SubagentOutcome,
     };
 
@@ -591,17 +582,17 @@ mod tests {
             // `ProviderConfig` / `AgentOverrideFields` is exercised on every
             // run, and the camelCase WIRE NAMES are pinned byte-wise by
             // `the_start_env_packages_the_five_desktop_config_fields_in_camel_case`.
-            file_policy: crate::agent::policy::FilePolicy {
-                reads: crate::agent::policy::AccessPolicy::Ask,
-                writes: crate::agent::policy::AccessPolicy::Sandboxed,
-                shell: crate::agent::policy::AccessPolicy::Ask,
-                rules: vec![crate::agent::policy::AccessRule {
+            file_policy: crate::policy::FilePolicy {
+                reads: crate::policy::AccessPolicy::Ask,
+                writes: crate::policy::AccessPolicy::Sandboxed,
+                shell: crate::policy::AccessPolicy::Ask,
+                rules: vec![crate::policy::AccessRule {
                     path: "/etc/hosts".to_string(),
-                    direction: crate::agent::policy::RuleDirection::ReadWrite,
-                    decision: crate::agent::policy::RuleDecision::Deny,
+                    direction: crate::policy::RuleDirection::ReadWrite,
+                    decision: crate::policy::RuleDecision::Deny,
                 }],
             },
-            web: crate::config::WebSettings {
+            web: crate::web::config::WebSettings {
                 brave_api_key: "b-key".to_string(),
                 tavily_api_key: String::new(),
                 perplexity_api_key: String::new(),
@@ -615,14 +606,14 @@ mod tests {
             )]),
             agent_overrides: std::collections::HashMap::from([(
                 "scout".to_string(),
-                crate::config::AgentOverrideFields {
+                crate::config_types::AgentOverrideFields {
                     model: Some("fake/m3".to_string()),
                     thinking: None,
                     // ADR 0067: an EMPTY list is ABSENT, never `Some(vec![])`.
                     tools: None,
                 },
             )]),
-            providers: vec![crate::config::ProviderConfig {
+            providers: vec![crate::config_types::ProviderConfig {
                 id: "corp".to_string(),
                 name: "Corp".to_string(),
                 base_url: "https://corp.invalid/v1".to_string(),
@@ -645,9 +636,9 @@ mod tests {
     /// verdict, one per-pattern ruleset, and one unrecognised tool key — the
     /// three shapes `Rules` / `ToolKey` can hold, so the decode exercises every
     /// nested type in the aggregate.
-    fn test_permission_block() -> crate::agent::definition_permission::PermissionBlock {
-        use crate::agent::definition_permission::{Action, Rule, Rules, ToolKey};
-        crate::agent::definition_permission::PermissionBlock {
+    fn test_permission_block() -> crate::definition_permission::PermissionBlock {
+        use crate::definition_permission::{Action, Rule, Rules, ToolKey};
+        crate::definition_permission::PermissionBlock {
             tools: vec![
                 (ToolKey::Bash, Rules::whole_tool(Action::Deny)),
                 (
@@ -825,13 +816,10 @@ mod tests {
         // And they DECODE — the round-trip direction, on the same literal.
         match decode_inbound(&line).expect("the grown `start` decodes") {
             Inbound::Start(env) => {
-                assert_eq!(
-                    env.file_policy.reads,
-                    crate::agent::policy::AccessPolicy::Ask
-                );
+                assert_eq!(env.file_policy.reads, crate::policy::AccessPolicy::Ask);
                 assert_eq!(
                     env.file_policy.writes,
-                    crate::agent::policy::AccessPolicy::Sandboxed
+                    crate::policy::AccessPolicy::Sandboxed
                 );
                 assert_eq!(env.file_policy.rules.len(), 1);
                 assert_eq!(env.web.brave_api_key, "b-key");
@@ -908,10 +896,10 @@ mod tests {
             Inbound::Start(env) => {
                 assert_eq!(
                     env.file_policy,
-                    crate::agent::policy::FilePolicy::default(),
+                    crate::policy::FilePolicy::default(),
                     "no packaged policy = the all-`Allow` default"
                 );
-                assert_eq!(env.web, crate::config::WebSettings::default());
+                assert_eq!(env.web, crate::web::config::WebSettings::default());
                 assert!(
                     env.mcp_servers.is_empty(),
                     "no packaged map = no desktop layer"
@@ -935,11 +923,8 @@ mod tests {
         // five: a caller that knows nothing about them gets the inert env, not
         // a panic and not a half-populated one.
         let plain = test_env();
-        assert_eq!(
-            plain.file_policy,
-            crate::agent::policy::FilePolicy::default()
-        );
-        assert_eq!(plain.web, crate::config::WebSettings::default());
+        assert_eq!(plain.file_policy, crate::policy::FilePolicy::default());
+        assert_eq!(plain.web, crate::web::config::WebSettings::default());
         assert!(plain.mcp_servers.is_empty());
         assert!(plain.agent_overrides.is_empty());
         assert!(plain.providers.is_empty());
@@ -1033,7 +1018,7 @@ mod tests {
             } => {
                 assert_eq!(
                     file_policy.map(|p| p.reads),
-                    Some(crate::agent::policy::AccessPolicy::Ask),
+                    Some(crate::policy::AccessPolicy::Ask),
                     "the pushed policy arrives (the top-level keys ARE camelCase \
                      — `StartEnv`'s casing applies here too)"
                 );
@@ -1070,7 +1055,7 @@ mod tests {
             } => {
                 assert_eq!(
                     file_policy.map(|p| p.reads),
-                    Some(crate::agent::policy::AccessPolicy::Sandboxed)
+                    Some(crate::policy::AccessPolicy::Sandboxed)
                 );
                 assert!(web.is_none(), "no web key = leave the web config alone");
                 assert!(
@@ -1172,19 +1157,19 @@ mod tests {
             },
             // (Fulcrum T3) The live-reload push, with all three fields set.
             Inbound::ConfigUpdate {
-                file_policy: Some(crate::agent::policy::FilePolicy {
-                    reads: crate::agent::policy::AccessPolicy::Ask,
-                    writes: crate::agent::policy::AccessPolicy::Ask,
-                    shell: crate::agent::policy::AccessPolicy::Sandboxed,
+                file_policy: Some(crate::policy::FilePolicy {
+                    reads: crate::policy::AccessPolicy::Ask,
+                    writes: crate::policy::AccessPolicy::Ask,
+                    shell: crate::policy::AccessPolicy::Sandboxed,
                     rules: Vec::new(),
                 }),
-                web: Some(crate::config::WebSettings {
+                web: Some(crate::web::config::WebSettings {
                     brave_api_key: "b".to_string(),
-                    ..crate::config::WebSettings::default()
+                    ..crate::web::config::WebSettings::default()
                 }),
                 agent_overrides: Some(std::collections::HashMap::from([(
                     "scout".to_string(),
-                    crate::config::AgentOverrideFields {
+                    crate::config_types::AgentOverrideFields {
                         model: Some("fake/m3".to_string()),
                         thinking: Some("low".to_string()),
                         tools: Some(vec!["read".to_string()]),
@@ -1419,7 +1404,7 @@ mod tests {
                 session_id: Some("s1".to_string()),
             },
             Outbound::Event {
-                event: crate::agent::events::RpcEvent::agent_settled,
+                event: crate::events::RpcEvent::agent_settled,
             },
             Outbound::TranscriptInsert {
                 session_id: "s1".to_string(),
@@ -1433,7 +1418,7 @@ mod tests {
             },
             Outbound::DisplayUpsert {
                 session_id: "s1".to_string(),
-                rows: vec![crate::agent::harness::store::DisplayRow {
+                rows: vec![crate::harness::store::DisplayRow {
                     kind: "agent-text".to_string(),
                     message_key: "m1".to_string(),
                     payload_json: serde_json::json!({ "text": "hi" }),
@@ -1491,24 +1476,24 @@ mod tests {
     #[test]
     fn rpc_event_inside_event_nesting_round_trips() {
         let events = vec![
-            crate::agent::events::RpcEvent::agent_start,
-            crate::agent::events::RpcEvent::turn_start,
-            crate::agent::events::RpcEvent::text_delta {
+            crate::events::RpcEvent::agent_start,
+            crate::events::RpcEvent::turn_start,
+            crate::events::RpcEvent::text_delta {
                 content_index: 0,
                 delta: "hi".to_string(),
             },
-            crate::agent::events::RpcEvent::message_update {
+            crate::events::RpcEvent::message_update {
                 usage: serde_json::json!({ "inputTokens": 5 }),
                 assistant_message_event: serde_json::json!({ "type": "textDelta" }),
             },
-            crate::agent::events::RpcEvent::compaction_end {
-                reason: crate::agent::events::CompactionReason::Threshold,
+            crate::events::RpcEvent::compaction_end {
+                reason: crate::events::CompactionReason::Threshold,
                 result: None,
                 aborted: false,
                 will_retry: false,
                 error_message: None,
             },
-            crate::agent::events::RpcEvent::unknown {
+            crate::events::RpcEvent::unknown {
                 raw: serde_json::json!({ "type": "brand-new-event", "x": 1 }),
             },
         ];
@@ -1543,7 +1528,7 @@ mod tests {
     /// string-typed field.
     #[test]
     fn compaction_reason_serde_spellings_are_frozen() {
-        use crate::agent::events::CompactionReason;
+        use crate::events::CompactionReason;
 
         // (a) The three members serialize to EXACTLY the three TS spellings.
         assert_eq!(
@@ -1576,20 +1561,20 @@ mod tests {
         // through the real outbound codec (mirrors
         // `rpc_event_inside_event_nesting_round_trips`'s shape).
         let events = vec![
-            crate::agent::events::RpcEvent::compaction_start {
+            crate::events::RpcEvent::compaction_start {
                 reason: CompactionReason::Overflow,
             },
-            crate::agent::events::RpcEvent::compaction_end {
+            crate::events::RpcEvent::compaction_end {
                 reason: CompactionReason::Threshold,
                 result: None,
                 aborted: false,
                 will_retry: false,
                 error_message: None,
             },
-            crate::agent::events::RpcEvent::compaction_start {
+            crate::events::RpcEvent::compaction_start {
                 reason: CompactionReason::Manual,
             },
-            crate::agent::events::RpcEvent::compaction_end {
+            crate::events::RpcEvent::compaction_end {
                 reason: CompactionReason::Manual,
                 result: Some(serde_json::json!({ "tokens": 12 })),
                 aborted: true,
@@ -1614,7 +1599,7 @@ mod tests {
         // `rename_all` (the enum-level note in `events.rs`): the frame the TS
         // side routes on is unchanged by the enum.
         let line = encode_outbound(&Outbound::Event {
-            event: crate::agent::events::RpcEvent::compaction_start {
+            event: crate::events::RpcEvent::compaction_start {
                 reason: CompactionReason::Manual,
             },
         });

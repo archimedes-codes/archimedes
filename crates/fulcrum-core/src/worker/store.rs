@@ -15,17 +15,25 @@
 
 use tokio::sync::mpsc;
 
-use crate::agent::harness::provider::ChatMessage;
-use crate::agent::harness::store::{DisplayRow, Store};
-use crate::agent::worker::protocol::Outbound;
-// (T5/S5b) The `Store` trait moved to `fulcrum-core` with its error type
-// re-typed to the crate's `StoreError`, so this impl follows it. The mapping is
-// free HERE and worth stating: `IpcStore` never touches SQLite — its one error
-// is the hand-built write-only `Io` below — so it constructs `StoreError::Io`
-// directly and no `DbError` ever needs converting on this path. (The desktop's
-// `From<DbError> for StoreError` is what `SessionStore` maps through; this impl
-// does not need it, which is the seam doing its job rather than a second one.)
-use fulcrum_core::StoreError;
+use crate::harness::provider::ChatMessage;
+use crate::harness::store::{DisplayRow, Store};
+use crate::seams::StoreError;
+use crate::worker::protocol::Outbound;
+// (T5/S5b + T8/S8.1) The `Store` trait moved to this crate with its error type
+// re-typed to the crate's `StoreError`, so this impl follows it — and now the
+// FILE has moved too, so the error is named crate-internally rather than through
+// the package path: `use fulcrum_core::StoreError` from inside `fulcrum-core` is
+// a cycle (a crate cannot import itself by name), which is exactly what the
+// compiler reported at the RED step. `crate::seams::StoreError` is the same type.
+// The mapping is free HERE and worth stating: `IpcStore` never touches SQLite —
+// its one error is the hand-built write-only `Io` below — so it constructs
+// `StoreError::Io` directly and no `DbError` ever needs converting on this path.
+// (The desktop's `From<DbError> for StoreError` is what `SessionStore` maps
+// through; this impl does not need it, which is the seam doing its job rather
+// than a second one. The pre-accepted `"io error: sqlite error: …"` deviation
+// therefore does NOT widen here: `load_messages_is_the_defensive_write_only_error`
+// pins the one error this impl builds, and its `Display` is `"io error: …"` on
+// both sides of the move.)
 
 /// The Worker's `Store` seam (ADR 0025 Task 2): frames every `Store`
 /// call over the protocol (the Supervisor's `TranscriptPersister` —
@@ -120,7 +128,7 @@ impl Store for IpcStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::harness::store::DisplayRow;
+    use crate::harness::store::DisplayRow;
     use tokio::sync::mpsc;
 
     /// A test-observed outbound channel + the `IpcStore`.

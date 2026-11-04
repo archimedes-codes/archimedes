@@ -108,6 +108,39 @@ pub(crate) fn target_debug_dir() -> std::path::PathBuf {
         .join("debug")
 }
 
+/// Is `s` EXACTLY SIX LOWERCASE hex chars — the shape
+/// `crate::types::mint_incarnation` guarantees for a **Session incarnation**
+/// stamp (ADR 0049)?
+///
+/// Lifted into this crate in T8/S8.1 (the grounding's §7.4 "lift the stamp
+/// helper into the crate" option) because `worker/protocol.rs` moved with its
+/// `#[cfg(test)]` block, and that block calls this predicate: `crate::test_support`
+/// is PER-CRATE, so the desktop's copy does not exist inside this crate's test
+/// build and this crate may not reach it through `archimedes_lib` (that edge is
+/// the package cycle T5's ruling severs). The BODY is character-for-character the
+/// desktop's — the two copies are the same predicate, and the crate's own pin
+/// below (`the_stamp_shape_rejects_everything_a_radix_parse_admits`) carries the
+/// same negative cases, so a drift between them reddens on one side or the other.
+/// The desktop's copy STAYS (its `tests/session_native.rs` names it) — this is a
+/// lift for the crate's test build, not a relocation.
+///
+/// The shared pin for the `protocol` unit test and the two-process e2e, because
+/// the obvious check is half blind: `len() == 6` + `u32::from_str_radix(s, 16)`
+/// also accepts `A3F9C1` (and a radix parse accepts a leading `+`, so it is not
+/// even an alphabet check on its own). The BYTE SET is the whole argument: a
+/// stamp made only of `[0-9a-f]` is lowercase by construction, which is what
+/// makes the `to_lowercase` clause implied rather than load-bearing — it is kept
+/// because ADR 0049 names lowercase at the seam, and because it is the clause
+/// that fails LOUDEST (`A3F9C1` trips it first) when a stamp source ever grows
+/// upper-case letters. Case is not what keeps a stamp from equaling a
+/// bookkeeping word, either: `system` and `retract` are already lowercase, and
+/// what they are not is hex-spelled (`system` carries `s`/`y`/`t`/`m`, `retract`
+/// is seven chars and carries `r`/`t`) — see `normalize::is_bookkeeping_message_id`.
+pub fn is_incarnation_stamp(s: &str) -> bool {
+    let lower_hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+    s.len() == 6 && s == s.to_lowercase() && s.bytes().all(lower_hex)
+}
+
 /// (test only) The broadest rule path a test can name — the one root that
 /// really does contain every canonical absolute path ON THIS PLATFORM.
 ///
@@ -251,7 +284,51 @@ impl AsRef<std::path::Path> for ScratchDir {
 
 #[cfg(test)]
 mod tests {
-    use super::ScratchDir;
+    use super::{is_incarnation_stamp, ScratchDir};
+
+    /// The crate's OWN pin for the crate's OWN copy of the stamp predicate —
+    /// the rule this module's docs state for `ScratchDir` ("a duplicated helper
+    /// that is only tested in its ORIGINAL copy is untested where it is used")
+    /// applies exactly as hard to `is_incarnation_stamp`, which T8/S8.1 lifted
+    /// here because `worker/protocol.rs`'s moved `#[cfg(test)]` block calls it.
+    ///
+    /// The negative cases are the point. `every_start_env_gets_its_own_incarnation_stamp`
+    /// (in `worker/protocol.rs`) only ever asserts POSITIVE stamps, so without
+    /// this pin the copy that the crate actually compiles would never have its
+    /// rejections tested at all — and `A3F9C1` is the one case the
+    /// `len() == 6` + `u32::from_str_radix(_, 16)` check this replaces was
+    /// genuinely BLIND to. The rest are kept so that a future "simplify it back"
+    /// that drops EITHER half of this predicate reddens something here — and note
+    /// that this is NOT true of the desktop's inherited list, which never contains
+    /// a six-char lowercase non-hex string, so dropping the BYTE-SET clause there
+    /// reddens nothing. The two cases below are what make the crate's copy
+    /// discriminate all three halves; the gap is reported, not silently left.
+    #[test]
+    fn the_crate_stamp_shape_rejects_everything_a_radix_parse_admits() {
+        for ok in ["a3f9c1", "000000", "ffffff", "dead01"] {
+            assert!(is_incarnation_stamp(ok), "{ok} is a stamp");
+        }
+        for bad in [
+            "A3F9C1",  // uppercase hex — parses, wrong case
+            "+a3f9c1", // a signed number — parses, not an id
+            "a3f9c",   // five chars
+            "a3f9c10", // seven chars
+            "abcdefg", // not hex (`g`) — but 7 chars, so `len` catches it first
+            "",        // the EMPTY stamp `TurnState::default()` carries
+            // The two cases the inherited list was BLIND to. Every case above is
+            // already rejected by `len() == 6` or by `to_lowercase`, so a copy of
+            // this predicate that dropped the BYTE-SET clause entirely stayed
+            // green — which is precisely the half ADR 0049's byte-set argument is
+            // about, and the half the doc above claims is pinned. A six-char
+            // LOWERCASE word is the only shape that reaches the byte set, and
+            // `system` is the real one: it is a bookkeeping word a stamp must
+            // never equal (see `normalize::is_bookkeeping_message_id`).
+            "system", // six chars, lowercase, NOT hex (`s`/`y`/`t`/`m`)
+            "retrac", // six chars, lowercase, NOT hex — a truncated bookkeeping word
+        ] {
+            assert!(!is_incarnation_stamp(bad), "{bad} is NOT a stamp");
+        }
+    }
 
     /// The mechanism the moved fixtures depend on: the guard removes its dir when
     /// its owner is dropped. A bare `PathBuf` has no `Drop`, so every panicking

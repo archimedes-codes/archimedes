@@ -62,8 +62,9 @@ pub mod web;
 // ── T5/S3 — the one-way dependents: `interactive`, `codemode`, `mcp` ────────
 // `git mv`'d with every `mod`/`#[cfg(test)]` block verbatim. These three depend
 // on S2's cluster one-way (`mcp→tools` 1, `interactive→tools` 4) and nothing in
-// the crate depends on them for this step except the desktop `harness` (moves
-// S5) and the desktop `worker` (stays through T8).
+// the crate depends on them for this step except the desktop `harness` (moved
+// in S5) and the desktop `worker` (S8.1 opened that directory — see the T8
+// block at the bottom of this file).
 //
 // `provider_auth` is NOT here. The status file's S3 RULING measured the crate's
 // need at exactly ONE item — `provider_auth::headers::expand_map`, one call site
@@ -169,5 +170,21 @@ pub mod harness;
 pub mod normalize;
 pub mod persist;
 pub mod subagent;
+
+// ── T8/S8.1 — the Worker's wire leaf ────────────────────────────────────────
+// `worker` moves in five sub-steps (S8.1–S8.5), bottom-up on dependency. S8.1
+// takes the three files nothing else in `worker/` compiles without: the wire
+// vocabulary (`protocol`) and the two Worker-side trait implementations
+// (`store`'s `IpcStore`, `sink`'s `IpcEventSink`). The desktop keeps a pure
+// re-export shell at `src-tauri/src/agent/worker/mod.rs`, so its still-desktop
+// residents (`client`, `core`, `dispatch`, `manager/**`) keep resolving
+// `crate::agent::worker::protocol::…` through it with zero edits until S8.2–S8.3
+// move them, and so do the 11 integration targets that name
+// `archimedes_lib::agent::worker::…`.
+//
+// `provider_auth` REMAINS absent from this crate (it is T7's, minus `headers`,
+// which S3 moved as `provider_headers`). `worker` is no longer absent: this line
+// is where it arrived.
+pub mod worker;
 
 pub use seams::{Dispatcher, FulcrumPersistence, StoreError};
