@@ -57,11 +57,13 @@ pub mod worker;
 // (a `storage::Db` cannot cross) and re-exports the two crate halves, so
 // `crate::agent::harness::trust::{TrustSource, StaticTrustSource,
 // SqliteTrustSource}` all still resolve at their pre-S5a path. `permission` has
-// no staying half at all, so the module alias alone is enough: the eight
-// desktop consumers (`worker/client.rs`, `worker/protocol.rs`, `worker/core.rs`,
-// `worker/manager/tests/mod.rs`, `session/mod.rs`, `harness/loop.rs`,
-// `harness/loop/gate.rs`, `harness/loop/tests/policy_gate.rs`) keep their
-// `crate::agent::permission::…` paths UNCHANGED.
+// no staying half at all, so the module alias alone is enough, and every desktop
+// consumer keeps its `crate::agent::permission::…` path UNCHANGED.
+// NO CONSUMER LIST HERE, ON PURPOSE. This comment used to name eight files; five
+// of them were stale inside three sub-steps, because `worker/` and `harness/` have
+// each moved since (T8/S8.1, S8.2). An enumeration of consumers is wrong by
+// construction the next time anything moves — derive it instead:
+//   grep -rl 'crate::agent::permission::' src-tauri/src --include='*.rs'
 // T5/S5b adds the last three files of the T5 closure — `harness` (a real
 // desktop module above, because `store.rs`/`trust.rs` stayed), plus
 // `normalize`, `persist` and `subagent`, which have NO staying half and so need
