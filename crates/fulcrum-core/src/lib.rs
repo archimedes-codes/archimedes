@@ -187,14 +187,22 @@ pub mod subagent;
 // `src-tauri/src/agent/worker/mod.rs` (module aliases + the named surface), so
 // `session/mod.rs`, `lib.rs`, `commands/**`, `bin/fake_worker.rs` and the 11
 // integration targets that name `archimedes_lib::agent::worker::…` all resolve
-// with zero edits. The shell still defines the zero-argument
-// `run_worker_inner()` wrapper that supplies the two injected arguments — that is
-// what lets `lib.rs::run_worker` stay untouched — and S8.4 deletes it and lands
-// the `run_worker` shim.
+// with zero edits. S8.4 deleted the shell's last definition — the zero-argument
+// `run_worker_inner()` wrapper — so the shell is now PURELY re-exports, and the
+// desktop's `lib.rs::run_worker` calls `worker::run_worker` below directly,
+// supplying the two injected arguments itself. That hand-off (desktop → crate)
+// is the direction ADR 0091 allows; the reverse is what the boundary pins catch.
 //
 // `provider_auth` REMAINS absent from this crate (it is T7's, minus `headers`,
 // which S3 moved as `provider_headers`). `worker` is no longer absent: this line
 // is where it arrived.
 pub mod worker;
+
+// S8.4: the crate's Worker-mode entry, re-exported at the root so
+// `fulcrum_core::run_worker()` is the literal spelling. Both parameter types
+// are crate types (`Arc<dyn crate::mcp::OpenRequester>` and
+// `Option<Arc<dyn Fn(PathBuf) + Send + Sync>>`), so the re-export keeps the
+// crate standalone — nothing desktop is named.
+pub use worker::run_worker;
 
 pub use seams::{Dispatcher, FulcrumPersistence, StoreError};

@@ -17,34 +17,34 @@
 //! lines → `decode_inbound` → `core.handle` → the outbound frames to
 //! stdout). Exit 0 when the core is closed or stdin hits EOF.
 //!
-//! # T8 — this file is a RE-EXPORT SHELL plus ONE wrapper
+//! # T8 — this file is a PURE RE-EXPORT SHELL
 //!
 //! `protocol.rs`, `store.rs` and `sink.rs` moved to
 //! `crates/fulcrum-core/src/worker/` in S8.1; `core.rs` and `dispatch.rs` (and
 //! `run_worker_inner` itself) moved in S8.2; `client.rs` and the whole
-//! `manager/` directory moved in S8.3, so **this file declares NO modules at
-//! all** — every `worker/` file is crate-owned now. They are re-exported here
-//! BOTH as modules and by name, because module-qualified spellings outnumber
-//! named ones (the S1 measurement, and the reason S1–S5b kept this shape):
-//! `session/mod.rs`, `lib.rs`, `commands/**`, `bin/fake_worker.rs` and the 11
-//! integration targets all address `…::agent::worker::protocol::…` /
-//! `…::worker::client::WorkerHandle` / `…::WorkerManager`, and every one of them
-//! compiles with ZERO edits. S8.4 leaves this file as it is minus the wrapper.
+//! `manager/` directory moved in S8.3; S8.4 added the crate's `run_worker`
+//! entry. So **this file declares NO modules and DEFINES NOTHING at all** —
+//! every `worker/` file is crate-owned, and everything here is a `pub use`. The
+//! names are re-exported BOTH as modules and by name, because module-qualified
+//! spellings outnumber named ones (the S1 measurement, and the reason S1–S5b
+//! kept this shape): `session/mod.rs`, `lib.rs`, `commands/**`,
+//! `bin/fake_worker.rs` and the 11 integration targets all address
+//! `…::agent::worker::protocol::…` / `…::worker::client::WorkerHandle` /
+//! `…::WorkerManager`, and every one of them compiles with ZERO edits.
 //!
-//! The ONE thing defined here is the `run_worker_inner()` wrapper. It is not
-//! leftover — it is the boundary. The crate's `run_worker_inner` takes the two
-//! desktop-only behaviours as parameters (the browser opener and the crash
-//! hook), and this wrapper is the desktop-side call site that supplies them, so
-//! `src-tauri/src/lib.rs::run_worker` keeps calling
-//! `agent::worker::run_worker_inner()` UNCHANGED through S8.2. The deliberate
-//! two-commit split: the seam's SIGNATURE lands in S8.2, the desktop's call site
-//! flips in S8.4 (which deletes this wrapper and calls the crate's parameterised
-//! entry from `lib.rs::run_worker`), so a mid-flight regression is bisectable.
+//! S8.2 left ONE definition here — a zero-argument `run_worker_inner()` wrapper
+//! that supplied the crate's two injected desktop-only arguments. S8.4 deleted
+//! it: `src-tauri/src/lib.rs::run_worker` is now the single desktop → crate
+//! hand-off and passes
+//! `fulcrum_core::worker::run_worker(crate::open::desktop_open_requester(), …)`
+//! itself.
 //!
-//! `open.rs::the_production_loop_caller_passes_the_desktop_opener` reads THIS
-//! file for exactly that reason: after S8.2 the crate can no longer name
-//! `crate::open` (it is `tauri`), so the "the desktop hands its real opener to
-//! the crate" assertion lives here — desktop → crate is the legal direction.
+//! That is why `open.rs::the_production_loop_caller_passes_the_desktop_opener`
+//! reads `src-tauri/src/lib.rs` and not this file: after S8.4 the crate can
+//! never name `crate::open` (it is `tauri`), so the "the desktop hands its real
+//! opener to the crate" assertion lives at the ONE call site that makes the
+//! crossing — desktop → crate is the legal direction, and `lib.rs` is now that
+//! site's only home.
 
 // The S8.1/S8.2/S8.3 re-export shell. Module aliases first (the spellings that carry
 // the traffic), then the named surface — the exact list this file exported
@@ -62,33 +62,3 @@ pub use fulcrum_core::worker::{
 // reachable at `crate::agent::worker::{…}` for `persist.rs` / `subagent.rs` /
 // the integration tests.
 pub use protocol::{StartEnv, StartMode, StoreFrame, SubagentDispatchWire};
-
-/// The Worker main — the desktop's zero-argument spelling of the crate's
-/// parameterised `run_worker_inner` (S8.2's seam; deleted by S8.4 when
-/// `lib.rs::run_worker` passes the two arguments itself).
-///
-/// The two arguments are the whole point of this function's existence, and each
-/// is a desktop thing the crate may not name:
-///
-///   * `crate::open::desktop_open_requester()` — the tauri-backed browser
-///     opener. `open.rs` is `tauri` (`tauri::Url`, `tauri_plugin_opener`) so it
-///     cannot move into `fulcrum-core`; the loop it eventually reaches takes an
-///     `Arc<dyn OpenRequester>` (S5a's SEAM 2) and `default_build_loop` takes it
-///     from here (S8.2). Passing anything else here still COMPILES — that is
-///     precisely the failure
-///     `open.rs::the_production_loop_caller_passes_the_desktop_opener` pins, and
-///     the reason that pin reads this file rather than the crate.
-///   * the crash hook — `agent/crashlog.rs` stays desktop (the crate needs none
-///     of it), so the desktop passes the install closure. The tag (`"worker"`)
-///     and the `base.join("archimedes")` layout are unchanged; the directory is
-///     still resolved INSIDE the crate at install time and handed to the hook,
-///     so the hook resolves nothing during the panic.
-pub async fn run_worker_inner() {
-    fulcrum_core::worker::run_worker_inner(
-        crate::open::desktop_open_requester(),
-        Some(std::sync::Arc::new(|dir: std::path::PathBuf| {
-            crate::agent::crashlog::install_panic_hook("worker", dir)
-        })),
-    )
-    .await;
-}

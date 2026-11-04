@@ -444,15 +444,38 @@ fn grab_webview_key_focus<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) {
     }
 }
 
-/// The Worker mode (ADR 0025): a fresh tokio runtime + the stdio JSONL
-/// worker (`agent::worker::run_worker_inner`). Checked BEFORE Tauri
-/// init in `main` — the Tauri runtime never starts in a Worker.
+/// The Worker mode (ADR 0025): the thin desktop shim over the crate's Worker
+/// entry (`fulcrum_core::worker::run_worker`, which builds the tokio runtime and
+/// runs the stdio JSONL `run_worker_inner`). Checked BEFORE Tauri init in `main`
+/// — the Tauri runtime never starts in a Worker.
+///
+/// Since T8/S8.4 the runtime construction and the whole Worker live in
+/// `crates/fulcrum-core`; this function's ONLY job is to hand the crate the two
+/// desktop-only behaviours it may not name (ADR 0091 — the shape crosses, the
+/// substance stays):
+///
+///   * `crate::open::desktop_open_requester()` — the tauri-backed browser opener
+///     (`open.rs` is `tauri`, so it cannot move into the crate). It reaches
+///     `AgentLoop::new` through `WorkerCore::new` → `default_build_loop`. Passing
+///     anything else here still COMPILES — that is exactly the silent failure
+///     `open.rs::the_production_loop_caller_passes_the_desktop_opener` pins, and
+///     since S8.4 that pin reads THIS function: this is the one desktop → crate
+///     hand-off the Worker boundary exists to prove.
+///   * the crash hook — `agent/crashlog.rs` stays desktop (the crate needs none
+///     of it), so the desktop passes the install closure. The tag (`"worker"`)
+///     and the `base.join("archimedes")` layout are unchanged; the directory is
+///     resolved inside the crate at install time and handed to the hook, so the
+///     hook resolves nothing during the panic.
+///
+/// The signature stays parameterless — `archimedes_lib::run_worker()` is
+/// `main.rs`'s contract for the `--worker` flag, and `main.rs` is untouched.
 pub fn run_worker() {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("the worker tokio runtime");
-    runtime.block_on(agent::worker::run_worker_inner());
+    fulcrum_core::worker::run_worker(
+        crate::open::desktop_open_requester(),
+        Some(std::sync::Arc::new(|dir: std::path::PathBuf| {
+            crate::agent::crashlog::install_panic_hook("worker", dir)
+        })),
+    );
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

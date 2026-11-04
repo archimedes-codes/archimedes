@@ -378,8 +378,8 @@ mod tests {
     /// itself from that file — the crate may not name `open.rs` at all, and
     /// `boundary_pins::no_path_reaches_a_desktop_module` would red if it did.
     /// The opener is now threaded one level up, and the desktop-side supplier is
-    /// the wrapper in `agent/worker/mod.rs`. So the pin split into two halves,
-    /// both read here:
+    /// the ONE desktop function that enters the Worker. So the pin split into
+    /// two halves, both read here:
     ///
     ///   * **(1) structure, in the crate.** The moved `core.rs` still has
     ///     exactly ONE production `#[cfg(test)]` split and exactly ONE
@@ -388,12 +388,22 @@ mod tests {
     ///     from going green on a deleted literal: without it, someone could
     ///     drop the argument and hard-code `NoOpenRequester` inside the crate
     ///     and every structural count would still pass.
-    ///   * **(2) the needle, in the desktop shell.** `agent/worker/mod.rs`'s
-    ///     `run_worker_inner()` wrapper must pass
-    ///     `crate::open::desktop_open_requester()` to the crate — and exactly
-    ///     once. Desktop → crate is the legal direction; the reverse is the
-    ///     crossing this whole boundary exists to prevent, which is why the
-    ///     needle cannot live beside the loop it protects.
+    ///   * **(2) the needle, at the DESKTOP'S ONE hand-off.** Since S8.4 that
+    ///     site is `src-tauri/src/lib.rs::run_worker`, which must pass
+    ///     `crate::open::desktop_open_requester()` to
+    ///     `fulcrum_core::worker::run_worker(…)` — and exactly once. Desktop →
+    ///     crate is the legal direction; the reverse is the crossing this whole
+    ///     boundary exists to prevent, which is why the needle cannot live
+    ///     beside the loop it protects. S8.2's needle lived on the
+    ///     `agent/worker/mod.rs` wrapper; S8.4 DELETED that wrapper, so the
+    ///     needle moved with the call site — pointing at a file that no longer
+    ///     holds it would be the unfalsifiable-needle failure this plan's review
+    ///     round rejected. Half 2 therefore also asserts the ABSENCE of
+    ///     `agent::worker::run_worker_inner(` in `lib.rs`: a restored wrapper
+    ///     would satisfy a bare `contains` on the opener and still break the
+    ///     chain, so the scan is SCOPED TO `run_worker`'S OWN BODY (a
+    ///     file-wide `contains` on a 1-600-line file is trivially satisfiable —
+    ///     S8.2's child measured exactly that vacuity in its own first draft).
     ///
     /// # Why a lint on top of a required argument
     ///
@@ -409,23 +419,29 @@ mod tests {
     /// naming `desktop_open_requester` must not credit a call site that never
     /// makes it, the same fail-OPEN direction this file's other scans refuse.
     ///
-    /// # Non-vacuity (measured, on BOTH halves, at S8.2)
+    /// # Non-vacuity (measured on BOTH halves, at S8.2; re-measured on the NEW
+    /// target at S8.4)
     ///
     /// (1) Delete the `open_requester: Arc<dyn crate::mcp::OpenRequester>`
     /// parameter from `crates/fulcrum-core/src/worker/core.rs`'s
     /// `default_build_loop` → this fails on the parameter half.
-    /// (2) Replace `crate::open::desktop_open_requester(),` in the wrapper with
-    /// `Arc::new(fulcrum_core::mcp::NoOpenRequester),` → this fails naming the
-    /// call site, while the workspace still compiles green — which is precisely
-    /// why the lint is worth having.
+    /// (2) Replace `crate::open::desktop_open_requester(),` in
+    /// `lib.rs::run_worker` with a placeholder opener
+    /// (`std::sync::Arc::new(fulcrum_core::mcp::NoOpenRequester),`) → this fails
+    /// naming the call site, while the workspace still compiles green — which is
+    /// precisely why the lint is worth having. **Re-measured at S8.4 against the
+    /// NEW target**: the swap reddened the `passed` assert, and a second break
+    /// (pointing `run_worker` at the deleted desktop wrapper instead of the crate
+    /// entry) reddened the call-site assert — the break was aimed at the NEW
+    /// assert, not at the one S8.2 had already proven.
     ///
-    /// # S8.4's obligation (recorded, not silently inherited)
+    /// # S8.4's obligation — DONE in this commit
     ///
-    /// S8.4 deletes the wrapper this needle points at and moves the opener call
-    /// to `src-tauri/src/lib.rs::run_worker`. **S8.4 must re-point half (2)
-    /// there and re-prove non-vacuity in the new file** — pointing a pin at a
-    /// file that no longer holds its needle is the unfalsifiable-needle failure
-    /// this plan's review round rejected. See the status file's T8 vetting entry.
+    /// S8.4 deleted the wrapper half (2) used to point at and moved the opener
+    /// call to `src-tauri/src/lib.rs::run_worker`. Half (2) is re-pointed THERE,
+    /// scoped to that function's own body, and its non-vacuity was re-proved by
+    /// placeholder swap in the new file (see *Non-vacuity* above). The status
+    /// file's T8 vetting entry records this as the gap the plan did not contain.
     #[test]
     fn the_production_loop_caller_passes_the_desktop_opener() {
         // ── Half 1 — the STRUCTURE, in the crate ─────────────────────────────
@@ -568,46 +584,88 @@ mod tests {
              which region this lint's production half is reading",
         );
 
-        // ── Half 2 — the NEEDLE, in the DESKTOP shell ───────────────────────
-        // The one desktop call site that constructs the opener argument.
-        let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent/worker/mod.rs");
-        let shell_source = std::fs::read_to_string(&shell)
-            .unwrap_or_else(|e| panic!("reading {}: {e}", shell.display()));
-        let shell_source = shell_source.replace("\r\n", "\n");
-        let shell_code: Vec<(usize, &str)> = shell_source
+        // ── Half 2 — the NEEDLE, at the DESKTOP'S ONE hand-off ──────────────
+        // (T8/S8.4) Since the S8.2 wrapper in `agent/worker/mod.rs` is deleted,
+        // `src-tauri/src/lib.rs::run_worker` is the ONE desktop site that
+        // supplies the opener to the crate — the whole point of the boundary
+        // (desktop → crate is legal; the reverse is the crossing). So the needle
+        // lives here now, and `lib.rs` is its only home.
+        let shim = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+        let shim_source = std::fs::read_to_string(&shim)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", shim.display()));
+        let shim_source = shim_source.replace("\r\n", "\n");
+        let shim_code: Vec<(usize, &str)> = shim_source
             .lines()
             .enumerate()
             .map(|(i, l)| (i + 1, l))
-            // CODE, not prose — the same fail-OPEN reason as half 1. This file's
-            // docs name `desktop_open_requester` in THREE comments; a scan that
-            // read them would pass a wrapper that never passes it.
+            // CODE, not prose — the same fail-OPEN reason as half 1. `lib.rs`
+            // names `desktop_open_requester` in THIS function's doc comment; a
+            // scan that read it would credit a shim that never passes it.
             .filter(|(_, l)| {
                 let t = l.trim_start();
                 !t.starts_with("//")
             })
             .collect();
 
-        let call_lines: Vec<usize> = shell_code
+        // SCOPED TO `run_worker`'S OWN BODY. `lib.rs` is a large file with many
+        // other call sites; a file-wide `contains` would be trivially
+        // satisfiable, and a needle that cannot fail is not a pin. The body runs
+        // from the `pub fn run_worker() {` line to the first line that is just
+        // `}` at fn-body indentation.
+        let fn_line = shim_code
             .iter()
-            .filter(|(_, l)| l.contains("fulcrum_core::worker::run_worker_inner("))
+            .find(|(_, l)| l.trim_start().starts_with("pub fn run_worker("))
+            .map(|(n, _)| *n)
+            .unwrap_or_else(|| panic!("no `pub fn run_worker(` in {shim:?}"));
+        let fn_end = shim_code
+            .iter()
+            .find(|(n, l)| *n > fn_line && *l == "}")
+            .map(|(n, _)| *n)
+            .unwrap_or_else(|| panic!("no closing `}}` for run_worker at {fn_line} in {shim:?}"));
+        let body = shim_code
+            .iter()
+            .filter(|(n, _)| *n > fn_line && *n < fn_end)
+            .map(|(n, l)| (*n, *l))
+            .collect::<Vec<_>>();
+
+        let call_lines: Vec<usize> = body
+            .iter()
+            .filter(|(_, l)| l.contains("fulcrum_core::worker::run_worker("))
             .map(|(n, _)| *n)
             .collect();
         assert_eq!(
             call_lines.len(),
             1,
-            "expected exactly 1 call to `fulcrum_core::worker::run_worker_inner(` \
-             in {shell:?} (the S8.2 wrapper — the ONE desktop site that supplies \
-             the opener), found {call_lines:?}: a second one would be an unwired \
-             worker entry this lint does not read",
+            "expected exactly 1 call to `fulcrum_core::worker::run_worker(` inside \
+             `lib.rs::run_worker` ({fn_line}..{fn_end}) (the S8.4 shim — the ONE \
+             desktop site that supplies the opener), found {call_lines:?}: a second \
+             one would be an unwired worker entry this lint does not read, and zero \
+             means the desktop still reaches a wrapper the crate no longer exposes",
+        );
+        // The desktop must NOT keep a wrapper of its own: `agent/worker/mod.rs`
+        // is a pure re-export shell since S8.4, so a `run_worker_inner(` spelling
+        // in `lib.rs` would mean the hand-off moved back out of `run_worker`'s
+        // body and this needle is reading the wrong function.
+        let wrapper = shim_code
+            .iter()
+            .find(|(_, l)| l.contains("agent::worker::run_worker_inner("))
+            .map(|(n, l)| (*n, l.trim().to_string()));
+        assert!(
+            wrapper.is_none(),
+            "`lib.rs` still calls the desktop `agent::worker::run_worker_inner(` at \
+             {wrapper:?} — S8.4 deleted that wrapper (the shell is pure re-exports), \
+             and if it were restored the opener would be supplied OUTSIDE the \
+             function this needle reads, so this pin would be pointing at the wrong \
+             call site",
         );
         let call = call_lines[0];
-        // The argument list runs to the first line that is just `)`.
-        let end = shell_code
+        // The argument list runs to the first line that is just `);`.
+        let end = body
             .iter()
-            .find(|(n, l)| *n > call && l.trim() == ")")
+            .find(|(n, l)| *n > call && l.trim() == ");")
             .map(|(n, _)| *n)
-            .unwrap_or_else(|| panic!("no closing `)` found for the wrapper call at {call}"));
-        let passed: Vec<usize> = shell_code
+            .unwrap_or_else(|| panic!("no closing `);` found for the shim call at {call}"));
+        let passed: Vec<usize> = body
             .iter()
             .filter(|(n, l)| {
                 *n > call && *n < end && l.contains("crate::open::desktop_open_requester()")
@@ -617,17 +675,17 @@ mod tests {
         assert_eq!(
             passed.len(),
             1,
-            "the desktop wrapper at {shell:?}:{call} does not pass \
+            "the desktop shim at {shim:?}:{call} (`run_worker`) does not pass \
              `crate::open::desktop_open_requester()` to the crate exactly once \
              (found {passed:?}) — the Worker's loop would then carry \
              `NoOpenRequester` for every session, so the MCP `auth` action would \
              silently never open a browser and its OAuth flow would die at the \
              callback timeout",
         );
-        // The SECOND injected seam, so the wrapper is pinned as a whole and not
+        // The SECOND injected seam, so the shim is pinned as a whole and not
         // half-restored: the crash hook is the other desktop thing the crate may
         // not name (`agent/crashlog.rs` stayed desktop).
-        let hook_lines: Vec<usize> = shell_code
+        let hook_lines: Vec<usize> = body
             .iter()
             .filter(|(n, l)| *n > call && *n < end && l.contains("install_panic_hook(\"worker\""))
             .map(|(n, _)| *n)
@@ -635,7 +693,7 @@ mod tests {
         assert_eq!(
             hook_lines.len(),
             1,
-            "the desktop wrapper at {shell:?}:{call} does not pass the \
+            "the desktop shim at {shim:?}:{call} (`run_worker`) does not pass the \
              `install_panic_hook(\"worker\", …)` closure exactly once (found \
              {hook_lines:?}) — a Worker that panics with no hook leaves no crash \
              log, which is the whole reason the hook exists",

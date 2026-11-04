@@ -6,8 +6,9 @@
 //! `archimedes_lib::agent::worker::…` spelling — the 11 two-sided integration
 //! targets, `bin/fake_worker.rs` and `session/mod.rs` — resolves with zero
 //! edits. After S8.3 the whole `worker/` tree lives HERE; the desktop's shell
-//! declares no modules at all, only re-exports plus the one `run_worker_inner()`
-//! wrapper S8.4 deletes.
+//! declares no modules at all, only re-exports — the wrapper S8.2 left there to
+//! supply the two injected arguments is gone; `src-tauri/src/lib.rs::run_worker`
+//! passes them to [`run_worker`] itself.
 //!
 //! S8.1 moved the LEAF of the dependency closure: the wire vocabulary
 //! (`protocol`), and the two Worker-side trait implementations (`store`,
@@ -15,8 +16,9 @@
 //! and nothing in the crate yet needs anything they do not already reach. S8.2
 //! added the composition point (`core` + `dispatch`) and moved `run_worker_inner`
 //! here with the two injected seams; S8.3 added the Supervisor-side half
-//! (`client` + the whole `manager/` directory); the final `run_worker` shim
-//! arrives in S8.4.
+//! (`client` + the whole `manager/` directory); S8.4 added [`run_worker`], the
+//! synchronous `--worker` entry (runtime + `block_on`), re-exported at the crate
+//! root as `fulcrum_core::run_worker`.
 
 pub mod client;
 pub mod core;
@@ -55,6 +57,33 @@ use std::io::BufRead;
 
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
+
+/// The Worker mode entry (the `--worker` flag path): a fresh multi-thread
+/// tokio runtime + the stdio JSONL `run_worker_inner`. Moved verbatim from
+/// the desktop's `lib.rs::run_worker` (T8/S8.4).
+///
+/// The runtime construction is BYTE-IDENTICAL to the desktop's — the
+/// multi-thread builder, `enable_all()`, the same `expect` message and the
+/// `block_on` — because the documented `worker_e2e` flake
+/// (`subagent_dispatch_end_to_end_real_workers`) measures the settle-to-output
+/// rendezvous on this path: no await, no sleep, no barrier and no reordering
+/// was added here, and the `expect` message is unchanged.
+///
+/// The two parameters are the desktop-only behaviours the crate may not name
+/// (see [`run_worker_inner`]); both are crate types, so the crate stays
+/// standalone. `src-tauri/src/lib.rs::run_worker` is the thin shim that
+/// supplies them — that hand-off is what
+/// `open.rs::the_production_loop_caller_passes_the_desktop_opener` pins.
+pub fn run_worker(
+    open_requester: std::sync::Arc<dyn crate::mcp::OpenRequester>,
+    install_crash_hook: Option<std::sync::Arc<dyn Fn(std::path::PathBuf) + Send + Sync>>,
+) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("the worker tokio runtime");
+    runtime.block_on(run_worker_inner(open_requester, install_crash_hook));
+}
 
 /// The Worker main (the `run_worker` entry's async half — the stdio
 /// JSONL loop over the `WorkerCore`).
