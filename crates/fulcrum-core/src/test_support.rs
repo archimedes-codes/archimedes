@@ -85,19 +85,36 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 ///
 /// # Why the desktop's own pin cannot catch this
 ///
-/// T4's `fixture_path_resolves_to_the_workspace_root_target` lives in
-/// `worker/client.rs`, which stays desktop through T8 — it keeps passing while
-/// every moved fixture path is broken. The pin that rules this helper lives in
-/// `childproc.rs` (`target_debug_dir_is_where_cargo_actually_builds`) and compares
-/// the resolution against `current_exe()`'s real location, so it cannot go green
-/// on a wrong level count.
+/// When this trap was written, T4's
+/// `fixture_path_resolves_to_the_workspace_root_target` lived in the DESKTOP's
+/// `worker/client.rs`, and a desktop-side pin keeps passing while every moved
+/// fixture path is broken — it cannot see the crate's module tree. **T8/S8.3
+/// moved that file into this crate**, so the original asymmetry is gone; what
+/// replaced it is two witnesses, not one:
+///   * `childproc::target_debug_dir_is_where_cargo_actually_builds` (this
+///     helper's own pin) compares the resolution against `current_exe()`'s real
+///     location, so it cannot go green on a wrong level count; and
+///   * `worker/client.rs` and `worker/manager/tests/mod.rs` each assert
+///     EQUALITY against this helper plus a `current_exe()` comparison — because
+///     S8.3 measured that the old two-`starts_with` form PASSED on the broken
+///     path, which is how the trap stayed invisible in the first place.
 ///
-/// # Consumers (T5/S3, measured)
+/// # Consumers (re-derived by grep at T8/S8.5 — never transcribe a list like
+/// this; the T5/S3 version of it had already drifted twice)
 ///
-/// `mcp/stdio.rs::fake_mcp_bin`, `mcp/tool.rs::fake_bin`, and three
-/// `fake_mcp_stdio` sites in `mcp/manager.rs`'s tests. None of those spawners
-/// carries a vacuity guard, which is why the pin above is the only thing standing
-/// between a wrong root and a silently-green suite.
+/// Two fixture binaries, and every spawner goes through this ONE helper:
+///   * `fake_mcp_stdio` — `mcp/stdio.rs`, `mcp/tool.rs`, four sites in
+///     `mcp/manager.rs`'s tests, and two in
+///     `harness/loop/tests/turn_lifecycle.rs`;
+///   * `fake_worker` — `worker/client.rs::fixture_path` and
+///     `worker/manager/tests/mod.rs::fixture_path` (both re-pointed here in
+///     T8/S8.3; before that they did their own manifest-parent arithmetic and
+///     resolved to a directory no build writes to).
+///
+/// The `mcp` spawners still carry no vacuity guard of their own, which is why
+/// the `childproc` pin above is what stands between a wrong root and a
+/// silently-green suite; the two `worker/` spawners now do carry equality +
+/// `current_exe()` guards, so a wrong LEVEL count there fails in two places.
 #[cfg(test)]
 pub(crate) fn target_debug_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

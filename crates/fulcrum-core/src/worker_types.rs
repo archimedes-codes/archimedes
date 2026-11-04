@@ -11,18 +11,22 @@
 //! same vocabulary speaks, and splitting one enum's variants across two packages
 //! is not a thing serde can do.
 //!
-//! What stays desktop is the Worker's PROCESSING: `worker/**` (`client`, `core`,
-//! `dispatch`, `manager`, `sink`, `store`) moves in T8, and the codec
+//! What the S4 cut left desktop was the Worker's PROCESSING: `worker/**`
+//! (`client`, `core`, `dispatch`, `manager`, `sink`, `store`) — all of which T8
+//! then moved into this crate (S8.1–S8.3), so what was a split across a package
+//! boundary is now a split between two modules of ONE package. The cut's
+//! reasoning still holds and no byte of the wire changed: the codec
 //! (`encode_*`/`decode_*`/`stamp_outbound`, `PROTOCOL_VERSION`, `ProtoError`,
-//! `Inbound`, `Outbound`) stays here with it. `Inbound`/`Outbound` are NOT wire
-//! DATA in the sense this module cares about — nothing in the crate names them;
-//! the crate constructs `StoreFrame` and the desktop frames it. That is why the
-//! cut lands between "what a frame IS" and "how a frame travels", and why it is
-//! not a cycle: the desktop depends on the crate for the types, the crate depends
-//! on nothing for them.
+//! `Inbound`, `Outbound`) stayed here with the data it speaks. `Inbound`/
+//! `Outbound` are still NOT wire DATA in the sense this module cares about —
+//! nothing else in the crate names them; the crate constructs `StoreFrame` and
+//! `worker/protocol.rs` frames it. The cut lands between "what a frame IS" and
+//! "how a frame travels", and it was never a cycle: this module depends on
+//! nothing for those types.
 //!
-//! The desktop's `agent/worker/protocol.rs` re-exports every item below, so all
-//! ~200 existing `crate::agent::worker::protocol::*` and
+//! The desktop's `agent/worker/mod.rs` re-export shell still re-exports every
+//! item below (and `worker/protocol.rs` re-exports the codec), so all ~200
+//! existing `crate::agent::worker::protocol::*` and
 //! `archimedes_lib::agent::worker::protocol::*` paths keep resolving with ZERO
 //! edits — which, per the S4 ruling, IS the E1/E3 proof. The serde attributes are
 //! untouched, so no byte on the wire changes.
@@ -140,8 +144,9 @@ pub struct StartEnv {
     /// re-read `file_policy` from `settings.json` at the top of EVERY turn (ADR
     /// 0030 Deviation 4). It now consumes the value that rode the envelope, and
     /// a later edit reaches the loop through the `config-update` push
-    /// (the desktop's `Inbound::ConfigUpdate`, which stays desktop with the
-    /// codec) instead of through a second disk read — the
+    /// (`Inbound::ConfigUpdate`, whose codec lives in this crate's
+    /// `worker/protocol.rs` since T8/S8.1 — it was the desktop's when this line
+    /// was written) instead of through a second disk read — the
     /// live-reload property is preserved by the push, not lost with the read.
     ///
     /// ADDITIVE and camelCase (`filePolicy`) like every other field here:

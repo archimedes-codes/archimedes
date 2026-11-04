@@ -278,8 +278,12 @@ mod tests {
     /// A crate-side [`Dispatcher`] double (T5/S5b). The two pins below are the
     /// only survivors of the `WorkerManager`-backed cluster in this module, and
     /// they need a dispatcher to hold — so they get the crate's own trait object
-    /// rather than the desktop's `WorkerManager`, which this crate must not name
-    /// (`worker/` stays desktop through T8).
+    /// rather than a `WorkerManager`. WHEN THIS WAS WRITTEN THAT WAS A BOUNDARY
+    /// RULE (`worker/` was desktop through T8 and this crate could not name it);
+    /// T8/S8.3 moved `worker/manager/` in, so `crate::worker::manager::
+    /// WorkerManager` is nameable here now. The double is still the right choice,
+    /// for the reason stated below rather than the boundary rule: a real manager
+    /// spawns a child process, and neither claim below is about the manager.
     ///
     /// WHY A DOUBLE IS HONEST HERE AND WAS NOT HONEST FOR THE OTHER EIGHT
     ///

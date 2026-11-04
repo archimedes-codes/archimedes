@@ -64,12 +64,16 @@ use crate::worker_types::SubagentDispatchWire;
 /// nothing needs that information back. Verified at `8e1d159c`, all three sites
 /// the plan names plus an exhaustive grep of `DbError::Sqlite` in `src/`:
 /// - `harness/store.rs:220` — CONSTRUCTS `DbError::Json` (moves to the crate);
-/// - `worker/store.rs:62` — CONSTRUCTS `DbError::Io` (stays desktop through T8);
+/// - `worker/store.rs:62` — CONSTRUCTS `DbError::Io` (this file moved into the
+///   crate at T8/S8.1 and now builds `StoreError::Io` directly — see the S8.1
+///   entry; it was desktop when this measurement was taken);
 /// - `agent/errors.rs:171` — the ONE `match` on `DbError::Sqlite`, and it is
 ///   `impl From<DbError> for HistoryError`, which is desktop-only (the IPC error
 ///   envelope) and keeps the full three-variant `DbError` untouched;
-/// - `worker/store.rs:239` — a `matches!(err, DbError::Io(_))` assertion in a test
-///   for the file above, which also stays.
+/// - `worker/store.rs:239` — a `matches!(err, DbError::Io(_))` assertion in a
+///   test for the file above; it moved with the file at T8/S8.1 and now reads
+///   `matches!(err, StoreError::Io(_))` (`worker/store.rs:259`), so it never
+///   needed the `Sqlite` variant either.
 ///
 /// No code that will live in the crate matches on `Sqlite`. The only other
 /// `Sqlite` mention under `src/` is `errors.rs:963`, a test fixture constructing

@@ -196,6 +196,26 @@ pub mod subagent;
 // `provider_auth` REMAINS absent from this crate (it is T7's, minus `headers`,
 // which S3 moved as `provider_headers`). `worker` is no longer absent: this line
 // is where it arrived.
+//
+// T8/S8.5 EXTRACTION RESULT (the dry-run T8b consumes). The crate was copied OUT
+// of the workspace and built as its own package: it COMPILES standalone,
+// `--all-targets` clean, and all 9 `boundary_pins` pass there — no `crate::`
+// path, no manifest line, and no `test_support` helper reaches the desktop. What
+// does NOT survive is TEST FIXTURES, not code. All 1300 of the crate's tests
+// COMPILE and RUN standalone; 1231 pass. The 69 that fail do so for two reasons,
+// both about files outside the crate, and both LOUD (every one panics or fails
+// an assert — zero pass silently, which is the failure mode this audit existed to
+// hunt):
+//   * 65 spawn `fake_worker` or `fake_mcp_stdio`, which are BINS OF THE DESKTOP
+//     PACKAGE (`src-tauri/src/bin/`) and therefore do not exist next to an
+//     extracted crate — `ENOENT` at the spawn, or the `is_file()` witness in the
+//     two fixture-path guards;
+//   * 4 are `childproc`'s census pins, which walk BOTH packages' `src/` trees on
+//     purpose (a one-root walk reports a clean bill for the half it never
+//     opened) and panic naming the missing root rather than scanning nothing.
+// T8b must decide where the two fixture bins live and how the census learns it
+// has one package. Recorded here because it is the only thing standing between
+// the extraction and a green-looking suite with 69 holes.
 pub mod worker;
 
 // S8.4: the crate's Worker-mode entry, re-exported at the root so

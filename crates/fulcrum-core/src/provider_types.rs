@@ -174,8 +174,12 @@ pub struct ToolCall {
 /// transcript) is untouched.
 ///
 /// `pub` (T5/S4, Step A.3): a package boundary erases `pub(super)`, and the
-/// desktop's `provider/openai.rs` — which stays desktop through S5 — constructs
-/// these in its `request_body`.
+/// desktop's `provider/openai.rs` — desktop then — constructed these in its
+/// `request_body`. T5/S5b moved that file into this crate as
+/// `harness/provider/openai.rs`, so the cross-package reason is gone and this is
+/// now constructed only inside the crate (grep-verified at T8/S8.5: zero
+/// references under `src-tauri/`). `pub` KEPT — see the note on
+/// `interactive::dispatch_params`; the same tighten candidate.
 pub struct WireToolCall<'a> {
     pub id: &'a str,
     pub name: &'a str,

@@ -144,10 +144,20 @@ pub struct SudoRun {
 /// `AgentLoop`'s `ToolRegistry` (Task 6) reuses the SAME validation.
 ///
 /// (T5/S3 A.3) This was `pub(crate)`. A package boundary erases `pub(crate)`:
-/// the caller (`harness/dispatch.rs`) stays desktop until S5 while this file is
-/// now in another package, so `pub(crate)` here reads as an E0603 for it.
+/// the caller (`harness/dispatch.rs`) was desktop then while this file was
+/// already in another package, so `pub(crate)` read as an E0603 for it.
 /// Widening is the only option that keeps the ONE shared validator — the
 /// alternative is a second implementation of the same param parsing.
+///
+/// T5/S5b then moved `harness` into this crate too, so the caller is a
+/// crate-internal neighbour again: the ONLY production consumer today is
+/// `harness/dispatch.rs:298` (grep-verified at T8/S8.5 — zero references under
+/// `src-tauri/`), so `pub(crate)` would compile. The `pub` is KEPT anyway:
+/// tightening is a code change and this audit is doc-only, and a visibility
+/// tighten belongs with a deliberate audit of the crate's public surface
+/// (T8/S8.5 records it as a candidate, alongside `provider_types::WireToolCall`
+/// and `harness::provider::headers_for_providers`, which are in the same
+/// situation).
 pub fn dispatch_params(params: &Value) -> Option<(String, LaunchConfig)> {
     let task = params
         .get("task")

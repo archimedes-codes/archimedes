@@ -1,20 +1,30 @@
 //! `LaunchConfig` — the per-dispatch launch DTO, moved to the crate in T5/S3.
 //!
-//! # Why this type is here and its manager is not
+//! # Why this type moved BEFORE its manager (and where the manager is now)
 //!
-//! `LaunchConfig` lives with `SubagentSessionManager` in `subagent.rs`, which
-//! cannot move until T5/S5: `subagent.rs:28` imports
-//! `crate::agent::worker::manager::WorkerManager`, the E2 behaviour edge (edge
-//! list, plan §2). But `interactive/mod.rs` — which DOES move in S3 — imports
-//! `LaunchConfig` from it. That is the one genuine ordering constraint in S3, and
-//! the plan's S3 text missed it (the status file's S3 RULING records the fix).
+//! HISTORY, kept because the ordering constraint was real and the plan missed
+//! it: `LaunchConfig` lived with `SubagentSessionManager` in `subagent.rs`,
+//! which could not move until T5/S5b because `subagent.rs:28` imported
+//! `crate::agent::worker::manager::WorkerManager` — the E2 behaviour edge (edge
+//! list, plan §2). But `interactive/mod.rs`, which DID move in S3, imports
+//! `LaunchConfig` from it. That was the one genuine ordering constraint in S3,
+//! and the plan's S3 text missed it (the status file's S3 RULING records the
+//! fix).
 //!
-//! The resolution is the E.1 wire-type pattern rather than a seam: the type is
-//! PURE DATA, so it moves on its own and the desktop `subagent.rs` re-exports it
-//! (`pub use fulcrum_core::launch_config::LaunchConfig;`), which keeps every
-//! pre-existing `subagent::LaunchConfig` path compiling with zero edits. A trait
-//! would be the wrong shape — there is no behaviour here to invert, only a
-//! struct whose home module is not yet movable.
+//! The resolution was the E.1 wire-type pattern rather than a seam: the type is
+//! PURE DATA, so it moves on its own and its home module re-exports it
+//! (`pub use crate::launch_config::LaunchConfig;` at `subagent.rs:42`), which
+//! keeps every pre-existing `subagent::LaunchConfig` path compiling with zero
+//! edits. A trait would be the wrong shape — there is no behaviour here to
+//! invert, only a struct whose home module was not yet movable.
+//!
+//! **BOTH halves of that story are now history, and saying so matters:**
+//! `subagent.rs` moved in T5/S5b (it is `crates/fulcrum-core/src/subagent.rs`),
+//! and the `WorkerManager` edge that blocked it was closed by S5b's `Dispatcher`
+//! seam, not by the manager moving. T8/S8.3 then moved `worker/manager/` into
+//! this crate too. So the type and its manager are both crate residents today,
+//! and the re-export survives purely as the zero-edit path contract — the
+//! desktop's `agent/subagent.rs` no longer exists at all.
 //!
 //! # Why it is genuinely movable
 //!
@@ -27,8 +37,11 @@
 //!
 //! The `Serialize`/`Deserialize` derives are load-bearing, not decoration: this
 //! type crosses the Supervisor↔Worker wire inside `SubagentDispatchWire.launch`
-//! (`worker/protocol.rs`, which stays desktop through T8 — desktop→crate is the
-//! allowed direction).
+//! — `worker/protocol.rs`, which T8/S8.1 moved into this crate (when this line
+//! was written it was the desktop's, and desktop→crate was the reason the
+//! derives mattered; now the type and its codec are simply neighbours in one
+//! package, and the derives still earn their keep because the bytes cross a
+//! PROCESS boundary even though they no longer cross a package one).
 
 use serde::{Deserialize, Serialize};
 

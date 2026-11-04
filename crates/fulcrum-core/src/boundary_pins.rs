@@ -185,9 +185,24 @@ fn crate_code() -> Vec<(PathBuf, String)> {
     // already been bitten by twice (the `CARGO_MANIFEST_DIR.parent()` fixture paths
     // after the move, and the census guard that quietly stopped covering moved
     // code).
+    //
+    // WHAT THIS FLOOR ACTUALLY PROTECTS (measured at T8/S8.5, so the number is
+    // not a formality — 135 `.rs` files live under `src/`, and a floor of 40
+    // against 135 looks like a rubber stamp until you ask what it fires on).
+    // It does NOT fire on "the crate got smaller" and it cannot catch a single
+    // missing file. It fires on the ONE realistic way this walk goes wrong
+    // without going empty: it stops DESCENDING. A flat `read_dir` of `src/` —
+    // the shape this loop collapses to if the `stack.push(dir)` branch is ever
+    // simplified away — reads 36 files, because every moved subtree
+    // (`harness/`, `worker/`, `mcp/`, `tools/`, `web/`, `codemode/`) is a
+    // directory. 36 < 40, so the floor sits deliberately ABOVE the shallow-walk
+    // count and BELOW the recursive one: it is a discriminator, not a
+    // headroom check. Raising it to hug 135 would be worse, not better — it
+    // would make the guard fire on an ordinary deletion and get silenced.
     assert!(
         found.len() > 40,
-        "the scan found only {} .rs files — a wrong root makes every boundary pin vacuous",
+        "the scan found only {} .rs files — a wrong root (or a walk that stopped \
+         descending: a flat read of src/ sees 36) makes every boundary pin vacuous",
         found.len()
     );
     found
@@ -527,11 +542,27 @@ fn declared_crate_modules() -> Vec<String> {
     // The vacuity guard, same reason as `crate_code`'s: an empty allow-list would
     // make EVERY crate-internal path an offender (loud, so safe), but a `lib.rs`
     // this cannot parse would also make it empty, and then the pin is shouting
-    // about the wrong thing. After S5b the crate has well over 40 modules.
+    // about the wrong thing.
+    //
+    // WHAT THE FLOOR ACTUALLY PROTECTS (measured at T8/S8.5, refreshed rather
+    // than left as a formality). `lib.rs` declares 41 modules today, so `> 30`
+    // looks like slack. It is not a headroom check either — it is the parser's
+    // own liveness check. This function accepts exactly three spellings
+    // (`pub mod `, `pub(crate) mod `, `mod `); the realistic failure is a fourth
+    // arriving (a `#[cfg(test)] mod` line is already a fourth shape living in
+    // this file at `mod boundary_pins;`, which the `mod ` prefix happens to
+    // catch) or the prefixes drifting out of sync with `lib.rs`'s style. Either
+    // mistake drops the parse to near-zero, and the floor turns "the allow-list
+    // silently stopped including `harness`" into a panic naming the count. It
+    // CANNOT catch a single missed module — one missing name makes its paths
+    // report as offenders, which is the loud half — so do not raise this floor
+    // toward 41 to "keep it honest": that would only make it fire on the next
+    // legitimate `pub mod` and invite someone to delete it.
     assert!(
         mods.len() > 30,
-        "parsed only {} `mod` declarations out of lib.rs — the parser or the file \
-         is wrong, and the allow-list is not trustworthy",
+        "parsed only {} of the crate's `mod` declarations out of lib.rs (41 as of \
+         T8/S8.5) — the parser or the file is wrong, and the allow-list is not \
+         trustworthy",
         mods.len()
     );
     mods
