@@ -355,9 +355,9 @@ mod tests {
         }
     }
 
-    /// (T5/S5a, SEAM 2) The OTHER half of the wiring, which S3 could not write
-    /// because the wiring did not exist yet: the DESKTOP'S CALL SITE must hand
-    /// the loop the real opener.
+    /// (T5/S5a SEAM 2, re-pointed + needle-moved by T8/S8.2) The OTHER half of
+    /// the wiring, which S3 could not write because the wiring did not exist
+    /// yet: the DESKTOP'S CALL SITE must hand the loop the real opener.
     ///
     /// # What changed, and why this pin had to wait
     ///
@@ -368,8 +368,32 @@ mod tests {
     /// `open.rs` cannot follow (it is `tauri`), and a crate file naming
     /// `crate::open` does not fail any check until the boundary actually
     /// crosses it. So the loop now TAKES the opener as a required argument and
-    /// the desktop's one production caller — `worker/core.rs`'s
-    /// `default_build_loop`, which stays desktop through T8 — supplies it.
+    /// the desktop's one production caller supplies it.
+    ///
+    /// # What S8.2 moved, and why the pin had to move with it
+    ///
+    /// The caller used to be `worker/core.rs`'s `default_build_loop`, which the
+    /// plan expected to stay desktop through T8. S8.2 moved `core.rs` into the
+    /// crate, so the literal `crate::open::desktop_open_requester()` DELETED
+    /// itself from that file — the crate may not name `open.rs` at all, and
+    /// `boundary_pins::no_path_reaches_a_desktop_module` would red if it did.
+    /// The opener is now threaded one level up, and the desktop-side supplier is
+    /// the wrapper in `agent/worker/mod.rs`. So the pin split into two halves,
+    /// both read here:
+    ///
+    ///   * **(1) structure, in the crate.** The moved `core.rs` still has
+    ///     exactly ONE production `#[cfg(test)]` split and exactly ONE
+    ///     production `AgentLoop::new(`, and `default_build_loop` still TAKES
+    ///     the opener as a parameter. The last assert is what keeps this half
+    ///     from going green on a deleted literal: without it, someone could
+    ///     drop the argument and hard-code `NoOpenRequester` inside the crate
+    ///     and every structural count would still pass.
+    ///   * **(2) the needle, in the desktop shell.** `agent/worker/mod.rs`'s
+    ///     `run_worker_inner()` wrapper must pass
+    ///     `crate::open::desktop_open_requester()` to the crate — and exactly
+    ///     once. Desktop → crate is the legal direction; the reverse is the
+    ///     crossing this whole boundary exists to prevent, which is why the
+    ///     needle cannot live beside the loop it protects.
     ///
     /// # Why a lint on top of a required argument
     ///
@@ -381,20 +405,35 @@ mod tests {
     /// type is the same and the default is a legitimate value for a test. That
     /// is the silent failure this lint closes, and it is exactly the failure
     /// [`every_desktop_mcp_manager_carries_the_open_requester`] closes one level
-    /// down. The scan reads the PRODUCTION region only (everything before the
-    /// file's `#[cfg(test)]`), because the stub in the test module passes the
-    /// no-op opener ON PURPOSE — a test must never launch a browser.
+    /// down. Both halves read CODE with comment lines dropped — a doc comment
+    /// naming `desktop_open_requester` must not credit a call site that never
+    /// makes it, the same fail-OPEN direction this file's other scans refuse.
     ///
-    /// # Non-vacuity (measured)
+    /// # Non-vacuity (measured, on BOTH halves, at S8.2)
     ///
-    /// Replace `crate::open::desktop_open_requester(),` at
-    /// `worker/core.rs`'s production `AgentLoop::new(` with
-    /// `Arc::new(crate::agent::mcp::NoOpenRequester),` and this fails naming the
-    /// call site; the rest of the workspace still compiles green, which is
-    /// precisely why the lint is worth having.
+    /// (1) Delete the `open_requester: Arc<dyn crate::mcp::OpenRequester>`
+    /// parameter from `crates/fulcrum-core/src/worker/core.rs`'s
+    /// `default_build_loop` → this fails on the parameter half.
+    /// (2) Replace `crate::open::desktop_open_requester(),` in the wrapper with
+    /// `Arc::new(fulcrum_core::mcp::NoOpenRequester),` → this fails naming the
+    /// call site, while the workspace still compiles green — which is precisely
+    /// why the lint is worth having.
+    ///
+    /// # S8.4's obligation (recorded, not silently inherited)
+    ///
+    /// S8.4 deletes the wrapper this needle points at and moves the opener call
+    /// to `src-tauri/src/lib.rs::run_worker`. **S8.4 must re-point half (2)
+    /// there and re-prove non-vacuity in the new file** — pointing a pin at a
+    /// file that no longer holds its needle is the unfalsifiable-needle failure
+    /// this plan's review round rejected. See the status file's T8 vetting entry.
     #[test]
     fn the_production_loop_caller_passes_the_desktop_opener() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent/worker/core.rs");
+        // ── Half 1 — the STRUCTURE, in the crate ─────────────────────────────
+        // `open.rs` lives in `src-tauri/src/`, so its manifest parent is the
+        // repo root and ONE `../` reaches the crate — the spelling this file's
+        // two `harness/loop.rs` pins already use.
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/fulcrum-core/src/worker/core.rs");
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         let source = source.replace("\r\n", "\n");
@@ -411,9 +450,10 @@ mod tests {
         assert_eq!(
             test_starts.len(),
             1,
-            "expected exactly 1 `#[cfg(test)]` in worker/core.rs to split production \
-             from the stub fixtures, found {test_starts:?} — this lint cannot tell the \
-             production `AgentLoop::new(` from the stub's without that boundary",
+            "expected exactly 1 `#[cfg(test)]` in the crate's worker/core.rs to \
+             split production from the stub fixtures, found {test_starts:?} — this \
+             lint cannot tell the production `AgentLoop::new(` from the stub's \
+             without that boundary",
         );
         let production = &lines[..test_starts[0]];
         let code: Vec<(usize, &str)> = production
@@ -435,40 +475,170 @@ mod tests {
         assert_eq!(
             ctor_lines.len(),
             1,
-            "expected exactly 1 production `AgentLoop::new(` in worker/core.rs (the \
-             `default_build_loop` call site — the S5 RULING's measurement), found \
-             {ctor_lines:?}: a second one would be an unwired loop this lint does not read",
+            "expected exactly 1 production `AgentLoop::new(` in the crate's \
+             worker/core.rs (the `default_build_loop` call site — the S5 RULING's \
+             measurement), found {ctor_lines:?}: a second one would be an unwired \
+             loop this lint does not read",
         );
+        // The seam is still a SEAM, and this reads `default_build_loop`'S OWN
+        // signature — NOT the whole file. `WorkerCore::new` carries an
+        // identically-typed parameter two hundred lines below, so a file-wide
+        // `contains` was MEASURED VACUOUS: deleting `default_build_loop`'s
+        // parameter and hard-coding `Arc::new(NoOpenRequester)` at the
+        // `AgentLoop::new(` site left that scan green (caught by breaking it).
+        // Hence the scoped region.
+        let fn_start = code
+            .iter()
+            .find(|(_, l)| l.contains("pub fn default_build_loop("))
+            .map(|(n, _)| *n)
+            .unwrap_or_else(|| panic!("no `pub fn default_build_loop(` in {path:?}"));
+        let fn_end = code
+            .iter()
+            .find(|(n, l)| *n > fn_start && l.contains("-> Box<dyn Fn(&StartEnv) -> LoopHandles"))
+            .map(|(n, _)| *n)
+            .unwrap_or_else(|| {
+                panic!("no `-> Box<dyn Fn(&StartEnv) -> LoopHandles` after {fn_start}")
+            });
+        let signature: Vec<&str> = code
+            .iter()
+            .filter(|(n, _)| *n > fn_start && *n <= fn_end)
+            .map(|(_, l)| l.trim())
+            .collect();
+        assert!(
+            signature
+                .iter()
+                .any(|l| l.starts_with("open_requester: Arc<dyn crate::mcp::OpenRequester>")),
+            "`default_build_loop` ({fn_start}..{fn_end}) no longer takes the \
+             `OpenRequester` as a parameter — since S8.2 the opener can only ever \
+             ARRIVE here, so a version that builds one inside the crate is the \
+             boundary crossing `no_path_reaches_a_desktop_module` exists to catch, \
+             and this half is the desktop-side witness that the seam is real",
+        );
+        // And the production `AgentLoop::new(` must pass THAT parameter, not a
+        // no-op it built itself. This is what REPLACES the old
+        // `crate::open::desktop_open_requester()` needle inside the crate: the
+        // crate may not name the desktop's opener, so what is provable on this
+        // side is that the loop carries the THREADED value, and half 2 proves
+        // the value handed in is the desktop's real one. Together the two halves
+        // chain to the same conclusion the old single needle did.
         let ctor = ctor_lines[0];
         // The argument list runs to the first line that is just `);`.
-        let end = code
+        let ctor_end = code
             .iter()
             .find(|(n, l)| *n > ctor && l.trim() == ");")
             .map(|(n, _)| *n)
             .unwrap_or_else(|| panic!("no closing `);` found for AgentLoop::new at {ctor}"));
         let passed: Vec<usize> = code
             .iter()
-            .filter(|(n, l)| {
-                *n > ctor && *n < end && l.contains("crate::open::desktop_open_requester()")
-            })
+            .filter(|(n, l)| *n > ctor && *n < ctor_end && l.trim() == "open_requester.clone(),")
             .map(|(n, _)| *n)
             .collect();
+        assert_eq!(
+            passed.len(),
+            1,
+            "the production `AgentLoop::new(` at {path:?}:{ctor} does not pass the \
+             threaded `open_requester` exactly once (found {passed:?}) — a loop \
+             built on a no-op opener means the MCP `auth` action silently never \
+             opens a browser and its OAuth flow dies at the callback timeout",
+        );
+        // The crate may neither reach the desktop's opener nor hard-code the
+        // no-op in PRODUCTION (the test region below does, on purpose — that is
+        // the stub's contract, and the split above is what keeps it out of the
+        // count).
+        let offender = code
+            .iter()
+            .find(|(_, l)| l.contains("crate::open::") || l.contains("mcp::NoOpenRequester"))
+            .map(|(n, l)| (*n, l.trim().to_string()));
         assert!(
-            !passed.is_empty(),
-            "the production `AgentLoop::new(` at worker/core.rs:{ctor} does not pass \
-             `crate::open::desktop_open_requester()` — the loop would then carry \
-             `NoOpenRequester` for every session, so the MCP `auth` action would \
-             silently never open a browser and its OAuth flow would die at the \
-             callback timeout",
+            offender.is_none(),
+            "the crate's worker/core.rs constructs the opener in PRODUCTION at \
+             {offender:?} — `open.rs` is `tauri` and cannot move into \
+             `fulcrum-core`, and a production `NoOpenRequester` is exactly the \
+             silent failure this pin exists to catch; the opener must arrive \
+             through `default_build_loop`'s parameter, supplied by the desktop \
+             wrapper half 2 reads",
         );
         // And the no-op opener must be a TEST-ONLY choice in this file, so the
         // split above is not quietly crediting the stub.
         let test_region = &lines[test_starts[0]..];
         assert!(
             test_region.iter().any(|l| l.contains("NoOpenRequester")),
-            "expected the test region of worker/core.rs to inject `NoOpenRequester` \
-             (the stub's contract) — if that changed, re-check which region this \
-             lint's production half is reading",
+            "expected the test region of the crate's worker/core.rs to inject \
+             `NoOpenRequester` (the stub's contract) — if that changed, re-check \
+             which region this lint's production half is reading",
+        );
+
+        // ── Half 2 — the NEEDLE, in the DESKTOP shell ───────────────────────
+        // The one desktop call site that constructs the opener argument.
+        let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent/worker/mod.rs");
+        let shell_source = std::fs::read_to_string(&shell)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", shell.display()));
+        let shell_source = shell_source.replace("\r\n", "\n");
+        let shell_code: Vec<(usize, &str)> = shell_source
+            .lines()
+            .enumerate()
+            .map(|(i, l)| (i + 1, l))
+            // CODE, not prose — the same fail-OPEN reason as half 1. This file's
+            // docs name `desktop_open_requester` in THREE comments; a scan that
+            // read them would pass a wrapper that never passes it.
+            .filter(|(_, l)| {
+                let t = l.trim_start();
+                !t.starts_with("//")
+            })
+            .collect();
+
+        let call_lines: Vec<usize> = shell_code
+            .iter()
+            .filter(|(_, l)| l.contains("fulcrum_core::worker::run_worker_inner("))
+            .map(|(n, _)| *n)
+            .collect();
+        assert_eq!(
+            call_lines.len(),
+            1,
+            "expected exactly 1 call to `fulcrum_core::worker::run_worker_inner(` \
+             in {shell:?} (the S8.2 wrapper — the ONE desktop site that supplies \
+             the opener), found {call_lines:?}: a second one would be an unwired \
+             worker entry this lint does not read",
+        );
+        let call = call_lines[0];
+        // The argument list runs to the first line that is just `)`.
+        let end = shell_code
+            .iter()
+            .find(|(n, l)| *n > call && l.trim() == ")")
+            .map(|(n, _)| *n)
+            .unwrap_or_else(|| panic!("no closing `)` found for the wrapper call at {call}"));
+        let passed: Vec<usize> = shell_code
+            .iter()
+            .filter(|(n, l)| {
+                *n > call && *n < end && l.contains("crate::open::desktop_open_requester()")
+            })
+            .map(|(n, _)| *n)
+            .collect();
+        assert_eq!(
+            passed.len(),
+            1,
+            "the desktop wrapper at {shell:?}:{call} does not pass \
+             `crate::open::desktop_open_requester()` to the crate exactly once \
+             (found {passed:?}) — the Worker's loop would then carry \
+             `NoOpenRequester` for every session, so the MCP `auth` action would \
+             silently never open a browser and its OAuth flow would die at the \
+             callback timeout",
+        );
+        // The SECOND injected seam, so the wrapper is pinned as a whole and not
+        // half-restored: the crash hook is the other desktop thing the crate may
+        // not name (`agent/crashlog.rs` stayed desktop).
+        let hook_lines: Vec<usize> = shell_code
+            .iter()
+            .filter(|(n, l)| *n > call && *n < end && l.contains("install_panic_hook(\"worker\""))
+            .map(|(n, _)| *n)
+            .collect();
+        assert_eq!(
+            hook_lines.len(),
+            1,
+            "the desktop wrapper at {shell:?}:{call} does not pass the \
+             `install_panic_hook(\"worker\", …)` closure exactly once (found \
+             {hook_lines:?}) — a Worker that panics with no hook leaves no crash \
+             log, which is the whole reason the hook exists",
         );
     }
 

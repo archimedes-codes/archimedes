@@ -20,22 +20,22 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, watch, Mutex as TokioMutex};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::events::EventSink;
-use crate::agent::events::RpcEvent;
-use crate::agent::harness::prompt::{build_main_prompt, PromptContext};
-use crate::agent::harness::provider::openai::content_is_effectively_empty;
-use crate::agent::harness::r#loop::{AgentLoop, ControlCmd, PromptTurn, SudoDeps};
-use crate::agent::harness::retry::RetryPolicy;
-use crate::agent::harness::store::Store;
-use crate::agent::harness::trust::{StaticTrustSource, TrustSource};
-use crate::agent::interactive::{interactive_key, PendingInteractive, PendingSudo};
-use crate::agent::permission::{permission_key, PendingPermissions, PermissionOutcome};
-use crate::agent::subagent::SubagentOutcome;
-use crate::agent::todo::TodoStore;
-use crate::agent::worker::dispatch::{IpcDispatcher, SubagentWaiters};
-use crate::agent::worker::protocol::{Inbound, Outbound, StartEnv, StartMode};
-use crate::agent::worker::sink::IpcEventSink;
-use crate::agent::worker::store::IpcStore;
+use crate::events::EventSink;
+use crate::events::RpcEvent;
+use crate::harness::prompt::{build_main_prompt, PromptContext};
+use crate::harness::provider::openai::content_is_effectively_empty;
+use crate::harness::r#loop::{AgentLoop, ControlCmd, PromptTurn, SudoDeps};
+use crate::harness::retry::RetryPolicy;
+use crate::harness::store::Store;
+use crate::interactive::{interactive_key, PendingInteractive, PendingSudo};
+use crate::permission::{permission_key, PendingPermissions, PermissionOutcome};
+use crate::subagent::SubagentOutcome;
+use crate::todo::TodoStore;
+use crate::trust::{StaticTrustSource, TrustSource};
+use crate::worker::dispatch::{IpcDispatcher, SubagentWaiters};
+use crate::worker::protocol::{Inbound, Outbound, StartEnv, StartMode};
+use crate::worker::sink::IpcEventSink;
+use crate::worker::store::IpcStore;
 
 /// The handles `build_loop` returns (the core keeps the control fields —
 /// the `AgentLoop`'s `prompt_tx` / `turn_cancel` / `settle_tx` fields are
@@ -166,16 +166,13 @@ impl IpcRenderRequester {
     }
 }
 
-impl crate::agent::web::RenderRequester for IpcRenderRequester {
+impl crate::web::RenderRequester for IpcRenderRequester {
     fn request_render(
         &self,
         url: &str,
         timeout_ms: u64,
     ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<crate::agent::web::RenderedPage, String>>
-                + Send,
-        >,
+        Box<dyn std::future::Future<Output = Result<crate::web::RenderedPage, String>> + Send>,
     > {
         let session_id = self.session_id.clone();
         let outbound = self.outbound.clone();
@@ -223,7 +220,7 @@ impl crate::agent::web::RenderRequester for IpcRenderRequester {
                             .and_then(Value::as_str)
                             .unwrap_or(&url)
                             .to_string();
-                        Ok(crate::agent::web::RenderedPage {
+                        Ok(crate::web::RenderedPage {
                             html,
                             status,
                             final_url,
@@ -255,6 +252,25 @@ impl crate::agent::web::RenderRequester for IpcRenderRequester {
 /// application — the wire field IS the harness convention — the thinking
 /// level), (4) the `LoopHandles` (the `prompt_tx` / `control_tx` clones
 /// taken from the `pub` fields BEFORE the `tokio::spawn`).
+///
+/// (T8/S8.2) `open_requester` is the DESKTOP's browser opener, injected. It
+/// used to be constructed here (`crate::open::desktop_open_requester()`),
+/// which compiled only while this file was desktop — `open.rs` is `tauri` and
+/// cannot move into this crate, so S5a made `AgentLoop::new` TAKE the opener
+/// and this commit makes the Worker take it one level up. ADR 0091: the shape
+/// crosses, the substance stays. The argument is REQUIRED (a caller that
+/// forgets it is `E0061`, not a silent `NoOpenRequester` default), and
+/// `open.rs::the_production_loop_caller_passes_the_desktop_opener` pins that
+/// the DESKTOP shell's `run_worker_inner()` wrapper is the call site that
+/// supplies it.
+//
+// 8 args (+1 over the `clippy::too_many_arguments` threshold of 7) — the seventh
+// was the `trust` source and the eighth is this commit's injected opener. Kept
+// rather than collapsed into a params struct: the crate's own precedent is
+// `harness/loop.rs`'s 23-arg `AgentLoop::new`, whose `#[allow]` carries the same
+// reasoning (the commit is the seam, not a lint refactor), and a params struct
+// here would rewrite every field-line of a 23-arg call for a lint.
+#[allow(clippy::too_many_arguments)]
 pub fn default_build_loop(
     outbound: mpsc::UnboundedSender<Outbound>,
     subagent_waiters: SubagentWaiters,
@@ -263,6 +279,7 @@ pub fn default_build_loop(
     pending_sudo: PendingSudo,
     pending_render: PendingRender,
     trust: Option<Arc<StaticTrustSource>>,
+    open_requester: Arc<dyn crate::mcp::OpenRequester>,
 ) -> Box<dyn Fn(&StartEnv) -> LoopHandles + Send> {
     Box::new(move |env: &StartEnv| {
         let cwd = std::path::PathBuf::from(&env.cwd);
@@ -283,20 +300,19 @@ pub fn default_build_loop(
         // `StaticTrustSource` + the `TodoStore`). A model with no configured
         // headers → `None` — byte-identical to the old `build_provider(&env.model)`
         // and to an old envelope (`providers` decodes to the empty vec).
-        let provider = crate::agent::harness::provider::build_provider_with_headers(
+        let provider = crate::harness::provider::build_provider_with_headers(
             &env.model,
-            crate::agent::harness::provider::headers_for_providers(&env.providers, &env.model)
-                .as_ref(),
+            crate::harness::provider::headers_for_providers(&env.providers, &env.model).as_ref(),
         );
         let store: Arc<dyn Store> = Arc::new(IpcStore::new(outbound.clone()));
         let trust: Option<Arc<dyn TrustSource>> = trust.clone().map(|t| t as Arc<dyn TrustSource>);
         let sink: Arc<dyn EventSink> = Arc::new(IpcEventSink::new(outbound.clone()));
-        let subagent: Option<Arc<dyn crate::agent::harness::SubagentDispatcher>> =
+        let subagent: Option<Arc<dyn crate::harness::SubagentDispatcher>> =
             env.subagent_enabled.then(|| {
                 Arc::new(IpcDispatcher::new(
                     outbound.clone(),
                     subagent_waiters.clone(),
-                )) as Arc<dyn crate::agent::harness::SubagentDispatcher>
+                )) as Arc<dyn crate::harness::SubagentDispatcher>
             });
         let sudo = SudoDeps {
             pending_sudo: pending_sudo.clone(),
@@ -327,24 +343,28 @@ pub fn default_build_loop(
             // The envelope's stamp (ADR 0049) — THE line that makes the fix
             // real: a Resume's loop mints ids its predecessor never used.
             env.incarnation.clone(),
-            // (T5/S5a, SEAM 2) THE desktop's opener, handed to the loop. This is
-            // the ONE production caller of `AgentLoop::new`, and the loop takes
-            // the opener rather than constructing it because `harness` moves into
-            // `fulcrum-core` in S5b while `open.rs` cannot (it is `tauri`). The
-            // argument is REQUIRED, so a caller that forgets it is a compile
+            // (T5/S5a SEAM 2, threaded through in T8/S8.2) THE opener, handed
+            // to the loop. The loop takes the opener rather than constructing
+            // it because `harness` lives in a crate that cannot name `open.rs`
+            // (`tauri`), and SINCE S8.2 the same reason applies one level up:
+            // this file lives in that crate too, so the opener now arrives
+            // through `default_build_loop`'s parameter — threaded from
+            // `run_worker_inner`, whose DESKTOP wrapper supplies
+            // `crate::open::desktop_open_requester()`. The argument is
+            // REQUIRED at both levels, so a caller that forgets it is a compile
             // error (`E0061: this function takes 23 arguments but 22 were
             // supplied`), not a silent `NoOpenRequester` default — and
             // `open.rs`'s `the_production_loop_caller_passes_the_desktop_opener`
-            // pins that THIS site names `desktop_open_requester` rather than
-            // some other `Arc<dyn OpenRequester>` that would still compile.
-            crate::open::desktop_open_requester(),
+            // pins that the desktop wrapper names `desktop_open_requester`
+            // rather than some other `Arc<dyn OpenRequester>` that would still
+            // compile.
+            open_requester.clone(),
         );
-        let render_req: Arc<dyn crate::agent::web::RenderRequester> =
-            Arc::new(IpcRenderRequester::new(
-                env.session_id.clone(),
-                outbound.clone(),
-                pending_render.clone(),
-            ));
+        let render_req: Arc<dyn crate::web::RenderRequester> = Arc::new(IpcRenderRequester::new(
+            env.session_id.clone(),
+            outbound.clone(),
+            pending_render.clone(),
+        ));
         loop_.set_render_requester(Some(render_req));
         // (Fulcrum T3) THE packaging hop: the five desktop-config fields ride
         // the envelope, and this is where they reach the loop that used to read
@@ -475,7 +495,13 @@ pub fn default_build_loop(
 impl WorkerCore {
     /// Build the core (the `build_loop` seam defaults to the production
     /// path; the inbound channel is fed by `run_worker`'s stdin loop).
-    pub fn new(outbound: mpsc::UnboundedSender<Outbound>) -> (Self, mpsc::Sender<Inbound>) {
+    ///
+    /// (T8/S8.2) `open_requester` is the desktop's browser opener, injected
+    /// (see `default_build_loop`'s docs for why it cannot be constructed here).
+    pub fn new(
+        outbound: mpsc::UnboundedSender<Outbound>,
+        open_requester: Arc<dyn crate::mcp::OpenRequester>,
+    ) -> (Self, mpsc::Sender<Inbound>) {
         let (inbound_tx, inbound_rx) = mpsc::channel(64);
         let subagent_waiters = Arc::new(StdMutex::new(HashMap::new()));
         // The per-Worker maps + the shared `StaticTrustSource` (created
@@ -510,6 +536,7 @@ impl WorkerCore {
                 pending_sudo,
                 pending_render,
                 trust,
+                open_requester,
             ),
         };
         (core, inbound_tx)
@@ -781,7 +808,7 @@ impl WorkerCore {
                         SubagentOutcome::Failed {
                             // `Other`, NOT `Cancelled` — the child settled; it was
                             // not stopped (`Cancelled` is a parent/user Stop).
-                            reason: crate::agent::subagent::SubagentFailureReason::Other,
+                            reason: crate::subagent::SubagentFailureReason::Other,
                             error: "the subagent settled with no output".to_string(),
                             output: String::new(),
                             metrics,
@@ -821,16 +848,16 @@ impl WorkerCore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::events::RpcEvent;
-    use crate::agent::harness::catalog::Model;
-    use crate::agent::harness::provider::{
+    use crate::events::RpcEvent;
+    use crate::harness::catalog::Model;
+    use crate::harness::provider::{
         FinishReason, ModelRequest, Provider, ProviderError, ProviderEvent,
     };
-    use crate::agent::harness::{RetryPolicy, Store, SudoDeps};
-    use crate::agent::permission::{permission_key, PendingPermissions, PermissionOutcome};
-    use crate::agent::subagent::SubagentOutcome;
-    use crate::agent::todo::TodoStore;
-    use crate::agent::worker::protocol::StartMode;
+    use crate::harness::{RetryPolicy, Store, SudoDeps};
+    use crate::permission::{permission_key, PendingPermissions, PermissionOutcome};
+    use crate::subagent::SubagentOutcome;
+    use crate::todo::TodoStore;
+    use crate::worker::protocol::StartMode;
     use futures_util::stream;
     use futures_util::StreamExt;
     use std::collections::HashMap;
@@ -875,7 +902,7 @@ mod tests {
 
     fn test_env(
         mode: StartMode,
-        transcript: Option<Vec<crate::agent::harness::provider::ChatMessage>>,
+        transcript: Option<Vec<crate::harness::provider::ChatMessage>>,
         system_prompt: Option<String>,
     ) -> StartEnv {
         StartEnv::from_parts(
@@ -884,7 +911,7 @@ mod tests {
             mode,
             transcript,
             test_model(),
-            crate::agent::harness::ModelCatalog {
+            crate::harness::ModelCatalog {
                 models: vec![test_model()],
                 ..Default::default()
             },
@@ -909,8 +936,7 @@ mod tests {
         let turn_cancel = Arc::new(StdMutex::new(CancellationToken::new()));
         let (settle_tx, _settle_rx) = watch::channel(0u64);
         let store: Arc<dyn Store> = Arc::new(IpcStore::new(outbound.clone()));
-        let sink: Arc<dyn crate::agent::events::EventSink> =
-            Arc::new(IpcEventSink::new(outbound.clone()));
+        let sink: Arc<dyn crate::events::EventSink> = Arc::new(IpcEventSink::new(outbound.clone()));
         let mut loop_ = AgentLoop::new(
             env.session_id.clone(),
             cwd,
@@ -937,9 +963,10 @@ mod tests {
             // (T5/S5a, SEAM 2) The no-op opener: this stub builds a real
             // `AgentLoop` but never drives the MCP `auth` action, and a test
             // must never launch a real browser. The PRODUCTION path above
-            // passes `crate::open::desktop_open_requester()` instead — the
-            // distinction is what makes the stub a stub.
-            Arc::new(crate::agent::mcp::NoOpenRequester),
+            // threads through the injected `open_requester`, which the desktop
+            // wrapper fills with its tauri-backed opener — the distinction is
+            // what makes the stub a stub.
+            Arc::new(crate::mcp::NoOpenRequester),
         );
         // The session initialization (the seam stub mirrors the
         // `build_loop` default's init steps — the SAME four arms, so the
@@ -988,6 +1015,23 @@ mod tests {
         }
     }
 
+    /// (T8/S8.2) The opener the test cores inject. `WorkerCore::new` now TAKES
+    /// the opener (the crate cannot construct the desktop's), and a test must
+    /// never launch a browser — so the crate's own no-op `NoOpenRequester`.
+    /// NOTE what that does and does not change for the three
+    /// `production_core()` tests below: they still drive the REAL
+    /// `default_build_loop` (the seam is NOT swapped) and every production line
+    /// of it — the provider build, `AgentLoop::new`'s 23 arguments, the session
+    /// init `match`, `set_desktop_config`, `set_enabled_tools`,
+    /// `set_permission`. The ONLY thing they now hold differently is the value
+    /// of the one injected argument, and none of their assertions reads the
+    /// opener (they assert the seq-0 transcript row and the outbound frames).
+    /// The desktop opener itself is pinned from the desktop side by
+    /// `open.rs::the_production_loop_caller_passes_the_desktop_opener`.
+    fn test_open_requester() -> Arc<dyn crate::mcp::OpenRequester> {
+        Arc::new(crate::mcp::NoOpenRequester)
+    }
+
     /// A `WorkerCore` with the stub `build_loop` (the outbound channel
     /// is test-observed).
     fn stub_core() -> (
@@ -997,7 +1041,7 @@ mod tests {
     ) {
         let (out_tx, out_rx) = mpsc::unbounded_channel();
         let out_tx2 = out_tx.clone();
-        let (core, in_tx) = WorkerCore::new(out_tx);
+        let (core, in_tx) = WorkerCore::new(out_tx, test_open_requester());
         let core = core.with_build_loop(move |env: &StartEnv| stub_handles(env, out_tx2.clone()));
         (core, out_rx, in_tx)
     }
@@ -1135,15 +1179,15 @@ mod tests {
     async fn resume_start_hydrates_the_transcript_without_re_persisting() {
         let (mut core, mut out_rx, _in_tx) = stub_core();
         let transcript = vec![
-            crate::agent::harness::provider::ChatMessage {
-                role: crate::agent::harness::provider::ChatRole::System,
-                content: crate::agent::harness::provider::MessageContent::Text("sp".to_string()),
+            crate::harness::provider::ChatMessage {
+                role: crate::harness::provider::ChatRole::System,
+                content: crate::harness::provider::MessageContent::Text("sp".to_string()),
                 tool_call_id: None,
                 tool_calls: None,
             },
-            crate::agent::harness::provider::ChatMessage {
-                role: crate::agent::harness::provider::ChatRole::User,
-                content: crate::agent::harness::provider::MessageContent::Text("hi".to_string()),
+            crate::harness::provider::ChatMessage {
+                role: crate::harness::provider::ChatRole::User,
+                content: crate::harness::provider::MessageContent::Text("hi".to_string()),
                 tool_call_id: None,
                 tool_calls: None,
             },
@@ -1211,14 +1255,16 @@ mod tests {
     /// A `WorkerCore` on the PRODUCTION `default_build_loop` (the canned
     /// provider resolves from the envelope's `Model`, which the test model
     /// points at a dead `http://fake/v1` — never called: these tests send no
-    /// `Prompt`).
+    /// `Prompt`). Since S8.2 this is the crate's own view of the production
+    /// builder: EVERY line of `default_build_loop` runs, and only the injected
+    /// opener is the crate's no-op (see `test_open_requester`).
     fn production_core() -> (
         WorkerCore,
         mpsc::UnboundedReceiver<Outbound>,
         mpsc::Sender<Inbound>,
     ) {
         let (out_tx, out_rx) = mpsc::unbounded_channel();
-        let (core, in_tx) = WorkerCore::new(out_tx);
+        let (core, in_tx) = WorkerCore::new(out_tx, test_open_requester());
         (core, out_rx, in_tx)
     }
 
@@ -1447,7 +1493,7 @@ mod tests {
     /// `IpcRenderRequester` emits `Outbound::FetchRenderRequest` and resolves on response.
     #[tokio::test]
     async fn ipc_render_requester_sends_outbound_and_resolves() {
-        use crate::agent::web::RenderRequester;
+        use crate::web::RenderRequester;
 
         let (out_tx, mut out_rx) = mpsc::unbounded_channel();
         let pending_render: PendingRender = Arc::new(TokioMutex::new(HashMap::new()));
@@ -1546,10 +1592,10 @@ mod tests {
         core.handle(Inbound::SubagentResult {
             id: "sub1".to_string(),
             outcome: SubagentOutcome::Failed {
-                reason: crate::agent::subagent::SubagentFailureReason::Other,
+                reason: crate::subagent::SubagentFailureReason::Other,
                 error: "boom".to_string(),
                 output: "partial thought".to_string(),
-                metrics: crate::agent::subagent::SubagentMetrics::default(),
+                metrics: crate::subagent::SubagentMetrics::default(),
             },
         })
         .await;
@@ -1557,10 +1603,10 @@ mod tests {
         assert_eq!(
             outcome,
             SubagentOutcome::Failed {
-                reason: crate::agent::subagent::SubagentFailureReason::Other,
+                reason: crate::subagent::SubagentFailureReason::Other,
                 error: "boom".to_string(),
                 output: "partial thought".to_string(),
-                metrics: crate::agent::subagent::SubagentMetrics::default(),
+                metrics: crate::subagent::SubagentMetrics::default(),
             }
         );
         assert!(
@@ -1584,7 +1630,7 @@ mod tests {
         for empty in [
             String::new(),
             "  \n ".to_string(),
-            crate::agent::harness::provider::openai::EMPTY_CONTENT_SANITISE_PLACEHOLDER.to_string(),
+            crate::harness::provider::openai::EMPTY_CONTENT_SANITISE_PLACEHOLDER.to_string(),
         ] {
             let (stx, srx) = oneshot::channel::<SubagentOutcome>();
             core.subagent_waiters
@@ -1595,7 +1641,7 @@ mod tests {
                 id: "sub1".to_string(),
                 outcome: SubagentOutcome::Completed {
                     output: empty.clone(),
-                    metrics: crate::agent::subagent::SubagentMetrics::default(),
+                    metrics: crate::subagent::SubagentMetrics::default(),
                 },
             })
             .await;
@@ -1611,7 +1657,7 @@ mod tests {
                 } => {
                     assert_eq!(
                         reason,
-                        crate::agent::subagent::SubagentFailureReason::Other,
+                        crate::subagent::SubagentFailureReason::Other,
                         "`Other`, NOT `Cancelled` — the child settled, it was not \
                          stopped (for empty output {empty:?})"
                     );
@@ -1638,7 +1684,7 @@ mod tests {
         core.handle(Inbound::from(&env)).await;
         let real = format!(
             "the answer is 42. {}",
-            crate::agent::harness::provider::openai::EMPTY_CONTENT_SANITISE_PLACEHOLDER
+            crate::harness::provider::openai::EMPTY_CONTENT_SANITISE_PLACEHOLDER
         );
         let (stx, srx) = oneshot::channel::<SubagentOutcome>();
         core.subagent_waiters
@@ -1649,7 +1695,7 @@ mod tests {
             id: "sub1".to_string(),
             outcome: SubagentOutcome::Completed {
                 output: real.clone(),
-                metrics: crate::agent::subagent::SubagentMetrics::default(),
+                metrics: crate::subagent::SubagentMetrics::default(),
             },
         })
         .await;
@@ -1710,7 +1756,7 @@ mod tests {
     /// loop's CONTROL channel and returns NO frame (`handle`'s return is the
     /// store / sink frames; `RpcEvent`s leave via the PUMP), so the
     /// observation point is the pump: a `compaction_start` whose `reason` is
-    /// [`crate::agent::events::CompactionReason::Manual`]. The stub transcript
+    /// [`crate::events::CompactionReason::Manual`]. The stub transcript
     /// is the single system prompt, so the outcome is `Skipped` — both frames
     /// still fire. (Cancellation is NOT
     /// asserted here: the canned provider completes synchronously, so no
@@ -1746,7 +1792,7 @@ mod tests {
                 f,
                 Outbound::Event {
                     event: RpcEvent::compaction_start { reason }
-                } if reason == &crate::agent::events::CompactionReason::Manual
+                } if reason == &crate::events::CompactionReason::Manual
             )),
             "the compact frame reached the loop's control queue (a `compaction_start` \
              with the manual reason), got {frames:?}"

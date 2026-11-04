@@ -117,7 +117,10 @@ pub fn build_provider(m: &crate::harness::catalog::Model) -> Box<dyn Provider> {
 /// method).
 // (Step A.3) RAISED from `pub(crate)`: the STAYING desktop `worker/core.rs`
 // calls it (the loop-construction header site), and a package boundary erases
-// `pub(crate)`.
+// `pub(crate)`. T8/S8.2 then moved `worker/core.rs` INTO this crate, so the
+// caller is no longer across the boundary and the raise is no longer strictly
+// required — it is KEPT (widening is not the thing to undo under a move, and
+// S8.5's extraction audit is where a visibility tighten belongs if it is wanted).
 pub fn headers_for_providers(
     providers: &[crate::config_types::ProviderConfig],
     model: &crate::harness::catalog::Model,

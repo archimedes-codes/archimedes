@@ -48,8 +48,11 @@
 //! `render.rs` imports nothing from the crate. It owns `RenderRequest`/`RenderReply`
 //! and `session/router.rs` drives them. The crate's `RenderRequester` trait —
 //! declared in the crate's `web/mod.rs`, NOT in `render.rs`, which is why the
-//! trait could move and the renderer could stay — is implemented by the desktop's
-//! `worker/core.rs::IpcRenderRequester`. Desktop → crate: the allowed direction.
+//! trait could move and the renderer could stay — was implemented by the desktop's
+//! `worker/core.rs::IpcRenderRequester` (desktop → crate, the allowed direction)
+//! until T8/S8.2 moved `core.rs` into `fulcrum-core`; the renderer is still the
+//! only half that touches a `WebviewWindow`, and it still names nothing in the
+//! crate's `web` tree, which is the reason the split works either way.
 
 pub mod render;
 

@@ -173,14 +173,22 @@ pub mod subagent;
 
 // ── T8/S8.1 — the Worker's wire leaf ────────────────────────────────────────
 // `worker` moves in five sub-steps (S8.1–S8.5), bottom-up on dependency. S8.1
-// takes the three files nothing else in `worker/` compiles without: the wire
+// took the three files nothing else in `worker/` compiles without: the wire
 // vocabulary (`protocol`) and the two Worker-side trait implementations
-// (`store`'s `IpcStore`, `sink`'s `IpcEventSink`). The desktop keeps a pure
-// re-export shell at `src-tauri/src/agent/worker/mod.rs`, so its still-desktop
-// residents (`client`, `core`, `dispatch`, `manager/**`) keep resolving
-// `crate::agent::worker::protocol::…` through it with zero edits until S8.2–S8.3
-// move them, and so do the 11 integration targets that name
-// `archimedes_lib::agent::worker::…`.
+// (`store`'s `IpcStore`, `sink`'s `IpcEventSink`). S8.2 added the composition
+// point (`core` + `dispatch`) and moved `run_worker_inner` here with the two
+// injected seams — the browser opener and the crash panic hook — because
+// `open.rs` is `tauri` and `crashlog.rs` stays desktop (ADR 0091: the shape
+// crosses, the substance stays).
+//
+// The desktop keeps a re-export shell at `src-tauri/src/agent/worker/mod.rs`, so
+// its still-desktop residents (`client`, `manager/**`) keep resolving
+// `crate::agent::worker::protocol::…` through it with zero edits until S8.3 moves
+// them, and so do the 11 integration targets that name
+// `archimedes_lib::agent::worker::…`. The shell is not yet PURE: it still defines
+// the zero-argument `run_worker_inner()` wrapper that supplies the two injected
+// arguments, which is what lets `lib.rs::run_worker` stay untouched through
+// S8.2's gate. S8.4 deletes it.
 //
 // `provider_auth` REMAINS absent from this crate (it is T7's, minus `headers`,
 // which S3 moved as `provider_headers`). `worker` is no longer absent: this line
