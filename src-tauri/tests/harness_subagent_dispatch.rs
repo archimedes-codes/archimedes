@@ -114,7 +114,7 @@ async fn make_manager(
         .await
         .expect("the parent attach completes");
     let manager = Arc::new(SubagentSessionManager::new());
-    manager.set_worker_manager(wm);
+    manager.set_dispatcher(wm);
     manager
 }
 

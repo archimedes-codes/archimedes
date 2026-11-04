@@ -837,7 +837,7 @@ impl SessionManager {
     /// exclusive access) so the `Arc<SessionManager>` the `WorkerManager`
     /// callbacks capture can already own the manager. Set BEFORE any
     /// `start_session` / `send_prompt`. The ADR 0025 Task 5 re-plumb ALSO
-    /// forwards it to the `SubagentSessionManager` (`set_worker_manager` —
+    /// forwards it to the `SubagentSessionManager` (`set_dispatcher` —
     /// the `dispatch_native` delegation) and registers the child-cwd
     /// registrar (the `dispatch_subagent` flow's `ensure_session_row` —
     /// the ephemeral `sessions` row's `cwd` — the `StoreFrame` carries no
@@ -847,7 +847,7 @@ impl SessionManager {
     pub fn attach_worker_manager(&self, wm: Arc<WorkerManager>) {
         let _ = self.worker_manager.set(wm.clone());
         if let Some(m) = self.subagent_manager.get() {
-            m.set_worker_manager(wm.clone());
+            m.set_dispatcher(wm.clone());
         }
         let persister = self.persister.clone();
         wm.set_cwd_registrar(Arc::new(move |session_id: &str, cwd: &str| {
@@ -1219,7 +1219,7 @@ impl SessionManagerBuilder {
 
             let _ = sm.worker_manager.set(wm.clone());
             if let Some(m) = sm.subagent_manager.get() {
-                m.set_worker_manager(wm.clone());
+                m.set_dispatcher(wm.clone());
             }
 
             wm_holder = Some(wm);

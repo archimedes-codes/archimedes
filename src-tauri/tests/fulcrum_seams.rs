@@ -815,3 +815,139 @@ fn test_model_shape() -> Model {
         api: Some("openai-completions".to_string()),
     }
 }
+
+// ── Pin 6 (T5/S5b) — the two `Store` IMPLs the S5b split left on the desktop ──
+
+/// `impl Store for SessionStore` and `impl Store for IpcStore` both COMPILE and
+/// are INSTANTIATED (the S5b half of the S4 instantiation rule: an impl nobody
+/// instantiates proves nothing — a hand-written surface comparison still passes
+/// after the `impl` block is deleted, a generic bound does not).
+///
+/// # Why S5b needs this pin at all
+///
+/// S5b moved `pub trait Store` into the crate and re-typed all six methods from
+/// `Result<_, DbError>` to `Result<_, StoreError>` (Ruling 2 — the addendum's
+/// "both pure" was wrong, `DbError` wraps the SQLite driver's error and could not
+/// cross). Both desktop impls were RE-PLUMBED to map at the boundary. A re-plumbed
+/// impl that no test instantiates is exactly the S4 failure mode, so: the generic
+/// bound, a `dyn` coercion, and one real call through each object.
+///
+/// # The deletion that reddens it (measured — see the S5b report for counts)
+///
+///   * delete `impl Store for SessionStore` (`agent/harness/store.rs`) →
+///     `E0277: SessionStore: Store is not satisfied` at the bound, at the
+///     `Arc<dyn Store>` coercion, and at the identity fn below;
+///   * delete `impl Store for IpcStore` (`agent/worker/store.rs`) → the same three
+///     for `IpcStore`;
+///   * delete the `pub use fulcrum_core::harness::store::{DisplayRow, NoopStore,
+///     Store};` line in `agent/harness/mod.rs` → this file AND the desktop's
+///     `harness/**` consumers fail: the re-export seam is the other half of proof.
+///
+/// # ⚠️ THIS PIN'S VALUE IS LOWER THAN S4's, and that is not a defect to hide
+///
+/// S4's pins proved a NEW impl against a NEW trait, so compiling them was most of
+/// the evidence. These two prove that the RE-PLUMBED impls still typecheck against
+/// the crate trait — they do NOT prove the SQLite behaviour behind `SessionStore`
+/// is unchanged, and they cannot: the trait object returns `StoreError`, and the
+/// `DbError → StoreError` mapping COLLAPSES `Sqlite` into `Io`, so a variant the
+/// old code distinguished is no longer visible through the seam. The behavioural
+/// evidence is elsewhere and is the same evidence that existed before the split:
+/// the four `SessionStore` tests that stayed with the STAYING half
+/// (`agent/harness/store.rs`), `tests/harness_store.rs`, and the display/fk/upsert
+/// tests relocated in S5b (`tests/persist_frames_db.rs`,
+/// `tests/normalize_display_db.rs`).
+#[test]
+fn session_store_and_ipc_store_satisfy_the_crate_store() {
+    use archimedes_lib::agent::harness::SessionStore;
+    use archimedes_lib::agent::worker::IpcStore;
+    use fulcrum_core::harness::store::Store;
+
+    fn assert_store<T: Store>() {}
+    assert_store::<SessionStore>();
+    assert_store::<IpcStore>();
+
+    // The DESKTOP's spelling of the trait (through `harness/mod.rs`'s re-export,
+    // which is what `harness/**` and `worker/**` import) IS the crate's trait:
+    // this only compiles if the two `dyn` types are one type. A desktop-side
+    // re-declaration of `Store` — the failure mode a split invites — fails HERE,
+    // not at some later call site.
+    fn desktop_spelling_is_the_crate_trait(
+        v: &dyn archimedes_lib::agent::harness::Store,
+    ) -> &dyn fulcrum_core::harness::store::Store {
+        v
+    }
+
+    // ── `SessionStore`, behind the shape the loop holds ──────────────────────
+    let dir = archimedes_lib::test_support::ScratchDir::in_env_temp("fulcrum-seams-store-", "db");
+    let db = Arc::new(Db::open(&dir.join("t.db")).expect("a temp db"));
+    db.record_session(&SessionInfo {
+        session_id: "s1".to_string(),
+        cwd: std::path::PathBuf::from("/tmp"),
+        capabilities: serde_json::json!({}),
+        config_options: None,
+        archived: false,
+        title: None,
+        context_usage: None,
+        cost_usd: None,
+        is_subagent: false,
+    })
+    .expect("record_session");
+    let session: Arc<dyn fulcrum_core::harness::store::Store> =
+        Arc::new(SessionStore::new(db.clone()));
+    // A REAL round trip through the trait object: the write and the read both go
+    // through `&dyn Store`, so this is an instantiated impl, not a bound check.
+    desktop_spelling_is_the_crate_trait(session.as_ref())
+        .insert_message("s1", 0, "user", r#"{"role":"user","content":"hi"}"#)
+        .expect("the insert goes through the crate trait");
+    let loaded = session
+        .load_messages("s1")
+        .expect("the read goes through the crate trait");
+    assert_eq!(
+        loaded.len(),
+        1,
+        "one message round-tripped through the seam"
+    );
+    // The display half, through the crate's `DisplayRow` (the S4-moved type — the
+    // same type on both sides is what makes the frame transportable).
+    session
+        .persist_display(
+            "s1",
+            &[DisplayRow {
+                kind: "agent-text".to_string(),
+                message_key: "m1".to_string(),
+                payload_json: serde_json::json!({ "text": "hi" }),
+                created_at: 1,
+            }],
+        )
+        .expect("display rows go through the crate trait");
+    assert_eq!(db.messages_for("s1").expect("messages").len(), 1);
+
+    // ── `IpcStore`, behind the same shape ────────────────────────────────────
+    let (tx, mut rx) =
+        tokio::sync::mpsc::unbounded_channel::<archimedes_lib::agent::worker::protocol::Outbound>();
+    let ipc: Arc<dyn fulcrum_core::harness::store::Store> = Arc::new(IpcStore::new(tx));
+    desktop_spelling_is_the_crate_trait(ipc.as_ref())
+        .insert_message("s1", 3, "assistant", r#"{"role":"assistant"}"#)
+        .expect("the frame send never fails (unbounded)");
+    match rx.try_recv().expect("the frame is on the channel") {
+        archimedes_lib::agent::worker::protocol::Outbound::TranscriptInsert {
+            seq, role, ..
+        } => {
+            assert_eq!(
+                (seq, role.as_str()),
+                (3, "assistant"),
+                "the frame carries the call"
+            );
+        }
+        other => panic!("expected TranscriptInsert, got {other:?}"),
+    }
+    // The `load_messages` arm the Worker's store documents as a DEFENSIVE error
+    // — asserted through the trait object, so the mapping is the crate's
+    // `StoreError`, not the desktop's.
+    let err = ipc.load_messages("s1").expect_err("write-only by design");
+    assert!(
+        matches!(err, StoreError::Io(_)),
+        "the write-only arm reports `StoreError::Io` — got {err}"
+    );
+    drop(dir);
+}

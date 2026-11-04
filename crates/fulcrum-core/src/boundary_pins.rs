@@ -424,3 +424,316 @@ fn prose_is_stripped_but_code_is_not() {
         "a real path segment must SURVIVE literal-stripping or the pin is blind, got {literals_gone}"
     );
 }
+
+// ── S5b: the REAL boundary test ──────────────────────────────────────────────
+//
+// # Why the six identifiers above were never a boundary
+//
+// Everything in the first half of this module hunts NAMES: the settings loader,
+// the settings file, the writer, the SQLite driver, the desktop package, the UI
+// framework. That is a list of six identifiers, and S5b proved it is not the
+// boundary: after `harness` moved, the crate was full of `crate::config::Settings`
+// — a path into a desktop module that matches NONE of the six needles. The scans
+// stayed green while the boundary was wide open, because a name-based scan can
+// only find the names someone thought to list.
+//
+// # What this scan asserts instead
+//
+// A PATH. `crate::X` inside this crate can only mean one of this crate's own
+// modules; a `crate::X::` whose `X` is not a module `lib.rs` declares is a path
+// into the desktop, i.e. the package edge itself. That catches the whole family at
+// once — `config`, `storage`, `open`, and whatever a later move invents — without
+// needing anyone to pre-name it. The brief's three named roots (`crate::config::`,
+// `crate::storage::`, `crate::open::`) are ALSO scanned individually, so the
+// specific regressions T3/T5 care about each carry their own message.
+//
+// # Why `crate::config::` in a doc comment is not a violation, and what is
+//
+// The crate's docs explain why `load_settings` and `open.rs` stayed desktop, and
+// that prose is the documentation of the boundary. So the scan reads CODE, through
+// the same `strip_comments` the other pins use — and the same
+// [`prose_is_stripped_but_code_is_not`] discipline keeps that honest. String
+// literals are stripped too (the same choice the UI-framework pin makes), which
+// leaves one blind spot: a forbidden path hidden inside a string literal. That
+// cannot smuggle a dependency — a path in a string does not compile into a
+// reference — so the blind spot costs lint precision, not the invariant.
+//
+// # Fail-open-proof
+//
+// A scan whose needle cannot prick is worse than no scan, because it is trusted —
+// that is the S4 lesson (`needle()` once joined its parts with a separator, every
+// needle matched nothing, and all three original scans passed a planted settings
+// read). So [`no_path_reaches_a_desktop_module`] is paired with
+// [`the_path_needles_are_the_paths_they_stand_for`], which asserts each assembled
+// spelling equals the path built from raw characters AND that the scan FIRES on
+// planted code, in both an import and a call position.
+
+/// The three desktop module roots S5b specifically closes: `config` (the settings
+/// loader and the DTOs' former home), `storage` (the SQLite `Db`), `open` (the
+/// Tauri opener). Assembled at runtime — see the module docs for why.
+fn desktop_path_roots() -> Vec<(String, &'static str)> {
+    vec![
+        (
+            format!(
+                "{}::{}::",
+                needle('\u{63}', "rate"),
+                needle('\u{63}', "onfig")
+            ),
+            "the desktop settings module (the settings-loader disk boundary, T3, \
+             and the settings DTOs' former home — Ruling 1 moved the types, not \
+             the file)",
+        ),
+        (
+            format!(
+                "{}::{}::",
+                needle('\u{63}', "rate"),
+                needle('\u{73}', "torage")
+            ),
+            "the desktop persistence module (`Db` and its error type — the \
+             SQLite-driver-wrapping half Step B-bis could not move)",
+        ),
+        (
+            format!(
+                "{}::{}::",
+                needle('\u{63}', "rate"),
+                needle('\u{6f}', "pen")
+            ),
+            "the desktop opener (`open.rs` names `tauri::Url` and \
+             `tauri_plugin_opener`, so S3 injected it instead of moving it)",
+        ),
+    ]
+}
+
+/// Every module name `lib.rs` declares — the complete set `crate::X` may legally
+/// name. Read from the manifest's own module list rather than a hand-maintained
+/// array, so the pin cannot go stale by forgetting a move: a module that arrives
+/// in a later sub-step is automatically allowed, and a path into the desktop is
+/// automatically not.
+fn declared_crate_modules() -> Vec<String> {
+    let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+    let text = std::fs::read_to_string(&lib).expect("the crate has a lib.rs");
+    let mut mods = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        for prefix in ["pub mod ", "pub(crate) mod ", "mod "] {
+            if let Some(rest) = t.strip_prefix(prefix) {
+                let name = rest.trim_end_matches(';').trim().to_string();
+                if !name.is_empty() {
+                    mods.push(name);
+                }
+            }
+        }
+    }
+    // The vacuity guard, same reason as `crate_code`'s: an empty allow-list would
+    // make EVERY crate-internal path an offender (loud, so safe), but a `lib.rs`
+    // this cannot parse would also make it empty, and then the pin is shouting
+    // about the wrong thing. After S5b the crate has well over 40 modules.
+    assert!(
+        mods.len() > 30,
+        "parsed only {} `mod` declarations out of lib.rs — the parser or the file \
+         is wrong, and the allow-list is not trustworthy",
+        mods.len()
+    );
+    mods
+}
+
+/// The path prefix `crate::`, assembled (this file must not contain it literally —
+/// it is the thing it scans for, and exempting this file would be the loophole the
+/// module docs refuse to take).
+fn crate_path_prefix() -> String {
+    needle('\u{63}', "rate::")
+}
+
+/// Every `crate::<segment>` in the given code, with the file and line it came from.
+///
+/// Deliberately textual rather than an AST walk: the crate cannot depend on a
+/// parser (no `syn` in its graph, and adding one to service a test would be its own
+/// decision). The textual rule is exact for the shape that matters — `crate::word`
+/// — and both the `use` form and the call-site form spell it identically.
+fn crate_path_segments(code: &[(PathBuf, String)]) -> Vec<(PathBuf, String, String)> {
+    let prefix = crate_path_prefix();
+    let mut found = Vec::new();
+    for (path, body) in code {
+        let body = strip_string_literals(body);
+        let mut cursor = 0;
+        while let Some(rel) = body[cursor..].find(&prefix) {
+            let start = cursor + rel + prefix.len();
+            // The segment: the identifier run that follows `crate::`.
+            let seg: String = body[start..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !seg.is_empty() {
+                let line = body[..start]
+                    .lines()
+                    .last()
+                    .unwrap_or("(unprintable)")
+                    .trim()
+                    .to_string();
+                found.push((path.clone(), seg, line));
+            }
+            cursor = start;
+        }
+    }
+    found
+}
+
+/// THE BOUNDARY TEST: no path in the crate reaches a desktop module.
+///
+/// Two halves, one strict and one specific:
+///
+///   1. the three roots S5b named (`crate::config::`, `crate::storage::`,
+///      `crate::open::`) must appear nowhere in crate code — each with its own
+///      message naming the ruling it protects;
+///   2. no `crate::X::` at all may name an `X` that `lib.rs` does not declare, so
+///      a NEW desktop edge — `crate::agent::`, `crate::session::`, anything a
+///      later move invents — reddens here too, without anyone adding a needle.
+#[test]
+fn no_path_reaches_a_desktop_module() {
+    let code = crate_code();
+
+    // (1) The three named roots.
+    for (forbidden, why) in desktop_path_roots() {
+        let hits = offenders(&code, &forbidden);
+        assert!(
+            hits.is_empty(),
+            "`{forbidden}` appears in crate CODE at {hits:?} — {why}. After S5b the \
+             crate has ZERO production edges to the desktop; a path back into it is \
+             the package cycle T5 exists to sever, and `cargo check` will NOT catch \
+             it on its own (the desktop lib still compiles, because the crate is \
+             one of its dependencies — the edge only shows up when the crate is \
+             built as its own package, i.e. exactly what this pin does)."
+        );
+    }
+
+    // (2) The general rule, which is the actual boundary.
+    let allowed = declared_crate_modules();
+    let strays: Vec<(PathBuf, String, String)> = crate_path_segments(&code)
+        .into_iter()
+        .filter(|(_, seg, _)| !allowed.iter().any(|m| m == seg))
+        .collect();
+    assert!(
+        strays.is_empty(),
+        "crate paths name modules `lib.rs` does not declare, at {strays:?} — \
+         `crate::` can only mean THIS crate, so any other root is a desktop module \
+         and a package edge. Declared modules: {allowed:?}"
+    );
+}
+
+/// The fail-open-proof for the boundary test, in the shape S4 established.
+///
+/// Without this, a needle that matches nothing is indistinguishable from a clean
+/// crate — which is precisely how the six-identifier list managed to look green
+/// while `crate::config::Settings` sat in production code.
+#[test]
+fn the_path_needles_are_the_paths_they_stand_for() {
+    // (a) Each assembled needle is the REAL path, character for character.
+    let rate: String = ['c', 'r', 'a', 't', 'e'].iter().collect();
+    let expected: Vec<String> = ["config", "storage", "open"]
+        .iter()
+        .map(|root| format!("{rate}::{root}::"))
+        .collect();
+    let assembled: Vec<String> = desktop_path_roots()
+        .into_iter()
+        .map(|(needle, _)| needle)
+        .collect();
+    assert_eq!(
+        assembled, expected,
+        "an assembled path needle is not the real path — the scan is matching nothing"
+    );
+    assert_eq!(
+        crate_path_prefix(),
+        format!("{rate}::"),
+        "`crate_path_prefix()` is not the real prefix"
+    );
+
+    // (b) The scan FIRES on planted code, in both spellings that matter: the
+    //     `use` form and the call-site form.
+    // The planted code must not name a forbidden IDENTIFIER literally either —
+    // this file is inside the scan's own walk, so a literal here would trip the
+    // settings-loader pin it sits next to. Assemble it, as everything else here.
+    let loader = settings_loader_name();
+    let db = needle('\u{44}', "b");
+    for needle in &expected {
+        for planted in [
+            format!("use {needle}Settings;"),
+            format!("fn f() {{ {needle}{loader}(); }}"),
+            format!("fn f() {{ let _ = <{needle}{db} as Clone>::clone(&x); }}"),
+        ] {
+            let sample = vec![(PathBuf::from("planted.rs"), planted.clone())];
+            assert_eq!(
+                offenders(&sample, needle).len(),
+                1,
+                "the path scan did not fire on planted `{needle}`: {planted}"
+            );
+        }
+    }
+
+    // (c) The segment extractor FIRES, and reports the intruding root by name —
+    //     otherwise half (2) of the boundary test could pass on an empty set.
+    let planted = vec![(
+        PathBuf::from("planted.rs"),
+        format!("use {rate}::agent::worker::WorkerManager;"),
+    )];
+    let segs = crate_path_segments(&planted);
+    assert_eq!(
+        segs.len(),
+        1,
+        "the segment extractor found nothing in a planted desktop path"
+    );
+    assert_eq!(segs[0].1, "agent", "wrong segment extracted: {segs:?}");
+
+    // (d) And it does NOT fire on a legitimate crate path — the pin must not be
+    //     a machine that reports everything, or it will be silenced.
+    let clean = vec![(
+        PathBuf::from("clean.rs"),
+        format!("use {rate}::harness::store::Store;"),
+    )];
+    let segs = crate_path_segments(&clean);
+    assert_eq!(segs.len(), 1);
+    assert_eq!(segs[0].1, "harness");
+    let allowed = declared_crate_modules();
+    assert!(
+        allowed.iter().any(|m| m == "harness"),
+        "`harness` must be declared in lib.rs or the allow-list is wrong: {allowed:?}"
+    );
+    assert!(
+        !allowed
+            .iter()
+            .any(|m| m == "agent" || m == "config" || m == "storage" || m == "open"),
+        "the allow-list contains a desktop root, so half (2) of the boundary test \
+         is disarmed: {allowed:?}"
+    );
+}
+
+/// The stripper half of the fail-open-proof for the new scan: prose about a
+/// forbidden path must be stripped, code carrying one must not be.
+#[test]
+fn path_prose_is_stripped_but_code_is_not() {
+    let roots = desktop_path_roots();
+    let config = &roots[0].0;
+    let storage = &roots[1].0;
+    let loader = settings_loader_name();
+    let db = needle('\u{44}', "b");
+    let sample = format!(
+        "//! This module explains why {config}{loader} stayed desktop.\n\
+         // A line comment about {storage}{db} and why it cannot move.\n\
+         /* a block comment naming {config}Settings too */\n\
+         pub fn reads() -> u32 {{\n    \
+         let _ = {config}{loader}();\n    \
+         let _ = {storage}{db}::open();\n    \
+         0\n}}\n"
+    );
+    let stripped = strip_comments(&sample);
+    assert!(
+        !stripped.contains("stayed desktop"),
+        "doc prose should be stripped, got:\n{stripped}"
+    );
+    for needle in [&config, &storage] {
+        assert!(
+            stripped.contains(needle.as_str()),
+            "the comment-stripper swallowed `{needle}` out of a real statement — \
+             the boundary pin would then pass vacuously. Stripped:\n{stripped}"
+        );
+    }
+}

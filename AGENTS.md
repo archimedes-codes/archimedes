@@ -20,6 +20,26 @@ green:
 | Rust lint | `cargo clippy --all-targets` | repo root (must be 0 warnings) |
 | Rust formatting | `cargo fmt --all -- --check` | repo root |
 
+`cd src-tauri && cargo test` is not a substitute for the root run. It is not a
+style rule, and the reason is narrower than "it cannot see the crate" — it can.
+Cargo walks **up** to the workspace root, so `cd src-tauri && cargo check
+--all-targets` really does fail when `crates/fulcrum-core` has a type error
+(measured: it reports it). What does not happen is the **test run**: `src-tauri`
+is one workspace member, so `cargo test` there selects that member alone —
+**1033 of the workspace's 2216 tests** — and exits 0. Measured by planting a
+`#[test]` that panics inside `fulcrum-core`: `cargo test -p fulcrum-core` fails
+loudly, `cd src-tauri && cargo test` prints nothing about it and **exits 0**.
+So the crate's behaviour can be broken while a "backend is green" check reports
+success. Run cargo from the repo root; `-p fulcrum-core` for the crate alone,
+`cargo test --workspace` (the default at the root) for both.
+
+When a change moves code between the two packages, the check that matters is test
+**names**, not totals — a moved test that silently disappears leaves the total
+looking plausible. Enumerate them with `cargo test --workspace -- --list`; do
+**not** grep the sources for `#[test]`, because a source grep counts
+`#[cfg(windows)]`-only tests that never reach the compiler on Linux (measured: 6
+too many), so a grep-based "no test lost" is confidently wrong.
+
 The Rust compiler is pinned in the repo-root `rust-toolchain.toml`, so plain
 `cargo …` from the repo root (the workspace) is the pinned one — CI installs
 from that same file rather than naming a version. Do not float it: a newer rustc adds lints,
@@ -410,6 +430,13 @@ These are properties of the repo, not of any branch:
   explicitly. So pointing `TMPDIR` at a real disk fixes most tests and breaks
   those four. (Both halves re-measured, not copied from the plan that recorded
   them.)
+- **Component rule: locate by content string, not by path.** When adding or verifying a
+  component (e.g. a Rust module, a TS component, a test file), find it by its content
+  signature — the `impl`, the trait name, the string literal — rather than by a
+  hard-coded path. Paths move (the `harness` move from `src-tauri/` to
+  `crates/fulcrum-core/` proved that twice: the `CARGO_MANIFEST_DIR.parent()` trap and
+  the `settings.json` pin). Content is what the claim is about, so locate by content
+  and recompute the path at run time.
 - **`grep -c '#\[cfg(unix)\]'` counts LINES, including prose that names the
   attribute.** A census count needs the anchored `^#\[cfg(unix)\]$` or it
   false-reports high.

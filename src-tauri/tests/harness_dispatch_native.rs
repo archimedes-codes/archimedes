@@ -111,7 +111,7 @@ async fn make_manager(
         .await
         .expect("the parent attach completes");
     let manager = Arc::new(SubagentSessionManager::new());
-    manager.set_worker_manager(wm);
+    manager.set_dispatcher(wm);
     manager
 }
 
@@ -326,7 +326,7 @@ async fn dispatch_native_cancel_cancels_the_dispatch() {
 }
 
 /// (5) **not configured**: a manager that never got a `WorkerManager`
-/// (`set_worker_manager` never called — a `SessionManager` that never
+/// (`set_dispatcher` never called — a `SessionManager` that never
 /// `attach_worker_manager`ed) → an ALREADY-RESOLVED `Failed` (the
 /// dispatch is unavailable — NOT a hang).
 #[test]

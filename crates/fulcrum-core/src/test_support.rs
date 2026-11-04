@@ -337,3 +337,295 @@ mod tests {
         );
     }
 }
+
+// ── `MemoryStore` — the crate-side double for the harness's `Store` seam ─────
+//
+// # Why this exists
+//
+// The moved `harness` fixtures built every `AgentLoop` on a real
+// `storage::Db` + the desktop's `SessionStore` (`loop/tests/support.rs`'s
+// `build_loop_with_sink`, `compact.rs`'s `temp_store`, `normalize.rs`'s
+// `temp_db`). None of that can travel: the crate has no `rusqlite` in its graph
+// (Step B-bis) and cannot name `storage::Db` at all. So either ~190 moved tests
+// relocate to the desktop — which is where the two-sided `harness_*.rs` targets
+// already live, and would leave the crate with no loop tests — or the crate
+// gets its own implementation of the seam it now owns. It does the latter.
+//
+// # What it does NOT pretend to be
+//
+// A double is not the database, and the honest way to say that is to list what
+// only the real thing proves:
+//
+//   * UPSERT / idempotency keyed on a UNIQUE constraint — the display store's
+//     `(session_id, kind, message_key)` collapse and `native_messages`'
+//     `(session_id, seq)` collapse;
+//   * the ATOMICITY of the compaction rewrite (one SQLite transaction);
+//   * the FK from `native_messages` / `messages` to `sessions`;
+//   * `payload_json` surviving a round-trip through a TEXT column.
+//
+// Every moved test whose ASSERTION is one of those four RELOCATED to the desktop
+// instead of being re-pointed here — `src-tauri/tests/persist_frames_db.rs`,
+// `normalize_display_db.rs`, and the four `SessionStore`-as-a-`Store` tests that
+// stayed with the STAYING half in `src-tauri/src/agent/harness/store.rs`. What
+// re-pointed here asserts only what a `Store` has to give: which rows the loop
+// handed the seam, in what order, with what payload.
+//
+// # The one thing it must get RIGHT
+//
+// `load_messages` returns the transcript in `seq` ORDER, and `replace_messages`
+// REPLACES the whole transcript (it does not append). Both are assertions the
+// moved loop/compaction tests actually make, so both are implemented rather than
+// stubbed, and `the_memory_store_is_not_a_noop_store` below is the pin that
+// keeps them that way — a double whose `load_messages` always returned `[]`
+// would make a dozen compaction and transcript pins pass vacuously.
+
+/// The crate-side [`Store`] double (see the section header for the four
+/// properties it deliberately does NOT provide).
+#[derive(Default)]
+pub struct MemoryStore {
+    inner: std::sync::Mutex<MemoryStoreState>,
+}
+
+#[derive(Default)]
+struct MemoryStoreState {
+    /// `(session_id, seq) → (role, content_json)`, read out in `seq` order.
+    transcript: Vec<(String, u64, String, String)>,
+    /// The DISPLAY rows, in write order, as the `(kind, message_key,
+    /// payload_json)` triples the seam was handed.
+    display: Vec<(String, String, String, String)>,
+    /// The last `record_context_usage` per session.
+    context_usage: Vec<(String, u64, u64)>,
+}
+
+impl MemoryStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, MemoryStoreState> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The display rows handed to `persist_display`, in write order, as
+    /// `(session_id, kind, message_key, payload_json)`.
+    pub fn display_rows(&self) -> Vec<(String, String, String, String)> {
+        self.lock().display.clone()
+    }
+
+    /// The last context-usage write per session.
+    pub fn context_usage(&self) -> Vec<(String, u64, u64)> {
+        self.lock().context_usage.clone()
+    }
+
+    /// The raw transcript rows in `seq` order, as `(seq, role, content_json)`.
+    pub fn transcript(&self, session_id: &str) -> Vec<(u64, String, String)> {
+        let mut rows: Vec<(u64, String, String)> = self
+            .lock()
+            .transcript
+            .iter()
+            .filter(|(sid, _, _, _)| sid == session_id)
+            .map(|(_, seq, role, json)| (*seq, role.clone(), json.clone()))
+            .collect();
+        rows.sort_by_key(|(seq, _, _)| *seq);
+        rows
+    }
+}
+
+impl crate::harness::store::Store for MemoryStore {
+    fn insert_message(
+        &self,
+        session_id: &str,
+        seq: u64,
+        role: &str,
+        content_json: &str,
+    ) -> Result<(), crate::seams::StoreError> {
+        let mut st = self.lock();
+        // The `(session_id, seq)` collapse is reproduced (NOT as a UNIQUE
+        // constraint claim — as the "one row per seq" the loop's own reads
+        // depend on).
+        st.transcript
+            .retain(|(sid, s, _, _)| !(sid == session_id && *s == seq));
+        st.transcript.push((
+            session_id.to_string(),
+            seq,
+            role.to_string(),
+            content_json.to_string(),
+        ));
+        Ok(())
+    }
+
+    fn load_messages(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::provider_types::ChatMessage>, crate::seams::StoreError> {
+        let rows = self.transcript(session_id);
+        rows.into_iter()
+            .map(|(_, _, json)| serde_json::from_str(&json).map_err(crate::seams::StoreError::Json))
+            .collect()
+    }
+
+    fn clear_messages(&self, session_id: &str) -> Result<(), crate::seams::StoreError> {
+        self.lock()
+            .transcript
+            .retain(|(sid, _, _, _)| sid != session_id);
+        Ok(())
+    }
+
+    fn replace_messages(
+        &self,
+        session_id: &str,
+        rows: &[(u64, String, String)],
+    ) -> Result<(), crate::seams::StoreError> {
+        let mut st = self.lock();
+        st.transcript.retain(|(sid, _, _, _)| sid != session_id);
+        for (seq, role, content_json) in rows {
+            st.transcript.push((
+                session_id.to_string(),
+                *seq,
+                role.clone(),
+                content_json.clone(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn persist_display(
+        &self,
+        session_id: &str,
+        rows: &[crate::store_rows::DisplayRow],
+    ) -> Result<(), crate::seams::StoreError> {
+        // NO UPSERT here, on purpose: the `(session_id, kind, message_key)`
+        // collapse is the SQLite UNIQUE constraint's behaviour and belongs to
+        // the relocated tests. This records EVERY call, which is what the
+        // re-pointed loop tests read.
+        let mut st = self.lock();
+        for row in rows {
+            st.display.push((
+                session_id.to_string(),
+                row.kind.clone(),
+                row.message_key.clone(),
+                row.payload_json.to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn record_context_usage(
+        &self,
+        session_id: &str,
+        used: u64,
+        window: u64,
+    ) -> Result<(), crate::seams::StoreError> {
+        let mut st = self.lock();
+        st.context_usage.retain(|(sid, _, _)| sid != session_id);
+        st.context_usage
+            .push((session_id.to_string(), used, window));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod memory_store_tests {
+    use super::MemoryStore;
+    use crate::harness::store::Store;
+    use crate::store_rows::DisplayRow;
+
+    fn row(key: &str, text: &str) -> DisplayRow {
+        DisplayRow {
+            kind: "agent-text".to_string(),
+            message_key: key.to_string(),
+            payload_json: serde_json::json!({ "text": text }),
+            created_at: 1,
+        }
+    }
+
+    /// THE non-vacuity pin for the double. `NoopStore` returns an empty
+    /// transcript from `load_messages` and drops every write; if `MemoryStore`
+    /// degenerated into a second `NoopStore`, a dozen moved compaction and
+    /// transcript pins (`load_messages("s1")` after a turn, after a compaction,
+    /// after a retraction) would go GREEN on an empty store. So: write, read
+    /// back, and prove the read is the write.
+    #[test]
+    fn the_memory_store_is_not_a_noop_store() {
+        let store = MemoryStore::new();
+        store
+            .insert_message("s1", 0, "user", r#"{"role":"user","content":"hi"}"#)
+            .unwrap();
+        store
+            .insert_message(
+                "s1",
+                1,
+                "assistant",
+                r#"{"role":"assistant","content":"yo"}"#,
+            )
+            .unwrap();
+        let loaded = store.load_messages("s1").expect("both rows parse");
+        assert_eq!(loaded.len(), 2, "the writes are READ BACK, not dropped");
+        use crate::provider_types::MessageContent;
+        assert!(
+            matches!(&loaded[0].content, MessageContent::Text(s) if s == "hi"),
+            "in seq order, got {:?}",
+            loaded[0].content
+        );
+        assert!(
+            matches!(&loaded[1].content, MessageContent::Text(s) if s == "yo"),
+            "got {:?}",
+            loaded[1].content
+        );
+
+        // The display half, same claim.
+        store.persist_display("s1", &[row("m1", "Hel")]).unwrap();
+        store.persist_display("s1", &[row("m1", "Hello")]).unwrap();
+        let rows = store.display_rows();
+        assert_eq!(rows.len(), 2, "every write is recorded (no UPSERT here)");
+        assert_eq!(
+            rows[1].3, r#"{"text":"Hello"}"#,
+            "the payload rides as the string the seam was handed"
+        );
+
+        // `replace_messages` REPLACES (the compaction rewrite) — the property
+        // the overflow tests read.
+        store
+            .replace_messages(
+                "s1",
+                &[(
+                    0,
+                    "system".to_string(),
+                    r#"{"role":"system","content":"s"}"#.to_string(),
+                )],
+            )
+            .unwrap();
+        let after = store.load_messages("s1").expect("the rewrite parses");
+        assert_eq!(after.len(), 1, "the rewrite replaced, it did not append");
+        assert_eq!(after[0].role, crate::provider_types::ChatRole::System);
+
+        // `clear_messages` clears the transcript and NOT the display rows (the
+        // two tables are independent — the reason `native_messages` exists).
+        store.clear_messages("s1").unwrap();
+        assert!(store.load_messages("s1").unwrap().is_empty());
+        assert_eq!(
+            store.display_rows().len(),
+            2,
+            "the display rows survive a transcript clear"
+        );
+
+        // And a second session does not see the first one's rows.
+        assert!(store.load_messages("other").unwrap().is_empty());
+    }
+
+    /// The `seq`-collapse the loop depends on (the same `(session_id, seq)`
+    /// re-insert must not double a row — the loop re-persists seq 0 on every
+    /// resume). NOTE what this does NOT pin: that the collapse is enforced by a
+    /// UNIQUE constraint. That is the desktop's `Db`, and
+    /// `tests/harness_store.rs::insert_is_idempotent_on_conflict` pins it there.
+    #[test]
+    fn a_repeated_seq_collapses_to_one_row() {
+        let store = MemoryStore::new();
+        for _ in 0..3 {
+            store
+                .insert_message("s1", 0, "user", r#"{"role":"user","content":"hi"}"#)
+                .unwrap();
+        }
+        assert_eq!(store.transcript("s1").len(), 1);
+    }
+}

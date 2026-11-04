@@ -144,4 +144,30 @@ pub mod worker_types;
 #[cfg(test)]
 mod boundary_pins;
 
+// ── T5/S5b — THE MOVE: the harness, and the three files that reference it ───
+//
+// `harness` is the last piece of the closure and it moves as ONE unit: `loop`
+// / `launch` / `dispatch` / `provider` / `prompt` / `tool_specs` / `catalog`
+// reference each other in a tight cycle (the S5 ruling: "moves as one"), and
+// `normalize` / `persist` / `subagent` ride with it because they reference
+// `harness` (`normalize.rs` imports `harness::store::DisplayRow`,
+// `subagent.rs` imports `harness::{Model, ModelKey}`) and are referenced by it.
+//
+// The two files the DESKTOP keeps beside this directory are the two that hold a
+// `storage::Db`: `harness/store.rs` (`SessionStore`) and `harness/trust.rs`
+// (`SqliteTrustSource`). Both implement crate traits and re-export the crate
+// halves, so `crate::agent::harness::store::SessionStore` and
+// `crate::agent::harness::trust::SqliteTrustSource` keep resolving — the S2
+// `web/render.rs` shape, one level down inside `harness`.
+//
+// After this step the crate has ZERO production edges to the desktop: the last
+// four (`config`, `storage`, `worker`, the stale `types` path) were closed by
+// moving the DTOs, splitting `Store`, taking `Arc<dyn FulcrumPersistence>` and
+// holding `Arc<dyn Dispatcher>`. `boundary_pins::
+// no_code_reaches_a_desktop_module` is the proof, not this comment.
+pub mod harness;
+pub mod normalize;
+pub mod persist;
+pub mod subagent;
+
 pub use seams::{Dispatcher, FulcrumPersistence, StoreError};

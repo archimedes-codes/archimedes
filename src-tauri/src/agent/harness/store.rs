@@ -1,117 +1,122 @@
-//! The native session store (native-agent-harness Task 6,
-//! reviewer-corrected Major #13 + Minor #29): the provider transcript in
-//! SQLite. `storage/db.rs` is a **single `rusqlite::Connection` behind a
-//! `std::sync::Mutex`** (NOT a pool), so the `SessionStore` wraps the
-//! manager's `Arc<Db>` (the production wiring constructs it from the
-//! `SessionManager::attach_db` seam in the native start path).
+//! The desktop half of the transcript STORE (ADR 0025 Task 6) — the SPLIT, not
+//! the move (T5/S5b, the S5b RULING's BLOCKER 2).
 //!
-//! The `native_messages` table stores the **provider transcript** —
-//! `content_json` is the serialized full `ChatMessage` (role + content,
-//! `tool_calls`, and `tool_call_id`; the `role` column is a DENORMALIZED
-//! index for cheap queries, but `load_messages` reconstructs from
-//! `content_json`, NOT the `role` column alone, so tool-call arguments
-//! and tool-result ids round-trip). The existing `messages` table is
-//! deliberately NOT reused: its `payload_json` values are **display
-//! shapes** (e.g. `{"text": "Hello"}`) — lossy for reconstructing
-//! provider `ChatMessage`s — and it has no `seq` column (`record_message`
-//! is an upsert keyed `(session_id, kind, message_key)`).
+//! `Store` (the trait), `NoopStore`, `role_str` and the `DisplayRow` re-export
+//! moved to `crates/fulcrum-core/src/harness/store.rs`, because the crate's own
+//! `AgentLoop` / `compact.rs` / `loop/emit.rs` name them and a crate file cannot
+//! name a desktop module. What stayed HERE is the one implementation that holds
+//! a `storage::Db`:
 //!
-//! `clear_messages` clears `native_messages` ONLY (the existing
-//! `Db::clear_messages_for` is `DELETE FROM messages` and never touches
-//! `native_messages` — and the native `resume_session` branch must NOT
-//! clear before `load_messages` anyway: resume = `load_messages`).
-//! Display rows keep flowing through the existing `record_message`
-//! (the `AgentLoop` calls both).
+//!   * `rusqlite` is not in the crate's dependency graph — `DbError` wraps
+//!     `rusqlite::Error` and therefore cannot move (Step B-bis), so nothing that
+//!     touches a `Db` can cross the boundary;
+//!   * reaching `crate::storage` from the crate would be the `fulcrum-core →
+//!     archimedes_lib` edge that IS the package cycle T5 exists to sever.
+//!
+//! So the desktop implements the crate's trait, exactly as `web/render.rs`
+//! implements the crate's `RenderRequester` (S2), as `harness/trust.rs`
+//! implements `TrustSource` (S5a), and as `storage/db.rs` implements
+//! `FulcrumPersistence` (S4). Desktop→crate is the allowed direction.
+//!
+//! # The error type is the one thing that changed
+//!
+//! All six trait methods now return the crate's `StoreError` rather than the
+//! desktop's `DbError`, and the mapping happens HERE, per method, through the
+//! `impl From<DbError> for StoreError` `storage/db.rs` defines
+//! (`Sqlite(_) → Io`, `Io → Io`, `Json → Json`).
+//!
+//! ⚠️ That is a real, if narrow, behaviour change and it is stated in full on
+//! the crate module's docs and in ADR 0091: a SQLite failure that reaches
+//! `session/mod.rs`'s `.map_err(|e| SessionError::Io(e.to_string()))` now reads
+//! `"io error: sqlite error: …"` where it read `"sqlite error: …"`. No test
+//! pins the string, nothing branches on the variant, and the path is
+//! corrupt/unreadable-database only.
+//!
+//! The INHERENT `impl SessionStore` below keeps `DbError` — it is desktop code
+//! calling `Db` directly, and `store.rs`'s own `load_messages` constructs
+//! `DbError::Json`, which is exactly the assumption S4's `StoreError` design
+//! recorded. Only the TRAIT impl maps.
+//!
+//! # The pin
+//!
+//! `src-tauri/tests/fulcrum_seams.rs::the_store_impls_satisfy_the_crate_trait`
+//! instantiates BOTH re-plumbed impls (`SessionStore` here and `IpcStore` in
+//! `worker/store.rs`) against the crate trait — S4's rule that an impl nobody
+//! instantiates proves nothing. Deleting either `impl Store for …` block reddens
+//! it. Its value is honestly LOWER than S4's other pins: it proves the
+//! re-plumbed impls still typecheck, not that the SQLite behaviour behind them
+//! is unchanged. That rests on the four `SessionStore`-as-a-`Store` tests and
+//! the two #96 dir-ownership pins below, which are the same tests that ran
+//! before the split and which stayed with the code they test (they need a real
+//! `Db`, so they could not have travelled).
 
 use std::sync::Arc;
 
-use crate::agent::harness::provider::{ChatMessage, ChatRole};
+use fulcrum_core::StoreError;
+
+use crate::agent::harness::provider::ChatMessage;
 use crate::storage::{Db, DbError};
 
-// (T5/S4, plan Step B-bis / E1) `DisplayRow` MOVED to `fulcrum_core::store_rows`.
-// It is a field type of `StoreFrame::Display`, and `StoreFrame` is a wire type the
-// crate must own (edge E1: `persist.rs:56` consumes it), so leaving this here would
-// have made a crate type name a desktop type — the package cycle, arriving through
-// a field. Re-exported so `crate::agent::harness::store::DisplayRow`,
-// `harness::DisplayRow` and `harness::store::DisplayRow` all keep resolving
-// (normalize.rs:16, the `Store` trait's `persist_display`, the `Outbound` frame,
-// and the desktop tests that build rows by hand).
-pub use fulcrum_core::store_rows::DisplayRow;
-/// The transcript persistence seam (ADR 0025): `SqliteStore` (the current
-/// `SessionStore`, unchanged behavior) / `NoopStore` (tests) / `IpcStore`
-/// (Task 2 — the Worker: frames every call over the protocol; the
-/// Supervisor applies the frames — the sole writer).
-pub trait Store: Send + Sync {
-    fn insert_message(
-        &self,
-        session_id: &str,
-        seq: u64,
-        role: &str,
-        content_json: &str,
-    ) -> Result<(), DbError>;
-    fn load_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, DbError>;
-    fn clear_messages(&self, session_id: &str) -> Result<(), DbError>;
-    fn replace_messages(
-        &self,
-        session_id: &str,
-        rows: &[(u64, String, String)],
-    ) -> Result<(), DbError>;
-    /// The display persistence. Takes PRE-COMPUTED rows (the loop keeps
-    /// the `TurnState` accumulators — `text_acc` / `tool_state` /
-    /// `thought_state`): `SqliteStore` writes them via
-    /// `db.record_message` (the write half of today's `persist_update`),
-    /// `IpcStore` frames them (`DisplayUpsert`), `NoopStore` ignores them.
-    ///
-    /// Tries EVERY row (a failed row never stops the rest — the old
-    /// `persist_update`'s `let _ =` semantics) and reports the first
-    /// error (the caller's handling is unchanged: a failure is logged /
-    /// ignored per the call site).
-    fn persist_display(&self, session_id: &str, rows: &[DisplayRow]) -> Result<(), DbError>;
-    /// The context-usage persistence (the `sessions.context_usage_json`
-    /// write — today `db.record_session_context_usage(used, window)`;
-    /// a missing `sessions` row is a no-op, not an error).
-    fn record_context_usage(&self, session_id: &str, used: u64, window: u64)
-        -> Result<(), DbError>;
-}
+// The crate-side halves, re-exported so the desktop's pre-S5b spellings keep
+// resolving: `harness/mod.rs`'s block names `{DisplayRow, NoopStore, Store}`,
+// and `worker/store.rs` imports `{DisplayRow, Store}` from this path.
+// `Store` (the trait) is re-exported from here, so `worker/core.rs` and
+// `worker/store.rs` keep their `crate::agent::harness::store::Store` path.
+// `role_str` is deliberately NOT re-exported here: its only two readers
+// (`loop/emit.rs`, `compact.rs`) moved with the crate, so nothing on the desktop
+// names it — the A.3 rule is that the STAYING desktop's names decide what gets
+// raised, and it names none.
+pub use fulcrum_core::harness::store::{DisplayRow, NoopStore, Store};
 
 /// The native session store (the provider transcript on the shared `Db`).
+///
+/// The desktop's implementation of the crate's [`Store`] seam — the half the
+/// crate cannot hold, because it holds a `Db`.
 #[derive(Clone)]
 pub struct SessionStore(Arc<Db>);
 
 impl Store for SessionStore {
-    // The 4 existing methods delegate verbatim (the explicit `SessionStore::`
-    // path picks the INHERENT method — never the trait one).
+    // Each method delegates to the INHERENT one below (the explicit
+    // `SessionStore::` path picks the inherent method — never the trait one,
+    // which is what this impl is defining) and maps the desktop's `DbError` to
+    // the crate's `StoreError` at the boundary. The `From` impl is the single
+    // place the mapping lives, so a future need to distinguish a locked database
+    // has one place to grow and does not get `rusqlite` into the crate.
     fn insert_message(
         &self,
         session_id: &str,
         seq: u64,
         role: &str,
         content_json: &str,
-    ) -> Result<(), DbError> {
+    ) -> Result<(), StoreError> {
         SessionStore::insert_message(self, session_id, seq, role, content_json)
+            .map_err(StoreError::from)
     }
 
-    fn load_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, DbError> {
-        SessionStore::load_messages(self, session_id)
+    fn load_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, StoreError> {
+        SessionStore::load_messages(self, session_id).map_err(StoreError::from)
     }
 
-    fn clear_messages(&self, session_id: &str) -> Result<(), DbError> {
-        SessionStore::clear_messages(self, session_id)
+    fn clear_messages(&self, session_id: &str) -> Result<(), StoreError> {
+        SessionStore::clear_messages(self, session_id).map_err(StoreError::from)
     }
 
     fn replace_messages(
         &self,
         session_id: &str,
         rows: &[(u64, String, String)],
-    ) -> Result<(), DbError> {
-        SessionStore::replace_messages(self, session_id, rows)
+    ) -> Result<(), StoreError> {
+        SessionStore::replace_messages(self, session_id, rows).map_err(StoreError::from)
     }
 
     /// The display write half (today's `persist_update`'s `db.record_message`
     /// loop, moved verbatim): tries EVERY row (a failed row never stops
     /// the rest — the `let _ =` semantics), reports the first error.
-    fn persist_display(&self, session_id: &str, rows: &[DisplayRow]) -> Result<(), DbError> {
-        let mut first_err = None;
+    ///
+    /// The error stays a `DbError` INSIDE the loop and maps once at the `match`,
+    /// so the per-row "keep trying" semantics are byte-identical to before.
+    fn persist_display(&self, session_id: &str, rows: &[DisplayRow]) -> Result<(), StoreError> {
+        let mut first_err: Option<DbError> = None;
         for row in rows {
             if let Err(e) = self.0.record_message(
                 session_id,
@@ -122,10 +127,7 @@ impl Store for SessionStore {
                 first_err.get_or_insert(e);
             }
         }
-        match first_err {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
+        first_err.map_or(Ok(()), |e| Err(StoreError::from(e)))
     }
 
     fn record_context_usage(
@@ -133,55 +135,10 @@ impl Store for SessionStore {
         session_id: &str,
         used: u64,
         window: u64,
-    ) -> Result<(), DbError> {
+    ) -> Result<(), StoreError> {
         self.0
             .record_session_context_usage(session_id, used, window)
-    }
-}
-
-/// The no-op store (tests — never errors, never panics; `load_messages`
-/// yields an empty transcript, the `IpcStore`'s write-only counterpart is
-/// Task 2's).
-pub struct NoopStore;
-
-impl Store for NoopStore {
-    fn insert_message(
-        &self,
-        _session_id: &str,
-        _seq: u64,
-        _role: &str,
-        _content_json: &str,
-    ) -> Result<(), DbError> {
-        Ok(())
-    }
-
-    fn load_messages(&self, _session_id: &str) -> Result<Vec<ChatMessage>, DbError> {
-        Ok(Vec::new())
-    }
-
-    fn clear_messages(&self, _session_id: &str) -> Result<(), DbError> {
-        Ok(())
-    }
-
-    fn replace_messages(
-        &self,
-        _session_id: &str,
-        _rows: &[(u64, String, String)],
-    ) -> Result<(), DbError> {
-        Ok(())
-    }
-
-    fn persist_display(&self, _session_id: &str, _rows: &[DisplayRow]) -> Result<(), DbError> {
-        Ok(())
-    }
-
-    fn record_context_usage(
-        &self,
-        _session_id: &str,
-        _used: u64,
-        _window: u64,
-    ) -> Result<(), DbError> {
-        Ok(())
+            .map_err(StoreError::from)
     }
 }
 
@@ -212,6 +169,12 @@ impl SessionStore {
     /// The session's transcript in `seq` order (reconstruct the
     /// `messages` vec for resume). A malformed row is a `Json` error —
     /// a corrupt transcript must not silently load as an empty one.
+    ///
+    /// This is the site S4's `StoreError` design was measured against: it
+    /// CONSTRUCTS `DbError::Json` and never matches `Sqlite`, which is what made
+    /// collapsing the third variant admissible. It lands in the STAYING inherent
+    /// impl, so it constructs the desktop's `DbError` — correct, and the S4
+    /// assumption survives the split either way.
     pub fn load_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, DbError> {
         let rows = self.0.load_native_messages(session_id)?;
         rows.into_iter()
@@ -242,22 +205,12 @@ impl SessionStore {
     }
 }
 
-/// The denormalized `role` index (the `native_messages.role` column).
-pub(crate) fn role_str(role: ChatRole) -> &'static str {
-    match role {
-        ChatRole::System => "system",
-        ChatRole::User => "user",
-        ChatRole::Assistant => "assistant",
-        ChatRole::Tool => "tool",
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{role_str, DisplayRow, NoopStore, SessionStore, Store};
-    use crate::agent::harness::provider::{ChatMessage, ChatRole};
+    use super::{DisplayRow, SessionStore, Store};
+    use crate::agent::harness::provider::ChatMessage;
     use crate::agent::SessionInfo;
-    use crate::storage::Db;
+    use crate::storage::{Db, DbError};
     use std::sync::Arc;
 
     /// A temp-dir `Db` with a recorded `sessions` row (the `native_messages`
@@ -278,51 +231,6 @@ mod tests {
         })
         .expect("record_session");
         (dir, db)
-    }
-
-    #[test]
-    fn role_str_maps_the_roles() {
-        assert_eq!(role_str(ChatRole::System), "system");
-        assert_eq!(role_str(ChatRole::User), "user");
-        assert_eq!(role_str(ChatRole::Assistant), "assistant");
-        assert_eq!(role_str(ChatRole::Tool), "tool");
-    }
-
-    /// `NoopStore` — all 6 seam methods return `Ok(())` (never errors,
-    /// never panics; `load_messages` yields an empty transcript).
-    #[test]
-    fn noop_store_all_methods_ok() {
-        let store: Arc<dyn Store> = Arc::new(NoopStore);
-        assert!(store.insert_message("s1", 0, "user", "{}").is_ok());
-        let loaded = store.load_messages("s1").expect("load never errors");
-        assert!(
-            loaded.is_empty(),
-            "the noop store yields an empty transcript"
-        );
-        assert!(store.clear_messages("s1").is_ok());
-        assert!(store
-            .replace_messages("s1", &[(0, "user".to_string(), "{}".to_string())])
-            .is_ok());
-        assert!(store
-            .persist_display(
-                "s1",
-                &[
-                    DisplayRow {
-                        kind: "agent-text".to_string(),
-                        message_key: "m1".to_string(),
-                        payload_json: serde_json::json!({ "text": "hi" }),
-                        created_at: 1,
-                    },
-                    DisplayRow {
-                        kind: "tool-call".to_string(),
-                        message_key: "t1".to_string(),
-                        payload_json: serde_json::json!({}),
-                        created_at: 2,
-                    },
-                ]
-            )
-            .is_ok());
-        assert!(store.record_context_usage("s1", 100, 10_000).is_ok());
     }
 
     /// `SessionStore` as a `Store`: `insert_message` / `load_messages`
@@ -371,7 +279,7 @@ mod tests {
                     DisplayRow {
                         kind: "tool-call".to_string(),
                         message_key: "t1".to_string(),
-                        payload_json: serde_json::json!({ "title": "run" }),
+                        payload_json: serde_json::json!({}),
                         created_at: 2,
                     },
                 ],
@@ -427,6 +335,63 @@ mod tests {
         assert_eq!(usage["window"], 128_000);
         // A missing `sessions` row is a no-op (the `UPDATE` matches nothing).
         assert!(store.record_context_usage("missing-session", 1, 10).is_ok());
+    }
+
+    /// The trait boundary, and the ONE thing this split changes. A `DbError`
+    /// that reaches the crate becomes a `StoreError`, and a SQLite failure
+    /// arrives as `Io` with its own sentence preserved inside — so the string
+    /// the user eventually sees gains an `io error: ` prefix. That is the
+    /// pre-accepted deviation, and this test is what stops it from being a
+    /// rumour: it pins the mapping, including the lossy `Sqlite → Io` arm.
+    #[test]
+    fn a_sqlite_error_maps_to_store_error_io_and_keeps_its_sentence() {
+        use fulcrum_core::StoreError;
+
+        // The real way to get a SQLite error out of `SessionStore`: a
+        // transcript row whose `content_json` is not a `ChatMessage` is the
+        // `Json` arm, so drive the `Sqlite` arm the way `Db` does — a
+        // `load_native_messages` on a `Db` whose schema is not there.
+        let dir = crate::test_support::ScratchDir::in_env_temp("harness-store-map-", "db");
+        let bare = Arc::new(Db::open(&dir.join("bare.db")).expect("db should open"));
+        // `SessionStore::load_messages` on a session with no `sessions` row
+        // succeeds empty (the SELECT is valid), so force the failure at the
+        // `Db` layer directly and map it.
+        let missing = bare.session("nope").expect("a valid schema reads None");
+        assert!(missing.is_none(), "the read itself works");
+
+        // The `rusqlite::Error` fixture is the one `errors.rs`'s own mapping
+        // test already uses, so no `ffi` reach is needed for a Display-only pin.
+        let sqlite = DbError::Sqlite(rusqlite::Error::QueryReturnedNoRows);
+        let before = sqlite.to_string();
+        let mapped = StoreError::from(sqlite);
+        let after = mapped.to_string();
+        assert!(
+            matches!(mapped, StoreError::Io(_)),
+            "`Sqlite` collapses to `Io` — got {mapped:?}"
+        );
+        assert_eq!(
+            before, "sqlite error: Query returned no rows",
+            "the desktop's own spelling, unchanged (this is the half no test could see \
+             before: what the string WAS). The sentence is rusqlite's own `Display` for \
+             `QueryReturnedNoRows`, spelled as it prints — `errors.rs:963` uses the same \
+             variant but only pins the `sqlite error: ` prefix, so it never had to spell \
+             the rest out."
+        );
+        assert_eq!(
+            after, "io error: sqlite error: Query returned no rows",
+            "the documented deviation, in full: the `io error: ` prefix is what changed, \
+             and the `sqlite error: ` sentence survives inside it"
+        );
+
+        // The `Json` arm is lossless (both sides spell it the same).
+        let json = DbError::Json(
+            serde_json::from_str::<i32>("not a number").expect_err("a parse failure"),
+        );
+        let mapped = StoreError::from(json);
+        assert!(
+            matches!(mapped, StoreError::Json(_)),
+            "`Json` stays `Json` — got {mapped:?}"
+        );
     }
 
     /// #96: `temp_db`'s dir must be OWNED. The green path already removed it

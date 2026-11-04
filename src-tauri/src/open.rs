@@ -295,7 +295,8 @@ mod tests {
     /// no-op default.
     #[test]
     fn every_desktop_mcp_manager_carries_the_open_requester() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent/harness/loop.rs");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../crates/fulcrum-core/src/harness/loop.rs");
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         // CRLF-normalised, for the reason `tests/provider_oauth_flow.rs::crate_source`
@@ -489,7 +490,8 @@ mod tests {
     /// fails on the presence half.
     #[test]
     fn the_harness_takes_the_opener_instead_of_constructing_it() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent/harness/loop.rs");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../crates/fulcrum-core/src/harness/loop.rs");
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         let source = source.replace("\r\n", "\n");

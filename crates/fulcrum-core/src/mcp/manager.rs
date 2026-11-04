@@ -1178,8 +1178,7 @@ mod tests {
                 .is_ok(),
             "`NoOpenRequester` reports `Ok` — an unwired manager must not read \
              as a failure at the `let _ =` call site, which is what keeps the \
-             fire-and-forget behaviour identical to the pre-seam `let _ = \
-             crate::open::open(url, None)`"
+             fire-and-forget behaviour identical to the pre-seam direct open"
         );
         assert_eq!(
             counter.hits.load(Ordering::Relaxed),

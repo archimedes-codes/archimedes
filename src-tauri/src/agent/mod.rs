@@ -13,11 +13,8 @@
 pub mod crashlog;
 pub mod errors;
 pub mod harness;
-mod normalize;
-pub mod persist;
 pub mod provider_auth;
 mod session;
-pub mod subagent;
 pub mod web;
 pub mod worker;
 
@@ -65,9 +62,19 @@ pub mod worker;
 // `worker/manager/tests/mod.rs`, `session/mod.rs`, `harness/loop.rs`,
 // `harness/loop/gate.rs`, `harness/loop/tests/policy_gate.rs`) keep their
 // `crate::agent::permission::…` paths UNCHANGED.
+// T5/S5b adds the last three files of the T5 closure — `harness` (a real
+// desktop module above, because `store.rs`/`trust.rs` stayed), plus
+// `normalize`, `persist` and `subagent`, which have NO staying half and so need
+// the module alias alone. `subagent` is the one whose named block below had to
+// GROW: `bin/fake_worker.rs`, `commands/agents.rs` and the two-sided
+// `worker_e2e` fixtures all reach `subagent::{AgentNameResolution,
+// LaunchConfig, SubagentOutcome, SubagentCancel, SubagentSessionManager}` and
+// `SubagentCancel`'s dispatch variant was renamed with its held type
+// (`Worker` → `Dispatcher`, the E2 re-plumb).
 pub use fulcrum_core::{
     agents, boundary, childproc, codemode, debuglog, definition_permission, events, fs_backend,
-    hostenv, ids, interactive, mcp, permission, policy, skills, todo, tools, types,
+    hostenv, ids, interactive, mcp, normalize, permission, persist, policy, skills, subagent, todo,
+    tools, types,
 };
 
 pub use crate::types::SessionInfo;
@@ -78,20 +85,21 @@ pub use errors::{AgentsError, FilesError, McpError, SessionError, SettingsError,
 pub use fulcrum_core::events::{EventSink, RpcEvent};
 pub use fulcrum_core::fs_backend::{FsBackend, FsError};
 pub use fulcrum_core::ids::{GateKey, RequestId, SessionId};
+pub use fulcrum_core::normalize::{is_bookkeeping_message_id, normalize_capabilities};
+pub use fulcrum_core::persist::TranscriptPersister;
+pub use fulcrum_core::subagent::{
+    AgentNameResolution, LaunchConfig, SubagentCancel, SubagentFailureReason, SubagentMetrics,
+    SubagentOutcome, SubagentSessionManager,
+};
 pub use fulcrum_core::todo::{TodoItem, TodoStatus, TodoStore};
 pub use interactive::{
     interactive_key, CachedPassword, PendingInteractive, PendingSudo, RealSudoRunner, SudoRun,
     SudoRunner,
 };
-pub use normalize::{is_bookkeeping_message_id, normalize_capabilities};
 pub use permission::{permission_key, PendingPermissions, PermissionOutcome};
-pub use persist::TranscriptPersister;
 pub use session::{
     user_message_payload, ClosedReason, EffectiveCatalog, ImagePayload, ProviderFactory,
     SessionManager, SessionManagerBuilder, StalledInfo, StopReason, MAX_IMAGE_BYTES,
-};
-pub use subagent::{
-    AgentNameResolution, LaunchConfig, SubagentMetrics, SubagentOutcome, SubagentSessionManager,
 };
 
 pub use tools::{ContentBlock, ImageRef, ToolCtx, ToolResult};
