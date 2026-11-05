@@ -619,18 +619,21 @@ mod tests {
             .to_path_buf()
     }
 
-    /// The shared cargo `target/` dir. From `crates/fulcrum-core` that is TWO
-    /// levels up, NOT one — the trap T4 left and Step A-bis exists to close.
+    /// The shared cargo `target/` dir — a one-line ALIAS for
+    /// `test_support::target_debug_dir`, which since S8b.1 resolves it from
+    /// `current_exe()` rather than by counting manifest levels (see that helper for
+    /// why: a standalone `cargo test` in this package builds into
+    /// `<package>/target/`, so the grandparent names a directory no build writes).
     ///
-    /// T5/S3 MOVED THIS HERE (`test_support::target_debug_dir`) and left a
-    /// one-line alias below. The reason is Step A-bis's own instruction — "fix
-    /// once, not eight times" — and S3 is where it stops being hypothetical: the
-    /// first consumers arrived (`mcp/stdio.rs`, `mcp/tool.rs`, `mcp/manager.rs`,
-    /// four `fake_mcp_stdio` spawners). A second definition of "where cargo
-    /// builds" inside the same crate is exactly the drift this helper exists to
-    /// prevent, so the census keeps its local `workspace_root()` (it needs the
-    /// ROOT, to walk two `src/` trees) and defers the `target/debug` half to the
-    /// shared one.
+    /// T5/S3 MOVED THE BODY HERE and left this alias. The reason is Step A-bis's
+    /// own instruction — "fix once, not eight times" — and S3 is where it stops
+    /// being hypothetical: the first consumers arrived (`mcp/stdio.rs`,
+    /// `mcp/tool.rs`, `mcp/manager.rs`, four `fake_mcp_stdio` spawners). A second
+    /// definition of "where cargo builds" inside the same crate is exactly the
+    /// drift this helper exists to prevent, so the census keeps its local
+    /// `workspace_root()` (it needs the ROOT, to walk two `src/` trees — and that
+    /// two-package assumption is what S8b.2 must teach to detect a single-package
+    /// checkout) and defers the `target/debug` half to the shared one.
     ///
     /// NO S2 FILE CONSUMES THIS, and that was a measured finding, not an
     /// oversight: nothing in `{tools, web, boundary, policy, definition_permission,
@@ -672,19 +675,23 @@ mod tests {
     /// The ground truth is `current_exe()`: the test binary IS
     /// `target/debug/deps/<name>-<hash>`, cargo put it there, so walking up twice
     /// from it gives the real `target/debug` with NO manifest arithmetic involved.
-    /// If the crate's TWO-level resolution drifts to ONE level
-    /// (`crates/target/debug`), it stops equaling the ground truth and this
-    /// reddens. Since S8.3 the crate CAN call `worker/client.rs::fixture_path()`
-    /// directly (same package, both `#[cfg(test)]`) and does — in that module's
-    /// own equality pin — so this pin is now the resolver-level half of a pair
-    /// rather than the only witness.
+    /// If the resolver drifts a level in either direction it stops equaling the
+    /// ground truth and this reddens. Since S8.3 the crate CAN call
+    /// `worker/client.rs::fixture_path()` directly (same package, both
+    /// `#[cfg(test)]`) and does — in that module's own equality pin — so this pin
+    /// is the resolver-level half of a pair rather than the only witness.
     ///
     /// # Verified non-vacuous
     ///
-    /// Collapsing `workspace_root()`'s `.parent().and_then(|p| p.parent())` to a
-    /// single `.parent()` makes this fail: the assertion quotes both sides, so the
-    /// failure names `crates/target/debug` against the real one. That is the T4
-    /// lesson applied — a pin that cannot go red is not a pin.
+    /// S8b.1 re-ran the mutation on the resolver's CURRENT body (the helper moved
+    /// to `test_support` long ago, so the original wording here named
+    /// `workspace_root()`, which this pin does not call — a stale claim, corrected
+    /// rather than left). Dropping one `.parent()` from
+    /// `test_support::target_debug_dir`'s body reddens THIS pin and three others in
+    /// three other files; each of the two shape asserts below was additionally
+    /// tripped on its own with the equality disabled, so neither hides behind the
+    /// other. That is the T4 lesson applied — a pin that cannot go red is not a
+    /// pin, and the claim needs a mutation behind it, not a sentence.
     #[test]
     fn target_debug_dir_is_where_cargo_actually_builds() {
         let claimed = target_debug_dir();
@@ -701,8 +708,55 @@ mod tests {
              binary into {ground_truth:?}/deps — the two disagree, so every fixture \
              path the crate derives from `target_debug_dir()` would spawn an ENOENT \
              path (or, at a `let _ =` site, quietly nothing). The crate manifest is \
-             {}; the workspace root must be its GRANDPARENT (T5/S2 Step A-bis).",
+             {}.",
             env!("CARGO_MANIFEST_DIR"),
+        );
+
+        // ⚠️ **WHY THIS EQUALITY STILL HAS TEETH AFTER S8b.1.** The resolver's
+        // BODY moved to `current_exe()` in S8b.1 (see
+        // `test_support::target_debug_dir` for why: a standalone `cargo test` in
+        // this package builds into `<package>/target/`, so the manifest's
+        // grandparent names a directory no build ever writes, and 66 fixture
+        // spawns stayed ENOENT until the ROOT was fixed — not just the bin names).
+        // That COULD have turned this pin into an identity — two copies of one
+        // expression cannot disagree — and it did not, because `ground_truth`
+        // above is this pin's OWN `current_exe()` walk, written here and not
+        // borrowed from the helper it checks. Vacuity is a claim about mutations,
+        // so it was tested rather than asserted: **dropping one `.parent()` from
+        // the resolver's body reddens this pin** (measured: it reports
+        // `target/debug/deps` against the real `target/debug`), and the same
+        // mutation separately reddens `worker/client.rs`,
+        // `worker/manager/tests/mod.rs` and `test_support`'s own exe-suffix pin —
+        // four witnesses in four files.
+        //
+        // The two shape asserts below are a SECOND, INDEPENDENT kind of teeth, and
+        // they were each tripped on their own (with the equality disabled, so
+        // neither one hides behind the other): assert (1) fires on a path named
+        // `deps`, assert (2) on one named `target`. They also survive what the
+        // equality's own arithmetic cannot promise — they check the resolved NAME,
+        // so they hold for a workspace member, a standalone package, a relocated
+        // `--target-dir`, and a cross-compiled `target/<triple>/debug`.
+
+        // (1) ONE LEVEL TOO FEW: dropping a `.parent()` leaves
+        // `target/debug/deps`, whose file name is `deps`, not `debug`.
+        assert_eq!(
+            claimed.file_name().and_then(|s| s.to_str()),
+            Some("debug"),
+            "`target_debug_dir()` must name the `debug` profile directory, not a \
+             level inside it or above it — resolved {claimed:?}. A dropped \
+             `.parent()` lands on `deps` (where the TEST binaries live, so every \
+             fixture spawn would exec a `deps/<name>` that cargo never writes)."
+        );
+        //
+        // (2) ONE LEVEL TOO MANY: adding a `.parent()` lands on `target`, which
+        // has no `deps/` child. Together (1) and (2) bracket the level count in
+        // BOTH directions without naming a level, which is what lets them survive
+        // the layout change instead of encoding it.
+        assert!(
+            claimed.join("deps").is_dir(),
+            "`{claimed:?}` must be the PARENT of `deps/` — the directory cargo \
+             built this very test binary's siblings into. A level too high names \
+             `target/`, which has no `deps` child."
         );
 
         // The existence witness. It used to carry a different job: while
