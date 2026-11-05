@@ -24,6 +24,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# T5: the harness core moved to `crates/fulcrum-core` (S1 = the leaf modules). The
+# desktop depends on the crate (the allowed direction — the crate NEVER depends on
+# `archimedes_lib`; that edge is the package cycle T5's ruling severs), and
+# `agent/mod.rs` re-exports from it so consumers outside `agent/` need zero edits.
+fulcrum-core = { path = "../crates/fulcrum-core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
@@ -171,12 +176,10 @@ notify-rust = "4.18"
 tauri-plugin-updater = "2.14.0"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = 3
-# The ADR 0025 consequence: a Worker panic stays in the Worker (the
-# process dies, the app lives); the binary grows with unwind tables —
-# accepted.
-panic = "unwind"
-strip = true
+#
+# The `[profile.release]` block that used to sit here lives in the WORKSPACE ROOT's
+# `Cargo.toml` now. Cargo honours release profiles only from the root manifest of a
+# workspace and warns "profiles for the non root package will be ignored" from here, so
+# leaving it in the member would have made it dead configuration — and the five settings
+# (including ADR 0025's `panic = "unwind"`) must keep applying exactly as before.
+

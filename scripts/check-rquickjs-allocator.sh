@@ -44,7 +44,7 @@
 # name, which is why it reads `<crate> feature "<name>"` and not a substring.
 #
 # Usage: check-rquickjs-allocator.sh [repo-root] [--input FILE] [--self-test]
-#   repo-root    the checkout whose `src-tauri/` workspace is resolved (default: .)
+#   repo-root    the checkout whose ROOT workspace is resolved (default: .)
 #   --input      read a CAPTURED `cargo tree -e features` dump instead of running
 #                cargo — for the fixture harness and for triage offline
 #   --self-test  plant fixtures under a throwaway root and prove THIS guard —
@@ -345,9 +345,11 @@ if [[ -n "$input_file" ]]; then
   exit $?
 fi
 
-# The live path. `src-tauri/` is the workspace — running cargo from the repo root
-# would resolve nothing and answer "clean" about a graph it never looked at.
-workspace="$repo_root/src-tauri"
+# The live path. The repo ROOT is the workspace (the root `Cargo.toml` carries the
+# `[workspace]` table since T4) — resolving from there reads the whole graph, the
+# member and `crates/` alike, so feature unification across members is visible.
+# Before T4 this pointed at `src-tauri/`, the then-standalone package root.
+workspace="$repo_root"
 if [[ ! -f "$workspace/Cargo.toml" ]]; then
   echo "error: no workspace manifest at $workspace/Cargo.toml (pass the repo root)" >&2
   exit 1

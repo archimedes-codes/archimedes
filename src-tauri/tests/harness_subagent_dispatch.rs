@@ -56,17 +56,15 @@ fn parent_model() -> Model {
     }
 }
 
-/// The `fake_worker` fixture factory (the `WorkerFactory` seam — the
-/// `CARGO_MANIFEST_DIR`/`target/debug` convention; `cargo test` builds
-/// the bin targets).
+/// The `fake_worker` fixture factory (the `WorkerFactory` seam —
+/// `CARGO_BIN_EXE_fake_worker`, the compile-time path cargo hands an INTEGRATION
+/// target for a built bin; under the T4 root `[workspace]` it resolves inside the
+/// repo-root `target/`. Same idiom as `tests/worker_stderr.rs`).
 struct FakeWorkerFactory;
 
 impl WorkerFactory for FakeWorkerFactory {
     fn spawn(&self) -> Result<WorkerHandle, WorkerError> {
-        WorkerHandle::spawn(&std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_worker"
-        )))
+        WorkerHandle::spawn(&std::path::PathBuf::from(env!("CARGO_BIN_EXE_fake_worker")))
     }
 }
 
@@ -116,7 +114,7 @@ async fn make_manager(
         .await
         .expect("the parent attach completes");
     let manager = Arc::new(SubagentSessionManager::new());
-    manager.set_worker_manager(wm);
+    manager.set_dispatcher(wm);
     manager
 }
 
@@ -190,6 +188,9 @@ async fn build_harness(
         RetryPolicy::default(),
         None, // config_dir (no desktop MCP layer in the test)
         "t".to_string(),
+        // (T5/S5a, SEAM 2) The no-op opener — see the same note in
+        // `harness_loop.rs` for why a fixture injects `NoOpenRequester`.
+        Arc::new(archimedes_lib::agent::mcp::NoOpenRequester),
     );
     let task = tokio::spawn(loop_.run());
     // Reap the task on drop (the tests don't await it — the `events`

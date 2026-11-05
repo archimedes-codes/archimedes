@@ -2168,11 +2168,21 @@ describe("configOptions state", () => {
    * TRAP 3 (#105): the accumulator restarts at zero, the stored row does not.
    *
    * `dismissSession` drops `useInteractive.cost[id]` on close, so a resumed
-   * session's next priced frame would otherwise be THAT CALL's cost alone — the
-   * figure the user saw before the reload would silently drop to a fraction of
-   * itself. `resumeSession` therefore mirrors the `configOptions` seeding two
-   * tests above and hands the row's `costUsd` to `seedCostFromRow`, which writes
-   * the key DIRECTLY (never `applyCost`, which would add the total to itself).
+   * session would otherwise show NOTHING until its next frame arrives.
+   * `resumeSession` therefore mirrors the `configOptions` seeding two tests
+   * above and hands the row's `costUsd` to `seedCostFromRow`, which writes the
+   * key DIRECTLY (never `applyCost`, which also writes the four TOKEN fields —
+   * and tokens are never persisted).
+   *
+   * Fulcrum T2 moved WHERE the arithmetic lives, and this test reads the totals
+   * contract now (the same rewrite already made in the owned
+   * `interactive.test.ts`'s `seedCostFromRow` block). The store used to be the
+   * accumulator, so the frame after a seed had to ADD to it and `0.6` was only
+   * reachable by summing `0.5 + 0.1`. The emitter (`AgentLoop::cost_acc`,
+   * seeded from the SAME row through `StartEnv.cost_usd`) is the accumulator
+   * now and `combineSessionCost` is last-frame-wins, so the frame a resumed
+   * session receives ALREADY carries `0.5 + 0.1 = 0.6` — that total is what is
+   * applied below, and the entry must read it whole.
    *
    * Both cases `resetStores()` first: this `describe` has no reset of its own, so
    * without it the case below would inherit whatever `cost` a previous test left
@@ -2196,15 +2206,27 @@ describe("configOptions state", () => {
     const entry = useInteractive.getState().cost["s1"] as {
       costUsd: number | null;
     };
+    // The gap the seed exists to cover: the stored figure is on screen BEFORE
+    // the resumed session's first frame arrives.
     expect(entry.costUsd).toBe(0.5);
-    // The consequence the whole seeding exists for: the next priced frame ADDS
-    // to the stored figure instead of replacing it. 0.6, not 0.1 (no seed) and
-    // not 1.1 (the seed routed through `applyCost`).
-    useInteractive.getState().applyCost("s1", { costUsd: 0.1 });
+    // The next frame carries the session's TOTAL — the Rust loop added its own
+    // call to the same row this seed came from, so the frame states 0.6 and the
+    // store takes its word. Under the retired summing store this frame would
+    // have had to carry `0.1`.
+    useInteractive.getState().applyCost("s1", { costUsd: 0.6 });
     expect(
       (useInteractive.getState().cost["s1"] as { costUsd: number | null })
         .costUsd,
     ).toBeCloseTo(0.6, 10);
+    // The absence pin: `1.1` is `0.5 + 0.6` — what a SUMMING reducer would
+    // manufacture by adding a total on top of a seeded total. It is the exact
+    // double count Fulcrum T2 exists to make impossible, so it stays asserted
+    // alongside the positive value: a reducer that drifts back to addition
+    // reddens here, and `pnpm test` fails on this file for it.
+    expect(
+      (useInteractive.getState().cost["s1"] as { costUsd: number | null })
+        .costUsd,
+    ).not.toBeCloseTo(1.1, 10);
     resetStores();
   });
 

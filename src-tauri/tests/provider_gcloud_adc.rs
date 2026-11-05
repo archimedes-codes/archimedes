@@ -3,7 +3,9 @@
 //! Three things this file exists to make CI-red:
 //!
 //! 1. **Zero `gcloud` CLI subprocess** — a childproc-style source census over
-//!    `provider_auth/gcloud.rs`'s PRODUCTION region. The exchange is a `reqwest`
+//!    `provider_auth/gcloud.rs`'s PRODUCTION region (that file moved to
+//!    `crates/fulcrum-core/src/provider_auth/` in T7/S7.1; see `CRATE_GCLOUD_RS`).
+//!    The exchange is a `reqwest`
 //!    POST; nothing in this flow may spawn a child process.
 //! 2. **The ADC path never touches the credential store** — the same census shape
 //!    looking for `store::` calls, plus a runtime assertion that a successful mint
@@ -174,17 +176,32 @@ const TEST_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 
 // ── 1. the zero-subprocess census ─────────────────────────────────────────
 
+/// Where `gcloud.rs` lives since T7/S7.1: the ENGINE CRATE, one package over.
+/// Named once, as a constant, so both censuses lint the same file and a future
+/// move has exactly one line to follow. The path is relative to
+/// `CARGO_MANIFEST_DIR` (`src-tauri/`), hence the `../` into the sibling member.
+#[cfg(not(windows))]
+const CRATE_GCLOUD_RS: &str = "../crates/fulcrum-core/src/provider_auth/gcloud.rs";
+
 /// The census scanner shared by both source scans: the PRODUCTION region of one
 /// file (every code line before the first item-position `#[cfg(test)]`, comments
 /// dropped), `panic`-ing on an unreadable file — a census that quietly stops at
 /// the first odd file passes for the wrong reason (the `agent/childproc.rs`
 /// precedent, including its vacuity rule).
 ///
+/// `rel` is relative to THIS package's root (`CARGO_MANIFEST_DIR` = `src-tauri/`),
+/// NOT to `src/`: T7/S7.1 moved `gcloud.rs` into `crates/fulcrum-core`, so the
+/// linted file now lives OUTSIDE this package's tree and a helper that forced a
+/// `src/` prefix could not name it. `../crates/fulcrum-core/...` is the sibling-
+/// member spelling the S3/S5b precedent uses (`tests/provider_oidc.rs:1023`,
+/// `tests/provider_oauth_flow.rs:1248`). The read PANICS on a miss, so a wrong
+/// root is loud — the fail-open shape this repo keeps recording.
+///
 /// `#[cfg(not(windows))]` like the childproc precedent: Windows keeps no
 /// source-scan census (the repo's own recorded gap).
 #[cfg(not(windows))]
 fn production_region(rel: &str) -> Vec<(usize, String)> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(rel);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("census cannot read {}: {e}", path.display()));
     let is_comment = |t: &str| ["//", "/*", "*", "*/"].iter().any(|p| t.starts_with(p));
@@ -214,7 +231,7 @@ fn production_region(rel: &str) -> Vec<(usize, String)> {
 #[test]
 fn gcloud_rs_never_spawns_a_subprocess() {
     const NEEDLES: [&str; 3] = ["Command::new(", "process::Command", "tokio::process"];
-    let region = production_region("agent/provider_auth/gcloud.rs");
+    let region = production_region(CRATE_GCLOUD_RS);
     assert!(
         region.len() > 100,
         "the census is vacuous — it scanned {} lines of gcloud.rs",
@@ -244,7 +261,7 @@ fn gcloud_rs_never_spawns_a_subprocess() {
 #[test]
 fn gcloud_rs_never_calls_store() {
     const NEEDLES: [&str; 3] = ["store_credential", "store::save", "store::"];
-    let region = production_region("agent/provider_auth/gcloud.rs");
+    let region = production_region(CRATE_GCLOUD_RS);
     assert!(
         region.len() > 100,
         "the census is vacuous — it scanned {} lines of gcloud.rs",

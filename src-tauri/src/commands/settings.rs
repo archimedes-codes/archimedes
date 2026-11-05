@@ -25,12 +25,46 @@ pub async fn get_settings(
 }
 
 /// Persist the settings (overwrites the file).
+///
+/// (Fulcrum T3) After a SUCCESSFUL write, the three live-reload fields are
+/// PUSHED to every live Worker (`push_config_update`). This is the production
+/// trigger for the `config-update` frame, and it is the reason the Worker was
+/// allowed to stop reading `settings.json`: the per-turn
+/// `PermissionContext::refresh` re-read (ADR 0030 Deviation 4) and the
+/// per-dispatch `agentOverrides` re-read (ADR 0023) are replaced by this push,
+/// so "edit Settings, it applies at the next prompt, no restart" still holds.
+/// Without this call the frame exists and nothing sends it — every test of the
+/// frame would pass while the property stayed broken.
+///
+/// BEST-EFFORT and deliberately unchecked: the file is already written by the
+/// time the push runs, so a session whose Worker is mid-teardown must not turn
+/// a SAVE that succeeded into an error the Settings UI reports. A Worker that
+/// is not running has nothing to reload; it picks the values up from the
+/// envelope when its next session starts.
 #[tauri::command]
 pub async fn save_settings(
     state: State<'_, Arc<SessionManager>>,
     settings: Settings,
 ) -> Result<(), SettingsError> {
-    write_settings(state.config_dir(), &settings).map_err(SettingsError::SaveFailed)
+    // The delivered-count is discarded: a save must not fail because a Worker
+    // was mid-teardown (see the doc above).
+    save_settings_and_push(&state, &settings).await.map(|_| ())
+}
+
+/// The `save_settings` body, factored out so the PUSH TRIGGER is testable:
+/// `tauri::State` cannot be constructed in a unit test (the repo's own note in
+/// `commands::update`'s tests records the same wall), and "the save actually
+/// pushes" is exactly the property a green suite would otherwise fake. A test
+/// calls THIS with a real `SessionManager` and a real attached Worker.
+///
+/// Returns the number of Workers the push reached — discarded by the command
+/// (best-effort), asserted on by the test.
+pub(crate) async fn save_settings_and_push(
+    state: &Arc<SessionManager>,
+    settings: &Settings,
+) -> Result<usize, SettingsError> {
+    write_settings(state.config_dir(), settings).map_err(SettingsError::SaveFailed)?;
+    Ok(state.push_config_update(settings).await)
 }
 
 /// The effective catalog's models (the frontend's Default-model select +
@@ -157,9 +191,22 @@ pub async fn auth_mcp_server(name: String, entry: Value) -> Result<String, Setti
     let def = crate::agent::mcp::types::classify_server(&entry).ok_or_else(|| {
         SettingsError::InvalidMcpServer("need a `url` or a `command`".to_string())
     })?;
-    crate::agent::mcp::manager::authenticate_server(&name, &def)
-        .await
-        .map_err(SettingsError::McpAuthFailed)
+    // (T5/S3, edge E6) `authenticate_server` moved to `fulcrum-core` with `mcp`
+    // and the browser-opening step became an injected `OpenRequester`, because
+    // `crate::open` is `tauri` and cannot move. This is the seam's ONLY
+    // out-of-`agent/` call site, so it is the one file outside `agent/` this
+    // sub-step touches — the plan's acceptance line ("zero edits to the 20
+    // outside-`agent/` files") cannot survive a signature change on a function
+    // this file calls, and passing the desktop's own opener is the minimal edit
+    // that keeps the behaviour: the Settings page's Authenticate button still
+    // reaches `crate::open::open(url, None)`, the ONE External-open policy.
+    crate::agent::mcp::manager::authenticate_server(
+        &name,
+        &def,
+        crate::open::desktop_open_requester().as_ref(),
+    )
+    .await
+    .map_err(SettingsError::McpAuthFailed)
 }
 
 /// Test ONE Search provider: one canned query, reporting the hit count or the
@@ -543,52 +590,60 @@ pub struct ProviderBudgetDtoResponse {
 
 /// The facts → wire mapping. A `None` fact (denied, rate-limited, unreachable,
 /// or never polled) contributes NO row; a team list contributes one row each.
-impl From<&crate::agent::provider_auth::budget::BudgetFacts> for Vec<ProviderBudgetDto> {
-    fn from(facts: &crate::agent::provider_auth::budget::BudgetFacts) -> Self {
-        use crate::agent::provider_auth::budget::BudgetFacts as Facts;
-        let mut rows: Vec<ProviderBudgetDto> = Vec::new();
-        let Facts { key, user, teams } = facts;
-        if let Some(key) = key {
-            rows.push(ProviderBudgetDto {
-                level: crate::agent::provider_auth::budget::BudgetEndpoint::KeyInfo
-                    .level()
-                    .to_string(),
-                entitled: true,
-                label: None,
-                spend: key.spend,
-                max_budget: key.max_budget,
-                remaining: key.remaining,
-                budget_reset_at: key.budget_reset_at.clone(),
-            });
-        }
-        if let Some(user) = user {
-            rows.push(ProviderBudgetDto {
-                level: crate::agent::provider_auth::budget::BudgetEndpoint::UserInfo
-                    .level()
-                    .to_string(),
-                entitled: true,
-                label: user.user_id.clone(),
-                spend: user.spend,
-                max_budget: user.max_budget,
-                remaining: user.remaining,
-                budget_reset_at: user.budget_reset_at.clone(),
-            });
-        }
-        for team in teams {
-            rows.push(ProviderBudgetDto {
-                level: crate::agent::provider_auth::budget::BudgetEndpoint::TeamInfo
-                    .level()
-                    .to_string(),
-                entitled: true,
-                label: team.team_alias.clone().or_else(|| team.team_id.clone()),
-                spend: team.spend,
-                max_budget: team.max_budget,
-                remaining: team.remaining,
-                budget_reset_at: team.budget_reset_at.clone(),
-            });
-        }
-        rows
+///
+/// **Why this is a function and not the `impl From<&BudgetFacts> for
+/// Vec<ProviderBudgetDto>` it used to be (T7/S7.2).** `BudgetFacts` now lives in
+/// `fulcrum-core`, so that impl would name a foreign trait (`From`) with a
+/// foreign type on the left (`&BudgetFacts`) and only `Vec` — also foreign —
+/// before any local type: `E0117`, the orphan rule. Moving a type across a
+/// package boundary therefore forbids the desktop from implementing a `From`
+/// conversion *for* it. A plain function is the same mapping with the same body;
+/// `Vec::from(&f)` becomes `budget_rows(&f)`. Behaviour is identical (both call
+/// sites and the pin test below run the same code).
+fn budget_rows(facts: &crate::agent::provider_auth::budget::BudgetFacts) -> Vec<ProviderBudgetDto> {
+    use crate::agent::provider_auth::budget::BudgetFacts as Facts;
+    let mut rows: Vec<ProviderBudgetDto> = Vec::new();
+    let Facts { key, user, teams } = facts;
+    if let Some(key) = key {
+        rows.push(ProviderBudgetDto {
+            level: crate::agent::provider_auth::budget::BudgetEndpoint::KeyInfo
+                .level()
+                .to_string(),
+            entitled: true,
+            label: None,
+            spend: key.spend,
+            max_budget: key.max_budget,
+            remaining: key.remaining,
+            budget_reset_at: key.budget_reset_at.clone(),
+        });
     }
+    if let Some(user) = user {
+        rows.push(ProviderBudgetDto {
+            level: crate::agent::provider_auth::budget::BudgetEndpoint::UserInfo
+                .level()
+                .to_string(),
+            entitled: true,
+            label: user.user_id.clone(),
+            spend: user.spend,
+            max_budget: user.max_budget,
+            remaining: user.remaining,
+            budget_reset_at: user.budget_reset_at.clone(),
+        });
+    }
+    for team in teams {
+        rows.push(ProviderBudgetDto {
+            level: crate::agent::provider_auth::budget::BudgetEndpoint::TeamInfo
+                .level()
+                .to_string(),
+            entitled: true,
+            label: team.team_alias.clone().or_else(|| team.team_id.clone()),
+            spend: team.spend,
+            max_budget: team.max_budget,
+            remaining: team.remaining,
+            budget_reset_at: team.budget_reset_at.clone(),
+        });
+    }
+    rows
 }
 
 /// The per-provider spend/budget rows (T8's read; the Settings-page MOUNT fetch,
@@ -646,11 +701,14 @@ pub async fn get_provider_budget(
     let mut out = Vec::with_capacity(provider_ids.len());
     for provider_id in provider_ids {
         let rows: Vec<ProviderBudgetDto> = match poller.lock() {
-            Ok(guard) => guard.facts(&provider_id).map(Vec::from).unwrap_or_default(),
+            Ok(guard) => guard
+                .facts(&provider_id)
+                .map(budget_rows)
+                .unwrap_or_default(),
             Err(poisoned) => poisoned
                 .into_inner()
                 .facts(&provider_id)
-                .map(Vec::from)
+                .map(budget_rows)
                 .unwrap_or_default(),
         };
         out.push(ProviderBudgetDtoResponse { provider_id, rows });
@@ -691,7 +749,7 @@ mod tests {
                 budget_reset_at: None,
             }],
         };
-        let rows: Vec<ProviderBudgetDto> = Vec::from(&facts);
+        let rows: Vec<ProviderBudgetDto> = budget_rows(&facts);
         let response = ProviderBudgetDtoResponse {
             provider_id: "gw".into(),
             rows,
@@ -721,7 +779,7 @@ mod tests {
 
         // The empty ledger: no facts at all ⇒ an empty row set (the UI's
         // not-offered state), never an error and never a placeholder row.
-        let empty: Vec<ProviderBudgetDto> = Vec::from(&BudgetFacts::default());
+        let empty: Vec<ProviderBudgetDto> = budget_rows(&BudgetFacts::default());
         assert!(empty.is_empty(), "nothing read ⇒ nothing rendered");
     }
 
@@ -896,10 +954,14 @@ mod tests {
     async fn test_mcp_server_a_valid_stdio_entry_reports_the_tool_count() {
         // (ADR 0019) A valid stdio entry (the fake binary — three canned
         // tools) round-trips the count through the command.
-        let bin = std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_mcp_stdio"
-        ));
+        // The WORKSPACE ROOT's `target/debug` (the cargo root moved to the repo
+        // root with the T4 `[workspace]`).
+        let bin = {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("the src-tauri package has a parent (the repo root)");
+            root.join("target/debug/fake_mcp_stdio")
+        };
         let count = test_mcp_server(
             None,
             serde_json::json!({ "command": bin.display().to_string() }),

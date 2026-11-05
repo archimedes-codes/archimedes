@@ -70,7 +70,7 @@
 # runs `cargo test` from the repo root; a census there needs a snapshot of its own
 # and is a separate decision. This is a CI gate plus a script you can run by hand:
 #   bash scripts/check-temp-dir-census.sh snapshot --state ~/.cache/census.txt
-#   (cd src-tauri && TMPDIR=/tmp cargo test)
+#   (TMPDIR=/tmp cargo test)
 #   bash scripts/check-temp-dir-census.sh verify   --state ~/.cache/census.txt
 #
 # BAR ENFORCED IN CI: `bash -n` on this file plus `check-temp-dir-census.test.sh`
@@ -127,47 +127,139 @@ usage() {
 attribution_table() {
   # prefix <TAB> owner
   cat <<'TABLE'
-exec-skill-esc-	src-tauri/src/agent/tools/exec/tests/skills.rs
-exec-	src-tauri/src/agent/tools/exec/tests/support.rs
+exec-skill-esc-	crates/fulcrum-core/src/tools/exec/tests/skills.rs
+exec-	crates/fulcrum-core/src/tools/exec/tests/support.rs
 harness-subagent-	src-tauri/tests/harness_subagent_dispatch.rs
 harness-loop-test-	src-tauri/src/agent/harness/loop/tests/support.rs
 harness-loop-	src-tauri/tests/harness_loop.rs
 harness-store-test-	src-tauri/src/agent/harness/store.rs
 harness-store-	src-tauri/tests/harness_store.rs
 harness-compact-test-	src-tauri/src/agent/harness/compact.rs
-harness-trust-test-	src-tauri/src/agent/harness/trust.rs
+harness-trust-test-	src-tauri/tests/fulcrum_seams.rs
 harness-agent-def-e2e-cfg-	src-tauri/src/agent/harness/loop/tests/subagents.rs
 harness-list-agents-home-	src-tauri/src/agent/harness/loop/tests/tools_enabled.rs
 harness-resolve-launch-home-	src-tauri/src/agent/harness/launch.rs
 archimedes-prompt-	src-tauri/src/agent/harness/prompt.rs
 mcp-loop-	src-tauri/src/agent/harness/loop/tests/turn_lifecycle.rs
-mcp-	src-tauri/src/agent/mcp/config.rs
+mcp-	crates/fulcrum-core/src/mcp/config.rs
+# (T5/S3) was src-tauri/src/agent/mcp/config.rs before `mcp` moved. `mcp-loop-` above
+# still belongs to the DESKTOP's turn_lifecycle.rs (S5) and outranks this by
+# longest-match, so the two rows keep blaming different files.
 db-	src-tauri/src/storage/db.rs
 archimedes-cmd-agents-	src-tauri/src/commands/agents.rs
-archimedes-agents-	src-tauri/src/agents.rs
-archimedes-skills-	src-tauri/src/skills.rs
-archimedes-sudo-	src-tauri/src/agent/interactive/sudo_exec.rs
+archimedes-agents-	crates/fulcrum-core/src/agents.rs
+archimedes-skills-	crates/fulcrum-core/src/skills.rs
+archimedes-sudo-	crates/fulcrum-core/src/interactive/sudo_exec.rs
+# (T5/S3) was src-tauri/src/agent/interactive/sudo_exec.rs before `interactive` moved.
 archimedes-canonical-	src-tauri/tests/storage.rs
 archimedes-native-mig-	src-tauri/tests/storage.rs
 archimedes-spaces-	src-tauri/tests/storage.rs
 archimedes-storage-test-	src-tauri/tests/storage.rs
 archimedes-trusted-	src-tauri/tests/storage.rs
-archimedes-sandbox-	src-tauri/src/agent/tools/sandbox.rs
+archimedes-sandbox-	crates/fulcrum-core/src/tools/sandbox/tests/mod.rs
 sessions-log-test-	src-tauri/src/commands/sessions.rs
 history-	src-tauri/src/commands/history.rs
 files-cmd-test-	src-tauri/src/commands/files/tests/support.rs
 test-support-guard-	src-tauri/src/test_support.rs
+# T5/S2: the six rows above repointed at `crates/fulcrum-core/...` because the
+# `{tools, web, boundary}` cluster + `skills`/`agents` MOVED. A stale owner path
+# still ATTRIBUTES the prefix correctly (the census matches the PREFIX, never the
+# file), so nothing reddened — but it sends a reader chasing a leak to a file that
+# no longer mints it, which is the whole point of the table. Verified against
+# `grep '"<prefix>"'` in both packages, not against the old table.
+#
+# T5/S2 also RELOCATED one test: `the_prompt_catalog_and_the_list_skills_catalog_
+# agree` moved out of the crate's `exec/tests/skills.rs` into
+# `src-tauri/tests/skill_catalog_drift.rs` (it drives `harness::prompt`, which
+# stays desktop until S5). It mints through its OWN `temp_cwd` with the prefix
+# `skill-catalog-`, deliberately NOT `exec-`: two files minting one prefix would
+# blame the wrong one. That makes it a NEW minter, so it needs a NEW row —
+# otherwise its dirs report UNATTRIBUTED, which the header defines as "NEW, which
+# is exactly what this guard is for", and a correctly-guarded dir reads as a leak.
+skill-catalog-	src-tauri/tests/skill_catalog_drift.rs
+# T5/S2 found these TWO rows missing — both minters existed at `$BASE` and
+# neither was in the table, so their dirs reported UNATTRIBUTED on every run
+# (a pre-existing gap, recorded rather than silently absorbed). Both files moved
+# in S2, so the rows are written against their NEW paths.
+policy-rules-	crates/fulcrum-core/src/policy.rs
+archimedes-childproc-kill-test-	crates/fulcrum-core/src/childproc.rs
+# T5/S2: `fulcrum-core`'s OWN copy of the scratch-dir guard — the crate cannot
+# reach `archimedes_lib::test_support` (that edge is the package cycle T5 severs),
+# so the crate mints under its own prefix. Same mechanism, same guard, one row.
+# Without this row a `fc-guard-*` dir reports as UNATTRIBUTED — which the header
+# defines as "NEW, which is exactly what this guard is for" — i.e. a correctly
+# guarded dir would read as a leak and invite someone to "fix" a test that is fine.
+fc-guard-	crates/fulcrum-core/src/test_support.rs
+# T5/S4: the seam instantiation pins (`cargo test` integration target). Three pins
+# each open a real SQLite file, so three prefixes; ONE row covers them all because
+# longest-wins makes the shared `fulcrum-seams-` the match for each. The prefixes
+# are written as LITERAL strings at the call sites rather than built with
+# `format!` — the minter scans (`.test.sh` 18c / 18c(2)) grep for literal
+# `in_env_temp("<prefix>"` text, and an interpolated prefix is invisible to them,
+# which would take this file out of the corpus those two cases certify.
+fulcrum-seams-	src-tauri/tests/fulcrum_seams.rs
 session-cfg-	src-tauri/src/agent/session/mod.rs
 refresh-	src-tauri/src/agent/session/mod.rs
 router-todos-	src-tauri/src/agent/session/router.rs
 crashsel-	src-tauri/src/agent/session/router.rs
 crashlog-test-	src-tauri/src/agent/crashlog.rs
-debuglog-test-	src-tauri/src/agent/debuglog.rs
-perm-gate-	src-tauri/src/agent/permission.rs
+debuglog-test-	crates/fulcrum-core/src/debuglog.rs
+# T5/S5a: TWO rows repointed because the MINTER moved, not the prefix.
+# `harness-trust-test-` was minted in `src-tauri/src/agent/harness/trust.rs`; that
+# file's `Db` test could not follow the trait into the crate (`#[cfg(test)]` does
+# not survive into an rlib — A.4 — and the crate cannot reach `storage::Db`), so it
+# relocated to `tests/fulcrum_seams.rs`, which now mints BOTH `harness-trust-test-`
+# (the relocated trust test) and its own `fulcrum-seams-trust-` (the new
+# instantiation pin — covered by the `fulcrum-seams-` row above by longest-match).
+# `perm-gate-` was minted in `src-tauri/src/agent/permission.rs`; that whole module
+# moved to `crates/fulcrum-core/`, but its `Db` fixture could not move with it, so
+# the prefix's only remaining minter is the desktop target that inherited those
+# tests. A stale owner path still ATTRIBUTES the prefix (the table matches the
+# prefix, never the file) so nothing reddened — the point of repointing is that a
+# reader hunting a leak is sent to the file that actually mints it. Verified with
+# `grep -rn '"<prefix>"' src-tauri/src src-tauri/tests crates`, not against the
+# old table.
+perm-gate-	src-tauri/tests/permission_gate_db.rs
+# T7/S7.1: TWO NEW rows for the minters that moved with `provider_auth` into the
+# crate. Both prefixes had NO row before this commit (verified: grepping the table
+# for `gcloud-adc-` and `-t2a-keyhelper` at `$BASE` `f488e8dd` is EMPTY), so their
+# dirs reported UNATTRIBUTED on every run — the pre-existing gap the S2 note above
+# records twice. These are ADDITIONS, not repoints.
+#
+# ⚠️ BOTH PREFIXES ARE DUAL-MINTED after this move, and `attribute()` is
+# longest-prefix with ONE row per prefix, so the table CANNOT name both minters:
+#   * `gcloud-adc-` mints in `crates/fulcrum-core/src/provider_auth/gcloud.rs`
+#     (moved here in S7.1, 8 call sites) AND in
+#     `src-tauri/tests/provider_gcloud_adc.rs` (stayed desktop, 8 call sites);
+#   * `-t2a-keyhelper` mints ONLY in the crate (its single minter moved).
+# Each row therefore points at the file the MOVED code mints, and attribution is
+# BEST-EFFORT: the census only decides where a reader hunting a leak is SENT,
+# never whether the leak is caught — a leaked dir fails either way. If a
+# `gcloud-adc-*` leak is ever reported, check BOTH files before believing the
+# blame line.
+gcloud-adc-	crates/fulcrum-core/src/provider_auth/gcloud.rs
+-t2a-keyhelper	crates/fulcrum-core/src/provider_auth/key_helper.rs
+# T7/S7.2: the THIRD `provider_auth` minter moved — `budget.rs` → the crate. No
+# row for `provider-budget-` existed before (verified: grepping the table for it
+# at `$BASE` `2e59fe5a` is EMPTY), so its dirs reported UNATTRIBUTED on every run
+# — the same pre-existing gap the S2 and S7.1 notes above record.
+#
+# ⚠️ DUAL-MINTED, exactly like `gcloud-adc-` above, and for the same reason:
+# `attribute()` is longest-prefix with ONE row per prefix, so the table cannot
+# name both minters.
+#   * `crates/fulcrum-core/src/provider_auth/budget.rs` (moved here at S7.2 — the
+#     poller's bearer-rotation unit test);
+#   * `src-tauri/tests/provider_budget.rs:425,495` (stayed desktop, 2 call sites
+#     — the integration targets that drive `run_budget_tick` against wiremock).
+# The row points at the crate (where the moved code lives); attribution is
+# BEST-EFFORT — the census decides where a reader hunting a leak is SENT, never
+# whether the leak is caught. If a `provider-budget-*` dir is ever reported,
+# check BOTH files before believing the blame line.
+provider-budget-	crates/fulcrum-core/src/provider_auth/budget.rs
 persist-test-	src-tauri/src/agent/persist.rs
-fsb-	src-tauri/src/agent/fs_backend.rs
+fsb-	crates/fulcrum-core/src/fs_backend.rs
 fs-backend-	src-tauri/tests/fs_backend.rs
-boundary-	src-tauri/src/agent/boundary.rs
+boundary-	crates/fulcrum-core/src/boundary.rs
 session-native-	src-tauri/tests/session_native.rs
 worker-e2e-	src-tauri/tests/worker_e2e.rs
 worker-stdin-	src-tauri/tests/worker_stdin.rs

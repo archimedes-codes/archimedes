@@ -61,17 +61,31 @@ fn spawn_worker() -> tokio::process::Command {
     cmd
 }
 
-/// Read the first stdout line (the `ready` frame) off the SHARED reader
-/// (the same reader then feeds the frame collector — taking `stdout`
-/// twice would close the pipe).
+/// Read the two handshake lines off the SHARED reader (`hello` then
+/// `ready` — the same reader then feeds the frame collector, so taking
+/// `stdout` twice would close the pipe).
 async fn read_ready_line(reader: &mut tokio::io::BufReader<tokio::process::ChildStdout>) {
+    let hello = read_line(reader).await;
+    assert_eq!(hello["type"], "hello", "the FIRST stdout line is `hello`");
+    assert_eq!(
+        hello["protocolVersion"], 1,
+        "the `hello` frame carries the protocol version: {hello}"
+    );
+    let ready = read_line(reader).await;
+    assert_eq!(
+        ready["type"], "ready",
+        "`hello` is immediately followed by `ready`"
+    );
+}
+
+/// Read one stdout line as JSON (bounded).
+async fn read_line(reader: &mut tokio::io::BufReader<tokio::process::ChildStdout>) -> Value {
     let mut line = String::new();
     tokio::time::timeout(Duration::from_secs(15), reader.read_line(&mut line))
         .await
-        .expect("the ready line arrives within the bound")
+        .expect("the handshake line arrives within the bound")
         .expect("stdout is readable");
-    let v: Value = serde_json::from_str(line.trim()).expect("the ready line is JSON");
-    assert_eq!(v["type"], "ready");
+    serde_json::from_str(line.trim()).expect("the handshake line is JSON")
 }
 
 /// A `start` envelope (the subagent shape — `FreshChild` + a `system_prompt`,

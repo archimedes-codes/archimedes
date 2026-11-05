@@ -1231,11 +1231,36 @@ async fn pasted_token_and_cli_sso_refresh_are_noops() {
 /// Windows — which is how these structural pins go red on `windows-latest` while
 /// green everywhere else. Normalising makes the lint measure the CONTENT it
 /// means to measure, never the platform's checkout convention.
-fn crate_source(relative: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+///
+/// T5/S3 added the `crate_kind` argument, and it is NOT decoration: the one file
+/// this helper lints (`mcp/callback.rs`) moved to `crates/fulcrum-core`, so "the
+/// crate root" now means TWO different roots depending on which package the
+/// linted file lives in. A single root would have made this lint read a path that
+/// no longer exists — and because the read PANICS, that failure is loud rather
+/// than the fail-open shape this repo keeps recording. The two kinds are named
+/// rather than resolved by probing, so a wrong kind cannot quietly find a
+/// same-named file in the other tree.
+fn crate_source(kind: CrateRoot, relative: &str) -> String {
+    let path = match kind {
+        CrateRoot::Desktop => Path::new(env!("CARGO_MANIFEST_DIR")).join(relative),
+        // `CARGO_MANIFEST_DIR` is `src-tauri/`, so the sibling member is one up.
+        CrateRoot::FulcrumCore => Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../crates/fulcrum-core")
+            .join(relative),
+    };
     std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("reading {relative:?}: {e}"))
+        .unwrap_or_else(|e| panic!("reading {kind:?} {relative:?}: {e}"))
         .replace("\r\n", "\n")
+}
+
+/// Which package's tree a structural lint reads (T5/S3 — the move made this a
+/// real question, where before there was only one crate to read).
+#[derive(Debug, Clone, Copy)]
+enum CrateRoot {
+    /// `src-tauri/` — the desktop package.
+    Desktop,
+    /// `crates/fulcrum-core/` — the engine crate T5 is extracting into.
+    FulcrumCore,
 }
 
 #[test]
@@ -1247,7 +1272,15 @@ fn callback_state_check_is_constant_time_lint() {
     // reintroduce. Behavior is pinned by `callback.rs`'s own tests (equal /
     // first-byte / last-byte / length-mismatch, plus MCP's matching/mismatched
     // state tests staying green). NO test here claims to measure timing.
-    let source = crate_source("src/agent/mcp/callback.rs");
+    // T5/S3: `mcp/callback.rs` moved into `crates/fulcrum-core`, so this reads
+    // the CRATE's tree. The needles below are otherwise unchanged — this lint
+    // still pins the `state` guard's shape and the helper's absence of an early
+    // exit; only the file's home moved. (The `pub(crate) fn` → `pub fn` needle
+    // change is at `tests/provider_oidc.rs`, which asserts the visibility; the
+    // needle here is the bare `pub(crate) fn constant_time_eq(` used to LOCATE
+    // the helper, so it tracks the same widening — see the note there for why a
+    // package boundary forced it.)
+    let source = crate_source(CrateRoot::FulcrumCore, "src/mcp/callback.rs");
     // Vacuity guard: the region we lint exists at all.
     let wait_start = source
         .find("pub async fn wait(")
@@ -1286,7 +1319,7 @@ fn callback_state_check_is_constant_time_lint() {
     // own doc comment (which NAMES the forbidden constructs to explain why they
     // are absent) would trip every detector.
     let helper_start = source
-        .find("pub(crate) fn constant_time_eq(")
+        .find("pub fn constant_time_eq(")
         .expect("the ONE constant-time helper exists (ruling R4)");
     let helper_end = source[helper_start..]
         .find("\n}\n")
@@ -1311,11 +1344,18 @@ fn callback_state_check_is_constant_time_lint() {
              mismatch is exactly the timing leak this exists to avoid:\n{helper}"
         );
     }
-    // `pub(crate)`, per R4 — T6's `oidc.rs` IMPORTS this rather than writing a
-    // second implementation of a security primitive.
+    // Reachable by the importer, per R4 — the desktop's `oidc.rs` IMPORTS this
+    // rather than writing a second implementation of a security primitive. The
+    // spelling is `pub` and not `pub(crate)` since T5/S3 moved the file into
+    // `fulcrum-core`: a package boundary erases `pub(crate)`, so the narrower
+    // form would not reach the desktop importer at all. "reachable crate-wide"
+    // was the old wording for "reachable by every importer"; the substance — one
+    // definition, reachable, never duplicated — is what the assertion still
+    // measures.
     assert!(
-        helper.contains("pub(crate) fn constant_time_eq"),
-        "R4 needs the helper reachable crate-wide"
+        helper.contains("pub fn constant_time_eq"),
+        "R4 needs the helper reachable by its importers (`pub`, because a \
+         package boundary erases `pub(crate)`)"
     );
 }
 
@@ -1324,7 +1364,7 @@ fn login_commands_are_registered_in_generate_handler() {
     // The command surface T8 renders is worthless if the commands are not on the
     // invoke whitelist. The `window_state_plugin_is_registered…` precedent: read
     // `lib.rs` and assert each entry is present (vacuity-guarded by the read).
-    let source = crate_source("src/lib.rs");
+    let source = crate_source(CrateRoot::Desktop, "src/lib.rs");
     for command in [
         "commands::settings::provider_login_oauth",
         "commands::settings::provider_login_sso_poll",

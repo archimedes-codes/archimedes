@@ -243,11 +243,35 @@ describe("applyCost (the session's cumulative USD figure, #87)", () => {
     });
   });
 
-  it("two cost frames SUM — a frame is THIS CALL's money; if the emitter ever sends a running total, change combineSessionCost, not the renderer", () => {
+  it("two cost frames LAST-FRAME-WINS — a frame carries the RUNNING TOTAL", () => {
+    // Fulcrum T2 flipped the frame's VALUE from per-call delta to session total,
+    // and this is the pin `combineSessionCost`'s doc named as the one that would
+    // redden when an emitter changed its mind. `0.02` then `0.05` is a session
+    // that reached 2 cents and then 5 cents: the entry reads `0.05`.
+    //
+    // `0.07` is the value the retired SUM produced, and it is the number this
+    // assertion exists to forbid — a store that adds two totals reports the same
+    // money twice, which is exactly the double count ADR 0082's limit 7 was the
+    // other half of.
     useInteractive.getState().applyCost(S1, { costUsd: 0.02 });
     useInteractive.getState().applyCost(S1, { costUsd: 0.05 });
+    const entry = useInteractive.getState().cost[S1] as {
+      costUsd: number;
+      cost: number;
+    };
+    expect(entry.costUsd).toBeCloseTo(0.05, 10);
+    expect(entry.costUsd).not.toBeCloseTo(0.07, 10);
+    // Rule R1: the card's `cost` alias tracks the same last-wins figure.
+    expect(entry.cost).toBeCloseTo(0.05, 10);
+  });
+
+  it("a replayed frame leaves the entry exactly where it was (the store is a snapshot)", () => {
+    // The frontend half of the idempotency the DB write gained: a re-delivered
+    // total frame is not a second spend.
+    useInteractive.getState().applyCost(S1, { costUsd: 0.0000341 });
+    useInteractive.getState().applyCost(S1, { costUsd: 0.0000341 });
     const entry = useInteractive.getState().cost[S1] as { costUsd: number };
-    expect(entry.costUsd).toBeCloseTo(0.07, 10);
+    expect(entry.costUsd).toBeCloseTo(0.0000341, 12);
   });
 
   it("a frame with costUsd: null never becomes a real 0 — the session total stays null", () => {
@@ -332,22 +356,28 @@ describe("applyCost (the session's cumulative USD figure, #87)", () => {
     expect(entry.cost).toBeCloseTo(0.0042, 10);
   });
 
-  it("a legacy frame and a costUsd frame SUM ONCE into one total, never twice", () => {
-    // Rule R4. `costUsd` and `cost` are ONE accumulator, not two sums: the
-    // frame's money is chosen ONCE (`costUsd` first, legacy `cost` second) and
-    // only then added. Adding both keys would report `0.02` for `0.01` spent —
-    // the double-count trap D4/D5 exist to stop, relocated into the store.
+  it("a legacy frame and a costUsd frame are ONE accumulator, never two figures", () => {
+    // Rule R4, restated for the totals contract (Fulcrum T2). `costUsd` and
+    // `cost` are ONE accumulator, not two sums: the frame's money is chosen ONCE
+    // (`costUsd` first, legacy `cost` second) and only then combined. Under the
+    // delta wire that pair had to SUM to `0.01`; a frame now carries the session
+    // TOTAL, so the second frame's word is `0.005` and the entry reads that.
+    //
+    // The intent is unchanged and still the point: `0.02` — what adding BOTH keys
+    // of one frame would produce — remains forbidden, and so is the retired
+    // `0.01`, which is the same money counted twice under a different name.
     useInteractive.getState().applyCost(S1, { cost: 0.005 });
     useInteractive.getState().applyCost(S1, { costUsd: 0.005 });
     const entry = useInteractive.getState().cost[S1] as {
       cost: number | null;
       costUsd: number | null;
     };
-    expect(entry.costUsd).toBeCloseTo(0.01, 10);
+    expect(entry.costUsd).toBeCloseTo(0.005, 10);
+    expect(entry.costUsd).not.toBeCloseTo(0.01, 10);
     expect(entry.costUsd).not.toBeCloseTo(0.02, 10);
     // And the alias tracks the primary, so the card cannot show a different
     // figure from the session line.
-    expect(entry.cost).toBeCloseTo(0.01, 10);
+    expect(entry.cost).toBeCloseTo(0.005, 10);
   });
 
   it("costUsd wins when one frame carries both keys", () => {
@@ -401,29 +431,60 @@ describe("applyCost (the session's cumulative USD figure, #87)", () => {
  * TRAP 3 — the accumulator restarts at zero, the stored row does not.
  *
  * `dismissSession` deletes `cost[sessionId]` on close, so after a resume the map
- * is empty and the first priced frame yields THAT CALL's cost only. The fix is
- * to seed the accumulator from the row at resume, and the store's own doc on the
- * `cost` field names the one way to get that wrong: `applyCost` normalises AND
- * SUMS (`combineSessionCost` is pure addition), so feeding it a stored TOTAL
- * adds the total to itself. `seedCostFromRow` therefore writes the key DIRECTLY.
+ * is empty and the session shows no figure until its next frame arrives. The fix
+ * is to seed the entry from the row at resume.
  *
- * The 0.5 + 0.1 = 0.6 assertion below is the anti-double-count pin: the wrong
- * implementation yields 1.1, and every other test in this file stays green
- * either way. Do not soften it into "the figure is present".
+ * Fulcrum T2 moved WHERE the arithmetic happens but not what this seam is for.
+ * The store used to be the accumulator (`combineSessionCost` was pure addition),
+ * so a seed that was routed through `applyCost` added the stored total to itself.
+ * The emitter is the accumulator now (`AgentLoop::cost_acc`, seeded from the same
+ * row through `StartEnv.cost_usd`), `combineSessionCost` is last-frame-wins, and
+ * a total-bearing frame cannot double a seeded total — but a hydrator must STILL
+ * write the key directly, because `applyCost` also writes the four token fields,
+ * and tokens are never persisted (see the "writes MONEY ONLY" pin, which is the
+ * assertion that still catches a mis-routed seed).
  */
 describe("seedCostFromRow (a resumed session continues its stored total, #105)", () => {
-  it("seeds the accumulator so the next priced frame ADDS to the stored figure (0.5 + 0.1 = 0.6, NOT 1.1)", () => {
+  it("seeds the accumulator with the stored TOTAL, and a frame's total replaces it", () => {
+    // TRAP 3 (#105), restated for the totals contract (Fulcrum T2).
+    //
+    // What the seed is FOR changed, and saying so is the honest part of this
+    // rewrite. Under the delta wire it was load-bearing for ARITHMETIC: the
+    // first frame after a resume had to ADD to the stored figure, and `1.1` was
+    // the number that proved a seed had been routed through the summing
+    // `applyCost`. Under the totals contract the arithmetic moved to the emitter
+    // (`StartEnv.cost_usd` → `AgentLoop::seed_cost`, pinned Rust-side by
+    // `a_seeded_loop_continues_the_stored_total_instead_of_restarting_at_zero`),
+    // so the first frame of a resumed session ALREADY carries 0.5 + 0.1 = 0.6.
+    // The seed's job here is now the gap BEFORE that frame: a resumed session
+    // that has not made a call yet must show its stored figure, not nothing.
+    //
+    // Recorded rather than hidden: the `not.toBeCloseTo(1.1)` check this test
+    // used to carry has NO discriminating power left — under last-frame-wins a
+    // seed routed through `applyCost` also lands on the frame's value. The
+    // assertion that still catches that exact bug is the shape one below
+    // (`applyCost` writes the four token keys, a direct write does not), pinned
+    // by "writes MONEY ONLY — no token keys on the seeded entry".
     useInteractive.getState().seedCostFromRow(S1, 0.5);
-    useInteractive.getState().applyCost(S1, { costUsd: 0.1 });
+    const seeded = useInteractive.getState().cost[S1] as {
+      costUsd: number | null;
+      cost: number | null;
+    };
+    expect(seeded.costUsd).toBeCloseTo(0.5, 10);
+    expect(seeded.cost).toBeCloseTo(0.5, 10);
+
+    // The next frame carries the session's TOTAL (the Rust loop added its own
+    // call to the same row this seed came from), so the entry reads it whole.
+    useInteractive.getState().applyCost(S1, { costUsd: 0.6 });
     const entry = useInteractive.getState().cost[S1] as {
       costUsd: number | null;
       cost: number | null;
     };
-    // 0.6 — the stored total plus this call's money.
     expect(entry.costUsd).toBeCloseTo(0.6, 10);
-    // 1.1 would mean the seed was routed through `applyCost` and added itself
-    // (0.5 + 0.5) before the frame landed. That is the bug this line exists to
-    // catch, so it is asserted explicitly rather than left to the number above.
+    // `1.1` (0.5 + 0.6) is what a summing reducer would produce from a
+    // total-bearing frame on top of a seeded total. Asserted as an absence
+    // alongside the positive value above: it no longer discriminates the seed
+    // route, but it DOES catch a reducer that drifts back to addition.
     expect(entry.costUsd).not.toBeCloseTo(1.1, 10);
     // Rule R1: one total under BOTH names, so the card's `cost` alias link sees
     // the seeded figure too.

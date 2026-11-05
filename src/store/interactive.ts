@@ -131,28 +131,31 @@ export interface CostUpdatePayload {
 }
 
 /**
- * THE delta/total seam (issue #87).
+ * THE delta/total seam (issue #87; the FLIP is Fulcrum T2's).
  *
- * A `cost_update` frame carries THIS CALL's money, so the session's figure is
- * the SUM — and an unknown frame (`null`) contributes NOTHING:
- * `null + null = null` (still unknown), `null + x = x`, `x + null = x`.
- * That last rule is what stops D5's unknown from being manufactured into a real
- * `$0`; the inline `(prev.cost ?? 0) + (p?.cost ?? 0)` this function replaced
- * did exactly that, and it is why a session with no priced call displayed
- * `$0.00`.
+ * A `cost_update` frame carries the session's RUNNING TOTAL, so the entry IS
+ * the last frame — LAST FRAME WINS — and an unknown frame (`null`) changes
+ * NOTHING: `null + null = null` (still unknown), `null + x = x`, `x + null = x`
+ * in the old arithmetic; `null → null`, `null → x = x`, `x → null = x` here.
+ * That unknown rule is what stops D5's unknown from being manufactured into a
+ * real `$0`; the inline `(prev.cost ?? 0) + (p?.cost ?? 0)` this function
+ * replaced did exactly that, and it is why a session with no priced call
+ * displayed `$0.00`. That half is untouched by the flip.
  *
- * `prev` IS the session's cumulative figure — Rust holds no accumulator (T09's
- * Decision 1), so a Worker re-incarnation / `Resume` continues this same number
- * in this same key. Keep this pure ADDITION: never `max`, never assignment, or
- * that continuity breaks silently.
+ * WHY LAST-FRAME-WINS, in one line: the emitter now sums (`AgentLoop::cost_acc`,
+ * seeded from `sessions.cost_usd` on `Resume`), so a store that also summed
+ * would add the same money twice — and the DB write on the other side of the
+ * same frame became an overwrite in the same commit, so a summing store would
+ * disagree with the row it mirrors. The double count this used to prevent (a
+ * re-delivered delta doubling the figure, ADR 0082's limit 7) is now impossible
+ * at all three consumers, which is the point of the change.
  *
- * SEMANTICS ARE PINNED ON BOTH SIDES (T09's Decision 2 + its AC3), so the flip
- * below is HYPOTHETICAL, recorded for the day an emitter changes its mind: if a
- * frame ever carries a RUNNING TOTAL, this is the only line that changes —
- * last-frame-wins, i.e. return `frame` (with `frame === null ? prev : frame`, so
- * a trailing unknown frame keeps the total). Nothing in `SessionCostLine.tsx` or
- * `SidePane.tsx` changes: the component reads the entry, never the frames. The
- * test that reddens is named for this contract, in `interactive.test.ts`.
+ * The doc comment that used to live here described this exact flip as
+ * HYPOTHETICAL — "if a frame ever carries a RUNNING TOTAL, this is the only line
+ * that changes… The test that reddens is named for this contract, in
+ * `interactive.test.ts`." That day is this commit: the line changed, the named
+ * test reddened, and nothing in `SessionCostLine.tsx` or `SidePane.tsx` moved —
+ * the component reads the entry, never the frames, exactly as predicted.
  */
 function combineSessionCost(
   prev: number | null,
@@ -160,7 +163,10 @@ function combineSessionCost(
 ): number | null {
   if (prev === null) return frame;
   if (frame === null) return prev;
-  return prev + frame;
+  // The frame's word over the previous entry: it is the emitter's own total,
+  // which knows things this store cannot (a resumed loop continues the stored
+  // figure; a replay restates it).
+  return frame;
 }
 
 /**
@@ -168,8 +174,11 @@ function combineSessionCost(
  *
  * `costUsd` (D5's key) wins; the legacy `cost` key is the fallback for a
  * pre-D5 emitter. Reading them in this order — and ONCE — is what makes a
- * mixed-key session sum a single time: `{ cost: 0.005 }` then
- * `{ costUsd: 0.005 }` is `0.01`, not `0.02`.
+ * mixed-key frame count ONCE: a frame carrying both `{ cost: 0.005,
+ * costUsd: 0.007 }` is `0.007`, never `0.012`. (Before Fulcrum T2 this sentence
+ * spoke of a mixed-key SEQUENCE summing once; the sequence is last-frame-wins
+ * now, but the one-read rule that stops a frame's two keys being added together
+ * is untouched.)
  *
  * A value that is not a finite non-negative number is UNKNOWN, not money: a
  * string, `NaN`, `Infinity` and a negative all normalise to `null`. Nothing may
@@ -199,10 +208,17 @@ interface InteractiveState {
    * under the session title (via `lib/sessionCost.ts`, which falls back to the
    * session ROW's `costUsd` when this map holds no entry). Written by
    * `applyCost`, from `cost_update` FRAMES, and by `seedCostFromRow`, which
-   * copies a stored TOTAL off the DB row at resume: this map is a sum, so a
-   * stored figure must be WRITTEN DIRECTLY (the way `sessions.ts` copies
-   * `contextUsage` off the row) and never routed through `applyCost`, or the
-   * stored figure is added to itself.
+   * copies a stored TOTAL off the DB row at resume.
+   *
+   * The money field is a SNAPSHOT of the emitter's total, not a local sum
+   * (Fulcrum T2): `combineSessionCost` takes the last frame's word. The direct
+   * write rule for a stored figure SURVIVES that change, for a different reason
+   * than it did — `applyCost` no longer adds, but it also writes the four TOKEN
+   * fields, and tokens are never persisted, so routing a hydrator's stored total
+   * through it would fabricate a `0`-token entry that
+   * `SubagentDelegatingCard`'s context-% chain then prefers over its own
+   * sources. Write it directly (the way `sessions.ts` copies `contextUsage` off
+   * the row).
    */
   cost: Record<string, unknown>;
   /** The last `session` push payload — wired, not rendered in v1. */
@@ -229,16 +245,21 @@ interface InteractiveState {
   /** A `state` push (`{ state }`) — store, don't render in v1. */
   applyState: (sessionId: string, payload: unknown) => void;
   /**
-   * A `cost_update` push: ONE frame's money added to this session's running
-   * figure (issue #87). Frames are per-call DELTAS — see `combineSessionCost`.
-   * Frames only: a stored total must never come through here.
+   * A `cost_update` push: this frame's figure becomes this session's figure
+   * (issue #87; the VALUE is the session's RUNNING TOTAL since Fulcrum T2 — see
+   * `combineSessionCost`). Frames only: a stored total belongs to
+   * `seedCostFromRow`, because `applyCost` also writes the token fields a frame
+   * carries and a DB row carries none.
    */
   applyCost: (sessionId: string, payload: unknown) => void;
   /**
-   * Seed a resumed session's accumulator from its stored row (issue #105).
+   * Seed a resumed session's figure from its stored row (issue #105).
    *
-   * Writes the key DIRECTLY and never routes through `applyCost`, which
-   * normalises AND SUMS — feeding it a stored TOTAL would add it to itself.
+   * Writes the key DIRECTLY and never routes through `applyCost`: since Fulcrum
+   * T2 the money field is last-frame-wins so `applyCost` no longer adds a total
+   * to itself, but it still normalises the payload AND writes the four token
+   * fields, and a stored row has no tokens — so the direct write stays, and the
+   * "no token keys on the seeded entry" pin is what catches a mis-routed seed.
    * Seeds only when no entry exists, so live frames already in the map are
    * never clobbered. Writes BOTH `costUsd` and `cost` (rule R1) so the card's
    * alias link sees the figure too, and leaves the token fields absent —

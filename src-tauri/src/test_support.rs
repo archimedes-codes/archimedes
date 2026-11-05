@@ -1,6 +1,14 @@
 //! Test support utilities for Archimedes Desktop.
 //!
 //! Provides helpers for common patterns in integration and unit testing.
+//!
+//! (T5/S2) `filesystem_root` is GONE from this file: its only two callers were
+//! `agent/policy.rs` and `agent/tools/exec/tests/policy.rs`, both of which moved
+//! to `fulcrum-core` in S2, and the helper moved with them (a `#[cfg(test)]`
+//! `pub(crate)` fn cannot cross the package boundary anyway — A.4). It now lives
+//! at `crates/fulcrum-core/src/test_support.rs`, alongside the crate's own
+//! `ScratchDir`/`env_lock`. `ScratchDir` stays HERE because the ~35 desktop files
+//! that did not move still mint through it.
 
 /// The shared lock serializing the HOME-mutating tests (the parallel test
 /// harness runs all module tests concurrently; a `HOME` read by one test
@@ -13,70 +21,6 @@ pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(test)]
 pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     std::sync::Mutex::lock(&ENV_LOCK).unwrap_or_else(|p| p.into_inner())
-}
-
-/// (test only) The broadest rule path a test can name — the one root that
-/// really does contain every canonical absolute path ON THIS PLATFORM.
-///
-/// WHY THIS EXISTS: a test that wants "a rule with maximum reach" reaches for
-/// the literal `"/"`, and that is a Unix fact, not a platform one. On Windows
-/// a lone `/` is only the CURRENT DRIVE'S root in the current working
-/// directory's spelling, and it is not a component prefix of the verbatim
-/// (`\\?\C:\…`) form that `canonicalize` hands back — so a `"/"` rule matches
-/// NOTHING and a test that asserts it refuses something reddens there while
-/// staying green on Linux and macOS. This is the same fact
-/// `boundary::unrestricted_floor` had to encode to widen the executor on
-/// Windows: a lone `/` there is only the current drive, so that function
-/// enumerates the mounted drive roots instead.
-///
-/// `for_path` is a path the test is actually working with (its scratch home or
-/// `cwd`); the root is taken from ITS OWN components, so the two land on the
-/// same drive AND on the same verbatim spelling that the shared canonicalizer
-/// (`agent::fs_backend::canonicalize_lenient`) produces for it — which is the
-/// property the caller needs for a component-prefix compare to hold.
-///
-/// The result is run through `canonicalize()` for the same reason: on Windows
-/// the drive root spelled `C:\` has a `Disk` prefix component while the
-/// canonicalized target carries a `VerbatimDisk` one (`\\?\C:\…`), and
-/// `Path::starts_with` compares components — so the raw spelling would still
-/// fail the very compare it exists to satisfy. Canonicalizing lands both sides
-/// in the verbatim form. Strict `canonicalize()` (not the shared lenient one)
-/// is enough here and is deliberately the only resolver used: a drive root
-/// derived from a real path always EXISTS, and it keeps this test helper from
-/// reaching into `crate::agent`'s private `fs_backend` module.
-#[cfg(test)]
-pub(crate) fn filesystem_root(for_path: &std::path::Path) -> std::path::PathBuf {
-    #[cfg(not(windows))]
-    {
-        // On unix the root is the one true `/`, and every canonical absolute
-        // path is under it. `for_path` is irrelevant here, but the signature
-        // stays uniform so the call sites do not need a `cfg`.
-        let _ = for_path;
-        std::path::PathBuf::from("/")
-    }
-    #[cfg(windows)]
-    {
-        // `Prefix`(e.g. `C:`) then `RootDir`(`\`) is the drive root — the
-        // component-wise root, not a string slice, so a UNC path yields its
-        // own server/share root rather than a mangled `C:\`.
-        let mut root = std::path::PathBuf::new();
-        for component in for_path.components() {
-            match component {
-                std::path::Component::Prefix(prefix) => root.push(prefix.as_os_str()),
-                std::path::Component::RootDir => {
-                    root.push(component.as_os_str());
-                    break;
-                }
-                // Anything else is below the root: stop.
-                _ => break,
-            }
-        }
-        assert!(
-            !root.as_os_str().is_empty(),
-            "`{for_path:?}` is rooted on a drive — a relative path has no root to name"
-        );
-        root.canonicalize().unwrap_or(root)
-    }
 }
 
 /// The app's managed `WorkerManager` (the registry view — the accessor
@@ -453,12 +397,19 @@ mod tests {
         );
     }
 
-    /// The negative cases are the point, though only `A3F9C1` is a case the
-    /// `len() == 6` + `u32::from_str_radix(_, 16)` check this replaces was
-    /// actually BLIND to — the length clause already caught the 7-char, 5-char
-    /// and empty ones, and the radix parse already rejected `abcdefg`. The rest
-    /// are kept so that a future "simplify it back" that drops EITHER half of
-    /// this predicate reddens something here.
+    /// The negative cases are the point — and they had to be CHOSEN to cover
+    /// each clause, not merely to be near-misses. Measured (T8/S8.1, when this
+    /// helper was duplicated into `fulcrum-core`): with the original six cases,
+    /// dropping the `is_ascii_digit()|a..=f` clause reddened NOTHING, because
+    /// the only non-hex entry was `abcdefg`, which is SEVEN chars and so the
+    /// `len() == 6` clause caught it first; and dropping the `== to_lowercase()`
+    /// clause was covered only by `A3F9C1`. So the doc used to claim "a future
+    /// simplify-back that drops EITHER half reddens something" while two of the
+    /// three halves were unguarded. `system` / `retrac` are six lowercase
+    /// NON-hex characters — the one shape nothing else here produced, and the
+    /// only thing that makes the byte-set clause load-bearing.
+    /// (`A3F9C1` remains the one case the `len() == 6` +
+    /// `u32::from_str_radix(_, 16)` check this replaces was actually BLIND to.)
     #[test]
     fn the_stamp_shape_rejects_everything_a_radix_parse_admits() {
         for ok in ["a3f9c1", "000000", "ffffff", "dead01"] {
@@ -469,7 +420,9 @@ mod tests {
             "+a3f9c1", // a signed number — parses, not an id
             "a3f9c",   // five chars
             "a3f9c10", // seven chars
-            "abcdefg", // not hex (`g`)
+            "abcdefg", // not hex (`g`), but SEVEN chars — the length clause wins
+            "system",  // six lowercase NON-hex — ONLY the byte-set clause rejects
+            "retrac",  // as above, and it ends in a hex digit, so `a..=f` alone
             "",        // the EMPTY stamp `TurnState::default()` carries
         ] {
             assert!(!is_incarnation_stamp(bad), "{bad} is NOT a stamp");

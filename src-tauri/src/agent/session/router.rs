@@ -53,17 +53,18 @@ impl SessionManager {
                         // distinction `TranscriptPersister::apply` documents
                         // for `StoreFrame`s, and it is load-bearing here:
                         // writing a child's own `cost_update` to the delivery
-                        // id would put the child's per-call deltas on the
-                        // PARENT's row, and `finish_subagent`'s roll-up would
-                        // then add the child's SUM again — the parent's stored
-                        // figure double-counting every child. The payload's
-                        // `sessionId` is the emitting loop's own id (pinned
-                        // loop-side by
+                        // id would put the child's TOTAL on the PARENT's row,
+                        // and since the write is a SNAPSHOT that OVERWRITES it
+                        // would replace the parent's own figure with the child's
+                        // — the parent reporting a child's spend as its own. The
+                        // payload's `sessionId` is the emitting loop's own id
+                        // (pinned loop-side by
                         // `a_priced_call_emits_one_cost_update_frame_carrying_that_calls_cost`),
-                        // so it is the child id for a child frame. The
-                        // roll-up frame is delivered with `is_subagent: false`
-                        // under the parent's id and so takes the `else` branch
-                        // — the parent's row, exactly once.
+                        // so it is the child id for a child frame. The parent's
+                        // own frames — including the one `fold_child_cost` emits
+                        // when a child returns — arrive with `is_subagent: false`
+                        // under the parent's id and so take the `else` branch:
+                        // the parent's row, written by ONE producer.
                         //
                         // Inert for `todos_*`: a subagent's todo frames never
                         // reach this branch at all.
@@ -504,6 +505,75 @@ impl SessionManager {
                 ids_guard.insert(id.to_string());
             }
         });
+    }
+    // ── (Fulcrum T3) The `config-update` push (live-reload) ────────────────
+
+    /// Push the three live-reload desktop-config fields to every LIVE Worker
+    /// (Fulcrum T3) — the frame that REPLACED the Worker's per-turn
+    /// `settings.json` read, so "edit Settings, it applies at the next prompt,
+    /// no restart" survives the removal of that read.
+    ///
+    /// Called from `commands::settings::save_settings` after the file is
+    /// written: the Supervisor is the only process that reads desktop config,
+    /// and it hands the result down. Without this trigger the frame exists but
+    /// nothing sends it, and a green suite would claim live-reload works.
+    ///
+    /// All THREE fields go on every push (the caller just saved the whole
+    /// `Settings`, so all three are fresh). `None` would mean "leave it alone"
+    /// — used by a partial push, which the frame supports for an older
+    /// Supervisor; here there is no such caller, and sending all three is what
+    /// keeps the Workers' packaged state equal to the file that was just saved.
+    ///
+    /// Best-effort per session, the `refresh_live_models` discipline verbatim:
+    /// a dead / mid-teardown Worker is SKIPPED, never an error — the save
+    /// already succeeded and must not be reported as failed because one
+    /// session is going away. The `sessions` lock is collected BEFORE any send
+    /// so it is never held across an `await` / a pipe write.
+    ///
+    /// On a DELIVERED frame the registry's STORED env is mirrored too
+    /// (`mirror_stored_desktop_config`) — that copy is what each child's
+    /// packaged five are read from, so the push reaches subagents dispatched
+    /// after this point (ADR 0023's next-dispatch property). A failed send
+    /// mirrors NOTHING: the loop never applied it, and a child must not inherit
+    /// a policy its parent is not running (finding 12's rule).
+    ///
+    /// `providers` / `mcp_servers` are deliberately NOT pushed — the recorded
+    /// residual hole (both stay session-construction snapshots).
+    ///
+    /// Returns the number of Workers the frame was DELIVERED to.
+    pub async fn push_config_update(&self, settings: &crate::config::Settings) -> usize {
+        let Some(wm) = self.worker_manager.get().cloned() else {
+            // No `WorkerManager` wired (the pre-`setup_dirs` state, or a test
+            // harness): nothing is running, so there is nothing to push to.
+            return 0;
+        };
+        // The live MAIN session ids, collected BEFORE any send.
+        let ids: Vec<String> = {
+            let sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
+            sessions.keys().cloned().collect()
+        };
+        let mut delivered = 0;
+        for id in ids {
+            let Some(handle) = wm.handle_for(&id) else {
+                // A row with no live Worker (already reaped) — skip.
+                continue;
+            };
+            let policy = settings.file_policy.clone();
+            let web = settings.web.clone();
+            let overrides = settings.agent_overrides.clone();
+            if handle
+                .send_config_update(
+                    Some(policy.clone()),
+                    Some(web.clone()),
+                    Some(overrides.clone()),
+                )
+                .is_ok()
+            {
+                wm.mirror_stored_desktop_config(&id, Some(&policy), Some(&web), Some(&overrides));
+                delivered += 1;
+            }
+        }
+        delivered
     }
 }
 
@@ -1099,10 +1169,14 @@ mod tests {
     /// subagent's frames arrive under the PARENT's delivery id (`pump.rs`'s
     /// `delivery_id`) with the CHILD's id only in the payload's `sessionId`.
     /// So this test also pins WHICH row the child's money lands on — the
-    /// child's. Getting that wrong is not cosmetic: the child's per-call
-    /// deltas would accumulate on the parent's row and `finish_subagent`'s
-    /// roll-up would add the child's sum a second time, double-counting every
-    /// child in the parent's stored figure.
+    /// child's. Getting that wrong is not cosmetic, and since Fulcrum T2 the
+    /// failure mode has changed SHAPE: the frames carry TOTALS and the write
+    /// overwrites, so a child's figure routed to the parent's delivery id would
+    /// not accumulate onto the parent — it would REPLACE the parent's own total
+    /// with the child's, silently losing the parent's money. (The retired
+    /// roll-up compounded this: it overwrote the parent's row with the child's
+    /// total too, so the parent's own spend was unrecoverable — which is the
+    /// same two-writers-on-one-key defect the roll-up's removal ended.)
     #[test]
     fn a_subagent_cost_frame_persists_but_a_subagent_todo_frame_still_does_not() {
         let (main_sid, sub_sid) = ("main-session", "sub-session");
@@ -1132,7 +1206,31 @@ mod tests {
             db.session_cost(main_sid).unwrap(),
             None,
             "the child's money must NOT land on the delivery id's row — that id \
-             is the PARENT's, and the roll-up would add the child's sum again on top"
+             is the PARENT's, and a snapshot write there would replace the \
+             parent's own total with the child's figure"
+        );
+
+        // A LATER frame from the same child carries the child's NEW total, and
+        // the child's row reads exactly that — the stored figure EQUALS the last
+        // frame's total (the snapshot contract), where the retired increment
+        // would have read the sum `0.00003243`.
+        manager.route_event(
+            main_sid,
+            true,
+            WorkerInboundEvent::SinkFrame {
+                event: "interactive-event".to_string(),
+                payload: serde_json::json!({
+                    "sessionId": sub_sid,
+                    "seq": 0,
+                    "event": "cost_update",
+                    "payload": { "costUsd": 0.00002, "source": "main" },
+                }),
+            },
+        );
+        assert_eq!(
+            db.session_cost(sub_sid).unwrap(),
+            Some(0.00002),
+            "the child's row tracks the LAST total, not the sum of its frames"
         );
 
         manager.route_event(
@@ -1166,11 +1264,13 @@ mod tests {
         let frames = emitted.lock().unwrap();
         assert_eq!(
             frames.len(),
-            2,
-            "both frames are still re-emitted to the UI verbatim"
+            3,
+            "every frame is still re-emitted to the UI verbatim (two cost frames \
+             and one todo frame)"
         );
         assert_eq!(frames[0].1["event"], "cost_update");
-        assert_eq!(frames[1].1["event"], "todos_update");
+        assert_eq!(frames[1].1["event"], "cost_update");
+        assert_eq!(frames[2].1["event"], "todos_update");
     }
 
     /// A COLD child's first cost frame — the row does not exist yet — still
@@ -1192,11 +1292,14 @@ mod tests {
     /// the write off the delivery id (`session_id`) instead of extracting the
     /// payload's id, the money would land on the parent's row — and here it
     /// would ALSO create the parent's `cost_usd` before the parent had spent
-    /// anything, so `finish_subagent`'s roll-up would add the child's sum a
-    /// second time on top. And if the row-ensure were dropped for this path,
+    /// anything, so the parent's row would carry a child's figure as its own
+    /// total, and the snapshot write would leave no trace of what it replaced
+    /// (the parent's own money then unrecoverable — the same last-frame-wins loss
+    /// that made the retired parent-keyed roll-up a defect rather than a
+    /// feature). And if the row-ensure were dropped for this path,
     /// `record_session_cost`'s silent no-op on a missing row would discard the
-    /// child's first figure without a sound — the child's card would show a
-    /// cost its row never had.
+    /// child's first figure without a sound — the child's card would show a cost
+    /// its row never had.
     #[test]
     fn a_childs_first_cost_frame_under_the_parents_delivery_id_creates_and_writes_the_childs_row() {
         let (main_sid, sub_sid) = ("parent-cold", "child-cold");
@@ -1237,14 +1340,15 @@ mod tests {
         assert_eq!(
             db.session_cost(sub_sid).unwrap(),
             Some(0.00001243),
-            "the child's first figure lands on the CHILD's row, not into the void"
+            "the child's first total lands on the CHILD's row, not into the void \
+             (a first frame's total IS that call's figure — the loop started at zero)"
         );
         assert_eq!(
             db.session_cost(main_sid).unwrap(),
             None,
             "the delivery id is the PARENT's: nothing of the child's money may \
-             touch its row (that id has no figure yet, and the roll-up would \
-             then add the child's sum again on top of it)"
+             touch its row (that id has no figure yet, and a snapshot write would \
+             leave the parent reporting a child's spend as its own)"
         );
 
         let frames = emitted.lock().unwrap();
@@ -1257,59 +1361,89 @@ mod tests {
         assert_eq!(frames[0].1["sessionId"], sub_sid);
     }
 
-    /// The roll-up's shape, proven where a `Db` is reachable.
+    /// A PARENT-KEYED cost frame's persistence, proven where a `Db` is
+    /// reachable.
     ///
-    /// The frame synthesised below IS the envelope `finish_subagent`'s
-    /// roll-up now emits: `state.hooks.on_event(parent_session_id, false,
-    /// WorkerInboundEvent::SinkFrame { event: "interactive-event", payload })`
-    /// with `sessionId` = the PARENT, `seq: 0`, `event: "cost_update"`, and
-    /// `payload: { costUsd, source: "subagent" }`. Routing it instead of
-    /// emitting it straight to the parent's Tauri sink is what makes the
-    /// parent's STORED total agree with the figure under its own title.
+    /// The frame synthesised below IS the envelope the parent's own loop emits
+    /// — `emit_cost_update` for its own calls and `fold_child_cost` for a
+    /// child's, which is the SAME envelope with the child's figure already added
+    /// in: `sessionId` = the PARENT, `seq: 0`, `event: "cost_update"`,
+    /// `payload: { costUsd, source: "main" }`. It reaches this router the way
+    /// every main-session frame does: `hooks.on_event(session, false,
+    /// WorkerInboundEvent::SinkFrame { event, payload })`. Routing rather than
+    /// emitting straight to the Tauri sink is what makes the parent's STORED
+    /// total agree with the figure under its own title.
     ///
-    /// Why the assertion lives here and not in `subagent_flow.rs`'s
-    /// `rollup_tests`: `ManagerState` holds only `workers` / `factory` /
-    /// `hooks` / `drives` (`registry.rs`) — it has NO `db` field, so the
-    /// roll-up unit tests can prove the FRAME (shape, count, parent-keying)
-    /// but cannot assert a write at all. This test closes the link: that
-    /// frame, through this router, lands on the PARENT's row. The end-to-end
-    /// proof through the real IPC surface is `tests/ipc.rs` (Task 3).
+    /// What used to be documented here was the Supervisor's parent-keyed
+    /// ROLL-UP frame, and that frame is DELETED: two writers on the parent's
+    /// store key lose money, because a frame is a snapshot the store overwrites
+    /// and the parent's accumulator had never seen the child. The write this
+    /// test proves is unchanged; only WHO WRITES the frame moved to the parent's
+    /// loop. `subagent_flow.rs`'s `rollup_tests` pin the removal (no
+    /// parent-keyed frame from the Supervisor at all).
+    ///
+    /// Why the assertion lives here and not in `subagent_flow.rs`: `ManagerState`
+    /// holds only `workers` / `factory` / `hooks` / `drives` (`registry.rs`) — it
+    /// has NO `db` field, so that module can prove what is EMITTED but cannot
+    /// assert a write at all. This test closes the link: a parent's frame,
+    /// through this router, lands on the PARENT's row. The end-to-end proof
+    /// through the real IPC surface is `tests/ipc.rs` (Task 3).
     #[test]
     fn a_parent_keyed_cost_frame_from_the_router_writes_the_parents_row() {
         let (main_sid, sub_sid) = ("parent-1", "child-1");
         let (_dir, manager, db, emitted) = manager_with_rows("router-rollup", main_sid, sub_sid);
 
-        let rollup = serde_json::json!({
+        let frame = serde_json::json!({
             "sessionId": main_sid,
             "seq": 0,
             "event": "cost_update",
-            "payload": { "costUsd": 0.0000341, "source": "subagent" },
+            "payload": { "costUsd": 0.0000341, "source": "main" },
         });
         manager.route_event(
             main_sid,
             false,
             WorkerInboundEvent::SinkFrame {
                 event: "interactive-event".to_string(),
-                payload: rollup.clone(),
+                payload: frame.clone(),
             },
         );
 
         assert_eq!(
             db.session_cost(main_sid).unwrap(),
             Some(0.0000341),
-            "the roll-up writes the PARENT's row — without this the parent's \
-             stored figure disagrees with its displayed one"
+            "the parent's frame writes the PARENT's row — without this the \
+             parent's stored figure disagrees with its displayed one. The stored \
+             figure EQUALS the frame's total (the frame carries a TOTAL — the \
+             parent's own, or the parent's plus a folded child's — and the write \
+             is a snapshot, so nothing is added to it here)"
+        );
+        // Re-delivering the SAME frame leaves the parent's row exactly where it
+        // was — the property the whole change exists to buy, proven on the
+        // parent's producer and not only on the child's.
+        manager.route_event(
+            main_sid,
+            false,
+            WorkerInboundEvent::SinkFrame {
+                event: "interactive-event".to_string(),
+                payload: frame.clone(),
+            },
+        );
+        assert_eq!(
+            db.session_cost(main_sid).unwrap(),
+            Some(0.0000341),
+            "a replayed frame overwrites to the SAME figure — the doubling \
+             ADR 0082's limit 7 pinned is gone at this producer too"
         );
         assert_eq!(
             db.session_cost(sub_sid).unwrap(),
             None,
-            "the roll-up is keyed to the parent: the child's row must stay clean"
+            "a parent-keyed frame is the parent's money: the child's row must stay clean"
         );
         let frames = emitted.lock().unwrap();
-        assert_eq!(frames.len(), 1, "the frame still reaches the UI");
+        assert_eq!(frames.len(), 2, "both deliveries still reach the UI");
         assert_eq!(frames[0].0, "interactive-event");
         assert_eq!(
-            frames[0].1, rollup,
+            frames[0].1, frame,
             "re-emitted VERBATIM — the frontend contract is unchanged"
         );
     }

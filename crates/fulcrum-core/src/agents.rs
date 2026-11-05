@@ -1,0 +1,1676 @@
+//! Agent-definition discovery (ADR 0020 — the desktop owns the agent
+//! layer).
+//!
+//! Finds and parses flat `*.md` Agent definition files under a bounded
+//! set of roots (pi's agent layout: `*.md` directly in the root, no
+//! subdir walk) and parses their YAML frontmatter. Mirrors `skills.rs`
+//! (ADR 0013) structurally: the same `space_roots` walk-up, the same
+//! `home_dir` reuse, the same first-wins dedupe and deterministic sort.
+//!
+//! Pure (fs reads only) and total: `discover_agents` never panics and
+//! never errors — a missing root, an unreadable file, or malformed
+//! frontmatter is silently skipped. Frontmatter is parsed by a
+//! hand-rolled tolerant reader (no new crate dependencies): an agent
+//! that cannot be parsed is skipped, never a crash.
+//!
+//! Six top-level keys are read (`name`, `description`, `model`,
+//! `thinking`, `tools`, and the NESTED `permission:` block — the format's
+//! first structured value, owned by
+//! [`crate::definition_permission`]); `parse_agent_file` returns
+//! `(name, description, model, thinking, tools, permission, notes, body)`.
+//!
+//! Unknown top-level keys are announced as per-definition reports
+//! (`AgentDefinition::frontmatter_notes`) — never silent no-ops, never
+//! errors; #101 / #78. Discovery has no error or log channel to announce
+//! into (§ the module's total contract), so a note rides the returned row,
+//! the same way a shadow does (ADR 0065).
+
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentScope {
+    Space,
+    User,
+}
+
+impl std::fmt::Display for AgentScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            AgentScope::Space => "space",
+            AgentScope::User => "user",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDefinition {
+    /// Frontmatter `name`, else the file's STEM name (`scout.md` → `scout`).
+    pub name: String,
+    /// Frontmatter `description`, else `""`.
+    pub description: String,
+    /// Frontmatter `model` (`"provider/id"` or `"provider/id:<level>"`), verbatim.
+    pub model: Option<String>,
+    /// Frontmatter `thinking` (a native extension beyond pi's format).
+    pub thinking: Option<String>,
+    /// Frontmatter `tools` (both the `read, bash` string and the `[read, bash]`
+    /// array spellings normalize to this).
+    pub tools: Option<Vec<String>>,
+    /// Frontmatter `permission` (opencode's per-tool allow/ask/deny block,
+    /// issue #101), typed as a NARROWING layer — an ORDERED aggregate of
+    /// `(ToolKey, Rules)`, never a one-tool enum (a multi-tool block is
+    /// fully representable; unrecognised tool keys are retained, not
+    /// dropped). `None` → this file does not speak about permissions (the
+    /// strict-of-two merge starts from `None` as "no narrowing"). `Some` →
+    /// the rules this file CARRIES; enforcement is the follow-up task's.
+    pub permission: Option<crate::definition_permission::PermissionBlock>,
+    /// The frontmatter-READ notes (unknown top-level keys, unrecognised
+    /// tool keys, unsupported pattern rows — a `bash` command-text pattern
+    /// object and a path-taking tool's path-pattern map each announce their own
+    /// reason, issue #101's announce half plus #124's; #78's principle applied
+    /// to files). A REPORT, never an error:
+    /// discovery stays total. The two `parse_value` copies are NOT
+    /// affected. Additive: an empty vec is the ordinary case.
+    /// **Wire/UI surfacing is the follow-up task's hand-off, mirroring the
+    /// `shadowed` report half ("a shadow is a REPORT, not an entry", ADR
+    /// 0065).** NOT the `Shadowed<T>` type: that carries
+    /// `{name,path,scope}` twice. NOT widened into `shadowed` (its
+    /// `[]`-wire pin stands).
+    pub frontmatter_notes: Vec<crate::definition_permission::FrontmatterNote>,
+    /// The file body (minus the frontmatter), trimmed. `""` when the body is
+    /// empty (no system prompt).
+    pub system_prompt: String,
+    pub scope: AgentScope,
+    /// Absolute (canonical) path to the file.
+    pub path: String,
+    /// The Agent definitions this name collision EXCLUDED, reported here on the
+    /// winner (ADR 0065: a shadow is a REPORT, not an entry — the losers stay
+    /// unaddressable by name). The SAME rule `skills.rs` applies, over the SAME
+    /// shared `Shadowed<T>` shape. Additive, so every existing consumer of this
+    /// struct is unaffected.
+    ///
+    /// **A REPORT, rendered on the winning row — never a row of its own.** It
+    /// crosses the wire: `commands::agents::AgentDefinitionReportDto` carries this very
+    /// `Shadowed<AgentScope>` (ADR 0068), so the sidebar **Agents** modal can
+    /// name the loser a collision excluded. `AgentDefinitionDto` still does NOT
+    /// carry it — and `discover_agents(None)` reads user-level roots only, so
+    /// the old app-global Settings page could never have seen a
+    /// Space-shadows-user collision anyway. The modal runs discovery with the
+    /// active Space's `cwd`, which is the surface that CAN.
+    pub shadowed: Vec<crate::skills::Shadowed<AgentScope>>,
+}
+
+/// Discover Agent definitions for `space_path` (its roots + the user-level
+/// roots). `space_path: None` → user-level definitions only.
+pub fn discover_agents(space_path: Option<&Path>) -> Vec<AgentDefinition> {
+    let mut roots: Vec<(PathBuf, AgentScope)> = Vec::new();
+    if let Some(p) = space_path {
+        roots.extend(space_roots(p));
+    }
+    roots.extend(user_roots());
+    discover_in_roots(&roots)
+}
+
+/// The core, testable without env manipulation: discover over EXPLICIT
+/// roots. `roots` order defines first-wins dedupe precedence.
+pub fn discover_in_roots(roots: &[(PathBuf, AgentScope)]) -> Vec<AgentDefinition> {
+    // Shared across ALL roots: a symlink in a later root pointing at an
+    // earlier root's file collapses by PATH, not just by name.
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut by_name: HashMap<String, AgentDefinition> = HashMap::new();
+    // Run-local, alongside `by_name` and dropped with it: lowercased name ->
+    // the WINNER's NORMALIZED RAW content, so a collision can be told apart
+    // from a Duplicate. Same reason as in `skills.rs`: compare the whole file,
+    // NEVER `AgentDefinition.system_prompt` (frontmatter-stripped AND trimmed,
+    // so a frontmatter-only difference would be swallowed as a Duplicate).
+    let mut content_by_name: HashMap<String, String> = HashMap::new();
+
+    for (root, scope) in roots {
+        if !root.is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(root) else {
+            continue;
+        };
+        // Collect the qualifying entries (a `*.md` file or symlink) and
+        // SORT THEM BY FILE NAME: `read_dir` order is OS-dependent, and
+        // the final `sort_by_cached_key` sorts the OUTPUT, not the
+        // insertion order — a same-root case-colliding pair (`a.md` +
+        // `A.md`) must dedupe deterministically.
+        let mut files: Vec<(String, PathBuf)> = Vec::new();
+        for entry in entries.flatten() {
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            if !file_name.ends_with(".md") {
+                continue;
+            }
+            let is_file_or_symlink = entry.file_type().map(|t| t.is_file() || t.is_symlink());
+            if !is_file_or_symlink.unwrap_or(false) {
+                continue;
+            }
+            files.push((file_name, entry.path()));
+        }
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        for (file_name, path) in files {
+            let Ok(canon) = fs::canonicalize(&path) else {
+                continue;
+            };
+            if !seen.insert(canon.clone()) {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(&canon) else {
+                continue;
+            };
+            // `file_name` ends in `.md` (3 ASCII bytes), so the byte
+            // offset is always on a char boundary.
+            let stem = file_name[..file_name.len() - 3].to_string();
+            let Some((name, description, model, thinking, tools, permission, notes, system_prompt)) =
+                parse_agent_file(&content, &stem)
+            else {
+                continue;
+            };
+            // First-wins across the whole run (a Space root shadows a
+            // same-named user agent; an innermost ancestor shadows an
+            // outer one) — and the collision is RECORDED on the winner as a
+            // `shadowed` report (ADR 0065, the same rule `skills.rs` runs).
+            //
+            // NO reorder is needed here, unlike `skills.rs`: this module has NO
+            // tag-safety skip on `path` (an agent file's path is never
+            // interpolated unescaped into a prompt tag), so the dedupe point is
+            // ALREADY the last validity gate the loop runs. Every other
+            // rejection (`parse_agent_file` returning `None`) is above this
+            // point, so a candidate that was never eligible is never recorded.
+            let key = name.to_lowercase();
+            // Normalized for the Duplicate test ONLY — never compared to
+            // `system_prompt`, and never compared RAW (a CRLF-vs-LF copy is the
+            // same definition, not a shadow). `skills::normalize_line_endings`
+            // is the ONE owner of that rule; a second copy here would diverge.
+            let normalized = crate::skills::normalize_line_endings(&content);
+            if let Some(winner) = by_name.get_mut(&key) {
+                if content_by_name.get(&key).is_some_and(|w| *w == normalized) {
+                    // A Duplicate, not a shadow (CONTEXT.md): the same file
+                    // bytes under two roots. Silent.
+                    continue;
+                }
+                // A genuine shadow: the loser rides on the WINNER, keeping its
+                // own name, canonical path and REAL scope (a user definition
+                // can lose to another user root — `user_roots()` returns two,
+                // and each Space level contributes two).
+                winner.shadowed.push(crate::skills::Shadowed {
+                    name,
+                    // Canonical, like the winner's own `path` (`path` is the raw
+                    // entry path — the pre-canonicalize input only).
+                    path: canon.to_string_lossy().into_owned(),
+                    scope: *scope,
+                });
+                continue;
+            }
+            content_by_name.insert(key.clone(), normalized);
+            by_name.insert(
+                key,
+                AgentDefinition {
+                    name,
+                    description,
+                    model,
+                    thinking,
+                    tools,
+                    permission,
+                    frontmatter_notes: notes,
+                    system_prompt,
+                    scope: *scope,
+                    path: canon.to_string_lossy().into_owned(),
+                    shadowed: Vec::new(),
+                },
+            );
+        }
+    }
+
+    let mut out: Vec<AgentDefinition> = by_name.into_values().collect();
+    // `sort_by_cached_key`: a single lowercased allocation per element
+    // (NOT per comparison), with the `path` as a deterministic tie-break.
+    out.sort_by_cached_key(|d| (d.name.to_lowercase(), d.path.clone()));
+    out
+}
+
+/// Walk UP from `space_path` to the repository root: the first ancestor
+/// (including `space_path` itself) that contains a `.git` entry is the
+/// repo root; if none exists, `space_path` alone is the only level. At
+/// each level (innermost first) collect `<level>/.agents/agents` (first)
+/// and `<level>/.pi/agents` (second), both tagged `AgentScope::Space`.
+///
+/// Do NOT canonicalize the input before walking (the caller passes a
+/// canonical path; if `space_path` doesn't exist, return an empty vec).
+///
+/// DELEGATOR: the walk-up itself lives in [`crate::roots::space_roots_in`],
+/// the ONE owner it shares with `skills::space_roots` (Finding 10). This
+/// function contributes only the two join targets and the scope tag; the
+/// order, the `.git` stop and the raw-spelling contract are the helper's, and
+/// `space_roots_walks_up_to_the_repo_root` pins them through here.
+pub fn space_roots(space_path: &Path) -> Vec<(PathBuf, AgentScope)> {
+    crate::roots::space_roots_in(
+        space_path,
+        Path::new(".agents/agents"),
+        Path::new(".pi/agents"),
+    )
+    .into_iter()
+    .map(|path| (path, AgentScope::Space))
+    .collect()
+}
+
+/// `home_dir().join(".agents/agents")` (first) and
+/// `home_dir().join(".pi/agent/agents")` (second), both tagged
+/// `AgentScope::User`.
+pub fn user_roots() -> Vec<(PathBuf, AgentScope)> {
+    let Some(home) = crate::skills::home_dir() else {
+        return Vec::new();
+    };
+    vec![
+        (home.join(".agents/agents"), AgentScope::User),
+        (home.join(".pi/agent/agents"), AgentScope::User),
+    ]
+}
+
+/// The tolerant frontmatter reader (no YAML crate): any failure mode
+/// (missing closing `---`, …) → `None` (the agent is skipped, never a
+/// crash).
+///
+/// Returns `(name, description, model, thinking, tools, permission, notes,
+/// body)` — SIX keys read (`permission` being the format's first NESTED
+/// value, owned by [`crate::definition_permission`]), plus the
+/// announce notes for every top-level key this reader does not read.
+///
+/// The notes are a REPORT, never an error: the tuple is still `Some` and the
+/// definition is still discovered (issue #101 / #78 — the next dialect miss
+/// must not be another silent no-op, and discovery must stay total).
+#[allow(clippy::type_complexity)] // the wide tuple IS the spec's signature
+fn parse_agent_file(
+    content: &str,
+    fallback_name: &str,
+) -> Option<(
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<Vec<String>>,
+    Option<crate::definition_permission::PermissionBlock>,
+    Vec<crate::definition_permission::FrontmatterNote>,
+    String,
+)> {
+    use crate::definition_permission::{parse_permission_block, FrontmatterNote};
+
+    // 1. Normalize `\r\n` and lone `\r` to `\n`.
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.split('\n').collect();
+
+    // 2. Frontmatter = a block starting at the very beginning: line 1
+    //    is exactly `---`, then lines until a line that is exactly
+    //    `---`. If line 1 is not `---`: no frontmatter → name =
+    //    fallback (the stem), description = "", all Option fields =
+    //    None, body = the whole content (trimmed). NO notes either — a file
+    //    with no frontmatter says nothing for the reader to misunderstand.
+    if lines.first() != Some(&"---") {
+        return Some((
+            fallback_name.to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            normalized.trim().to_string(),
+        ));
+    }
+    // The closing `---` is REQUIRED — EOF before it means the
+    // frontmatter is malformed → None.
+    let close = lines[1..].iter().position(|l| *l == "---")?;
+    let fm_end = 1 + close;
+    let fm: &[&str] = &lines[1..fm_end];
+    let body = lines[fm_end + 1..].join("\n").trim().to_string();
+
+    // 3. Top-level (non-indented) keys only, first occurrence of each
+    //    wins (indented lines belong to the previous key's block value).
+    //
+    //    SIX keys are read. Every OTHER non-indented `key: value` line is
+    //    ANNOUNCED as `FrontmatterNote::UnknownKey` — opencode's markdown
+    //    agents carry `mode:`, `temperature:` and friends that this desktop
+    //    does not read, and #78's principle says a key the reader ignores is
+    //    a key the user believes took effect. An indented line is a block's
+    //    body and never a top-level key, so it is never announced here.
+    let mut name: Option<String> = None;
+    let mut description: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut thinking: Option<String> = None;
+    let mut tools: Option<String> = None;
+    let mut permission: Option<crate::definition_permission::PermissionBlock> = None;
+    let mut notes: Vec<FrontmatterNote> = Vec::new();
+    // One `UnknownKey("permission")` per FILE, even if the key repeats: the
+    // note reports "this file said something unreadable", and N unreadable
+    // spellings of one key in one file are one announcement (D3's
+    // first-occurrence-wins rule for notes).
+    let mut permission_announced = false;
+    let mut i = 0;
+    while i < fm.len() {
+        let line = fm[i];
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            // The line's key (None for a line that is not a `key: value` pair
+            // at all — a stray comment, a list item). A key that IS one of the
+            // six is never announced, EVEN WHEN it repeats: the repeat is a
+            // first-wins drop of a key the reader definitely knows, and
+            // announcing it as "unknown" would be a lie about the reader.
+            let key = top_level_key(line);
+            let known = matches!(
+                key,
+                Some("name")
+                    | Some("description")
+                    | Some("model")
+                    | Some("thinking")
+                    | Some("tools")
+                    | Some("permission")
+            );
+            if name.is_none() {
+                if let Some(rest) = line.strip_prefix("name:") {
+                    name = parse_value(fm, i, rest);
+                }
+            }
+            if description.is_none() {
+                if let Some(rest) = line.strip_prefix("description:") {
+                    description = parse_value(fm, i, rest);
+                }
+            }
+            if model.is_none() {
+                if let Some(rest) = line.strip_prefix("model:") {
+                    model = parse_value(fm, i, rest);
+                }
+            }
+            if thinking.is_none() {
+                if let Some(rest) = line.strip_prefix("thinking:") {
+                    thinking = parse_value(fm, i, rest);
+                }
+            }
+            if tools.is_none() {
+                if let Some(rest) = line.strip_prefix("tools:") {
+                    tools = parse_value(fm, i, rest);
+                }
+            }
+            // The NESTED arm. `parse_value` cannot carry this: it returns
+            // `None` for an empty inline value, and a `permission:` block's
+            // inline IS empty — its value lives entirely in the indented
+            // lines below, which the scalar path never visits. So the block
+            // gets its own reader (and its own parity statement — opencode's
+            // markdown-agent `permission:` block, NOT a pi format).
+            //
+            // The READER owns every note about the block, including
+            // `UnknownKey("permission")` for a `permission:` that yielded
+            // nothing readable at all — so this arm EXTENDS and never adds a
+            // note of its own, which would double-report the same event.
+            if permission.is_none() {
+                if let Some(rest) = line.strip_prefix("permission:") {
+                    let (block, block_notes) = parse_permission_block(fm, i, rest);
+                    // A REPEAT of an unreadable `permission:` adds nothing: the
+                    // note is per file (D3's one-note-per-file rule).
+                    let repeat_of_unreadable = block.is_none() && permission_announced;
+                    if block.is_none() {
+                        permission_announced = true;
+                    }
+                    if !repeat_of_unreadable {
+                        notes.extend(block_notes);
+                        permission = block;
+                    }
+                }
+            }
+            if !known {
+                if let Some(key) = key {
+                    notes.push(FrontmatterNote::UnknownKey(key.to_string()));
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // 4. `name` empty or whitespace-only after parsing (an `""` value,
+    //    a `"   "` value, or a block with no indented lines) → fallback
+    //    (the stem).
+    //
+    //    NO tag-safety skip here — and the reason is NOT that the name never
+    //    reaches a prompt tag. It DOES: the composer's `@`-mention expansion
+    //    interpolates it UNESCAPED into `<agent name="NAME">` and into the
+    //    block body (`definition "NAME"`, `agentName "NAME"`) — see
+    //    `buildAgentBlock` in `src/lib/skills.ts`. What makes that safe is
+    //    `expandMentions`' EXACT-MATCH lookup: a hit requires
+    //    `name.toLowerCase() === token` and every tag-UNSAFE character (`"`,
+    //    `<`, control chars) is UNCHANGED by `toLowerCase()`, so a name
+    //    containing one equals no `[a-z0-9-]` token and can NEVER be
+    //    interpolated at all (the argument is NOT injectivity — U+212A KELVIN
+    //    SIGN folds to `k`, and is harmless only because it is itself
+    //    tag-safe) — and the picker surfaces hide such names so no dead token
+    //    is ever offered (`commands::agents::list_agent_definitions_for_space`).
+    //
+    //    Discovery itself must therefore NOT skip unsafe names: the harness's
+    //    `agentName` dispatch still honors them (a name with a space is
+    //    dispatchable — the model passes it verbatim), so skipping would
+    //    silently break existing user files. `list_agents` needs no guard
+    //    either — its output crosses the wire JSON-escaped.
+    let name = name
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| fallback_name.to_string());
+    // `description` left as parsed (may be empty). NO 1024-char cap HERE,
+    //    unlike skills — but NOT because it is not prompt-injected: it IS,
+    //    as the first line of the composer's `<agent>` block. The skill side
+    //    enforces its cap at discovery by SKIPPING the skill; this module
+    //    cannot skip (the definition must stay dispatchable and visible in
+    //    Settings), so the cap lives at the INJECTION POINT instead —
+    //    `capInterpolated` in `src/lib/skills.ts` truncates to the SAME 1024
+    //    code points before interpolating (the MCP `summary` gets the same
+    //    budget for the same reason — both are repo-controlled and
+    //    length-unbounded). What is parsed here stays verbatim so
+    //    the Settings page and `list_agents` show the real frontmatter.
+    let description = description.unwrap_or_default();
+    // `model` / `thinking` empty after parsing → None.
+    let model = model.filter(|m| !m.trim().is_empty());
+    let thinking = thinking.filter(|t| !t.trim().is_empty());
+    // `tools`: normalize the string / array spellings; a list that
+    // empties out → None.
+    let tools = tools.as_deref().and_then(parse_tools);
+
+    // 5. `body` = the content after the closing `---` (trimmed).
+    Some((
+        name,
+        description,
+        model,
+        thinking,
+        tools,
+        permission,
+        notes,
+        body,
+    ))
+}
+
+/// The KEY of a top-level frontmatter line, or `None` when the line is not a
+/// `key: value` pair at all.
+///
+/// Deliberately stricter than `parse_value`'s separator rule and deliberately
+/// NOT a second reader: it only decides *which key a line names*, so the
+/// unknown-key announce can name it verbatim. A key must be a bare identifier
+/// (`[\w-]+`, the same character class the `frontmatter.ts` reader this copy
+/// mirrors uses in its `/^([\w-]+):\s*(.*)$/` regex), so a quoted token, a
+/// list item (`- deny`) or a comment line is not a key and gets no note here —
+/// a block's own reader announces its own unreadable rows.
+fn top_level_key(line: &str) -> Option<&str> {
+    let colon = line.find(':')?;
+    let key = &line[..colon];
+    if key.is_empty() {
+        return None;
+    }
+    if key
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        Some(key)
+    } else {
+        None
+    }
+}
+
+/// Normalize a parsed `tools` value to a list (or `None`): `trim()`; if
+/// it starts with `[` AND ends with `]` → strip both brackets and split
+/// on `,`; else split on `,` directly; trim each element; drop empty
+/// elements; an empty result → `None`.
+fn parse_tools(raw: &str) -> Option<Vec<String>> {
+    let raw = raw.trim();
+    let inner = raw.strip_prefix('[').and_then(|s| s.strip_suffix(']'));
+    let source = inner.unwrap_or(raw);
+    let items: Vec<String> = source
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
+}
+
+/// Parse the value of a top-level `key: <rest>` line (step 3).
+///
+/// (A copy of `skills.rs`'s `parse_value` — deliberate per ADR 0020
+/// (docs/decisions/0020-native-subagent-agent-definitions.md): "do NOT
+/// change `skills.rs`'s visibility — the two frontmatter shapes differ,
+/// so the modules stay independent". `parse_value` itself is
+/// shape-agnostic: if a bug is found in the value-reading logic (e.g. the
+/// NBSP/dedent byte-offset guard documented below), it must be applied to
+/// BOTH copies.)
+///
+/// ONE CARVE-OUT to that "both copies" rule, and it is not a shape bug: the
+/// trailing `#`-comment strip that `skills.rs`'s `parse_value` gained for issue
+/// #11 belongs HERE NOT. The two copies mirror DIFFERENT upstream readers.
+/// `skills.rs` mirrors pi's `parseFrontmatter`, which parses with the `yaml`
+/// package — a plain scalar ENDS at a `#` preceded by a space or tab, so pi
+/// strips it. This copy mirrors the reader ADR 0020 names for Agent
+/// definitions: pi's subagent extension (`pi-subagents`,
+/// `src/agents/frontmatter.ts`), whose `parseFrontmatter` is a hand-rolled
+/// `/^([\w-]+):\s*(.*)$/` regex reader. Measured against it, that reader KEEPS
+/// the comment — `name: a # note` → `"a # note"` and `description: Do the thing
+/// # internal` → `"Do the thing # internal"`. Stripping here would therefore
+/// move the desktop AWAY from the only pi-side reader of Agent definitions and
+/// MANUFACTURE the divergence ADR 0036 exists to prevent. So: the "both copies"
+/// rule binds for SHAPE bugs (the NBSP/dedent guard, the quote pair, the `: `
+/// guard — where both copies read the same thing) and does NOT bind for this
+/// strip. Should that scoping ever be revisited, it needs its own parity target
+/// decided first, plus a truth table here — issue #11 is about Skills only.
+///
+/// A SECOND exception sits in the quote pair itself, and it narrows the
+/// "the quote pair" clause above rather than contradicting it: `skills.rs` now
+/// additionally UN-DOUBLES a SINGLE-quoted scalar's `''` escapes, because YAML's
+/// single-quote escape IS the doubled pair and `yaml` resolves it to one `'`
+/// (`'it''s fine'` → `it's fine`). This copy must NOT do that. The same
+/// `frontmatter.ts` reader slices one quote pair off and stops
+/// (`value = value.slice(1, -1)`) — measured against it, `description: 'it''s'`
+/// is `it''s`, pair still doubled. So the shared part of the quote pair is what
+/// both readers actually do (remove one matching surrounding pair); the
+/// un-doubling belongs to the `yaml`-backed reader alone, for the same reason as
+/// the comment strip above: a second divergence in the same direction, against
+/// the same target, manufactured for free. Each side names the other.
+///
+/// - inline: the rest of the line, trimmed; strip one pair of matching
+///   surrounding quotes; an empty inline value means "no value".
+/// - block: the inline value is exactly `|` or `>` (optionally followed
+///   by ONE chomping/indent indicator — `-` or `+ — with any further
+///   trailing whitespace: the value is the following indented lines
+///   until the next non-indented line; `|` joins with `\n`, `>` joins
+///   with a single space; the result is dedented and trimmed.
+/// - an unquoted inline value containing `: ` (a YAML mapping
+///   ambiguity) → no value (tolerant, no crash).
+fn parse_value(fm: &[&str], idx: usize, rest: &str) -> Option<String> {
+    let inline = rest.trim();
+    if inline.is_empty() {
+        return None;
+    }
+
+    let (style, is_block) = match inline {
+        "|" => ('|', true),
+        "|-" => ('|', true),
+        "|+" => ('|', true),
+        ">" => ('>', true),
+        ">-" => ('>', true),
+        ">+" => ('>', true),
+        _ => ('\0', false),
+    };
+    if is_block {
+        let mut collected = Vec::new();
+        let mut j = idx + 1;
+        while j < fm.len() {
+            let l = fm[j];
+            if l.starts_with(' ') || l.starts_with('\t') {
+                collected.push(l);
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        if collected.is_empty() {
+            return Some(String::new());
+        }
+        // Dedent: strip the common leading whitespace (YAML block
+        // semantics — the block's indent is not part of the value).
+        // ASCII spaces/tabs ONLY: `trim_start` would also trim UNICODE
+        // whitespace (e.g. U+00A0 NBSP, 2 bytes), making the byte offset
+        // land mid-character and the `&l[min..]` slice panic — but the
+        // discovery must be total (never panic). NBSP is content, not
+        // indent.
+        let min: usize = collected
+            .iter()
+            .map(|l| l.len() - l.trim_start_matches([' ', '\t']).len())
+            .min()
+            .unwrap_or(0);
+        let dedented: Vec<&str> = collected.iter().map(|l| &l[min..]).collect();
+        let joined = if style == '|' {
+            dedented.join("\n")
+        } else {
+            dedented.join(" ")
+        };
+        return Some(joined.trim().to_string());
+    }
+
+    // Strip one pair of matching surrounding quotes.
+    let first = inline.chars().next().unwrap();
+    let last = inline.chars().next_back().unwrap();
+    if (first == '"' || first == '\'') && first == last && inline.len() >= 2 {
+        return Some(inline[1..inline.len() - 1].to_string());
+    }
+    // Unquoted inline containing `: ` (a YAML mapping ambiguity) → no
+    // value (tolerant, no crash).
+    if inline.contains(": ") {
+        return None;
+    }
+    Some(inline.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// A scratch root with an EMPTY `.git/` dir so the context walk is
+    /// bounded at the scratch (a stray `~/.agents/agents` or `~/.pi`
+    /// from a developer's real home must not break the assertions) — and
+    /// OWNED (#96 task 08): the dir and everything under it is removed when
+    /// the guard drops. NOT `Clone`; `to_path_buf()` is the escape hatch
+    /// where a `PathBuf` is needed.
+    ///
+    /// The `archimedes-agents-` prefix is verbatim (D12: #96's census
+    /// attributes by prefix) with a `root` tag inserted INSIDE it, so the
+    /// name shape changes and the census glob does not. This helper is
+    /// called 24 times per run and the file contained ZERO `remove_dir_all`
+    /// before this change — 24 dirs/run, the largest single-file leak in the
+    /// lib suite.
+    fn scratch() -> crate::test_support::ScratchDir {
+        let dir = crate::test_support::ScratchDir::in_env_temp("archimedes-agents-", "root");
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        dir
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, content).unwrap();
+    }
+
+    /// Canonicalize for path comparisons (on macOS `std::env::temp_dir()`
+    /// is a symlinked path). Use it ONLY on paths that EXIST — the
+    /// fallback to the raw path is a silent no-op otherwise (the root
+    /// tests compare raw joined paths instead, as `tests/skills.rs` does).
+    fn canon(p: &Path) -> PathBuf {
+        fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    }
+
+    /// #96 task 08: the agents fixture must OWN its scratch. `scratch()` handed
+    /// back a bare `PathBuf` and this file contained ZERO `remove_dir_all`, so
+    /// all 24 dirs per run outlived it (1896 of them on disk at the baseline,
+    /// 24/run — the largest single-file leak in the lib suite). The GREEN half
+    /// of this assertion is the real win; the drop is what makes the panic path
+    /// cost nothing.
+    #[test]
+    fn the_agents_scratch_helper_owns_its_dir() {
+        let dir = scratch();
+        let captured = dir.to_path_buf();
+        assert!(captured.is_dir(), "the helper created its scratch dir");
+        assert!(
+            captured.join(".git").is_dir(),
+            "and the `.git` marker that bounds the context walk"
+        );
+        drop(dir);
+        assert!(
+            !captured.exists(),
+            "the helper's scratch goes with its owner: {captured:?}"
+        );
+    }
+
+    /// The panic path: an assertion that FAILS while the fixture still owns its
+    /// scratch must not leave it behind. The guard is MOVED INTO the panicking
+    /// scope — that is the value the unwind drops (the `test_support` /
+    /// `agent/mcp/oauth.rs` precedent). What this does NOT pin is #96's headline
+    /// case — a test failing with its guard as a plain local, so the HARNESS's
+    /// own unwind would have to remove the dir — because Rust makes no portable
+    /// guarantee there and status-doc D10 assigns that case to task 09's census.
+    #[test]
+    fn a_panicking_assertion_still_removes_the_agents_scratch() {
+        let captured = {
+            let dir = scratch();
+            let p = dir.to_path_buf();
+            assert!(p.is_dir(), "the helper created its scratch dir");
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let _dir = dir;
+                assert_eq!(
+                    1, 2,
+                    "an assertion fails while the fixture owns its scratch"
+                );
+            }));
+            assert!(r.is_err(), "the assertion failed as arranged");
+            p
+        };
+        assert!(
+            !captured.exists(),
+            "the unwind ran the removal: {captured:?}"
+        );
+    }
+
+    // 1
+    #[test]
+    fn a_flat_agent_file_is_discovered_with_all_fields() {
+        let root = scratch();
+        write_file(
+            &root.join("scout.md"),
+            "---\nname: scout\ndescription: Fast recon.\nmodel: fake/m2\nthinking: low\ntools: read, bash\n---\nYou are a scout.\n",
+        );
+        let out = discover_in_roots(&[(root.to_path_buf(), AgentScope::Space)]);
+        assert_eq!(out.len(), 1, "one agent expected: {out:?}");
+        let d = &out[0];
+        assert_eq!(d.name, "scout");
+        assert_eq!(d.description, "Fast recon.");
+        assert_eq!(d.model.as_deref(), Some("fake/m2"));
+        assert_eq!(d.thinking.as_deref(), Some("low"));
+        assert_eq!(d.tools, Some(vec!["read".to_string(), "bash".to_string()]));
+        assert_eq!(d.system_prompt, "You are a scout.");
+        assert_eq!(d.scope, AgentScope::Space);
+        assert_eq!(
+            d.path,
+            canon(&root.join("scout.md")).to_string_lossy().into_owned()
+        );
+    }
+
+    // 2
+    #[test]
+    fn a_file_without_frontmatter_uses_the_stem_name() {
+        let root = scratch();
+        write_file(&root.join("worker.md"), "Do the work.\n");
+        let out = discover_in_roots(&[(root.to_path_buf(), AgentScope::User)]);
+        assert_eq!(out.len(), 1, "one agent expected: {out:?}");
+        assert_eq!(out[0].name, "worker");
+        assert_eq!(out[0].description, "");
+        assert_eq!(out[0].model, None);
+        assert_eq!(out[0].thinking, None);
+        assert_eq!(out[0].tools, None);
+        assert_eq!(out[0].system_prompt, "Do the work.");
+    }
+
+    // 3
+    #[test]
+    fn a_missing_name_key_falls_back_to_the_stem() {
+        let root = scratch();
+        write_file(
+            &root.join("helper.md"),
+            "---\ndescription: A helper.\n---\nHelp.\n",
+        );
+        let out = discover_in_roots(&[(root.to_path_buf(), AgentScope::User)]);
+        assert_eq!(out.len(), 1, "one agent expected: {out:?}");
+        assert_eq!(out[0].name, "helper");
+        assert_eq!(out[0].description, "A helper.");
+        assert_eq!(out[0].system_prompt, "Help.");
+    }
+
+    // 4
+    #[test]
+    fn a_malformed_frontmatter_is_skipped() {
+        let root = scratch();
+        // An opening `---` with no closing `---` (EOF before it).
+        write_file(
+            &root.join("broken.md"),
+            "---\nname: broken\nmodel: fake/m1\n",
+        );
+        // A positive control: a well-formed file in the same root.
+        write_file(&root.join("good.md"), "---\nname: good\n---\nB.\n");
+        let out = discover_in_roots(&[(root.to_path_buf(), AgentScope::User)]);
+        assert_eq!(
+            out.len(),
+            1,
+            "only the well-formed file is discovered: {out:?}"
+        );
+        assert_eq!(out[0].name, "good");
+    }
+
+    // 5
+    #[test]
+    fn tools_accepts_string_and_array_spellings() {
+        let root = scratch();
+        write_file(
+            &root.join("s1.md"),
+            "---\nname: s1\ntools: read, bash\n---\nB1.\n",
+        );
+        write_file(
+            &root.join("s2.md"),
+            "---\nname: s2\ntools: [read, bash]\n---\nB2.\n",
+        );
+        let out = discover_in_roots(&[(root.to_path_buf(), AgentScope::User)]);
+        assert_eq!(out.len(), 2, "two agents expected: {out:?}");
+        let s1 = out.iter().find(|d| d.name == "s1").unwrap();
+        let s2 = out.iter().find(|d| d.name == "s2").unwrap();
+        assert_eq!(s1.tools, Some(vec!["read".to_string(), "bash".to_string()]));
+        assert_eq!(s2.tools, Some(vec!["read".to_string(), "bash".to_string()]));
+    }
+
+    /// The two `parse_value` copies are DOCUMENTED to diverge on exactly two
+    /// shapes (see this fn's doc: the trailing `#` strip and the single-quoted
+    /// `''` un-doubling), and the doc is only worth anything if a change that
+    /// re-unifies them is caught. So this pins the DIVERGENCE at the discovery
+    /// level — both public readers, the SAME frontmatter text, two expected
+    /// values — rather than asserting equality (which would be the wrong
+    /// invariant) or reading a private fn (which would need the visibility
+    /// change ADR 0020 forbids).
+    ///
+    /// HALF 1 — the trailing `#` strip. Each copy mirrors a different upstream
+    /// reader and the two readers disagree about comments: `skills.rs` mirrors
+    /// pi's `parseFrontmatter`, which parses with `yaml`, and a plain scalar
+    /// ENDS at a ` #` — so it drops the note. This copy mirrors the reader ADR
+    /// 0020 names for Agent definitions, `pi-subagents/src/agents/frontmatter.ts`,
+    /// a hand-rolled `/^([\w-]+):\s*(.*)$/` regex reader with NO comment rule at
+    /// all — measured against it `description: 'it''s fine' # note` is verbatim.
+    /// Stripping here would move the desktop away from its only pi-side reader
+    /// of Agent definitions.
+    ///
+    /// HALF 2 — the `''` escape, and it needs its OWN fixture: a value that is
+    /// a CLOSED quote pair, so the quote branch actually runs. (Half 1's fixture
+    /// ends in `note`, so its first and last chars differ and the branch is
+    /// never reached — pinning `''` through that fixture would test nothing.)
+    /// Here both copies DO enter the branch and DO slice the one surrounding
+    /// pair; they differ only in what happens after the slice, because YAML's
+    /// single-quote escape IS the doubled pair: `yaml` resolves `''` to one `'`,
+    /// so `'it''s'` is `it's` on the skill side, while `frontmatter.ts` is
+    /// `value = value.slice(1, -1)` and STOPS — measured against it the same
+    /// input is `it''s`, quotes gone, pair still doubled. Un-doubling on this
+    /// side would manufacture the divergence ADR 0036 exists to prevent, in the
+    /// same direction and against the same target as half 1.
+    #[test]
+    fn the_two_parse_value_copies_diverge_where_their_parity_targets_differ() {
+        let root = scratch();
+        // Half 1: the trailing `#` strip, on a value that does NOT close its
+        // quote pair (it ends in `note`), so only the comment rule is in play.
+        let comment_fm = "---\nname: quote\ndescription: 'it''s fine' # note\n---\nB.\n";
+        // Half 2: the `''` escape, on a CLOSED pair so the quote branch runs.
+        let closed_fm = "---\nname: pair\ndescription: 'it''s'\n---\nB.\n";
+
+        // The agent side (this module's copy) and the skill side (`skills.rs`'s
+        // copy) get the SAME frontmatter text, each fixture in both readers.
+        write_file(&root.join("quote.md"), comment_fm);
+        write_file(&root.join("pair.md"), closed_fm);
+        write_file(&root.join("skills/quote/SKILL.md"), comment_fm);
+        write_file(&root.join("skills/pair/SKILL.md"), closed_fm);
+
+        let agents = discover_in_roots(&[(root.to_path_buf(), AgentScope::Space)]);
+        let skills = crate::skills::discover_in_roots(&[(
+            root.to_path_buf(),
+            crate::skills::SkillScope::User,
+        )]);
+        assert_eq!(
+            agents.len(),
+            2,
+            "both agents must still be discovered: {agents:?}"
+        );
+        assert_eq!(
+            skills.len(),
+            2,
+            "both skills must still be discovered: {skills:?}"
+        );
+        let agent = |n: &str| {
+            agents
+                .iter()
+                .find(|d| d.name == n)
+                .unwrap_or_else(|| panic!("agent `{n}` missing: {agents:?}"))
+                .description
+                .clone()
+        };
+        let skill = |n: &str| {
+            skills
+                .iter()
+                .find(|s| s.name == n)
+                .unwrap_or_else(|| panic!("skill `{n}` missing: {skills:?}"))
+                .description
+                .clone()
+        };
+
+        // ── Half 1: the trailing `#` strip ────────────────────────────────────
+        assert_eq!(
+            agent("quote"),
+            "'it''s fine' # note",
+            "DIVERGENCE HALF 1, agent side: this copy mirrors `frontmatter.ts`, \
+             a regex reader with NO comment rule at all, so the value stays \
+             verbatim. Stripping the note here would move the desktop away from \
+             its only pi-side reader of Agent definitions and manufacture the \
+             divergence ADR 0036 exists to prevent"
+        );
+        assert_eq!(
+            skill("quote"),
+            "it's fine",
+            "DIVERGENCE HALF 1, skill side: `skills.rs` mirrors pi's `yaml`, \
+             where a plain scalar ENDS at a ` #`, so the note is stripped and \
+             the `''` escape resolves to one `'`"
+        );
+
+        // ── Half 2: the `''` escape inside a CLOSED quote pair ────────────────
+        assert_eq!(
+            agent("pair"),
+            "it''s",
+            "DIVERGENCE HALF 2, agent side: the quote branch DOES run here (the \
+             value starts and ends with `'`), and it does exactly what \
+             `frontmatter.ts` does — `value.slice(1, -1)`: one surrounding pair \
+             removed, NOTHING else. The doubled `''` survives, because that \
+             reader has no escape rule. Un-doubling it here (`\"''\"` → `\"'\"`) \
+             would manufacture the same ADR 0036 divergence as half 1, against \
+             the same parity target"
+        );
+        assert_eq!(
+            skill("pair"),
+            "it's",
+            "DIVERGENCE HALF 2, skill side: the same slice happens, then `yaml`'s \
+             single-quote escape resolves the surviving `''` to one `'` — which \
+             is what the escape MEANS"
+        );
+    }
+
+    // 6
+    #[test]
+    fn tools_empty_list_is_none() {
+        let root = scratch();
+        write_file(&root.join("e1.md"), "---\nname: e1\ntools: []\n---\nB.\n");
+        write_file(&root.join("e2.md"), "---\nname: e2\ntools: \"\"\n---\nB.\n");
+        let out = discover_in_roots(&[(root.to_path_buf(), AgentScope::User)]);
+        assert_eq!(out.len(), 2, "two agents expected: {out:?}");
+        let e1 = out.iter().find(|d| d.name == "e1").unwrap();
+        let e2 = out.iter().find(|d| d.name == "e2").unwrap();
+        assert_eq!(e1.tools, None, "`[]` must normalize to None");
+        assert_eq!(
+            e2.tools, None,
+            "an empty string value must normalize to None"
+        );
+    }
+
+    // 7
+    #[test]
+    fn a_missing_root_yields_an_empty_vec() {
+        let root = scratch();
+        let out = discover_in_roots(&[(root.join("missing"), AgentScope::User)]);
+        assert!(out.is_empty());
+    }
+
+    // 8
+    #[test]
+    fn a_non_md_file_is_ignored() {
+        let root = scratch();
+        write_file(&root.join("notes.txt"), "not an agent definition");
+        // A positive control: a well-formed `.md` file in the same root.
+        write_file(&root.join("good.md"), "---\nname: good\n---\nB.\n");
+        let out = discover_in_roots(&[(root.to_path_buf(), AgentScope::User)]);
+        assert_eq!(out.len(), 1, "only the `.md` file is discovered: {out:?}");
+        assert_eq!(out[0].name, "good");
+    }
+
+    // 9
+    #[test]
+    fn first_wins_dedupe_space_shadows_user() {
+        let space_root = scratch();
+        let user_root = scratch();
+        write_file(
+            &space_root.join("scout.md"),
+            "---\nname: scout\ndescription: space version\n---\nS.\n",
+        );
+        write_file(
+            &user_root.join("scout.md"),
+            "---\nname: scout\ndescription: user version\n---\nU.\n",
+        );
+        let out = discover_in_roots(&[
+            (space_root.to_path_buf(), AgentScope::Space),
+            (user_root.to_path_buf(), AgentScope::User),
+        ]);
+        assert_eq!(out.len(), 1, "first-wins dedupe: {out:?}");
+        assert_eq!(out[0].description, "space version");
+        assert_eq!(out[0].scope, AgentScope::Space);
+        // ADR 0065: the collision is also a REPORT on the winner (the dedupe
+        // decision above is unchanged — one entry, the Space description wins).
+        assert_eq!(out[0].shadowed.len(), 1, "{out:?}");
+        assert_eq!(out[0].shadowed[0].scope, AgentScope::User);
+    }
+
+    // 10 — find-by-name (NOT exact-vec equality): the user-level roots may
+    // contribute unrelated entries on a developer machine.
+    #[test]
+    fn innermost_level_shadows_outer() {
+        let root = scratch(); // `.git` at the root
+        let proj = root.join("proj");
+        fs::create_dir_all(&proj).unwrap();
+        write_file(
+            &root.join(".agents/agents/a.md"),
+            "---\nname: a\n---\nouter-body\n",
+        );
+        write_file(
+            &proj.join(".agents/agents/a.md"),
+            "---\nname: a\n---\ninner-body\n",
+        );
+        let out = discover_agents(Some(&proj));
+        let a = out
+            .iter()
+            .find(|d| d.name == "a")
+            .expect("an entry named `a`");
+        assert_eq!(a.system_prompt, "inner-body");
+        assert_eq!(a.scope, AgentScope::Space);
+    }
+
+    // 11
+    #[test]
+    fn a_symlink_collapses_across_roots() {
+        let a = scratch();
+        write_file(&a.join("scout.md"), "---\nname: scout\n---\nFrom A.\n");
+        let b = scratch();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(a.join("scout.md"), b.join("scout.md")).unwrap();
+        // Windows has no `std::os::windows::fs::symlink` — the two-arity split
+        // is `symlink_file` / `symlink_dir`, and `scout.md` is a file. (The
+        // first Windows build made the missing name a compile error.)
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(a.join("scout.md"), b.join("scout.md")).unwrap();
+        let out = discover_in_roots(&[
+            (a.to_path_buf(), AgentScope::Space),
+            (b.to_path_buf(), AgentScope::User),
+        ]);
+        assert_eq!(out.len(), 1, "the symlink must collapse: {out:?}");
+        assert_eq!(out[0].scope, AgentScope::Space);
+        assert_eq!(
+            out[0].path,
+            canon(&a.join("scout.md")).to_string_lossy().into_owned()
+        );
+    }
+
+    // 12
+    #[test]
+    fn a_model_with_a_level_suffix_is_preserved_verbatim() {
+        let root = scratch();
+        write_file(
+            &root.join("m.md"),
+            "---\nname: m\nmodel: fake/m2:high\n---\nB.\n",
+        );
+        let out = discover_in_roots(&[(root.to_path_buf(), AgentScope::User)]);
+        assert_eq!(out.len(), 1, "one agent expected: {out:?}");
+        assert_eq!(out[0].model.as_deref(), Some("fake/m2:high"));
+    }
+
+    // 13
+    #[test]
+    fn output_is_deterministically_sorted() {
+        let root = scratch();
+        write_file(&root.join("zeta.md"), "---\nname: Zeta\n---\nZ.\n");
+        write_file(&root.join("alpha.md"), "---\nname: Alpha\n---\nA.\n");
+        let out = discover_in_roots(&[(root.to_path_buf(), AgentScope::User)]);
+        let names: Vec<&str> = out.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["Alpha", "Zeta"], "sorted by lowercased name");
+    }
+
+    /// Restores `HOME` on scope exit (even when an assertion panics
+    /// mid-test): `Some(v)` → set, `None` → remove.
+    struct RestoreHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            match self.0.take() {
+                // SAFETY: the `ENV_LOCK` is still held at drop time (this
+                // guard is declared after the `_lock` guard and outlives
+                // it in reverse); no other thread mutates HOME concurrently.
+                Some(v) => unsafe {
+                    std::env::set_var("HOME", v);
+                },
+                // SAFETY: the `ENV_LOCK` is still held at drop time (this
+                // guard is declared after the `_lock` guard and outlives
+                // it in reverse); no other thread mutates HOME concurrently.
+                None => unsafe {
+                    std::env::remove_var("HOME");
+                },
+            }
+        }
+    }
+
+    // 14
+    #[test]
+    fn user_roots_reads_home() {
+        // Hold the shared lock for the WHOLE set→assert→restore span (a
+        // `cargo test --lib` runs all module tests concurrently).
+        let _lock = crate::test_support::env_lock();
+        let original = std::env::var_os("HOME");
+        let _restore = RestoreHome(original.clone());
+        let tmp = scratch();
+        // SAFETY: the `ENV_LOCK` is held for the whole set→assert→restore
+        // span (the `env_lock` guard); no other thread mutates HOME
+        // concurrently.
+        //
+        // `tmp.path()` and NOT `&tmp` (#96 task 08, D15): `set_var` wants an
+        // `AsRef<OsStr>` and `ScratchDir` deliberately implements only
+        // `AsRef<Path>` + `Deref<Target = Path>`. The declaration order above
+        // is load-bearing — `_lock`, then `_restore`, then `tmp` — so the
+        // scratch is removed while the env lock is STILL held and before the
+        // `HOME` restore runs.
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+        }
+        let roots = user_roots();
+        // Raw joined paths (NO `canon` — these directories never exist
+        // in the test, so `fs::canonicalize` would just fall back to
+        // the raw path; the expected values are built with plain
+        // `join`, as `tests/skills.rs` does for its root tests).
+        assert_eq!(
+            roots,
+            vec![
+                (tmp.join(".agents/agents"), AgentScope::User),
+                (tmp.join(".pi/agent/agents"), AgentScope::User),
+            ]
+        );
+    }
+
+    // 15
+    #[test]
+    fn space_roots_walks_up_to_the_repo_root() {
+        let root = scratch(); // `.git` at the root
+        let space = root.join("a/b");
+        fs::create_dir_all(&space).unwrap();
+        let roots = space_roots(&space);
+        // Raw joined paths (NO `canon` — the `.agents` / `.pi` dirs
+        // never exist in the test, so `fs::canonicalize` would just
+        // fall back to the raw path; the expected values are built with
+        // plain `join`, as `tests/skills.rs` does for its root tests).
+        assert_eq!(
+            roots,
+            vec![
+                (space.join(".agents/agents"), AgentScope::Space),
+                (space.join(".pi/agents"), AgentScope::Space),
+                (root.join("a/.agents/agents"), AgentScope::Space),
+                (root.join("a/.pi/agents"), AgentScope::Space),
+                (root.join(".agents/agents"), AgentScope::Space),
+                (root.join(".pi/agents"), AgentScope::Space),
+            ]
+        );
+    }
+
+    // ---- Shadowing: the loser is a REPORT on the winner (ADR 0065) -----
+    //
+    // The same rule `skills.rs` records, over the same shared
+    // `Shadowed<T>` shape. Assertions are on `name` / `scope` and on `path`
+    // compared through `canon` — never on a raw path string (`temp_dir()` is a
+    // symlinked prefix on macOS).
+
+    /// A byte-identical `*.md` in two roots is a **Duplicate**, not a shadow
+    /// (`CONTEXT.md`), and ADR 0065 keeps it silent: one entry, empty
+    /// `shadowed`. Reducing the rule to "any name collision is a shadow" would
+    /// fill the future Agents popup with a copy the user made on purpose.
+    #[test]
+    fn identical_agent_files_across_roots_are_silent() {
+        let space_root = scratch();
+        let user_root = scratch();
+        let bytes = "---\nname: scout\ndescription: D.\n---\nSame body.\n";
+        write_file(&space_root.join("scout.md"), bytes);
+        write_file(&user_root.join("scout.md"), bytes);
+        let out = discover_in_roots(&[
+            (space_root.to_path_buf(), AgentScope::Space),
+            (user_root.to_path_buf(), AgentScope::User),
+        ]);
+        assert_eq!(out.len(), 1, "one entry for a Duplicate: {out:?}");
+        assert!(
+            out[0].shadowed.is_empty(),
+            "a byte-identical copy is a Duplicate, not a shadow: {out:?}"
+        );
+    }
+
+    /// The Duplicate test compares NORMALIZED content, so a CRLF checkout of an
+    /// otherwise-identical file stays silent (reporting it would bury the real
+    /// shadows under Windows-checkout noise). Raw-bytes comparison goes RED
+    /// here. The normalization itself comes from the ONE owner of the rule,
+    /// `skills::normalize_line_endings` — not a second copy in this module.
+    #[test]
+    fn a_crlf_agent_copy_across_roots_is_silent() {
+        let space_root = scratch();
+        let user_root = scratch();
+        let lf = "---\nname: scout\ndescription: D.\n---\nSame body.\n";
+        let crlf = lf.replace('\n', "\r\n");
+        write_file(&space_root.join("scout.md"), lf);
+        write_file(&user_root.join("scout.md"), &crlf);
+        let out = discover_in_roots(&[
+            (space_root.to_path_buf(), AgentScope::Space),
+            (user_root.to_path_buf(), AgentScope::User),
+        ]);
+        assert_eq!(out.len(), 1, "one entry for a CRLF copy: {out:?}");
+        assert!(
+            out[0].shadowed.is_empty(),
+            "a CRLF-only difference is not a shadow: {out:?}"
+        );
+    }
+
+    /// The headline contract on the agent side: a genuinely different file under
+    /// the same name is reported ON THE WINNER, naming the loser with its own
+    /// name, its canonical path and its OWN scope.
+    #[test]
+    fn a_shadowed_agent_names_its_loser_path() {
+        let space_root = scratch();
+        let user_root = scratch();
+        let loser = user_root.join("scout.md");
+        write_file(
+            &space_root.join("scout.md"),
+            "---\nname: scout\ndescription: space version\n---\nS.\n",
+        );
+        write_file(
+            &loser,
+            "---\nname: scout\ndescription: user version\n---\nU.\n",
+        );
+        let out = discover_in_roots(&[
+            (space_root.to_path_buf(), AgentScope::Space),
+            (user_root.to_path_buf(), AgentScope::User),
+        ]);
+        assert_eq!(out.len(), 1, "the collision stays ONE entry: {out:?}");
+        assert_eq!(out[0].shadowed.len(), 1, "{out:?}");
+        assert_eq!(out[0].shadowed[0].name, "scout");
+        assert_eq!(out[0].shadowed[0].scope, AgentScope::User);
+        assert_eq!(
+            Path::new(&out[0].shadowed[0].path),
+            canon(&loser).as_path(),
+            "the loser's path must be canonical (compare via `canon`): {out:?}"
+        );
+    }
+
+    // ---- The `permission:` frontmatter block (issue #101, part a) ----------
+    //
+    // Parse + type + ANNOUNCE only: these pin what discovery READS and what it
+    // REPORTS. Nothing here enforces anything — carrying the block to the gate
+    // and the launch resolver is the follow-up task's scope, so no assertion
+    // below reaches for a `LaunchConfig`, a DTO or a verdict.
+
+    use crate::definition_permission::{
+        Action, FrontmatterNote, PermissionBlock, Rule, Rules, ToolKey, UnsupportedReason,
+    };
+
+    /// A file whose frontmatter carries ONLY a `permission:` block (the given
+    /// indented block lines) plus a one-line body.
+    fn permission_file(name: &str, block: &str) -> String {
+        format!("---\nname: {name}\npermission:\n{block}---\nBody.\n")
+    }
+
+    /// Discover one file over an owned scratch root.
+    fn discover_one(file_name: &str, content: &str) -> AgentDefinition {
+        let root = scratch();
+        write_file(&root.join(file_name), content);
+        let out = discover_in_roots(&[(root.to_path_buf(), AgentScope::User)]);
+        assert_eq!(out.len(), 1, "the file must still be discovered: {out:?}");
+        out.into_iter().next().unwrap()
+    }
+
+    /// T7 — the blank-line SKIP rule. `parse_value`'s block branch BREAKS on an
+    /// empty line (a blank matches neither the indent branch nor the break
+    /// branch, so the loop just stops); copying that here would truncate a
+    /// legal, readable permission block MID-RULESET. A blank line inside the
+    /// block is therefore skipped, never a terminator.
+    ///
+    /// #124: the `edit:` map is a per-pattern PATH map and now announces itself
+    /// unsupported at the DISCOVERY layer too — exactly one note, and the
+    /// whole-tool `bash: deny` stays silent.
+    #[test]
+    fn a_permission_block_with_a_blank_line_between_tool_groups_parses_in_full() {
+        let d = discover_one(
+            "blank.md",
+            &permission_file(
+                "blank",
+                "  edit: {\"*\": deny, \"*.md\": allow}\n\n   \n  bash: deny\n",
+            ),
+        );
+        let block = d
+            .permission
+            .clone()
+            .expect("the block parses — a blank line is not a terminator");
+        let keys: Vec<&ToolKey> = block.tools.iter().map(|(k, _)| k).collect();
+        assert_eq!(
+            keys,
+            vec![&ToolKey::Edit, &ToolKey::Bash],
+            "BOTH tool groups survive the blank line between them: {block:?}"
+        );
+        assert_eq!(block.tools[0].1.patterns.len(), 2, "and in full");
+        assert_eq!(
+            d.frontmatter_notes,
+            vec![FrontmatterNote::UnsupportedUnvalidatedMatcher(
+                UnsupportedReason::PathPatternRules
+            )],
+            "the `edit:` path map announces itself unsupported (#124) — and the \
+             whole-tool `bash: deny` next to it stays silent: {:?}",
+            d.frontmatter_notes
+        );
+    }
+
+    /// T7b — the comment-line SKIP rule at the DISCOVERY layer, with the fixture
+    /// shaped like the real file #101's Evidence section names
+    /// (`~/.agents/agents/researcher.md`): comments between the tool groups, one
+    /// comment containing a colon, comments between pattern rows, an `edit:`
+    /// nested map, `task: deny` and a `bash:` pattern object.
+    ///
+    /// Without the comment rule the reader turns prose into rules: the colon
+    /// comment becomes `UnrecognizedToolKey("# Known gap")` IN the block, and
+    /// every colon-free comment becomes an `UnknownKey` carrying the whole
+    /// sentence — so the file that motivated the issue would still not parse,
+    /// and its announcements would be noise. The ONLY notes this file may
+    /// produce are the three its content earns (and after #124, the first of
+    /// them is the `edit:` map's own path-pattern announcement).
+    #[test]
+    fn a_permission_block_with_comments_reports_only_real_tools_and_real_notes() {
+        let d = discover_one(
+            "researcher.md",
+            "---\nname: researcher\npermission:\n  \
+             # Markdown only. In opencode `edit` gates write / edit / patch, patterns match the\n  \
+             # worktree-relative path, and the LAST matching rule wins — so the catch-all goes first.\n  \
+             edit:\n    \"*\": deny\n    \"*.md\": allow\n  \
+             task: deny\n  \
+             # bash is a write hole (`echo x > src/app.ts`, `sed -i`, `tee`). Deny the mutating\n  \
+             # Known gap: a file redirect that also carries an fd suffix (`cat x > f.ts 2>/dev/null`)\n  \
+             # re-matches an allow rule. The prompt contract below is the backstop for that.\n  \
+             bash:\n    # The catch-all first, so the specifics win by order.\n    \
+             \"*\": allow\n    \"rm *\": deny\n---\nBody.\n",
+        );
+        assert_eq!(d.name, "researcher", "the file is still discovered");
+        assert_eq!(d.system_prompt, "Body.", "and the body is still the body");
+        let block = d
+            .permission
+            .clone()
+            .expect("the researcher-shaped block parses in full");
+        let keys: Vec<&ToolKey> = block.tools.iter().map(|(k, _)| k).collect();
+        assert_eq!(
+            keys,
+            vec![
+                &ToolKey::Edit,
+                &ToolKey::Unrecognized("task".to_string()),
+                &ToolKey::Bash,
+            ],
+            "ONLY the real tool keys — no `# …` entry masquerading as a tool: {keys:?}"
+        );
+        assert_eq!(
+            block.tools[0].1.patterns,
+            vec![
+                Rule {
+                    pattern: "*".to_string(),
+                    action: Action::Deny
+                },
+                Rule {
+                    pattern: "*.md".to_string(),
+                    action: Action::Allow
+                },
+            ],
+            "the nested `edit:` map survived the comments around it"
+        );
+        assert_eq!(
+            block.tools[2].1.patterns,
+            vec![
+                Rule {
+                    pattern: "*".to_string(),
+                    action: Action::Allow
+                },
+                Rule {
+                    pattern: "rm *".to_string(),
+                    action: Action::Deny
+                },
+            ],
+            "the comment BETWEEN pattern rows is skipped, not a terminator"
+        );
+        assert_eq!(
+            d.frontmatter_notes,
+            vec![
+                // #124: `edit:` comes FIRST in file order, and its nested map is
+                // a per-pattern PATH map — so its announcement lands first,
+                // before `task` and `bash` are even read.
+                FrontmatterNote::UnsupportedUnvalidatedMatcher(UnsupportedReason::PathPatternRules),
+                FrontmatterNote::UnrecognizedToolKey("task".to_string()),
+                FrontmatterNote::UnsupportedUnvalidatedMatcher(UnsupportedReason::BashPatternRules),
+            ],
+            "no comment-derived note — the announce channel stays credible"
+        );
+    }
+
+    /// T8 — the whole 8-field parse: a real opencode-shaped block (an inline
+    /// pattern map + a whole-tool verdict + a NESTED pattern map) lands on the
+    /// typed, ordered ruleset. Since #124 the two PATTERN MAPS announce their
+    /// path-pattern rows as unsupported (the whole-tool verdict does not), so
+    /// this fixture is no longer an "announces nothing" case — the typed
+    /// ruleset below is the point, and the notes are asserted exactly.
+    #[test]
+    fn a_permission_block_is_parsed_into_the_typed_ruleset() {
+        let d = discover_one(
+            "permission.md",
+            "---\nname: perm\ndescription: Speaks permissions.\npermission:\n  \
+             edit: {\"*\": deny, \"*.md\": allow}\n  bash: deny\n  \
+             read:\n    \"*\": ask\n    \"secrets/**\": deny\n---\nBody.\n",
+        );
+        assert_eq!(d.name, "perm");
+        assert_eq!(d.description, "Speaks permissions.");
+        assert_eq!(d.system_prompt, "Body.", "the body is still the body");
+        let block: &PermissionBlock = d.permission.as_ref().expect("a real value, not a no-op");
+        assert_eq!(
+            block.tools,
+            vec![
+                (
+                    ToolKey::Edit,
+                    Rules::per_tool(vec![
+                        Rule {
+                            pattern: "*".to_string(),
+                            action: Action::Deny
+                        },
+                        Rule {
+                            pattern: "*.md".to_string(),
+                            action: Action::Allow
+                        },
+                    ])
+                ),
+                (ToolKey::Bash, Rules::whole_tool(Action::Deny)),
+                (
+                    ToolKey::Read,
+                    Rules::per_tool(vec![
+                        Rule {
+                            pattern: "*".to_string(),
+                            action: Action::Ask
+                        },
+                        Rule {
+                            pattern: "secrets/**".to_string(),
+                            action: Action::Deny
+                        },
+                    ])
+                ),
+            ],
+            "three tools, FILE ORDER, both the inline-map and the nested spelling \
+             read — and the explicit `\"*\"` row stays per-pattern, not tool-wide"
+        );
+        // #124: BOTH pattern maps here (`edit:` inline, `read:` nested) are
+        // per-pattern PATH maps, so each announces its own reason — in FILE
+        // ORDER, `edit` before `read`. The whole-tool `bash: deny` between them
+        // announces nothing. The sentence this assert used to carry stays true:
+        // a `permission:` key is NOT an unknown key, and no `UnknownKey` note
+        // appears anywhere in this vec.
+        assert_eq!(
+            d.frontmatter_notes,
+            vec![
+                FrontmatterNote::UnsupportedUnvalidatedMatcher(UnsupportedReason::PathPatternRules),
+                FrontmatterNote::UnsupportedUnvalidatedMatcher(UnsupportedReason::PathPatternRules),
+            ],
+            "the two path-pattern maps announce themselves unsupported (#124), and \
+             a `permission:` key is still NOT an unknown key: {:?}",
+            d.frontmatter_notes
+        );
+    }
+
+    /// T9 — the "confident no-op" regression, plus first-occurrence-wins for a
+    /// REPEATED `permission:` key (the note is per file, so a repeat adds none).
+    #[test]
+    fn a_permission_block_reads_as_a_real_value_not_a_noop() {
+        let d = discover_one(
+            "twice.md",
+            "---\nname: twice\npermission:\n  edit: deny\npermission:\n  read: deny\n---\nB.\n",
+        );
+        let block = d.permission.expect("the first block is a real value");
+        assert_eq!(
+            block.tools,
+            vec![(ToolKey::Edit, Rules::whole_tool(Action::Deny))],
+            "FIRST occurrence wins — the second block does not merge, append, \
+             or replace: {block:?}"
+        );
+        assert!(
+            d.frontmatter_notes.is_empty(),
+            "a KNOWN key repeating is not an unknown key, and a readable block \
+             announces nothing: {:?}",
+            d.frontmatter_notes
+        );
+    }
+
+    /// T10 — the scope line, in both directions: a bash OBJECT with ≥1 pattern
+    /// row MUST parse (so the follow-up task can still see it) and announces
+    /// itself unsupported; a whole-tool `bash: deny` needs no matcher and so is
+    /// SUPPORTED and carries no note. A naive `*>*` deny would block
+    /// `grep x file 2>/dev/null`, because the command text includes its
+    /// redirect — that is why the object is announced and not enforced.
+    #[test]
+    fn a_permission_announces_unsupported_bash_pattern_rules_but_parses() {
+        let d = discover_one(
+            "bashobj.md",
+            &permission_file("bashobj", "  bash: {\"*\": deny, \"grep *\": allow}\n"),
+        );
+        let block = d
+            .permission
+            .expect("a bash pattern block MUST parse — announce, never drop");
+        assert_eq!(
+            block.tools[0].0,
+            ToolKey::Bash,
+            "and it is still typed as `bash`"
+        );
+        assert!(
+            !block.tools[0].1.whole_tool,
+            "an object is per-pattern, never tool-wide"
+        );
+        assert_eq!(
+            block.tools[0].1.patterns,
+            vec![
+                Rule {
+                    pattern: "*".to_string(),
+                    action: Action::Deny
+                },
+                Rule {
+                    pattern: "grep *".to_string(),
+                    action: Action::Allow
+                },
+            ],
+            "the rows are TYPED and left for the follow-up task's matcher"
+        );
+        assert_eq!(
+            d.frontmatter_notes,
+            vec![FrontmatterNote::UnsupportedUnvalidatedMatcher(
+                UnsupportedReason::BashPatternRules
+            )],
+            "announced as unsupported — never enforced by a matcher nothing validated"
+        );
+
+        // The supported half: whole-tool `bash: deny`.
+        let supported = discover_one(
+            "bashdeny.md",
+            &permission_file("bashdeny", "  bash: deny\n"),
+        );
+        let block = supported.permission.expect("whole-tool bash deny parses");
+        assert!(
+            block.tools[0].1.is_deny(),
+            "and it IS the outright-deny shape: {block:?}"
+        );
+        assert!(
+            supported.frontmatter_notes.is_empty(),
+            "a whole-tool deny needs no pattern matcher, so it is SUPPORTED and \
+             announces nothing: {:?}",
+            supported.frontmatter_notes
+        );
+    }
+
+    /// T11 — #78's principle applied to FILES: a key the reader does not read
+    /// announces itself instead of being a silent no-op. Never an error — the
+    /// file is discovered and its other fields parse as usual.
+    #[test]
+    fn unknown_top_level_keys_are_announced_never_silently_dropped() {
+        let d = discover_one(
+            "opencode.md",
+            "---\nname: opencode\ndescription: An opencode-markdown agent.\nmode: subagent\ntemperature: 0.1\n---\nB.\n",
+        );
+        assert_eq!(d.name, "opencode", "the known keys still parse");
+        assert_eq!(d.description, "An opencode-markdown agent.");
+        assert_eq!(
+            d.frontmatter_notes,
+            vec![
+                FrontmatterNote::UnknownKey("mode".to_string()),
+                FrontmatterNote::UnknownKey("temperature".to_string()),
+            ],
+            "one note per unknown key, IN FILE ORDER"
+        );
+    }
+
+    /// T12 — tolerance: an unreadable `permission:` block never panics and
+    /// never funnels the file into the SKIP path the missing-closing-`---` case
+    /// uses. The definition is still discovered, `permission` is `None`, and the
+    /// file says what it could not read.
+    #[test]
+    fn malformed_permission_never_panics_the_discovery() {
+        // (a) an inline value where a nested map belongs.
+        let inline = discover_one(
+            "inline.md",
+            "---\nname: inline\npermission: deny\n---\nB.\n",
+        );
+        assert_eq!(inline.permission, None, "no readable block");
+        assert_eq!(
+            inline.frontmatter_notes,
+            vec![FrontmatterNote::UnknownKey("permission".to_string())],
+            "announced, not swallowed"
+        );
+
+        // (b) an indent-broken block: the rows are NOT indented, so they are
+        // not the block — and the file is still discovered.
+        let broken = discover_one(
+            "broken.md",
+            "---\nname: broken\npermission:\nedit: deny\n---\nB.\n",
+        );
+        assert_eq!(broken.permission, None);
+        assert_eq!(
+            broken.frontmatter_notes,
+            vec![
+                // The key spoke and yielded nothing readable…
+                FrontmatterNote::UnknownKey("permission".to_string()),
+                // …and the un-indented row is now a TOP-LEVEL key the reader
+                // does not read, so it announces itself too.
+                FrontmatterNote::UnknownKey("edit".to_string()),
+            ],
+            "{:?}",
+            broken.frontmatter_notes
+        );
+
+        // (c) an empty block (EOF right after the key).
+        let empty = discover_one("empty.md", "---\nname: empty\npermission:\n---\nB.\n");
+        assert_eq!(empty.permission, None);
+        assert_eq!(
+            empty.frontmatter_notes,
+            vec![FrontmatterNote::UnknownKey("permission".to_string())]
+        );
+
+        // (d) the contrast that makes (a)–(c) meaningful: a file whose
+        // FRONTMATTER is malformed is skipped (the pre-existing contract), so
+        // "malformed" and "unreadable block" are different outcomes.
+        let root = scratch();
+        write_file(
+            &root.join("nofence.md"),
+            "---\nname: nofence\npermission:\n  edit: deny\n",
+        );
+        assert!(
+            discover_in_roots(&[(root.to_path_buf(), AgentScope::User)]).is_empty(),
+            "a missing closing `---` is still a skip — the block reader did not \
+             change the frontmatter contract"
+        );
+    }
+
+    /// T14 — notes are PER FILE: a noisy file never stains its neighbour's row,
+    /// and the ordering / dedupe pins of the suite still hold with the new
+    /// fields on the struct.
+    #[test]
+    fn a_notes_carrying_definition_is_discovered_without_affecting_adjoining_rows() {
+        let root = scratch();
+        write_file(
+            &root.join("noisy.md"),
+            "---\nname: noisy\nmode: subagent\n---\nB.\n",
+        );
+        write_file(&root.join("clean.md"), "---\nname: clean\n---\nB.\n");
+        let out = discover_in_roots(&[(root.to_path_buf(), AgentScope::User)]);
+        assert_eq!(out.len(), 2, "both rows survive: {out:?}");
+        let names: Vec<&str> = out.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["clean", "noisy"], "still sorted by name");
+        let clean = out.iter().find(|d| d.name == "clean").unwrap();
+        let noisy = out.iter().find(|d| d.name == "noisy").unwrap();
+        assert!(
+            clean.frontmatter_notes.is_empty(),
+            "the clean row is clean: {:?}",
+            clean.frontmatter_notes
+        );
+        assert_eq!(
+            noisy.frontmatter_notes,
+            vec![FrontmatterNote::UnknownKey("mode".to_string())]
+        );
+        assert_eq!(clean.permission, None, "and no phantom block");
+    }
+}

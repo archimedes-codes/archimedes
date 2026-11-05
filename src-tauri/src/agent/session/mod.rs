@@ -837,7 +837,7 @@ impl SessionManager {
     /// exclusive access) so the `Arc<SessionManager>` the `WorkerManager`
     /// callbacks capture can already own the manager. Set BEFORE any
     /// `start_session` / `send_prompt`. The ADR 0025 Task 5 re-plumb ALSO
-    /// forwards it to the `SubagentSessionManager` (`set_worker_manager` —
+    /// forwards it to the `SubagentSessionManager` (`set_dispatcher` —
     /// the `dispatch_native` delegation) and registers the child-cwd
     /// registrar (the `dispatch_subagent` flow's `ensure_session_row` —
     /// the ephemeral `sessions` row's `cwd` — the `StoreFrame` carries no
@@ -847,7 +847,7 @@ impl SessionManager {
     pub fn attach_worker_manager(&self, wm: Arc<WorkerManager>) {
         let _ = self.worker_manager.set(wm.clone());
         if let Some(m) = self.subagent_manager.get() {
-            m.set_worker_manager(wm.clone());
+            m.set_dispatcher(wm.clone());
         }
         let persister = self.persister.clone();
         wm.set_cwd_registrar(Arc::new(move |session_id: &str, cwd: &str| {
@@ -1219,7 +1219,7 @@ impl SessionManagerBuilder {
 
             let _ = sm.worker_manager.set(wm.clone());
             if let Some(m) = sm.subagent_manager.get() {
-                m.set_worker_manager(wm.clone());
+                m.set_dispatcher(wm.clone());
             }
 
             wm_holder = Some(wm);
@@ -1504,6 +1504,41 @@ impl SessionManager {
             // path passes a definition). The per-agent layer governs CHILDREN.
             None,
         );
+        // (Fulcrum T3) THE packaging hop for the FIVE desktop-config fields.
+        // `settings` above is `load_settings(&self.config_dir)`'s output, so
+        // this is the Supervisor reading its own config — the ONE reader left,
+        // which is what lets the Worker read none.
+        //
+        // `agent_overrides` is POST-FOLD by construction (ADR 0066): the
+        // retired `subagentModels` → `agentOverrides` fold runs inside
+        // `load_settings`, and the legacy map is cleared there, so the Worker
+        // can never see the raw `subagent_models` map. ADR 0067's tri-state
+        // rides untouched — an entry's `tools` is `None` when the list is
+        // empty, never `Some(vec![])`.
+        //
+        // This is also the hop that makes the `config-update` push meaningful:
+        // the same five land in the registry's stored env (via `attach`), which
+        // is what `subagent_flow` reads to build each child's five — so a push
+        // that refreshes the parent's copy reaches the NEXT dispatch's child.
+        let env = env.with_desktop_config(crate::agent::worker::protocol::DesktopConfig {
+            file_policy: settings.file_policy.clone(),
+            web: settings.web.clone(),
+            mcp_servers: settings.mcp_servers.clone(),
+            agent_overrides: settings.agent_overrides.clone(),
+            providers: settings.providers.clone(),
+        });
+        // (Fulcrum T2) The resume seed: the stored `sessions.cost_usd` figure
+        // rides the envelope so the Worker's fresh `AgentLoop` CONTINUES the
+        // session's total instead of restarting at zero. Gated on `is_resume`
+        // rather than applied unconditionally: a fresh session's `cost_usd` is
+        // `None` by construction (the match above), and `None` here must stay
+        // "this session has never had a figure" rather than become a seed call
+        // that reads as though there were one (D5 / ADR 0082).
+        let env = if is_resume {
+            env.with_seed_cost(cost_usd)
+        } else {
+            env
+        };
         // SPAWN the Worker (a spawn failure → the command returns an error — the
         // visible session error, NO in-process fallback — ADR 0025).
         wm.attach(&session_id, &env)
@@ -2591,20 +2626,27 @@ impl SessionManager {
     }
 }
 
-/// Resolve a composed model key (`"<provider>/<id>"` — the catalog / config
-/// option key form) to a `Model` (the first `/` split — model ids themselves
-/// contain `/`). `None` when the key is malformed or unknown. `pub(crate)` so
-/// the `dispatch_native` driver resolves a `launch.model` override (the
-/// `:<level>` suffix is stripped by the caller BEFORE calling this — this
-/// function does not split it).
-pub(crate) fn resolve_composed_model(catalog: &ModelCatalog, key: &str) -> Option<Model> {
-    let key = ModelKey::parse(key)?;
-    catalog
-        .models
-        .iter()
-        .find(|m| m.provider == key.provider && m.id == key.id)
-        .cloned()
-}
+// (T5/S4, plan Step E.3 / edge E4) `resolve_composed_model` MOVED to
+// `fulcrum_core::catalog`. It was the one crate→desktop edge that a seam would
+// have been silly for: the body is `ModelKey::parse` plus a `find` over a vec,
+// with zero desktop references in it — so the function moves and the edge
+// disappears rather than being mediated. Its one harness call site is
+// `harness/launch.rs:173` (`resolve_agent_launch`'s soft model rung); the two
+// `harness/model_key.rs` mentions are prose about the first-`/` rule, and the
+// rest are desktop (`session/mod.rs` itself), while
+// `worker/manager/subagent_flow.rs` moved into the crate in T8/S8.3 and imports it
+// as `crate::catalog::resolve_composed_model`.
+//
+// Re-exported at the SAME path so all 8 pre-existing `resolve_composed_model`
+// call sites compile untouched — `session/mod.rs`'s own three plus
+// `resolve_native_model` use the bare name. (Until T8/S8.3, `subagent_flow.rs`
+// was the eighth consumer and imported it from `crate::agent::session`; it is in
+// the crate now and takes the crate path directly, so this re-export serves the
+// desktop's own call sites only.) Note the visibility change the move forces
+// (Step A.3): it was `pub(crate)`, and a package boundary erases that, so the
+// crate declares it `pub`. That widens the CRATE's surface by one pure lookup;
+// the desktop's surface is unchanged, since `session` is a private `mod`.
+pub use fulcrum_core::catalog::resolve_composed_model;
 
 /// The remembered thinking level for a model (ADR 0015): the map entry,
 /// `Some` only when the model's `thinking_levels` is non-empty AND
@@ -3015,13 +3057,14 @@ mod session_tests {
         }
     }
 
-    /// The `fake_worker` fixture path (the `CARGO_MANIFEST_DIR`/
-    /// `target/debug` convention — `cargo test` builds the bin targets).
+    /// The `fake_worker` fixture path (the WORKSPACE ROOT's `target/debug` —
+    /// the cargo root moved to the repo root with the T4 `[workspace]`;
+    /// `cargo test` builds the bin targets).
     fn fixture_path() -> std::path::PathBuf {
-        std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_worker"
-        ))
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the src-tauri package has a parent (the repo root)")
+            .join("target/debug/fake_worker")
     }
 
     /// Build the Worker-mediated manager (the ADR 0025 late-wire — the
@@ -3091,6 +3134,139 @@ mod session_tests {
         };
         manager.attach_worker_manager(wm.clone());
         (manager, wm, db, requests)
+    }
+
+    // ── (Fulcrum T3) The `config-update` push trigger ──────────────────────
+
+    /// THE production trigger: a Settings SAVE pushes `config-update` to every
+    /// live Worker, and the registry's STORED env is refreshed with it.
+    ///
+    /// Why this test and not only the frame's unit tests: `Inbound::ConfigUpdate`
+    /// can exist, decode, and be routed by the Worker, and the whole suite stays
+    /// green while NO PRODUCTION PATH EVER SENDS IT. That is the failure mode the
+    /// status file's T3 escalation named — a push nobody pushes is worse than a
+    /// documented loss, because the green suite says live-reload works. So this
+    /// asserts the trigger itself, against a real attached `fake_worker`.
+    ///
+    /// The second assertion is the half that reaches CHILDREN: a child's five
+    /// packaged fields are read from the PARENT's stored env
+    /// (`DesktopConfig::from_env(&parent_env)`), so an un-mirrored registry entry
+    /// would hand the next subagent the PRE-EDIT policy — ADR 0023's
+    /// next-dispatch property, silently broken.
+    #[tokio::test]
+    async fn save_settings_pushes_config_update_to_a_live_worker() {
+        let dir = temp_config_dir();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+        let (manager, wm, _db, _requests) =
+            build_worker_manager_with_title_provider(&dir, native_test_catalog(), &sink, false);
+
+        // A live session: a row (what `push_config_update` iterates) AND an
+        // attached Worker (what the frame is sent to).
+        let env = StartEnv::from_parts(
+            "push-sess".to_string(),
+            "/tmp".to_string(),
+            crate::agent::worker::protocol::StartMode::Fresh,
+            None,
+            native_test_catalog().models[0].clone(),
+            native_test_catalog(),
+            None,
+            true,
+            None,
+            dir.display().to_string(),
+            false,
+            None,
+            None,
+        );
+        wm.attach("push-sess", &env).await.expect("attach");
+        manager.with_session_entry("push-sess", |row| {
+            row.live = Some(LiveWorkerSession {
+                cwd: std::path::PathBuf::from("/tmp"),
+                close_kind: Arc::new(StdMutex::new(None)),
+                pending_turn: Arc::new(StdMutex::new(None)),
+                cancel_requested: Arc::new(StdMutex::new(false)),
+                pending_modal_ids: StdMutex::new(HashSet::new()),
+            });
+        });
+
+        // The edited settings the user just saved: a policy that ASKS, and an
+        // override layer naming one agent.
+        let settings = crate::config::Settings {
+            file_policy: crate::agent::policy::FilePolicy {
+                reads: crate::agent::policy::AccessPolicy::Ask,
+                writes: crate::agent::policy::AccessPolicy::Sandboxed,
+                shell: crate::agent::policy::AccessPolicy::Ask,
+                rules: Vec::new(),
+            },
+            agent_overrides: HashMap::from([(
+                "scout".to_string(),
+                crate::config::AgentOverrideFields {
+                    model: Some("fake/m1".to_string()),
+                    thinking: None,
+                    // ADR 0067: an empty list is ABSENT, never `Some(vec![])`.
+                    tools: None,
+                },
+            )]),
+            ..crate::config::Settings::default()
+        };
+
+        let delivered = crate::commands::settings::save_settings_and_push(&manager, &settings)
+            .await
+            .expect("the save succeeds");
+        assert_eq!(
+            delivered, 1,
+            "the live session's Worker got the frame (a push that reports zero              deliveries is the silent no-op this test exists to catch)"
+        );
+
+        // The frame really went out: the fixture echoes it as its
+        // `config-update-ack` `SinkFrame`, re-emitted through the router onto
+        // the manager's sink.
+        let ack = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let v = rx.recv().await.expect("the sink stays open");
+                if v["event"] == "config-update-ack" {
+                    return v;
+                }
+            }
+        })
+        .await
+        .expect("the `config-update-ack` arrives — the frame crossed the pipe");
+        assert_eq!(
+            ack["payload"]["filePolicy"]["reads"], "ask",
+            "the PUSHED policy is the one the Worker received (camelCase on              both sides — a casing mismatch drops the field silently): {ack}"
+        );
+        assert_eq!(
+            ack["payload"]["agentOverrides"]["scout"]["model"], "fake/m1",
+            "the override layer rides the same frame"
+        );
+
+        // The registry's STORED env is refreshed — the hop that gives the NEXT
+        // dispatched child the edited values.
+        let stored = wm.test_env_for("push-sess").expect("still attached");
+        assert_eq!(
+            stored.file_policy.reads,
+            crate::agent::policy::AccessPolicy::Ask,
+            "the parent's stored policy is the pushed one"
+        );
+        assert_eq!(
+            stored
+                .agent_overrides
+                .get("scout")
+                .and_then(|e| e.model.as_deref()),
+            Some("fake/m1"),
+            "and so is the override layer children inherit"
+        );
+
+        // The file was written too (the push is an ADDITION to the save, never
+        // a replacement for it).
+        let on_disk = crate::config::load_settings(&dir);
+        assert_eq!(
+            on_disk.file_policy.reads,
+            crate::agent::policy::AccessPolicy::Ask,
+            "`settings.json` still holds what the user saved"
+        );
+
+        wm.reap_all().await;
     }
 
     // ── The naming-provider double (the level-triggered-titling tests) ─────

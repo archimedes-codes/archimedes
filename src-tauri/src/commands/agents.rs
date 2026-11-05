@@ -894,12 +894,19 @@ mod tests {
             let cat = catalog();
 
             // SIDE 1 — the dispatch. `resolve_launch` is what a real `subagent`
-            // call runs (it reads `settings.json` and discovers for itself).
+            // call runs (it discovers the definition for itself and applies the
+            // override layer). (Fulcrum T3) It no longer opens `settings.json`:
+            // the layer arrives packaged, so this side folds the settings
+            // document through `load_settings` first — the SAME call the
+            // Supervisor makes before it builds the `start` envelope, which
+            // keeps the post-fold shape (ADR 0066) honest on this side of the
+            // parity compare rather than hand-synthesising it.
+            let packaged = crate::config::load_settings(&config_dir).agent_overrides;
             let (dispatch, name_resolution) = crate::agent::harness::launch::resolve_launch(
                 &LaunchConfig::default(),
                 "scout",
                 &cat,
-                Some(&config_dir),
+                Some(&packaged),
                 &space,
             );
             // (issue #47) The parity cases are all MATCHED cases — the fixture

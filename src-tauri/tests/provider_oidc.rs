@@ -374,9 +374,17 @@ async fn gateway_headers_never_reach_the_idp() {
 /// like the childproc census: an unreadable file is a failure, not a pass.
 #[test]
 fn oidc_module_has_no_header_injection_point() {
+    // T7/S7.1 MOVED this file: `oidc.rs` is in `crates/fulcrum-core` now, so the
+    // path is the crate's, not `src-tauri`'s — the `mcp/callback.rs` precedent a
+    // few tests below (S3) and `provider_gcloud_adc.rs::CRATE_GCLOUD_RS` (S7.1).
+    // A cross-package read of SOURCE TEXT is fine: an integration target reads
+    // files, not symbols, so no package cycle is involved. The `read_to_string`
+    // EXPECTS, so a wrong root is a loud failure rather than the fail-open shape
+    // this repo keeps recording — the lint still cannot pass on a file it never
+    // opened.
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/agent/provider_auth/oidc.rs"
+        "/../crates/fulcrum-core/src/provider_auth/oidc.rs"
     );
     let source = std::fs::read_to_string(path)
         .expect("oidc.rs is readable (the census is vacuous otherwise)");
@@ -973,17 +981,25 @@ async fn the_oidc_store_variant_round_trips_the_documented_wire_shape() {
 /// missing import is a FAILURE, never a silent pass.
 #[test]
 fn the_constant_time_compare_is_imported_not_copy_pasted() {
+    // T7/S7.1 MOVED `oidc.rs` into `crates/fulcrum-core` (see
+    // `oidc_module_has_no_header_injection_point` above for the full reasoning:
+    // a cross-package read of source text involves no package cycle, and the
+    // `expect` keeps a wrong root loud).
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/agent/provider_auth/oidc.rs"
+        "/../crates/fulcrum-core/src/provider_auth/oidc.rs"
     );
     let source = std::fs::read_to_string(path)
         .expect("oidc.rs is readable (this lint is vacuous otherwise)");
     assert!(
-        source.contains("use crate::agent::mcp::callback::constant_time_eq"),
+        source.contains("use crate::mcp::callback::constant_time_eq"),
         "oidc.rs must IMPORT T5's constant_time_eq (ruling R4) — the import line is \
          missing, which means it is either defining its own or not comparing in \
-         constant time at all"
+         constant time at all. (The needle reads `crate::mcp::` and not \
+         `crate::agent::mcp::` because T7/S7.1 moved oidc.rs INTO the crate, so \
+         the path lost its `agent::` segment — the same rewrite the compiler \
+         forced at the import site. The ONE-definition claim this lint pins is \
+         unchanged by it.)"
     );
     // A DEFINITION (not an import) is the copy-paste this lint exists to catch.
     // COMMENT LINES ARE STRIPPED FIRST: the module doc NAMES T5's symbol (that is
@@ -1003,31 +1019,81 @@ fn the_constant_time_compare_is_imported_not_copy_pasted() {
     }
     // The callback file still OWNS the single definition (a move would silently
     // break the import and this lint's premise).
+    //
+    // T5/S3 MOVED that file: `mcp` is in `crates/fulcrum-core` now, so the path
+    // is the crate's, not `src-tauri`'s. Two things this lint must keep doing
+    // despite the move, and the reason it still can:
+    //   * it still READS the one definition (a cross-package read of source text
+    //     is fine — the desktop integration target reads files, not symbols, so
+    //     no package cycle is involved);
+    //   * it still FAILS LOUDLY if the file is unreadable, which is the vacuity
+    //     rule this suite applies to every census-style lint.
+    // The needle below changed from `pub(crate) fn` to `pub fn` for ONE reason:
+    // a package boundary erases `pub(crate)`, and `provider_auth/oidc.rs` (which
+    // STAYED desktop per the S3 RULING) imports this, so the narrower visibility
+    // would be an E0603 for it. That is visibility, not ownership — the "ONE
+    // definition, imported, never duplicated" claim below is unchanged and the
+    // `provider_auth` tree scan is untouched.
     let callback = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/agent/mcp/callback.rs"
+        "/../crates/fulcrum-core/src/mcp/callback.rs"
     ))
-    .expect("mcp/callback.rs is readable");
+    .expect("crates/fulcrum-core/src/mcp/callback.rs is readable");
     assert!(
-        callback.contains("pub(crate) fn constant_time_eq"),
-        "the ONE definition must stay in mcp/callback.rs (T5's file, read-only for T6)"
+        callback.contains("pub fn constant_time_eq"),
+        "the ONE definition must stay in mcp/callback.rs (T5's file, now in \
+         fulcrum-core; `pub` because a package boundary erases `pub(crate)` and \
+         the desktop's oidc.rs imports it)"
     );
     // And no OTHER file in the provider_auth tree grew a second one (the same
     // comment-stripping rule: a doc comment that NAMES the primitive is
     // documentation, not a second implementation).
-    let tree = concat!(env!("CARGO_MANIFEST_DIR"), "/src/agent/provider_auth");
+    //
+    // T7/S7.1 made "the provider_auth tree" TWO directories: six files moved to
+    // `crates/fulcrum-core/src/provider_auth/` and three stayed
+    // (`mod.rs`, `refresh.rs`, `budget.rs`); S7.2 moved the seventh (`budget.rs`),
+    // so the split is now 7 + 2. Scanning only the desktop dir would
+    // be the FAIL-OPEN shape this roadmap has been bitten by twice — the lint
+    // would still pass, and greenly, having opened a minority of the 9 files. So
+    // BOTH trees are scanned, and the vacuity guard below is what makes that a
+    // checked claim: the count of files actually read must cover the whole split,
+    // so a wrong path or a directory that stops existing cannot pass silently.
+    let desktop_tree = concat!(env!("CARGO_MANIFEST_DIR"), "/src/agent/provider_auth");
+    let crate_tree = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/fulcrum-core/src/provider_auth"
+    );
     let mut offenders = Vec::new();
-    for entry in std::fs::read_dir(tree).expect("the provider_auth dir is readable") {
-        let entry = entry.expect("an entry");
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).expect("a readable source file");
-        if code_only(&text).contains("fn constant_time_eq") {
-            offenders.push(path.display().to_string());
+    let mut scanned = 0usize;
+    for tree in [desktop_tree, crate_tree] {
+        for entry in std::fs::read_dir(tree)
+            .unwrap_or_else(|e| panic!("the provider_auth dir {tree:?} is readable: {e}"))
+        {
+            let entry = entry.expect("an entry");
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            scanned += 1;
+            let text = std::fs::read_to_string(&path).expect("a readable source file");
+            if code_only(&text).contains("fn constant_time_eq") {
+                offenders.push(path.display().to_string());
+            }
         }
     }
+    // 10 files across the two trees at this commit (8 crate-side: the 7 moved
+    // files + the crate's own `mod.rs`; 2 desktop: `mod.rs` + `refresh.rs`). The
+    // S7.2 move changed the SPLIT (7 + 2, was 6 + 3) but not the SUM, so this
+    // floor keeps holding unchanged. And the floor is a DISCRIMINATOR, not a
+    // headroom check: 2 (the desktop dir alone) proves the crate half was never
+    // opened, which is exactly the failure this guard exists to catch — so do not
+    // raise it toward 10.
+    assert!(
+        scanned > 6,
+        "the provider_auth duplicate-compare scan read only {scanned} files — it must \
+         cover BOTH sides of the T7 split (10 at this commit), so a scan that reads \
+         only the desktop dir is VACUOUS over the seven moved files"
+    );
     assert!(
         offenders.is_empty(),
         "a second constant_time_eq definition appeared in provider_auth: {offenders:?}"

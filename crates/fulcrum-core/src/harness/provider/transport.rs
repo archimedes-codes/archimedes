@@ -1,0 +1,796 @@
+//! Shared model-call transport: the `reqwest` client, the
+//! HTTP-status→[`ProviderError`] map, the LiteLLM session/request headers,
+//! and the Anthropic API version.
+//!
+//! These were TRIPlicated verbatim across the three `complete()` impls
+//! (OpenAI-completions / Anthropic / OpenAI-Responses) — they are
+//! wire-agnostic (ADR 0024) and live here once now.
+
+use std::str::FromStr;
+use std::time::Duration;
+
+use super::overflow::is_context_overflow_text;
+use super::types::ProviderError;
+
+/// The `User-Agent` the model calls identify with (`archimedes/<version>`
+/// — the harness is the desktop's own model client; `reqwest` sends NO
+/// `User-Agent` by default, so without this the traffic is unattributable
+/// in the provider's logs).
+pub const USER_AGENT: &str = concat!("archimedes/", env!("CARGO_PKG_VERSION"));
+
+/// The `anthropic-version` header value, REQUIRED on every Anthropic
+/// endpoint (used by the `AnthropicProvider` request and the Anthropic
+/// discovery call in `catalog.rs`).
+pub const ANTHROPIC_API_VERSION: &str = "2023-06-01";
+
+/// Build the `reqwest` client for a model call (finding 4 — the IDLE-based
+/// bounds: a generous `connect_timeout` + a `read_timeout` (the time BETWEEN
+/// BYTES on the body — a stalled provider errors `Retryable`, a healthy slow
+/// stream that dribbles bytes keeps flowing). Extracted so the tests can
+/// inject a short `read_timeout` (the production 5 min is too slow to test).
+///
+/// The client also identifies itself: a `User-Agent` header ([`USER_AGENT`])
+/// so the provider's logs can attribute the traffic to the app.
+///
+/// `custom_headers` (issue #129, R1) is the provider's EXPANDED + VALIDATED
+/// custom-header map (resolved at provider construction from `settings.json`
+/// by `provider::provider_headers_for` and stored on the provider struct);
+/// applied as `default_headers` so every request the client makes — the
+/// streaming `complete()` and any retry — carries them. This is the SINGLE
+/// header-application point for the COMPLETION path (the discovery seam is
+/// [`apply_custom_headers`]). `None` = current behaviour (no custom headers;
+/// the existing call sites stay byte-identical).
+pub(crate) fn build_client(
+    connect_timeout: Duration,
+    read_timeout: Duration,
+    custom_headers: Option<&std::collections::BTreeMap<String, String>>,
+) -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::USER_AGENT,
+        reqwest::header::HeaderValue::from_static(USER_AGENT),
+    );
+    if let Some(map) = custom_headers {
+        for (name, value) in map {
+            // Validated upstream (`headers::expand_map`) — a header NAME must
+            // be a valid token and a VALUE visible-ASCII, so
+            // `HeaderValue::from_str` cannot panic; the map is a `BTreeMap`,
+            // so the iteration order is stable for a golden-header test.
+            headers.append(
+                reqwest::header::HeaderName::from_str(name).expect("validated header name"),
+                reqwest::header::HeaderValue::from_str(value).expect("validated header value"),
+            );
+        }
+    }
+    reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .read_timeout(read_timeout)
+        .default_headers(headers)
+        .build()
+        .expect("the reqwest client builds (fixed connect + read timeouts)")
+}
+
+/// Apply a provider's CUSTOM headers to a request builder (issue #129).
+/// `headers` is the EXPANDED + VALIDATED map (`provider_auth::headers::expand_map`
+/// — names are header tokens, values visible-ASCII; the validation there is what
+/// makes this call panic-free: `reqwest::RequestBuilder::header` PANICS on an
+/// invalid value). This is the SINGLE header-application point for the DISCOVERY
+/// path: the three discovery arms (`catalog.rs`) call it. It never re-adds
+/// session / request tracking headers (that stays [`litellm_headers`]'s job —
+/// interface §9), and it never touches [`build_client`] (whose per-call
+/// `default_headers` is the COMPLETION-wire seam — T2b's byte).
+pub(crate) fn apply_custom_headers(
+    builder: reqwest::RequestBuilder,
+    headers: Option<&std::collections::BTreeMap<String, String>>,
+) -> reqwest::RequestBuilder {
+    if let Some(map) = headers {
+        let mut b = builder;
+        for (name, value) in map {
+            b = b.header(name.as_str(), value.as_str());
+        }
+        b
+    } else {
+        builder
+    }
+}
+
+/// Map an HTTP status to a [`ProviderError`] (the two-tier message contract
+/// of the pre-dedup `complete()`s): 401/403 → `Auth`, 429/5xx → `Retryable`,
+/// a 4xx whose BODY is a context-length rejection → `ContextOverflow` (ADR
+/// 0045 — the status is an ordinary client error, so only the prose tells the
+/// two apart), other 4xx → `Fatal` — all three embed the error body
+/// (`status {status}: {body}`); any OTHER non-success status (1xx / 3xx —
+/// e.g. a 3xx with no `Location` header, which `reqwest` surfaces instead of
+/// following) → the TERMINAL `Fatal(format!("status {status}"))`, with NO
+/// body suffix. `None` for 2xx (a success — no error).
+///
+/// The overflow arm is placed AFTER the status tiers on purpose: a 401 or a
+/// 429 that happens to carry overflow wording keeps the tier its status
+/// already decided, so a credential failure is never mistaken for a prompt
+/// that needs shrinking and a throttle never spends a compaction.
+///
+/// `body` is `Some` only when the caller READ the body — which happens only
+/// for a 4xx/5xx (see [`map_response`]); pass `None` for a status whose body
+/// was deliberately not read (the terminal arm ignores it either way).
+pub(crate) fn map_status(status: reqwest::StatusCode, body: Option<&str>) -> Option<ProviderError> {
+    if status.is_success() {
+        return None;
+    }
+    let body = body.unwrap_or_default();
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        Some(ProviderError::Auth(format!("status {status}: {body}")))
+    } else if status.as_u16() == 429 || status.is_server_error() {
+        Some(ProviderError::Retryable(format!("status {status}: {body}")))
+    } else if is_context_overflow_text(body) {
+        Some(ProviderError::ContextOverflow(format!(
+            "status {status}: {body}"
+        )))
+    } else if status.is_client_error() {
+        Some(ProviderError::Fatal(format!("status {status}: {body}")))
+    } else {
+        // Terminal (1xx / 3xx): no body read, no `: {body}` suffix.
+        Some(ProviderError::Fatal(format!("status {status}")))
+    }
+}
+
+/// Gate a response on its HTTP status BEFORE the SSE body is consumed: a
+/// success passes the [`reqwest::Response`] through untouched; otherwise the
+/// error payload is read ONLY for a 4xx / 5xx (a 1xx / 3xx body is NOT read)
+/// and mapped by [`map_status`] (byte-identical to the pre-dedup
+/// `complete()`s' status guards).
+pub(crate) async fn map_response(
+    resp: reqwest::Response,
+) -> Result<reqwest::Response, ProviderError> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let body = if status.is_client_error() || status.is_server_error() {
+        Some(resp.text().await.unwrap_or_default())
+    } else {
+        None
+    };
+    Err(map_status(status, body.as_deref()).expect("a non-success status maps to an error"))
+}
+
+// (Step A.3) RAISED from `pub(crate)`: the STAYING desktop
+// `session/naming.rs` imports it, and a package boundary erases `pub(crate)`.
+pub const TITLE_SESSION_SUFFIX: &str = "-title";
+
+/// The LiteLLM session / request tracking headers (added when the request
+/// carries a session id): `x-litellm-session-id` + `x-request-id`, both set
+/// to the session id (or a unique request id if titling).
+pub(crate) fn litellm_headers(session_id: Option<&str>) -> Vec<(String, String)> {
+    match session_id {
+        Some(sid) => {
+            let request_id = if sid.ends_with(TITLE_SESSION_SUFFIX) {
+                format!("{sid}-{}", uuid::Uuid::new_v4())
+            } else {
+                sid.to_string()
+            };
+            vec![
+                ("x-litellm-session-id".to_string(), sid.to_string()),
+                ("x-request-id".to_string(), request_id),
+            ]
+        }
+        None => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::types::{ModelOptions, ModelRequest, Provider};
+    use super::*;
+    use reqwest::StatusCode;
+
+    /// The HTTP-status→`ProviderError` map (the wire-visible behavior):
+    /// 401/403 → `Auth`, 429/5xx → `Retryable`, other 4xx → `Fatal`,
+    /// 2xx → no error.
+    #[test]
+    fn map_status_classifies_the_retry_contract() {
+        for s in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
+            assert!(
+                matches!(map_status(s, Some("boom")), Some(ProviderError::Auth(_))),
+                "{s} should be Auth"
+            );
+        }
+        for s in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            assert!(
+                matches!(
+                    map_status(s, Some("boom")),
+                    Some(ProviderError::Retryable(_))
+                ),
+                "{s} should be Retryable"
+            );
+        }
+        for s in [StatusCode::BAD_REQUEST, StatusCode::NOT_FOUND] {
+            assert!(
+                matches!(map_status(s, Some("boom")), Some(ProviderError::Fatal(_))),
+                "{s} should be Fatal"
+            );
+        }
+        assert!(map_status(StatusCode::OK, Some("")).is_none());
+        assert!(map_status(StatusCode::CREATED, Some("")).is_none());
+    }
+
+    /// (ADR 0045) A context-length rejection is its OWN tier, decided by the
+    /// BODY — the status is an ordinary client error (a 400, or Anthropic's
+    /// 413), so nothing but the prose separates "your prompt is too long"
+    /// from a bad model name. The arm sits AFTER 401/403 (`Auth`) and
+    /// 429/5xx (`Retryable`), so an auth failure or a throttle that happens
+    /// to carry overflow wording keeps the tier its status already decided:
+    /// the retry ladder and the credential prompt must not be diverted into
+    /// a compaction.
+    #[test]
+    fn map_status_classifies_a_context_overflow_from_the_body() {
+        for (s, body) in [
+            // Anthropic: the token-count rejection.
+            (
+                StatusCode::BAD_REQUEST,
+                "prompt is too long: 213462 tokens > 200000 maximum",
+            ),
+            // Anthropic: the byte-size rejection (413).
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                r#"{"error":{"type":"request_too_large","message":"Request exceeds the maximum size"}}"#,
+            ),
+            // OpenAI.
+            (
+                StatusCode::BAD_REQUEST,
+                "Your input exceeds the context window of this model",
+            ),
+        ] {
+            let err = map_status(s, Some(body)).expect("a 4xx maps to an error");
+            assert!(
+                matches!(err, ProviderError::ContextOverflow(_)),
+                "{s} with an overflow body should be ContextOverflow, got {err:?}"
+            );
+            // The body rides along in the message (the two-tier message
+            // contract: `status {status}: {body}`).
+            assert_eq!(
+                err,
+                ProviderError::ContextOverflow(format!("status {s}: {body}"))
+            );
+        }
+
+        // A 4xx that is NOT about length stays `Fatal` (a bad model name,
+        // a malformed body — none of which a compaction can fix).
+        assert!(
+            matches!(
+                map_status(
+                    StatusCode::BAD_REQUEST,
+                    Some("The model `gpt-99` does not exist")
+                ),
+                Some(ProviderError::Fatal(_))
+            ),
+            "a non-overflow 4xx is still Fatal"
+        );
+
+        // The status tiers WIN: the overflow arm is reached only after them,
+        // so overflow wording in an auth / throttle body cannot hijack the
+        // turn into a compaction.
+        for s in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
+            assert!(
+                matches!(
+                    map_status(s, Some("prompt is too long: 1 > 0 maximum")),
+                    Some(ProviderError::Auth(_))
+                ),
+                "{s} stays Auth whatever the body says"
+            );
+        }
+        for s in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            assert!(
+                matches!(
+                    map_status(s, Some("prompt is too long: 1 > 0 maximum")),
+                    Some(ProviderError::Retryable(_))
+                ),
+                "{s} stays Retryable whatever the body says — the ladder owns it"
+            );
+        }
+    }
+
+    /// The TERMINAL arm (1xx / 3xx — a status that is neither a client nor a
+    /// server error): `Fatal` with the message EXACTLY `status {status}` —
+    /// NO `: {body}` suffix, even when a body is supplied (byte-identical to
+    /// the pre-dedup `complete()`s, whose final `if !status.is_success()`
+    /// guard never read the body). The message is `status {status}` with
+    /// `reqwest`'s own `StatusCode` rendering (`301 Moved Permanently`).
+    #[test]
+    fn map_status_terminal_arm_has_no_body_suffix() {
+        let s = StatusCode::MOVED_PERMANENTLY;
+        let expected = format!("status {s}");
+        let without = map_status(s, None).expect("a non-success status maps to an error");
+        assert_eq!(without, ProviderError::Fatal(expected.clone()));
+        // A supplied body is IGNORED on the terminal arm.
+        let with = map_status(s, Some("nope")).expect("a non-success status maps to an error");
+        assert_eq!(with, ProviderError::Fatal(expected));
+    }
+
+    // ── the idle-based `read_timeout` (finding 4) ────────────────────
+
+    /// A raw HTTP server: reads the request, writes the `200` headers, then
+    /// either DRIBBLES a body byte every 50 ms (a healthy slow stream) or
+    /// stays SILENT (a stalled one). The `read_timeout` applies to the time
+    /// BETWEEN BYTES on the body, so a dribble under the timeout completes
+    /// and a silence over it errors.
+    async fn raw_http_server(
+        listener: tokio::net::TcpListener,
+        dribble: bool,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let mut data = Vec::new();
+            // Read the request until the headers end (`\r\n\r\n`).
+            while !data.windows(4).any(|w| w == b"\r\n\r\n") {
+                let Ok(n) = stream.read(&mut buf).await else {
+                    return;
+                };
+                if n == 0 {
+                    return;
+                }
+                data.extend_from_slice(&buf[..n]);
+            }
+            if stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
+                .await
+                .is_err()
+            {
+                return;
+            }
+            if dribble {
+                // Dribble a body byte every 50 ms for 2 s (a healthy slow
+                // stream — each byte is well under the 200 ms `read_timeout`).
+                for _ in 0..40 {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    if stream.write_all(b"x").await.is_err() {
+                        return;
+                    }
+                }
+            } else {
+                // Silent: HOLD the connection open (no body bytes — the
+                // `read_timeout` fires before this sleep ends; the test
+                // aborts the task so it does not wait the full duration).
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }
+            // Close (the stream is dropped when the function returns).
+        })
+    }
+
+    /// (finding 4) A stream that DRIBBLES a byte every 50 ms (under the
+    /// `read_timeout`) COMPLETES (a healthy slow stream is not cut — the
+    /// pre-fix `.timeout()` was a TOTAL request bound that killed it), while
+    /// a fully SILENT stream ERRORS (a stalled provider — the `read_timeout`
+    /// fires). A short `read_timeout` (200 ms) is injected via `build_client`
+    /// (the production 5 min is too slow to test).
+    #[tokio::test]
+    async fn a_slow_stream_completes_but_a_silent_stream_errors() {
+        // Consume a `bytes_stream`, returning `(bytes, error)`: `error` is
+        // `Some` if a chunk failed (the `read_timeout`), `None` if the stream
+        // completed (EOF).
+        async fn drain(resp: reqwest::Response) -> (Vec<u8>, Option<reqwest::Error>) {
+            use futures_util::StreamExt;
+            let mut stream = resp.bytes_stream();
+            let mut body = Vec::new();
+            let mut error: Option<reqwest::Error> = None;
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(b) => body.extend_from_slice(&b),
+                    Err(e) => {
+                        error = Some(e);
+                        break;
+                    }
+                }
+            }
+            (body, error)
+        }
+
+        // (1) Dribbling: a body byte every 50 ms for 2 s (under the 200 ms
+        //     `read_timeout`). The stream COMPLETES (40 bytes — not cut).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the listener binds");
+        let addr = listener.local_addr().expect("the listener has an address");
+        let server = raw_http_server(listener, true).await;
+        let client = build_client(Duration::from_secs(30), Duration::from_millis(200), None);
+        let resp = client
+            .post(format!("http://{addr}/chat/completions"))
+            .send()
+            .await
+            .expect("the request sends");
+        let (body, error) = drain(resp).await;
+        assert!(
+            error.is_none(),
+            "the slow (dribbling) stream completes — it is NOT cut, got {error:?}"
+        );
+        assert_eq!(body.len(), 40, "all 40 dribbled bytes were received");
+        let _ = server.await;
+
+        // (2) Silent: no body bytes (over the 200 ms `read_timeout`). The
+        //     stream ERRORS (a stalled provider — the `read_timeout` fires).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the listener binds");
+        let addr = listener.local_addr().expect("the listener has an address");
+        let server = raw_http_server(listener, false).await;
+        let client = build_client(Duration::from_secs(30), Duration::from_millis(200), None);
+        let resp = client
+            .post(format!("http://{addr}/chat/completions"))
+            .send()
+            .await
+            .expect("the request sends");
+        let (_body, error) = drain(resp).await;
+        assert!(
+            error.is_some(),
+            "the silent stream errors — the `read_timeout` fired"
+        );
+        server.abort(); // the server holds the connection open (the sleep)
+    }
+
+    /// End-to-end: a TERMINAL status (a `301` with NO `Location` header —
+    /// reqwest surfaces it instead of erroring) surfaces from a real provider
+    /// `complete()` as `Fatal` with the message EXACTLY `status {status}` —
+    /// the body is NOT read and NOT appended (byte-identical to main).
+    #[tokio::test]
+    async fn a_terminal_status_errors_without_a_body_suffix() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the listener binds");
+        let addr = listener.local_addr().expect("the listener has an address");
+        let server = tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let mut data = Vec::new();
+            while !data.windows(4).any(|w| w == b"\r\n\r\n") {
+                let Ok(n) = stream.read(&mut buf).await else {
+                    return;
+                };
+                if n == 0 {
+                    return;
+                }
+                data.extend_from_slice(&buf[..n]);
+            }
+            // A 3xx with no `Location` header + a body (the terminal arm).
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 301 Nope\r\ncontent-type: text/plain\r\nConnection: close\r\n\r\nnope",
+                )
+                .await;
+        });
+        let provider = super::super::openai::OpenAiCompatibleProvider::new(
+            format!("http://{addr}/v1"),
+            "k".to_string(),
+        );
+        let req = ModelRequest {
+            model: "m/1".to_string(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            options: ModelOptions {
+                temperature: None,
+                max_tokens: Some(64),
+                reasoning_effort: None,
+                stream: true,
+            },
+            session_id: None,
+        };
+        let err = match provider.complete(&req).await {
+            Ok(_) => panic!("a 301 with no Location is an error"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            err,
+            ProviderError::Fatal(format!("status {}", StatusCode::MOVED_PERMANENTLY))
+        );
+        assert!(
+            !err.to_string().contains("nope"),
+            "the terminal arm never reads/embeds the body: {err}"
+        );
+        let _ = server.await;
+    }
+
+    /// The client identifies itself: the request carries a `User-Agent`
+    /// header (`archimedes/<version>`) so the provider's logs can
+    /// attribute the traffic to the app (the harness is the desktop's own
+    /// OpenAI-compatible client — `reqwest` sends NO `User-Agent` by
+    /// default, so without this the traffic is unattributable).
+    #[tokio::test]
+    async fn the_request_sends_a_user_agent_header() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // A raw server that CAPTURES the request headers (the `reqwest`
+        // response is complete — `data: [DONE]` — so the client closes
+        // the connection; the captured bytes go to the test via the
+        // channel).
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the listener binds");
+        let addr = listener.local_addr().expect("the listener has an address");
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let mut data = Vec::new();
+            while !data.windows(4).any(|w| w == b"\r\n\r\n") {
+                let Ok(n) = stream.read(&mut buf).await else {
+                    return;
+                };
+                if n == 0 {
+                    return;
+                }
+                data.extend_from_slice(&buf[..n]);
+            }
+            let _ = tx.send(data).await;
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: [DONE]\r\n\r\n",
+                )
+                .await;
+            // Hold the socket open until the test is done (the response
+            // body is complete — the client closes the connection).
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let client = build_client(Duration::from_secs(30), Duration::from_millis(200), None);
+        let _resp = client
+            .post(format!("http://{addr}/chat/completions"))
+            .send()
+            .await
+            .expect("the request sends");
+        let raw = rx.recv().await.expect("the server captured the request");
+        let request = String::from_utf8(raw).expect("the request is valid UTF-8");
+        let header = request
+            .lines()
+            .find(|l| l.to_lowercase().starts_with("user-agent:"))
+            .expect("the request carries a User-Agent header")
+            .to_lowercase();
+        assert_eq!(
+            header,
+            format!("user-agent: archimedes/{}", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    /// (issue #129, R1) The COMPLETION seam: `build_client` with
+    /// `Some(&map)` puts every entry of the expanded map on the wire as
+    /// `default_headers` (stable `BTreeMap` order, appended after the
+    /// `User-Agent`), and `None` sends exactly what the client sent before —
+    /// the `User-Agent` and nothing custom (byte-identical). Same capture-
+    /// server shape as the `the_request_sends_a_user_agent_header` test.
+    #[tokio::test]
+    async fn build_client_applies_custom_headers_as_default_headers() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // One server instance, two connections (the Some-map request, then
+        // the None request) — each captures its request head to the channel.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the listener binds");
+        let addr = listener.local_addr().expect("the listener has an address");
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let mut data = Vec::new();
+                    while !data.windows(4).any(|w| w == b"\r\n\r\n") {
+                        let Ok(n) = stream.read(&mut buf).await else {
+                            return;
+                        };
+                        if n == 0 {
+                            return;
+                        }
+                        data.extend_from_slice(&buf[..n]);
+                    }
+                    let _ = tx.send(data).await;
+                    let _ = stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: [DONE]\r\n\r\n",
+                        )
+                        .await;
+                });
+            }
+        });
+
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("x-env-test".to_string(), "expanded-value".to_string());
+        map.insert("x-second".to_string(), "two".to_string());
+
+        // (1) Some(&map): both entries ride every request the client makes.
+        let client = build_client(
+            Duration::from_secs(30),
+            Duration::from_millis(200),
+            Some(&map),
+        );
+        let _resp = client
+            .post(format!("http://{addr}/chat/completions"))
+            .send()
+            .await
+            .expect("the request sends");
+        let raw = rx.recv().await.expect("the server captured the request");
+        let request = String::from_utf8(raw).expect("the request is valid UTF-8");
+        for (name, value) in &map {
+            let line = request
+                .lines()
+                .find(|l| l.to_lowercase().starts_with(&format!("{name}:")))
+                .unwrap_or_else(|| panic!("the request carries `{name}`:\n{request}"));
+            assert_eq!(
+                line[name.len() + 1..].trim(),
+                value.as_str(),
+                "the custom header `{name}` rides the completion request: {line}"
+            );
+        }
+        // The User-Agent survives alongside the custom headers.
+        assert!(request.to_lowercase().contains("user-agent: archimedes/"));
+
+        // (2) None: byte-identical to today — the User-Agent, nothing custom.
+        let client = build_client(Duration::from_secs(30), Duration::from_millis(200), None);
+        let _resp = client
+            .post(format!("http://{addr}/chat/completions"))
+            .send()
+            .await
+            .expect("the request sends");
+        let raw = rx.recv().await.expect("the server captured the request");
+        let request = String::from_utf8(raw).expect("the request is valid UTF-8");
+        assert!(
+            !request.to_lowercase().contains("x-env-test")
+                && !request.to_lowercase().contains("x-second"),
+            "None must attach nothing custom:\n{request}"
+        );
+        assert!(request.to_lowercase().contains("user-agent: archimedes/"));
+    }
+
+    /// (issue #129) The DISCOVERY seam: `apply_custom_headers` attaches every
+    /// entry of the expanded map to the builder, and `None` leaves the builder
+    /// untouched (no header, no panic). Same capture-server shape as the
+    /// `the_request_sends_a_user_agent_header` test above.
+    #[tokio::test]
+    async fn apply_custom_headers_puts_each_entry_on_the_wire() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the listener binds");
+        let addr = listener.local_addr().expect("the listener has an address");
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let mut data = Vec::new();
+            while !data.windows(4).any(|w| w == b"\r\n\r\n") {
+                let Ok(n) = stream.read(&mut buf).await else {
+                    return;
+                };
+                if n == 0 {
+                    return;
+                }
+                data.extend_from_slice(&buf[..n]);
+            }
+            let _ = tx.send(data).await;
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}")
+                .await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("x-env-test".to_string(), "expanded-value".to_string());
+        map.insert("x-second".to_string(), "two".to_string());
+
+        let client = reqwest::Client::new();
+        let builder =
+            apply_custom_headers(client.get(format!("http://{addr}/v1/models")), Some(&map));
+        let _resp = builder.send().await.expect("the request sends");
+        let raw = rx.recv().await.expect("the server captured the request");
+        let request = String::from_utf8(raw).expect("the request is valid UTF-8");
+        for (name, value) in &map {
+            let line = request
+                .lines()
+                .find(|l| l.to_lowercase().starts_with(&format!("{name}:")))
+                .unwrap_or_else(|| panic!("the request carries `{name}`:\n{request}"));
+            assert_eq!(line[name.len() + 1..].trim(), value.as_str(), "{line}");
+        }
+    }
+
+    /// (issue #129) The `None` half of the seam: a provider with no custom
+    /// headers sends exactly what it sent before — the pass-through builder.
+    #[tokio::test]
+    async fn apply_custom_headers_with_none_sends_nothing_extra() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the listener binds");
+        let addr = listener.local_addr().expect("the listener has an address");
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let mut data = Vec::new();
+            while !data.windows(4).any(|w| w == b"\r\n\r\n") {
+                let Ok(n) = stream.read(&mut buf).await else {
+                    return;
+                };
+                if n == 0 {
+                    return;
+                }
+                data.extend_from_slice(&buf[..n]);
+            }
+            let _ = tx.send(data).await;
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}")
+                .await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+        let client = reqwest::Client::new();
+        let builder = apply_custom_headers(client.get(format!("http://{addr}/v1/models")), None);
+        let _resp = builder.send().await.expect("the request sends");
+        let raw = rx.recv().await.expect("the server captured the request");
+        let request = String::from_utf8(raw).expect("the request is valid UTF-8");
+        assert!(
+            !request.to_lowercase().contains("x-env-test"),
+            "None must attach nothing:\n{request}"
+        );
+    }
+
+    #[test]
+    fn litellm_headers_sets_unique_uuid_request_id_for_title_suffix() {
+        let headers = litellm_headers(Some("sess-1-title"));
+        let session_id = headers
+            .iter()
+            .find(|(k, _)| k == "x-litellm-session-id")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(session_id, Some("sess-1-title"));
+
+        let request_id = headers
+            .iter()
+            .find(|(k, _)| k == "x-request-id")
+            .map(|(_, v)| v.as_str())
+            .expect("x-request-id should be present");
+
+        assert!(request_id.starts_with("sess-1-title-"));
+        let uuid_part = request_id.strip_prefix("sess-1-title-").unwrap();
+        assert!(uuid::Uuid::parse_str(uuid_part).is_ok());
+
+        // Unique on each call
+        let headers2 = litellm_headers(Some("sess-1-title"));
+        let request_id2 = headers2
+            .iter()
+            .find(|(k, _)| k == "x-request-id")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert_ne!(request_id, request_id2);
+    }
+
+    #[test]
+    fn litellm_headers_sets_identical_request_id_for_normal_session() {
+        let headers = litellm_headers(Some("sess-1"));
+        let session_id = headers
+            .iter()
+            .find(|(k, _)| k == "x-litellm-session-id")
+            .map(|(_, v)| v.as_str());
+        let request_id = headers
+            .iter()
+            .find(|(k, _)| k == "x-request-id")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(session_id, Some("sess-1"));
+        assert_eq!(request_id, Some("sess-1"));
+    }
+}

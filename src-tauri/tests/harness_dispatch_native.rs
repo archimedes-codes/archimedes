@@ -22,17 +22,15 @@ use archimedes_lib::agent::EventSink;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 
-/// The `fake_worker` fixture factory (the `WorkerFactory` seam — the
-/// `CARGO_MANIFEST_DIR`/`target/debug` convention; `cargo test` builds
-/// the bin targets).
+/// The `fake_worker` fixture factory (the `WorkerFactory` seam —
+/// `CARGO_BIN_EXE_fake_worker`, the compile-time path cargo hands an INTEGRATION
+/// target for a built bin; under the T4 root `[workspace]` it resolves inside the
+/// repo-root `target/`. Same idiom as `tests/worker_stderr.rs`).
 struct FakeWorkerFactory;
 
 impl WorkerFactory for FakeWorkerFactory {
     fn spawn(&self) -> Result<WorkerHandle, WorkerError> {
-        WorkerHandle::spawn(&PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/debug/fake_worker"
-        )))
+        WorkerHandle::spawn(&PathBuf::from(env!("CARGO_BIN_EXE_fake_worker")))
     }
 }
 
@@ -113,7 +111,7 @@ async fn make_manager(
         .await
         .expect("the parent attach completes");
     let manager = Arc::new(SubagentSessionManager::new());
-    manager.set_worker_manager(wm);
+    manager.set_dispatcher(wm);
     manager
 }
 
@@ -328,7 +326,7 @@ async fn dispatch_native_cancel_cancels_the_dispatch() {
 }
 
 /// (5) **not configured**: a manager that never got a `WorkerManager`
-/// (`set_worker_manager` never called — a `SessionManager` that never
+/// (`set_dispatcher` never called — a `SessionManager` that never
 /// `attach_worker_manager`ed) → an ALREADY-RESOLVED `Failed` (the
 /// dispatch is unavailable — NOT a hang).
 #[test]

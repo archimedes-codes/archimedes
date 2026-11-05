@@ -833,8 +833,14 @@ mod tests {
     }
 
     /// A poller over a scratch settings dir (no real dirs involved).
+    ///
+    /// S7.2: the poller no longer takes a settings dir — it takes a
+    /// `ProviderSource`. This goes through the shell's `budget_poller_for`,
+    /// which wraps the desktop's real `load_settings`, so the fixture drives the
+    /// SAME disk-reading path production does (the scratch `settings.json` the
+    /// tests above write is exactly what that read parses).
     fn poller_in(dir: &std::path::Path, interval_millis: u64) -> BudgetPoller {
-        BudgetPoller::new(
+        crate::agent::provider_auth::budget_poller_for(
             dir.to_path_buf(),
             dir.join("provider-auth.json"),
             interval_millis,

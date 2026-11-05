@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["src-tauri", "crates/fulcrum-core"]
+
+# The release profile used to live in `src-tauri/Cargo.toml`; in a workspace the
+# ROOT manifest is authoritative, so these five lines move here verbatim (same
+# values, same comment intent). `panic = "unwind"` is the ADR 0025 consequence
+# and must not change.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+# The ADR 0025 consequence: a Worker panic stays in the Worker (the
+# process dies, the app lives); the binary grows with unwind tables —
+# accepted.
+panic = "unwind"
+strip = true

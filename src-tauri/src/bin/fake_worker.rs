@@ -91,10 +91,21 @@ use archimedes_lib::agent::events::RpcEvent;
 use archimedes_lib::agent::harness::store::DisplayRow;
 use archimedes_lib::agent::harness::ModelKey;
 use archimedes_lib::agent::subagent::{AgentNameResolution, LaunchConfig};
-use archimedes_lib::agent::worker::protocol::{decode_inbound, encode_outbound, Inbound, Outbound};
+use archimedes_lib::agent::worker::protocol::{
+    decode_inbound, encode_outbound, stamp_outbound, Inbound, Outbound, PROTOCOL_VERSION,
+};
 
-/// The fixture version (the `ready` frame's `version` field).
+/// The fixture version (the `ready` frame's `version` field, and the
+/// `hello` frame's `clientVersion` — the binary-version analogue).
 const VERSION: &str = "fake-worker-0.0.0";
+
+/// The per-session frame cursor (Fulcrum T1) — the fixture must speak the
+/// IDENTICAL wire to the real Worker, so it stamps the same flat sibling
+/// `frameSeq` the real writers stamp, from the same 1-based count, reset on
+/// each `start`. A process `static` (not a local) because `emit` is a free
+/// function threaded through a dozen `emit_*` helpers; the fixture is
+/// single-threaded, so the counter has no competitor.
+static FRAME_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The `__long_stream__` chunk count (ADR 0055) — `LONG_STREAM_CHUNKS` ×
 /// `LONG_STREAM_GAP` = 3.0 s of CONTINUOUS production: TWICE the liveness tests'
@@ -140,8 +151,19 @@ const CRASH_BURST_CHUNKS: u32 = 40;
 /// for work that really cost money, the understatement the review named.
 const CRASH_BURST_USAGE: (u64, u64) = (777, 909);
 
-/// Emit one outbound frame (one JSONL line — the `protocol` encode).
+/// Emit one outbound frame (one JSONL line — the `protocol` encode)
+/// STAMPED with the next `frameSeq` (the same helper the real Worker's
+/// writers call — the fixture speaks the identical wire).
 fn emit<W: Write>(stdout: &mut W, frame: &Outbound) {
+    let line = stamp_outbound(&FRAME_SEQ, frame);
+    let _ = stdout.write_all(line.as_bytes());
+    let _ = stdout.flush();
+}
+
+/// Emit one UNSTAMPED outbound frame — the two pre-session handshake
+/// frames (`hello`, `ready`), which precede any `start` and therefore
+/// carry no `frameSeq` (mirrors the real Worker's `write_frame_unstamped`).
+fn emit_unstamped<W: Write>(stdout: &mut W, frame: &Outbound) {
     let line = encode_outbound(frame);
     let _ = stdout.write_all(line.as_bytes());
     let _ = stdout.flush();
@@ -523,9 +545,17 @@ fn emit_subagent_dispatch<W: Write>(
 fn main() {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
-    // The `ready` frame (the fixture version — emitted at startup,
-    // BEFORE `start`).
-    emit(
+    // The handshake, in order: `hello` (the protocol version) then
+    // `ready` (the fixture version) — BOTH unstamped, exactly like the
+    // real Worker, so the fixture speaks the identical wire.
+    emit_unstamped(
+        &mut stdout,
+        &Outbound::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            client_version: VERSION.to_string(),
+        },
+    );
+    emit_unstamped(
         &mut stdout,
         &Outbound::Ready {
             version: VERSION.to_string(),
@@ -567,6 +597,10 @@ fn main() {
         let sid = session_id.clone().unwrap_or_default();
         match msg {
             Inbound::Start(env) => {
+                // A new session: the cursor restarts, so the first canned
+                // frame after `start` is `frameSeq: 1` (the per-session
+                // guarantee the real Worker gives).
+                FRAME_SEQ.store(0, std::sync::atomic::Ordering::SeqCst);
                 session_id = Some(env.session_id.clone());
                 model_key = Some(ModelKey::from(&env.model).to_string());
                 incarnation = env.incarnation.clone();
@@ -1017,6 +1051,35 @@ fn main() {
             // corrupt it; the Supervisor drains stderr to the debug log).
             Inbound::Compact { instructions } => {
                 eprintln!("fake worker: compact requested (instructions: {instructions:?})");
+            }
+            // (Fulcrum T3) The live-reload push. Echoed like the `Config` arm
+            // above, because the fixture's job is to prove the frame is
+            // ENCODED and DECODED compatibly across the pipe: a Supervisor that
+            // sends a `config-update` the fixture cannot decode would silently
+            // no-op, and the parity test would pass while the real Worker and
+            // the fixture disagreed about the wire.
+            Inbound::ConfigUpdate {
+                file_policy,
+                web,
+                agent_overrides,
+            } => {
+                let mut payload = serde_json::json!({ "sessionId": sid });
+                if let Some(p) = file_policy {
+                    payload["filePolicy"] = serde_json::to_value(&p).unwrap_or_default();
+                }
+                if let Some(w) = web {
+                    payload["web"] = serde_json::to_value(&w).unwrap_or_default();
+                }
+                if let Some(o) = agent_overrides {
+                    payload["agentOverrides"] = serde_json::to_value(&o).unwrap_or_default();
+                }
+                emit(
+                    &mut stdout,
+                    &Outbound::SinkFrame {
+                        event: "config-update-ack".to_string(),
+                        payload,
+                    },
+                );
             }
             // `abort` / a `permission-response` to an unknown id / an
             // `interactive-response` / an unknown `type`: no response

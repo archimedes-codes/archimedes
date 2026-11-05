@@ -1,12 +1,20 @@
 pub mod agent;
-pub mod agents;
+// T5/S2: `skills.rs`, `agents.rs` and `roots.rs` moved to `fulcrum-core` (they
+// are inside the `{tools, web, boundary}` closure — `boundary.rs` imports both
+// `skills::{user_roots,space_roots}` and `agents::{user_roots,space_roots}`).
+// These are RE-EXPORTS at the crate root rather than `pub mod` declarations, so
+// every pre-existing `crate::skills::…` / `crate::agents::…` path inside the
+// desktop and every `archimedes_lib::skills::…` path in `tests/` keeps resolving
+// with ZERO edits — the same Step A.2 mechanism `agent/mod.rs` uses. `roots`
+// stays crate-internal on BOTH sides (its only two callers moved with it), so it
+// is absent here exactly as it was `pub(crate)` before.
+pub use agent::agents;
 pub mod attention;
 pub mod commands;
 pub mod config;
 pub mod navigation_guard;
 pub mod open;
-pub(crate) mod roots;
-pub mod skills;
+pub use agent::skills;
 pub mod storage;
 #[doc(hidden)]
 pub mod test_support;
@@ -238,13 +246,12 @@ fn init_dir_deps<R: tauri::Runtime>(
     // degrade (`Ok(vec![])`) in a test app, and no test inherits budget work
     // (the poller spawns nothing by itself — it is a passive ledger the refresher
     // loop drives, and that loop is suppressed on every test path).
-    let budget_poller = std::sync::Arc::new(std::sync::Mutex::new(
-        provider_auth::budget::BudgetPoller::new(
+    let budget_poller =
+        std::sync::Arc::new(std::sync::Mutex::new(provider_auth::budget_poller_for(
             config_dir.clone(),
             provider_auth::store::auth_file_path(),
             provider_auth::budget::BUDGET_POLL_INTERVAL_MILLIS,
-        ),
-    ));
+        )));
     if let Some(factory) = refresher_factory {
         let deps = provider_auth::SupervisorRefresherDeps {
             // Ruling R3: the loop reads the SAME path production resolution uses
@@ -259,7 +266,10 @@ fn init_dir_deps<R: tauri::Runtime>(
             // below (so the `get_provider_budget` command reads the facts this
             // loop writes). The cadence is the default 15 s; the settings home
             // and the DATA-dir store path are INJECTED into the poller, which
-            // never resolves either of them itself.
+            // never resolves either of them itself. Since S7.2 the settings home
+            // crosses as a `ProviderSource` (`budget_poller_for` wraps
+            // `load_settings` here) — the crate's poller holds no directory and
+            // reads no `settings.json`.
             budget_poller: Some(budget_poller.clone()),
         };
         // The factory is SYNC and DECLINES (returns `None`) when it cannot get a
@@ -436,15 +446,38 @@ fn grab_webview_key_focus<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) {
     }
 }
 
-/// The Worker mode (ADR 0025): a fresh tokio runtime + the stdio JSONL
-/// worker (`agent::worker::run_worker_inner`). Checked BEFORE Tauri
-/// init in `main` — the Tauri runtime never starts in a Worker.
+/// The Worker mode (ADR 0025): the thin desktop shim over the crate's Worker
+/// entry (`fulcrum_core::worker::run_worker`, which builds the tokio runtime and
+/// runs the stdio JSONL `run_worker_inner`). Checked BEFORE Tauri init in `main`
+/// — the Tauri runtime never starts in a Worker.
+///
+/// Since T8/S8.4 the runtime construction and the whole Worker live in
+/// `crates/fulcrum-core`; this function's ONLY job is to hand the crate the two
+/// desktop-only behaviours it may not name (ADR 0091 — the shape crosses, the
+/// substance stays):
+///
+///   * `crate::open::desktop_open_requester()` — the tauri-backed browser opener
+///     (`open.rs` is `tauri`, so it cannot move into the crate). It reaches
+///     `AgentLoop::new` through `WorkerCore::new` → `default_build_loop`. Passing
+///     anything else here still COMPILES — that is exactly the silent failure
+///     `open.rs::the_production_loop_caller_passes_the_desktop_opener` pins, and
+///     since S8.4 that pin reads THIS function: this is the one desktop → crate
+///     hand-off the Worker boundary exists to prove.
+///   * the crash hook — `agent/crashlog.rs` stays desktop (the crate needs none
+///     of it), so the desktop passes the install closure. The tag (`"worker"`)
+///     and the `base.join("archimedes")` layout are unchanged; the directory is
+///     resolved inside the crate at install time and handed to the hook, so the
+///     hook resolves nothing during the panic.
+///
+/// The signature stays parameterless — `archimedes_lib::run_worker()` is
+/// `main.rs`'s contract for the `--worker` flag, and `main.rs` is untouched.
 pub fn run_worker() {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("the worker tokio runtime");
-    runtime.block_on(agent::worker::run_worker_inner());
+    fulcrum_core::worker::run_worker(
+        crate::open::desktop_open_requester(),
+        Some(std::sync::Arc::new(|dir: std::path::PathBuf| {
+            crate::agent::crashlog::install_panic_hook("worker", dir)
+        })),
+    );
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

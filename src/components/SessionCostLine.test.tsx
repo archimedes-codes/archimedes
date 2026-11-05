@@ -270,15 +270,21 @@ describe("a real per-call cost never renders as free (issue #87's cliff)", () =>
     expect(screen.queryByText("$0.0000")).toBeNull();
   });
 
-  it("renders the four measured priced calls SUMMED as a NON-ZERO figure", () => {
-    // 0.000011662 + 0.0000047597 + 0.00001243 + 0.0000052633 = 0.000034115 —
-    // still below the seam, so the shared helper printed `$0.0000` for the
-    // session's whole visible spend.
+  it("renders the four measured priced calls' TOTAL as a NON-ZERO figure", () => {
+    // The same four T08 measurements (0.000011662 + 0.0000047597 + 0.00001243 +
+    // 0.0000052633 = 0.000034115), now fed as the FRAMES the wire actually
+    // carries: since Fulcrum T2 each `cost_update` carries the session's running
+    // TOTAL, so the four frames are the four partial sums and the last one IS
+    // 0.000034115. The rendered figure is UNCHANGED — which is the point of this
+    // case under the new contract: the component reads the entry, never the
+    // frames, so moving the accumulation from the store to the emitter moves not
+    // one pixel. Still below the seam, so the shared helper used to print
+    // `$0.0000` for the session's whole visible spend.
     seed("s1", [
       { costUsd: 0.000011662 },
-      { costUsd: 0.0000047597 },
-      { costUsd: 0.00001243 },
-      { costUsd: 0.0000052633 },
+      { costUsd: 0.000011662 + 0.0000047597 },
+      { costUsd: 0.000011662 + 0.0000047597 + 0.00001243 },
+      { costUsd: 0.000011662 + 0.0000047597 + 0.00001243 + 0.0000052633 },
     ]);
     render(<SessionCostLine sessionId="s1" />);
     expect(screen.getByTestId("session-cost").textContent).toBe("$0.000034");
