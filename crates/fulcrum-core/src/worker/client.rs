@@ -1165,7 +1165,7 @@ mod tests {
     /// two-shape rule), which is why the manifest-derived resolver is the only
     /// correct form at this depth.
     pub fn fixture_path() -> std::path::PathBuf {
-        crate::test_support::target_debug_dir().join("fake_worker")
+        crate::test_support::fixture_bin("fake_worker")
     }
 
     /// T4's pin, REWRITTEN in S8.3 — the old form was VACUOUS for the exact
@@ -1189,15 +1189,27 @@ mod tests {
     #[test]
     fn fixture_path_resolves_to_the_workspace_root_target() {
         let p = fixture_path();
+        // The name the platform's cargo actually writes. `is_file()` — unlike
+        // `CreateProcess` — does NOT append an exe suffix, so on Windows the
+        // suffix-less literal below is a file that does not exist even though
+        // the spawn three lines away succeeds; that asymmetry is what reddened
+        // this witness on `windows-latest` while Linux and macOS stayed green
+        // (their `EXE_SUFFIX` is empty). `test_support::exe_file_name` carries
+        // the rule and `the_fixture_binary_name_carries_the_platform_exe_suffix`
+        // pins both arms of it on every OS.
+        let want_name = format!("fake_worker{}", std::env::consts::EXE_SUFFIX);
         assert_eq!(
             p.file_name().and_then(|s| s.to_str()),
-            Some("fake_worker"),
-            "still the fake_worker fixture"
+            Some(want_name.as_str()),
+            "still the fake_worker fixture, under the name cargo builds it as"
         );
-        // (1) The equality half — the ONLY resolver, two levels up.
+        // (1) The equality half — the ONLY resolver, two levels up. Spelled
+        //     against `target_debug_dir()` and NOT against `fixture_bin`, so it
+        //     still discriminates a wrong LEVEL count instead of agreeing with
+        //     the body by construction.
         assert_eq!(
             p,
-            crate::test_support::target_debug_dir().join("fake_worker"),
+            crate::test_support::target_debug_dir().join(&want_name),
             "the fixture must resolve through the crate's ONE two-levels-up \
              resolver, not a manifest-parent guess"
         );

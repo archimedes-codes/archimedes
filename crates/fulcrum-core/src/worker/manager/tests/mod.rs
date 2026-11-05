@@ -39,7 +39,7 @@ type SinkEvents = Arc<StdMutex<Vec<(String, Value)>>>;
 /// THIS helper to it, so a wrong level count fails loudly rather than silently
 /// green.
 fn fixture_path() -> std::path::PathBuf {
-    crate::test_support::target_debug_dir().join("fake_worker")
+    crate::test_support::fixture_bin("fake_worker")
 }
 
 /// The vacuity guard this module did not have (the lesson `childproc.rs`
@@ -55,9 +55,14 @@ fn fixture_path() -> std::path::PathBuf {
 #[test]
 fn fixture_root_is_where_cargo_actually_builds() {
     let p = fixture_path();
+    // The name cargo builds on THIS platform — see the same note in
+    // `worker/client.rs::fixture_path_resolves_to_the_workspace_root_target`.
+    // `is_file()` below does not append an exe suffix the way `CreateProcess`
+    // does, which is what reddened this witness on `windows-latest`.
+    let want_name = format!("fake_worker{}", std::env::consts::EXE_SUFFIX);
     assert_eq!(
         p,
-        crate::test_support::target_debug_dir().join("fake_worker"),
+        crate::test_support::target_debug_dir().join(&want_name),
         "the fixture must resolve through the crate's ONE two-levels-up resolver"
     );
     let exe = std::env::current_exe().expect("a test binary has a path");

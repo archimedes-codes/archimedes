@@ -102,7 +102,8 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 /// # Consumers (re-derived by grep at T8/S8.5 — never transcribe a list like
 /// this; the T5/S3 version of it had already drifted twice)
 ///
-/// Two fixture binaries, and every spawner goes through this ONE helper:
+/// Two fixture binaries. This helper resolves the DIRECTORY; `fixture_bin`
+/// resolves the binary itself by adding the platform exe suffix:
 ///   * `fake_mcp_stdio` — `mcp/stdio.rs`, `mcp/tool.rs`, four sites in
 ///     `mcp/manager.rs`'s tests, and two in
 ///     `harness/loop/tests/turn_lifecycle.rs`;
@@ -115,6 +116,18 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 /// the `childproc` pin above is what stands between a wrong root and a
 /// silently-green suite; the two `worker/` spawners now do carry equality +
 /// `current_exe()` guards, so a wrong LEVEL count there fails in two places.
+///
+/// # Why a binary name is a SEPARATE helper
+///
+/// `target_debug_dir()` is suffix-free on purpose — it names a directory, and
+/// directories have no exe suffix on any platform. Appending `EXE_SUFFIX` here
+/// would break every caller that joins a directory and then a file name of its
+/// own. The suffix belongs to the FILE, so it belongs to `fixture_bin`.
+///
+/// The `mcp` sites above hand their path to a `Command` and never OBSERVE the
+/// file, so the missing suffix is harmless there — `CreateProcess` fills it in.
+/// The two `fake_worker` sites also assert `is_file()`, and that is where the
+/// suffix became load-bearing; see `fixture_bin` for the full story.
 #[cfg(test)]
 pub(crate) fn target_debug_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -123,6 +136,32 @@ pub(crate) fn target_debug_dir() -> std::path::PathBuf {
         .expect("crates/fulcrum-core has a grandparent (the repo root)")
         .join("target")
         .join("debug")
+}
+
+/// The file name cargo gives the bin target `name` on the platform whose
+/// `EXE_SUFFIX` is `suffix` (the suffix is a PARAMETER so the rule is testable
+/// on every OS — see `the_fixture_binary_name_carries_the_platform_exe_suffix`).
+#[cfg(test)]
+pub(crate) fn exe_file_name(name: &str, suffix: &str) -> String {
+    format!("{name}{suffix}")
+}
+
+/// The built bin target `name` under `target_debug_dir()` — the crate's ONE
+/// fixture-binary resolver, exe-suffix aware.
+///
+/// **Why the suffix is load-bearing.** `target_debug_dir()` names a DIRECTORY,
+/// so it is correct on every platform; but a fixture binary is a FILE, and on
+/// Windows cargo writes `fake_worker.exe`. Spawning still worked, because
+/// `CreateProcessW` appends `.exe` to a suffix-less name — which is exactly why
+/// this stayed invisible until a test tried to OBSERVE the file:
+/// `std::path::Path::is_file` performs no such appending, so the existence
+/// witness in `worker/client.rs` and `worker/manager/tests/mod.rs` failed on
+/// `…\target\debug\fake_worker` while the spawn three lines away succeeded.
+/// Deriving the name here means the path the tests assert on and the path the
+/// spawner execs are the same string on all three OS legs.
+#[cfg(test)]
+pub(crate) fn fixture_bin(name: &str) -> std::path::PathBuf {
+    target_debug_dir().join(exe_file_name(name, std::env::consts::EXE_SUFFIX))
 }
 
 /// Is `s` EXACTLY SIX LOWERCASE hex chars — the shape
@@ -301,7 +340,7 @@ impl AsRef<std::path::Path> for ScratchDir {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_incarnation_stamp, ScratchDir};
+    use super::{exe_file_name, fixture_bin, is_incarnation_stamp, target_debug_dir, ScratchDir};
 
     /// The crate's OWN pin for the crate's OWN copy of the stamp predicate —
     /// the rule this module's docs state for `ScratchDir` ("a duplicated helper
@@ -428,6 +467,58 @@ mod tests {
             a.path(),
             b.path(),
             "the SAME tag must still mint a DIFFERENT dir"
+        );
+    }
+
+    /// The exe-suffix rule behind `fixture_bin`.
+    ///
+    /// CI's `windows-latest` leg ran `fixture_path_resolves_to_the_workspace_root_target`
+    /// and `fixture_root_is_where_cargo_actually_builds` red on BOTH runs of the
+    /// first CI-enabled SHA, both on their `is_file()` witness:
+    /// `the fixture must exist: "D:\\a\\desktop\\desktop\\target\\debug\\fake_worker"`.
+    /// The directory half of the path was right and the SPAWN worked — on Windows
+    /// `CreateProcessW` appends `.exe` to a suffix-less name — but `is_file()`
+    /// performs no such appending, so the existence witness looked at a file that
+    /// cargo never wrote. Linux and macOS have an empty `EXE_SUFFIX`, which is why
+    /// 2220 local tests and both other legs passed.
+    ///
+    /// The suffix is a parameter here so BOTH arms of the rule are asserted on
+    /// every OS: a Linux run still proves the `.exe` arm, which a test that only
+    /// read `std::env::consts::EXE_SUFFIX` could not (it would assert `""` and
+    /// pass vacuously off Windows).
+    #[test]
+    fn the_fixture_binary_name_carries_the_platform_exe_suffix() {
+        // The rule, both platforms, on every OS.
+        assert_eq!(exe_file_name("fake_worker", ""), "fake_worker");
+        assert_eq!(
+            exe_file_name("fake_worker", ".exe"),
+            "fake_worker.exe",
+            "a Windows fixture binary is `fake_worker.exe` — the name cargo writes"
+        );
+
+        // The resolver applies the rule for the REAL platform, and keeps the
+        // directory half untouched (the two-levels-up root that
+        // `target_debug_dir_is_where_cargo_actually_builds` pins).
+        let p = fixture_bin("fake_worker");
+        let want_name = format!("fake_worker{}", std::env::consts::EXE_SUFFIX);
+        assert_eq!(
+            p.file_name().and_then(|s| s.to_str()),
+            Some(want_name.as_str()),
+            "fixture_bin appends the platform exe suffix to the bin name"
+        );
+        assert_eq!(
+            p.parent(),
+            Some(target_debug_dir().as_path()),
+            "fixture_bin resolves through the crate's ONE two-levels-up resolver"
+        );
+
+        // The existence witness that went red on Windows, now through the
+        // resolver — this is the arm that fails if the suffix is dropped.
+        assert!(
+            p.is_file(),
+            "the resolved fixture binary must exist on disk: {p:?} (cargo builds \
+             `{want_name}`; `is_file` does NOT append an exe suffix the way \
+             `CreateProcess` does, so a suffix-less path is a path that does not exist)"
         );
     }
 }
