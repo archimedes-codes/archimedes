@@ -1931,13 +1931,105 @@ async fn mount_request_script(server: &MockServer, bodies: &[String]) {
 /// One canned `chat.completions` body: a single `read` tool call on `path`.
 fn sse_read_call(id: &str, path: &str) -> String {
     // The inner JSON is escaped twice: once into the SSE `data:` line, once
-    // into the `arguments` STRING field the OpenAI wire carries.
-    let args = format!(r#"{{"path":"{path}"}}"#).replace('"', "\\\"");
+    // into the `arguments` STRING field the OpenAI wire carries. BOTH levels
+    // are produced by `serde_json` rather than by hand, because a hand-rolled
+    // `.replace('"', "\\\"")` escapes the QUOTES and nothing else — a Windows
+    // temp path (`C:\Users\RUNNER~1\AppData\Local\Temp\…`) carries
+    // BACKSLASHES, which are also JSON metacharacters. Leaving them raw makes
+    // the outer `data:` line invalid JSON, and the provider's SSE reader
+    // (`openai.rs`'s `handle_line`) SKIPS a line it cannot parse — so the
+    // canned `read` tool call silently never arrives and turn 1 settles with
+    // no `tool_execution_end` at all. That is a Windows-only red on an
+    // assertion that has nothing to do with what the test is about.
+    // `serde_json` escapes both levels correctly on every platform.
+    let args = serde_json::to_string(&serde_json::json!({ "path": path }))
+        .expect("a string map serializes");
+    let outer = serde_json::json!({
+        "choices": [{
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": id,
+                    "function": { "name": "read", "arguments": args }
+                }]
+            }
+        }]
+    });
+    let outer = serde_json::to_string(&outer).expect("the chunk serializes");
+    let finish = serde_json::json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] });
     format!(
-        "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"{id}\",\"function\":{{\"name\":\"read\",\"arguments\":\"{args}\"}}}}]}}}}]}}\n\n\
-         data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n\
-         data: [DONE]\n\n"
+        "data: {outer}\n\ndata: {}\n\ndata: [DONE]\n\n",
+        serde_json::to_string(&finish).expect("the finish chunk serializes")
     )
+}
+
+/// The Windows-escaping pin for `sse_read_call`.
+///
+/// CI's `windows-latest` leg ran `config_update_push_reaches_a_live_worker`
+/// red twice at the same SHA on `turn 1's read produced a tool_execution_end`
+/// (`worker_e2e.rs:2079`) — the canned tool call never reached the loop. The
+/// cause is the fixture, not the engine: the temp path it embeds is built by
+/// `format!`-and-`replace`, and on Windows that path is
+/// `C:\Users\…\AppData\Local\Temp\…`. Backslashes are JSON escapes, so the
+/// SSE `data:` line was unparseable, and `handle_line` ignores an unparseable
+/// line instead of failing — the turn settled with no tool call.
+///
+/// This asserts the two properties the engine actually relies on, against a
+/// LITERAL Windows path so the pin reddens on Linux too (where the real
+/// fixture can never produce one): the chunk must be valid JSON, and the
+/// `arguments` string must decode back to the exact path.
+#[test]
+fn sse_read_call_survives_a_windows_path() {
+    // A real `windows-latest` runner's temp path, backslashes and all.
+    let windows_path = r"C:\Users\RUNNER1\AppData\Local\Temp\.tmpABCDEF\secret.txt";
+    let body = sse_read_call("call_1", windows_path);
+
+    let first_line = body
+        .lines()
+        .find(|l| l.starts_with("data: "))
+        .expect("the body carries a data: line");
+    let payload = first_line
+        .trim()
+        .strip_prefix("data: ")
+        .expect("data: prefix");
+
+    let chunk: Value = serde_json::from_str(payload)
+        .unwrap_or_else(|e| panic!("the SSE chunk must be valid JSON, got {e}: {payload}"));
+
+    let args = chunk["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .expect("arguments rides as a JSON string on the OpenAI wire");
+    let parsed: Value = serde_json::from_str(args)
+        .unwrap_or_else(|e| panic!("the arguments string must be valid JSON, got {e}: {args}"));
+
+    assert_eq!(
+        parsed["path"].as_str(),
+        Some(windows_path),
+        "the path survives both JSON layers byte-for-byte"
+    );
+    assert_eq!(
+        chunk["choices"][0]["delta"]["tool_calls"][0]["function"]["name"], "read",
+        "the canned call names the read tool"
+    );
+    assert_eq!(
+        chunk["choices"][0]["delta"]["tool_calls"][0]["id"], "call_1",
+        "the canned call carries its tool_call id"
+    );
+
+    // The same pin for a POSIX path, so the fix cannot work only for one OS.
+    let posix_body = sse_read_call("call_2", "/tmp/e2e/secret.txt");
+    let posix_line = posix_body
+        .lines()
+        .find(|l| l.starts_with("data: "))
+        .expect("the body carries a data: line");
+    let posix_chunk: Value =
+        serde_json::from_str(posix_line.trim().strip_prefix("data: ").unwrap_or_default())
+            .expect("the POSIX chunk is valid JSON");
+    let posix_args = posix_chunk["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .expect("arguments is a string");
+    let posix_parsed: Value = serde_json::from_str(posix_args).expect("the POSIX arguments decode");
+    assert_eq!(posix_parsed["path"], "/tmp/e2e/secret.txt");
 }
 
 /// One canned `chat.completions` body: terminal text, no tool call.
