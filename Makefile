@@ -220,9 +220,10 @@ test-frontend: ## Frontend unit tests (vitest)
 # ── Rust backend (the workspace at the repo root) ─────────────────────
 
 # No `--manifest-path` anywhere below: the repo root IS the cargo root now (the
-# `[workspace]` lives in the root `Cargo.toml`), so a bare `cargo …` resolves every
-# member — `src-tauri` and `crates/fulcrum-core`. Naming `$(RUST_DIR)/Cargo.toml`
-# would run the member ALONE and quietly skip the rest of the workspace.
+# `[workspace]` lives in the root `Cargo.toml`), so `Cargo.lock` and `target/` stay
+# in one place. Since T8b/S8b.4-part-3 there is exactly ONE member — `src-tauri`;
+# `fulcrum-core` is a rev-pinned git dependency, so it is BUILT as a dependency but
+# is not a member and cannot be selected with `-p`.
 
 .PHONY: test-rust
 test-rust: ## Rust tests

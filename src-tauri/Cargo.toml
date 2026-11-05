@@ -24,11 +24,27 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# T5: the harness core moved to `crates/fulcrum-core` (S1 = the leaf modules). The
+# T5: the harness core moved out of the desktop binary (S1 = the leaf modules). The
 # desktop depends on the crate (the allowed direction — the crate NEVER depends on
 # `archimedes_lib`; that edge is the package cycle T5's ruling severs), and
 # `agent/mod.rs` re-exports from it so consumers outside `agent/` need zero edits.
-fulcrum-core = { path = "../crates/fulcrum-core" }
+#
+# T8b/S8b.4-part-3: the crate now lives in its OWN repo
+# (`archimedes-codes/fulcrum`), so this is a git dependency, not a path member.
+# The `rev` is the FULL 40-char commit and MUST stay a full rev, never a branch
+# name: a floating dep (branch/tag) lets the desktop's build change — different
+# engine code, different test outcome — without a single desktop commit, which
+# makes a green `main` a statement about whatever the branch pointed at that day.
+# A full rev makes an engine change require editing THIS line, so it arrives as a
+# reviewable desktop commit. Bump it in the same PR that reviews the engine diff.
+#
+# Working on the crate alongside the desktop? Do NOT edit this line to a path
+# (that would commit a dep that cannot resolve for anyone else). Copy
+# `.cargo/config.toml.example` to `.cargo/config.toml` — the `[patch]` there
+# redirects this git source to a sibling checkout and is gitignored, so it can
+# never leak into a commit. `.cargo/config.toml.example` is inert (cargo reads
+# only `config.toml`), which is what makes it safe to ship.
+fulcrum-core = { git = "https://github.com/archimedes-codes/fulcrum", rev = "78e595436ac5612d8ef87f692bee61f48f6e58e7" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

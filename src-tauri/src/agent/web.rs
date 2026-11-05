@@ -40,8 +40,9 @@
 //! And `session/router.rs` keeps naming `crate::agent::web::render::{RenderRequest,
 //! render}`, which resolves to the local `pub mod render` above. One path prefix,
 //! two packages underneath — which is what a re-export seam IS, and which is why
-//! the two halves stay separately compilable: `cargo test -p fulcrum-core` builds
-//! the crate with no knowledge that this file exists.
+//! the two halves stay separately compilable: the crate builds with no knowledge
+//! that this file exists (it is a rev-pinned git dependency now, and its own tests
+//! run in its own repo, not from this checkout).
 //!
 //! # The direction of the one edge between the halves
 //!

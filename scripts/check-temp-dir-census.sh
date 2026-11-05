@@ -127,8 +127,6 @@ usage() {
 attribution_table() {
   # prefix <TAB> owner
   cat <<'TABLE'
-exec-skill-esc-	crates/fulcrum-core/src/tools/exec/tests/skills.rs
-exec-	crates/fulcrum-core/src/tools/exec/tests/support.rs
 harness-subagent-	src-tauri/tests/harness_subagent_dispatch.rs
 harness-loop-test-	src-tauri/src/agent/harness/loop/tests/support.rs
 harness-loop-	src-tauri/tests/harness_loop.rs
@@ -141,32 +139,52 @@ harness-list-agents-home-	src-tauri/src/agent/harness/loop/tests/tools_enabled.r
 harness-resolve-launch-home-	src-tauri/src/agent/harness/launch.rs
 archimedes-prompt-	src-tauri/src/agent/harness/prompt.rs
 mcp-loop-	src-tauri/src/agent/harness/loop/tests/turn_lifecycle.rs
-mcp-	crates/fulcrum-core/src/mcp/config.rs
-# (T5/S3) was src-tauri/src/agent/mcp/config.rs before `mcp` moved. `mcp-loop-` above
-# still belongs to the DESKTOP's turn_lifecycle.rs (S5) and outranks this by
-# longest-match, so the two rows keep blaming different files.
+# (T8b/S8b.4-part-3) The `mcp-` row that used to sit here is GONE: its minter
+# (`crates/fulcrum-core/src/mcp/config.rs`) now lives in `archimedes-codes/fulcrum`
+# and the desktop mints no `mcp-*` temp dir (verified: grepping `src-tauri/src
+# src-tauri/tests` for the call form `in_env_temp("mcp-` is empty). `mcp-loop-`
+# above still stands on its own — it never needed `mcp-` beneath it, since the
+# census matches the longest prefix a name actually has.
 db-	src-tauri/src/storage/db.rs
 archimedes-cmd-agents-	src-tauri/src/commands/agents.rs
-archimedes-agents-	crates/fulcrum-core/src/agents.rs
-archimedes-skills-	crates/fulcrum-core/src/skills.rs
-archimedes-sudo-	crates/fulcrum-core/src/interactive/sudo_exec.rs
-# (T5/S3) was src-tauri/src/agent/interactive/sudo_exec.rs before `interactive` moved.
+# (T8b/S8b.4-part-3) THREE rows removed here — `archimedes-agents-`,
+# `archimedes-skills-`, `archimedes-sudo-` — their minters moved to
+# `archimedes-codes/fulcrum` and the desktop mints none of those prefixes
+# (verified against the call form, not the bare helper name).
 archimedes-canonical-	src-tauri/tests/storage.rs
 archimedes-native-mig-	src-tauri/tests/storage.rs
 archimedes-spaces-	src-tauri/tests/storage.rs
 archimedes-storage-test-	src-tauri/tests/storage.rs
 archimedes-trusted-	src-tauri/tests/storage.rs
-archimedes-sandbox-	crates/fulcrum-core/src/tools/sandbox/tests/mod.rs
+# (T8b/S8b.4-part-3) `archimedes-sandbox-` row removed — minter moved to
+# `archimedes-codes/fulcrum`. Note it never landed in the census base anyway (it
+# mints in `/dev/shm`, outside the base by design, D9), so this row was already
+# diagnostic-only.
 sessions-log-test-	src-tauri/src/commands/sessions.rs
 history-	src-tauri/src/commands/history.rs
 files-cmd-test-	src-tauri/src/commands/files/tests/support.rs
 test-support-guard-	src-tauri/src/test_support.rs
-# T5/S2: the six rows above repointed at `crates/fulcrum-core/...` because the
+# T5/S2 repointed six rows at `crates/fulcrum-core/...` when the
 # `{tools, web, boundary}` cluster + `skills`/`agents` MOVED. A stale owner path
 # still ATTRIBUTES the prefix correctly (the census matches the PREFIX, never the
 # file), so nothing reddened — but it sends a reader chasing a leak to a file that
 # no longer mints it, which is the whole point of the table. Verified against
 # `grep '"<prefix>"'` in both packages, not against the old table.
+#
+# ⚠️ T8b/S8b.4-part-3 REMOVES those rows, and the reasoning above is exactly why
+# removal is correct rather than merely tidy: the crate is a GIT dependency now,
+# so its sources are not in this checkout at all. A row naming them can never be
+# right from here — it blames a file a reader cannot open, and the same prefix is
+# minted (if at all) by a file that IS here. Each removal below was checked
+# against the DESKTOP's own minters (`grep -rhoE
+# '(in_env_temp|in_tmpfs|in_dir)\(\s*"[^"]*"' src-tauri/src src-tauri/tests`), not
+# against the old table, and the answer split two ways:
+#   * a prefix the desktop no longer mints at all → the row is DELETED;
+#   * a prefix the desktop STILL mints → the row is REPOINTED at the desktop file,
+#     because deleting it would make a live dir report UNATTRIBUTED, which this
+#     header defines as "NEW" — a correctly-guarded dir would read as a leak.
+#    That split is why the count moved 16 → 2, not 16 → 0.
+#
 #
 # T5/S2 also RELOCATED one test: `the_prompt_catalog_and_the_list_skills_catalog_
 # agree` moved out of the crate's `exec/tests/skills.rs` into
@@ -177,19 +195,15 @@ test-support-guard-	src-tauri/src/test_support.rs
 # otherwise its dirs report UNATTRIBUTED, which the header defines as "NEW, which
 # is exactly what this guard is for", and a correctly-guarded dir reads as a leak.
 skill-catalog-	src-tauri/tests/skill_catalog_drift.rs
-# T5/S2 found these TWO rows missing — both minters existed at `$BASE` and
+# T5/S2 found TWO rows missing — both minters existed at `$BASE` and
 # neither was in the table, so their dirs reported UNATTRIBUTED on every run
-# (a pre-existing gap, recorded rather than silently absorbed). Both files moved
-# in S2, so the rows are written against their NEW paths.
-policy-rules-	crates/fulcrum-core/src/policy.rs
-archimedes-childproc-kill-test-	crates/fulcrum-core/src/childproc.rs
-# T5/S2: `fulcrum-core`'s OWN copy of the scratch-dir guard — the crate cannot
-# reach `archimedes_lib::test_support` (that edge is the package cycle T5 severs),
-# so the crate mints under its own prefix. Same mechanism, same guard, one row.
-# Without this row a `fc-guard-*` dir reports as UNATTRIBUTED — which the header
-# defines as "NEW, which is exactly what this guard is for" — i.e. a correctly
-# guarded dir would read as a leak and invite someone to "fix" a test that is fine.
-fc-guard-	crates/fulcrum-core/src/test_support.rs
+# (a pre-existing gap, recorded rather than silently absorbed).
+#
+# (T8b/S8b.4-part-3) BOTH those rows — `policy-rules-` and
+# `archimedes-childproc-kill-test-` — are now REMOVED: their minters
+# (`policy.rs`, `childproc.rs`) went to `archimedes-codes/fulcrum` and the desktop
+# mints neither prefix (verified against the call form above).
+#
 # T5/S4: the seam instantiation pins (`cargo test` integration target). Three pins
 # each open a real SQLite file, so three prefixes; ONE row covers them all because
 # longest-wins makes the shared `fulcrum-seams-` the match for each. The prefixes
@@ -203,7 +217,8 @@ refresh-	src-tauri/src/agent/session/mod.rs
 router-todos-	src-tauri/src/agent/session/router.rs
 crashsel-	src-tauri/src/agent/session/router.rs
 crashlog-test-	src-tauri/src/agent/crashlog.rs
-debuglog-test-	crates/fulcrum-core/src/debuglog.rs
+# (T8b/S8b.4-part-3) `debuglog-test-` row removed — `debuglog.rs` moved to
+# `archimedes-codes/fulcrum` and the desktop mints no `debuglog-test-*` dir.
 # T5/S5a: TWO rows repointed because the MINTER moved, not the prefix.
 # `harness-trust-test-` was minted in `src-tauri/src/agent/harness/trust.rs`; that
 # file's `Db` test could not follow the trait into the crate (`#[cfg(test)]` does
@@ -220,46 +235,49 @@ debuglog-test-	crates/fulcrum-core/src/debuglog.rs
 # `grep -rn '"<prefix>"' src-tauri/src src-tauri/tests crates`, not against the
 # old table.
 perm-gate-	src-tauri/tests/permission_gate_db.rs
-# T7/S7.1: TWO NEW rows for the minters that moved with `provider_auth` into the
-# crate. Both prefixes had NO row before this commit (verified: grepping the table
+# T7/S7.1 added TWO rows for the minters that moved with `provider_auth` into the
+# crate. Both prefixes had NO row before that commit (verified: grepping the table
 # for `gcloud-adc-` and `-t2a-keyhelper` at `$BASE` `f488e8dd` is EMPTY), so their
 # dirs reported UNATTRIBUTED on every run — the pre-existing gap the S2 note above
-# records twice. These are ADDITIONS, not repoints.
+# records twice. These were ADDITIONS, not repoints.
 #
-# ⚠️ BOTH PREFIXES ARE DUAL-MINTED after this move, and `attribute()` is
-# longest-prefix with ONE row per prefix, so the table CANNOT name both minters:
-#   * `gcloud-adc-` mints in `crates/fulcrum-core/src/provider_auth/gcloud.rs`
-#     (moved here in S7.1, 8 call sites) AND in
-#     `src-tauri/tests/provider_gcloud_adc.rs` (stayed desktop, 8 call sites);
-#   * `-t2a-keyhelper` mints ONLY in the crate (its single minter moved).
-# Each row therefore points at the file the MOVED code mints, and attribution is
-# BEST-EFFORT: the census only decides where a reader hunting a leak is SENT,
-# never whether the leak is caught — a leaked dir fails either way. If a
-# `gcloud-adc-*` leak is ever reported, check BOTH files before believing the
-# blame line.
-gcloud-adc-	crates/fulcrum-core/src/provider_auth/gcloud.rs
--t2a-keyhelper	crates/fulcrum-core/src/provider_auth/key_helper.rs
-# T7/S7.2: the THIRD `provider_auth` minter moved — `budget.rs` → the crate. No
-# row for `provider-budget-` existed before (verified: grepping the table for it
-# at `$BASE` `2e59fe5a` is EMPTY), so its dirs reported UNATTRIBUTED on every run
-# — the same pre-existing gap the S2 and S7.1 notes above record.
+# ⚠️ BOTH PREFIXES WERE DUAL-MINTED after that move, and `attribute()` is
+# longest-prefix with ONE row per prefix, so the table COULD NOT name both minters:
+#   * `gcloud-adc-` minted in the crate's `provider_auth/gcloud.rs` (8 call sites)
+#     AND in `src-tauri/tests/provider_gcloud_adc.rs` (stayed desktop, 8 sites);
+#   * `-t2a-keyhelper` minted ONLY in the crate (its single minter moved).
 #
-# ⚠️ DUAL-MINTED, exactly like `gcloud-adc-` above, and for the same reason:
-# `attribute()` is longest-prefix with ONE row per prefix, so the table cannot
-# name both minters.
-#   * `crates/fulcrum-core/src/provider_auth/budget.rs` (moved here at S7.2 — the
-#     poller's bearer-rotation unit test);
-#   * `src-tauri/tests/provider_budget.rs:425,495` (stayed desktop, 2 call sites
-#     — the integration targets that drive `run_budget_tick` against wiremock).
-# The row points at the crate (where the moved code lives); attribution is
-# BEST-EFFORT — the census decides where a reader hunting a leak is SENT, never
-# whether the leak is caught. If a `provider-budget-*` dir is ever reported,
-# check BOTH files before believing the blame line.
-provider-budget-	crates/fulcrum-core/src/provider_auth/budget.rs
+# T8b/S8b.4-part-3 resolves that ambiguity by removing one of the two minters from
+# this checkout, and the two rows split as the rule above predicts:
+#   * `gcloud-adc-` is REPOINTED at the desktop file — `provider_gcloud_adc.rs`
+#     still mints it (22 call sites at this commit), so the prefix is LIVE here and
+#     deleting the row would report its dirs UNATTRIBUTED, i.e. brand a correctly
+#     guarded dir as NEW. The dual-mint caveat below is now obsolete: exactly one
+#     minter of this prefix is reachable from this repo.
+#   * `-t2a-keyhelper` is DELETED — its only minter was `key_helper.rs`, which
+#     moved, and the desktop mints no `-t2a-keyhelper*` name.
+# The census only ever decides where a reader hunting a leak is SENT, never
+# whether the leak is caught — a leaked dir fails either way.
+gcloud-adc-	src-tauri/tests/provider_gcloud_adc.rs
+# (T8b/S8b.4-part-3) `-t2a-keyhelper` row removed — see above.
+# T7/S7.2 moved the THIRD `provider_auth` minter — `budget.rs` → the crate. No
+# row for `provider-budget-` existed before that (verified: grepping the table for
+# it at `$BASE` `2e59fe5a` is EMPTY), so its dirs reported UNATTRIBUTED on every
+# run — the same pre-existing gap the S2 and S7.1 notes above record.
+#
+# It was DUAL-MINTED, exactly like `gcloud-adc-`, and T8b/S8b.4-part-3 resolves it
+# the same way: the crate's minter left this checkout, the desktop's did NOT —
+# `src-tauri/tests/provider_budget.rs:425,495` mints `provider-budget-` through
+# `ScratchDir::in_env_temp`, so the prefix is LIVE here and the row is REPOINTED
+# at the desktop file rather than deleted (deleting it would report those dirs
+# UNATTRIBUTED, i.e. "NEW", which is a false alarm on a correctly-guarded dir).
+provider-budget-	src-tauri/tests/provider_budget.rs
 persist-test-	src-tauri/src/agent/persist.rs
-fsb-	crates/fulcrum-core/src/fs_backend.rs
+# (T8b/S8b.4-part-3) `fsb-` and `boundary-` rows removed — `fs_backend.rs` and
+# `boundary.rs` moved to `archimedes-codes/fulcrum` and the desktop mints neither
+# prefix. Note `fs-backend-` (below) is a DIFFERENT, still-desktop prefix and does
+# NOT start with `fsb-`, so it was never served by the removed row.
 fs-backend-	src-tauri/tests/fs_backend.rs
-boundary-	crates/fulcrum-core/src/boundary.rs
 session-native-	src-tauri/tests/session_native.rs
 worker-e2e-	src-tauri/tests/worker_e2e.rs
 worker-stdin-	src-tauri/tests/worker_stdin.rs

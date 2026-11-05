@@ -497,9 +497,9 @@ assert_contains "and the exclusion is STILL announced on the failing path" "excl
 #      final lone `[[ -n ]]` negated test, no `| grep -q .` at the tail — under
 #      the harness's `set -euo pipefail` a trailing `grep -q .` can SIGPIPE its
 #      own upstream into a false green when a dotted literal IS present.)
-if [[ -n "$(grep -rE '(in_env_temp|in_tmpfs|in_dir)\(\s*"[^"]*\.' src-tauri/src src-tauri/tests crates 2>/dev/null)" ]]; then
+if [[ -n "$(grep -rE '(in_env_temp|in_tmpfs|in_dir)\(\s*"[^"]*\.' src-tauri/src src-tauri/tests 2>/dev/null)" ]]; then
   echo "FAIL no minter prefix contains a dot (the Darwin dotted-name exclusion depends on this)"
-  grep -rnE '(in_env_temp|in_tmpfs|in_dir)\(\s*"[^"]*\.' src-tauri/src src-tauri/tests crates | sed 's/^/       /'
+  grep -rnE '(in_env_temp|in_tmpfs|in_dir)\(\s*"[^"]*\.' src-tauri/src src-tauri/tests | sed 's/^/       /'
   failures=$((failures + 1))
 else
   echo "ok   no minter prefix contains a dot (the Darwin dotted-name exclusion depends on this)"
@@ -507,7 +507,7 @@ fi
 
 # 18c(2). A MINTER PREFIX WITH NO DASH would be an Archimedes leak wearing the
 #      shape `betaenrollmentagent` wears. It cannot exist today — every one of
-#      the 91 distinct `in_env_temp`/`in_tmpfs`/`in_dir` prefixes in this tree
+#      the 87 distinct `in_env_temp`/`in_tmpfs`/`in_dir` prefixes in this tree
 #      ends in a dash — but if a future minter ever mints a dash-free prefix,
 #      the second Darwin shape would hide it. So the invariant is asserted here,
 #      the no-dash twin of the no-dot invariant above: a future dash-free
@@ -520,9 +520,9 @@ fi
 #      a final LONE `[[ -n ]]` — no `| grep -q .` at the tail (see 18c's note:
 #      under `set -euo pipefail` a trailing `grep -q .` can SIGPIPE its own
 #      upstream into a false green exactly when a dash-free prefix IS present).
-if [[ -n "$(grep -rhoE '(in_env_temp|in_tmpfs|in_dir)\(\s*"[^"]*"' src-tauri/src src-tauri/tests crates 2>/dev/null | sed -E 's/^[^"]*"//; s/"$//' | sort -u | grep -v -- '-')" ]]; then
+if [[ -n "$(grep -rhoE '(in_env_temp|in_tmpfs|in_dir)\(\s*"[^"]*"' src-tauri/src src-tauri/tests 2>/dev/null | sed -E 's/^[^"]*"//; s/"$//' | sort -u | grep -v -- '-')" ]]; then
   echo "FAIL a minter prefix is dash-free (the Darwin second shape depends on this)"
-  grep -rhoE '(in_env_temp|in_tmpfs|in_dir)\(\s*"[^"]*"' src-tauri/src src-tauri/tests crates | sed -E 's/^[^"]*"//; s/"$//' | sort -u | grep -v -- '-' | sed 's/^/       /'
+  grep -rhoE '(in_env_temp|in_tmpfs|in_dir)\(\s*"[^"]*"' src-tauri/src src-tauri/tests | sed -E 's/^[^"]*"//; s/"$//' | sort -u | grep -v -- '-' | sed 's/^/       /'
   failures=$((failures + 1))
 else
   echo "ok   no minter prefix is dash-free (the Darwin second shape depends on this)"
