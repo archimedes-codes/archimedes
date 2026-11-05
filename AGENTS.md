@@ -20,22 +20,25 @@ green:
 | Rust lint | `cargo clippy --all-targets` | repo root (must be 0 warnings) |
 | Rust formatting | `cargo fmt --all -- --check` | repo root |
 
-`cd src-tauri && cargo test` is not a substitute for the root run. It is not a
-style rule, and the reason is narrower than "it cannot see the crate" — it can.
-Cargo walks **up** to the workspace root, so `cd src-tauri && cargo check
---all-targets` really does fail when `crates/fulcrum-core` has a type error
-(measured: it reports it). What does not happen is the **test run**: `src-tauri`
-is one workspace member, so `cargo test` there selects that member alone —
-**1033 of the workspace's 2216 tests** — and exits 0. Measured by planting a
-`#[test]` that panics inside `fulcrum-core`: `cargo test -p fulcrum-core` fails
-loudly, `cd src-tauri && cargo test` prints nothing about it and **exits 0**.
-So the crate's behaviour can be broken while a "backend is green" check reports
-success. Run cargo from the repo root; `-p fulcrum-core` for the crate alone,
-`cargo test --workspace` (the default at the root) for both.
+`cd src-tauri && cargo test` is not a substitute for the root run — though since
+T8b/S8b.4-part-3 the reason has changed, and the old reason is now FALSE. There
+used to be a second workspace member (`crates/fulcrum-core`) that a member-scoped
+run would quietly skip; the crate is a **rev-pinned git dependency** now, so this
+checkout has exactly ONE member and `cd src-tauri && cargo test` runs the same
+suite as the root. **The crate's own ~1400 tests are no longer runnable from this
+repo at all** — they run in `archimedes-codes/fulcrum`'s CI. What remains true is
+the discipline underneath: a command that checks less than you think still exits 0,
+so read what a run actually selected.
+
+Concretely, `cargo test -p fulcrum-core` **fails here** with
+`package fulcrum-core cannot be tested because it requires dev-dependencies and is
+not a member of the workspace`. That is correct, not a breakage: to test the engine,
+clone `https://github.com/archimedes-codes/fulcrum` (or point `.cargo/config.toml`
+at a sibling checkout — see `.cargo/config.toml.example`) and run `cargo test` there.
 
 When a change moves code between the two packages, the check that matters is test
 **names**, not totals — a moved test that silently disappears leaves the total
-looking plausible. Enumerate them with `cargo test --workspace -- --list`; do
+looking plausible. Enumerate them with `cargo test -- --list`; do
 **not** grep the sources for `#[test]`, because a source grep counts
 `#[cfg(windows)]`-only tests that never reach the compiler on Linux (measured: 6
 too many), so a grep-based "no test lost" is confidently wrong.
@@ -596,9 +599,12 @@ These are properties of the repo, not of any branch:
   `cargo` with no `cd` died with `could not find Cargo.toml` and, at exit 101, masqueraded as a real
   test failure (`worker_e2e` flake, once). **That failure mode is gone and a quieter one replaced it:**
   the repo root now holds the `[workspace]` manifest, so plain `cargo …` from the root is correct and
-  covers every member (`src-tauri` and `crates/fulcrum-core`). `cd src-tauri && cargo …` still WORKS —
-  it is a member — but it builds the MEMBER ALONE, so a `crates/` breakage passes it green. That is the
-  trap now: nothing errors, the command just checks less than you think. So write `cargo …` at the root,
+  is where `Cargo.lock` and `target/` live. Since T8b/S8b.4-part-3 the workspace has ONE member
+  (`src-tauri`) — `fulcrum-core` is a rev-pinned git dependency, built as a dependency, never a
+  member — so `cd src-tauri && cargo …` now runs the SAME suite as the root. The older trap this
+  bullet was written for (a second member quietly skipped by a member-scoped run) is gone with it;
+  what survives is the shape of the warning, because it reappears the moment a member is added:
+  nothing errors, the command just checks less than you think. So write `cargo …` at the root,
   and still read the TEXT of a `cargo` failure before concluding a test flaked: "could not find
   Cargo.toml" means the command never ran, and re-running it to confirm a flake will simply fail again.
 - **Plans carry stale baselines within hours** on a busy branch: re-measure test
