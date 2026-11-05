@@ -239,6 +239,23 @@ perm-gate-	src-tauri/tests/permission_gate_db.rs
 # blame line.
 gcloud-adc-	crates/fulcrum-core/src/provider_auth/gcloud.rs
 -t2a-keyhelper	crates/fulcrum-core/src/provider_auth/key_helper.rs
+# T7/S7.2: the THIRD `provider_auth` minter moved — `budget.rs` → the crate. No
+# row for `provider-budget-` existed before (verified: grepping the table for it
+# at `$BASE` `2e59fe5a` is EMPTY), so its dirs reported UNATTRIBUTED on every run
+# — the same pre-existing gap the S2 and S7.1 notes above record.
+#
+# ⚠️ DUAL-MINTED, exactly like `gcloud-adc-` above, and for the same reason:
+# `attribute()` is longest-prefix with ONE row per prefix, so the table cannot
+# name both minters.
+#   * `crates/fulcrum-core/src/provider_auth/budget.rs` (moved here at S7.2 — the
+#     poller's bearer-rotation unit test);
+#   * `src-tauri/tests/provider_budget.rs:425,495` (stayed desktop, 2 call sites
+#     — the integration targets that drive `run_budget_tick` against wiremock).
+# The row points at the crate (where the moved code lives); attribution is
+# BEST-EFFORT — the census decides where a reader hunting a leak is SENT, never
+# whether the leak is caught. If a `provider-budget-*` dir is ever reported,
+# check BOTH files before believing the blame line.
+provider-budget-	crates/fulcrum-core/src/provider_auth/budget.rs
 persist-test-	src-tauri/src/agent/persist.rs
 fsb-	crates/fulcrum-core/src/fs_backend.rs
 fs-backend-	src-tauri/tests/fs_backend.rs

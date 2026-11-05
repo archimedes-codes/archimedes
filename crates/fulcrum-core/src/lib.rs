@@ -66,14 +66,15 @@ pub mod web;
 // in S5) and the desktop `worker` (S8.1 opened that directory — see the T8
 // block at the bottom of this file).
 //
-// `provider_auth` is HERE now (T7/S7.1) — see the module's own docs and the
-// block below. The S3 RULING that kept it out measured the crate's need at one
+// `provider_auth` is HERE now (T7/S7.1 + S7.2) — see the module's own docs and
+// the block below. The S3 RULING that kept it out measured the crate's need at one
 // item (`headers::expand_map`) and zero consumers for every other submodule;
 // that was true of T5's consumers and false of T9's daemon, which must
 // authenticate providers itself (`status.md` RE-SCOPE). The seam S3 cancelled
-// with it (`ProviderSource`) returns in S7.2, because `budget.rs` — the file
-// whose `load_settings` read justified it — is the one file of that directory
-// still desktop at this commit.
+// with it (`ProviderSource`) landed in S7.2 — `budget.rs` moved, and with it the
+// two `load_settings` edges that justified the seam — so the crate now owns
+// SEVEN of the desktop's nine files in that directory, and reads no settings
+// file to do it.
 pub mod codemode;
 pub mod interactive;
 pub mod mcp;
@@ -174,17 +175,22 @@ pub mod normalize;
 pub mod persist;
 pub mod subagent;
 
-// ── T7/S7.1 — the provider credential machinery (6 files + 3 free functions) ─
-// `store`, `key_helper`, `gcloud`, `cli_sso`, `litellm_oauth`, `oidc` and the
-// `mod.rs` trio (`gcloud_token_auth_enabled`, `resolve_bearer`,
-// `resolve_bearer_at`) moved by `git mv` into `provider_auth/`. The desktop
-// keeps THREE files of that directory — `refresh.rs` (it holds
-// `tauri::AppHandle` + `session::SessionManager`), `budget.rs` (still reads
-// `load_settings`; the `ProviderSource` seam that frees it is S7.2) and
-// `headers.rs` (moved in S3 as `provider_headers`, above) — and its
-// `agent/provider_auth/mod.rs` is a re-export shell that declares the two
-// staying modules and re-exports this one, so every desktop spelling resolves
-// with ZERO edits to `refresh.rs` and `budget.rs`.
+// ── T7 — the provider credential machinery (7 files + 3 free functions) ─────
+// S7.1 moved `store`, `key_helper`, `gcloud`, `cli_sso`, `litellm_oauth`, `oidc`
+// and the `mod.rs` trio (`gcloud_token_auth_enabled`, `resolve_bearer`,
+// `resolve_bearer_at`); S7.2 moved `budget.rs`. All by `git mv` into
+// `provider_auth/`. The desktop keeps TWO files of that directory — `refresh.rs`
+// (it holds `tauri::AppHandle` + `session::SessionManager`) and `headers.rs`
+// (moved early, in S3, as `provider_headers`, above) — and its
+// `agent/provider_auth/mod.rs` is a re-export shell that declares the staying
+// module and re-exports this one, so every desktop spelling resolves.
+//
+// `budget.rs` is the file that needed a SEAM rather than only a move: it re-read
+// the provider rows from `settings.json` on every poll tick. That read is now
+// [`provider_auth::budget::ProviderSource`], implemented desktop-side by the
+// shell's `SettingsProviderSource`, so the crate gets the ROWS and never the
+// FILE — and `BudgetPoller` no longer holds a settings directory at all. See
+// `seams`' module docs for why this seam was cancelled in S3 and correct now.
 //
 // `gcloud.rs:8` names `src-tauri/tests/provider_gcloud_adc.rs` in a `//!` line.
 // That is a DOC mention of a desktop TEST path, not a code edge: the crate never

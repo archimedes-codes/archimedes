@@ -9,11 +9,13 @@
 // EXCEPTION and keeps its declaration: `web/render.rs` stayed desktop (the Tauri
 // webview), so `agent/web.rs` is a real desktop module that declares `render` and
 // re-exports the six that moved. (`provider_auth` is the SAME split shape, one
-// step later: T7/S7.1 moved six of its nine files to the crate's `provider_auth`
-// and its `mod.rs` is now a re-export shell that keeps only `refresh` (the
-// `tauri` half) and `budget` (awaiting the S7.2 `ProviderSource` seam) as real
-// desktop modules. `headers.rs` was the S3 exception — it moved early, as the
-// crate's `provider_headers`. See `provider_auth/mod.rs`.)
+// step later: T7 moved SEVEN of its nine files to the crate's `provider_auth`
+// (six in S7.1, `budget.rs` in S7.2) and its `mod.rs` is now a re-export shell
+// that keeps only `refresh` — the `tauri` half — as a real desktop module, plus
+// the desktop half of the `ProviderSource` seam (`budget_poller_for` /
+// `SettingsProviderSource`) that lets `budget.rs` move without taking
+// `load_settings` with it. `headers.rs` was the S3 exception — it moved early,
+// as the crate's `provider_headers`. See `provider_auth/mod.rs`.)
 pub mod crashlog;
 pub mod errors;
 pub mod harness;

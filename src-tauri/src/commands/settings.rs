@@ -590,52 +590,60 @@ pub struct ProviderBudgetDtoResponse {
 
 /// The facts → wire mapping. A `None` fact (denied, rate-limited, unreachable,
 /// or never polled) contributes NO row; a team list contributes one row each.
-impl From<&crate::agent::provider_auth::budget::BudgetFacts> for Vec<ProviderBudgetDto> {
-    fn from(facts: &crate::agent::provider_auth::budget::BudgetFacts) -> Self {
-        use crate::agent::provider_auth::budget::BudgetFacts as Facts;
-        let mut rows: Vec<ProviderBudgetDto> = Vec::new();
-        let Facts { key, user, teams } = facts;
-        if let Some(key) = key {
-            rows.push(ProviderBudgetDto {
-                level: crate::agent::provider_auth::budget::BudgetEndpoint::KeyInfo
-                    .level()
-                    .to_string(),
-                entitled: true,
-                label: None,
-                spend: key.spend,
-                max_budget: key.max_budget,
-                remaining: key.remaining,
-                budget_reset_at: key.budget_reset_at.clone(),
-            });
-        }
-        if let Some(user) = user {
-            rows.push(ProviderBudgetDto {
-                level: crate::agent::provider_auth::budget::BudgetEndpoint::UserInfo
-                    .level()
-                    .to_string(),
-                entitled: true,
-                label: user.user_id.clone(),
-                spend: user.spend,
-                max_budget: user.max_budget,
-                remaining: user.remaining,
-                budget_reset_at: user.budget_reset_at.clone(),
-            });
-        }
-        for team in teams {
-            rows.push(ProviderBudgetDto {
-                level: crate::agent::provider_auth::budget::BudgetEndpoint::TeamInfo
-                    .level()
-                    .to_string(),
-                entitled: true,
-                label: team.team_alias.clone().or_else(|| team.team_id.clone()),
-                spend: team.spend,
-                max_budget: team.max_budget,
-                remaining: team.remaining,
-                budget_reset_at: team.budget_reset_at.clone(),
-            });
-        }
-        rows
+///
+/// **Why this is a function and not the `impl From<&BudgetFacts> for
+/// Vec<ProviderBudgetDto>` it used to be (T7/S7.2).** `BudgetFacts` now lives in
+/// `fulcrum-core`, so that impl would name a foreign trait (`From`) with a
+/// foreign type on the left (`&BudgetFacts`) and only `Vec` — also foreign —
+/// before any local type: `E0117`, the orphan rule. Moving a type across a
+/// package boundary therefore forbids the desktop from implementing a `From`
+/// conversion *for* it. A plain function is the same mapping with the same body;
+/// `Vec::from(&f)` becomes `budget_rows(&f)`. Behaviour is identical (both call
+/// sites and the pin test below run the same code).
+fn budget_rows(facts: &crate::agent::provider_auth::budget::BudgetFacts) -> Vec<ProviderBudgetDto> {
+    use crate::agent::provider_auth::budget::BudgetFacts as Facts;
+    let mut rows: Vec<ProviderBudgetDto> = Vec::new();
+    let Facts { key, user, teams } = facts;
+    if let Some(key) = key {
+        rows.push(ProviderBudgetDto {
+            level: crate::agent::provider_auth::budget::BudgetEndpoint::KeyInfo
+                .level()
+                .to_string(),
+            entitled: true,
+            label: None,
+            spend: key.spend,
+            max_budget: key.max_budget,
+            remaining: key.remaining,
+            budget_reset_at: key.budget_reset_at.clone(),
+        });
     }
+    if let Some(user) = user {
+        rows.push(ProviderBudgetDto {
+            level: crate::agent::provider_auth::budget::BudgetEndpoint::UserInfo
+                .level()
+                .to_string(),
+            entitled: true,
+            label: user.user_id.clone(),
+            spend: user.spend,
+            max_budget: user.max_budget,
+            remaining: user.remaining,
+            budget_reset_at: user.budget_reset_at.clone(),
+        });
+    }
+    for team in teams {
+        rows.push(ProviderBudgetDto {
+            level: crate::agent::provider_auth::budget::BudgetEndpoint::TeamInfo
+                .level()
+                .to_string(),
+            entitled: true,
+            label: team.team_alias.clone().or_else(|| team.team_id.clone()),
+            spend: team.spend,
+            max_budget: team.max_budget,
+            remaining: team.remaining,
+            budget_reset_at: team.budget_reset_at.clone(),
+        });
+    }
+    rows
 }
 
 /// The per-provider spend/budget rows (T8's read; the Settings-page MOUNT fetch,
@@ -693,11 +701,14 @@ pub async fn get_provider_budget(
     let mut out = Vec::with_capacity(provider_ids.len());
     for provider_id in provider_ids {
         let rows: Vec<ProviderBudgetDto> = match poller.lock() {
-            Ok(guard) => guard.facts(&provider_id).map(Vec::from).unwrap_or_default(),
+            Ok(guard) => guard
+                .facts(&provider_id)
+                .map(budget_rows)
+                .unwrap_or_default(),
             Err(poisoned) => poisoned
                 .into_inner()
                 .facts(&provider_id)
-                .map(Vec::from)
+                .map(budget_rows)
                 .unwrap_or_default(),
         };
         out.push(ProviderBudgetDtoResponse { provider_id, rows });
@@ -738,7 +749,7 @@ mod tests {
                 budget_reset_at: None,
             }],
         };
-        let rows: Vec<ProviderBudgetDto> = Vec::from(&facts);
+        let rows: Vec<ProviderBudgetDto> = budget_rows(&facts);
         let response = ProviderBudgetDtoResponse {
             provider_id: "gw".into(),
             rows,
@@ -768,7 +779,7 @@ mod tests {
 
         // The empty ledger: no facts at all ⇒ an empty row set (the UI's
         // not-offered state), never an error and never a placeholder row.
-        let empty: Vec<ProviderBudgetDto> = Vec::from(&BudgetFacts::default());
+        let empty: Vec<ProviderBudgetDto> = budget_rows(&BudgetFacts::default());
         assert!(empty.is_empty(), "nothing read ⇒ nothing rendered");
     }
 

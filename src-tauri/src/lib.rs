@@ -246,13 +246,12 @@ fn init_dir_deps<R: tauri::Runtime>(
     // degrade (`Ok(vec![])`) in a test app, and no test inherits budget work
     // (the poller spawns nothing by itself — it is a passive ledger the refresher
     // loop drives, and that loop is suppressed on every test path).
-    let budget_poller = std::sync::Arc::new(std::sync::Mutex::new(
-        provider_auth::budget::BudgetPoller::new(
+    let budget_poller =
+        std::sync::Arc::new(std::sync::Mutex::new(provider_auth::budget_poller_for(
             config_dir.clone(),
             provider_auth::store::auth_file_path(),
             provider_auth::budget::BUDGET_POLL_INTERVAL_MILLIS,
-        ),
-    ));
+        )));
     if let Some(factory) = refresher_factory {
         let deps = provider_auth::SupervisorRefresherDeps {
             // Ruling R3: the loop reads the SAME path production resolution uses
@@ -267,7 +266,10 @@ fn init_dir_deps<R: tauri::Runtime>(
             // below (so the `get_provider_budget` command reads the facts this
             // loop writes). The cadence is the default 15 s; the settings home
             // and the DATA-dir store path are INJECTED into the poller, which
-            // never resolves either of them itself.
+            // never resolves either of them itself. Since S7.2 the settings home
+            // crosses as a `ProviderSource` (`budget_poller_for` wraps
+            // `load_settings` here) — the crate's poller holds no directory and
+            // reads no `settings.json`.
             budget_poller: Some(budget_poller.clone()),
         };
         // The factory is SYNC and DECLINES (returns `None`) when it cannot get a

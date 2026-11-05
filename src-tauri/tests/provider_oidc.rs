@@ -1051,12 +1051,13 @@ fn the_constant_time_compare_is_imported_not_copy_pasted() {
     //
     // T7/S7.1 made "the provider_auth tree" TWO directories: six files moved to
     // `crates/fulcrum-core/src/provider_auth/` and three stayed
-    // (`mod.rs`, `refresh.rs`, `budget.rs`). Scanning only the desktop dir would
+    // (`mod.rs`, `refresh.rs`, `budget.rs`); S7.2 moved the seventh (`budget.rs`),
+    // so the split is now 7 + 2. Scanning only the desktop dir would
     // be the FAIL-OPEN shape this roadmap has been bitten by twice — the lint
-    // would still pass, and greenly, having opened 3 of the 9 files. So BOTH
-    // trees are scanned, and the vacuity guard below is what makes that a checked
-    // claim: the count of files actually read must cover the whole split, so a
-    // wrong path or a directory that stops existing cannot pass silently.
+    // would still pass, and greenly, having opened a minority of the 9 files. So
+    // BOTH trees are scanned, and the vacuity guard below is what makes that a
+    // checked claim: the count of files actually read must cover the whole split,
+    // so a wrong path or a directory that stops existing cannot pass silently.
     let desktop_tree = concat!(env!("CARGO_MANIFEST_DIR"), "/src/agent/provider_auth");
     let crate_tree = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1080,15 +1081,18 @@ fn the_constant_time_compare_is_imported_not_copy_pasted() {
             }
         }
     }
-    // 9 files across the two trees at this commit (6 moved + 3 stayed). The floor
-    // is a DISCRIMINATOR, not a headroom check: 3 (the desktop dir alone) proves
-    // the crate half was never opened, which is exactly the failure this guard
-    // exists to catch.
+    // 10 files across the two trees at this commit (8 crate-side: the 7 moved
+    // files + the crate's own `mod.rs`; 2 desktop: `mod.rs` + `refresh.rs`). The
+    // S7.2 move changed the SPLIT (7 + 2, was 6 + 3) but not the SUM, so this
+    // floor keeps holding unchanged. And the floor is a DISCRIMINATOR, not a
+    // headroom check: 2 (the desktop dir alone) proves the crate half was never
+    // opened, which is exactly the failure this guard exists to catch — so do not
+    // raise it toward 10.
     assert!(
         scanned > 6,
         "the provider_auth duplicate-compare scan read only {scanned} files — it must \
-         cover BOTH sides of the T7/S7.1 split (9 at this commit), so a scan that reads \
-         only the desktop dir is VACUOUS over the six moved files"
+         cover BOTH sides of the T7 split (10 at this commit), so a scan that reads \
+         only the desktop dir is VACUOUS over the seven moved files"
     );
     assert!(
         offenders.is_empty(),

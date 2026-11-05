@@ -10,18 +10,22 @@
 //!
 //! ## Read this before judging S4 by its test count
 //!
-//! **Nothing in this module is called by the crate yet, and that is the plan, not
-//! an omission.** The S4 ruling in the status file states the consequence plainly:
-//! S4 is the first sub-step that gives the crate outward references, so "the
-//! desktop still compiles through the re-exports" — the proof that carried S1–S3 —
-//! proves nothing here, and a trait with no caller has no runtime behaviour to
-//! test. The crate-side callers arrive in S5 (`persist.rs` takes
-//! `Arc<dyn FulcrumPersistence>`, `subagent.rs` holds `Arc<dyn Dispatcher>`).
+//! **As written (S4), nothing in this module was called by the crate yet — and
+//! that was the plan, not an omission.** The S4 ruling in the status file states
+//! the consequence plainly: S4 is the first sub-step that gives the crate outward
+//! references, so "the desktop still compiles through the re-exports" — the proof
+//! that carried S1–S3 — proves nothing here, and a trait with no caller has no
+//! runtime behaviour to test. **The crate-side callers have since arrived, and
+//! this paragraph is corrected rather than left to rot: `persist.rs:85` holds
+//! `Arc<dyn FulcrumPersistence>` and `subagent.rs:95` holds
+//! `Arc<dyn Dispatcher>`, both in production, landed by S5b's re-plumb.** What
+//! has NOT changed is what the gate proves for the DESKTOP impls.
 //!
-//! What that means for the gate, and what this module's docs therefore insist on:
-//! the proof is **instantiation**, not execution. `impl FulcrumPersistence for
-//! storage::Db` and `impl Dispatcher for worker::manager::WorkerManager` must
-//! COMPILE, against the real inherent methods, with the real types. A
+//! For those, the proof is still **instantiation**, not execution.
+//! `impl FulcrumPersistence for storage::Db` (`src-tauri/src/storage/db.rs:1289`)
+//! and `impl Dispatcher for worker::manager::WorkerManager`
+//! (`crates/fulcrum-core/src/worker/manager/mod.rs:519`, crate-side since S8.3)
+//! must COMPILE, against the real inherent methods, with the real types. A
 //! surface-comparison test that never names the impl is void (Step B-bis says so
 //! in terms), and `src-tauri/tests/fulcrum_seams.rs` is written to be broken —
 //! its own file comment records the deletion that reddens each pin.
@@ -31,10 +35,31 @@
 //! - **E5 refresh trait — CANCELLED.** It existed for `refresh.rs:31 →
 //!   session::SessionManager`, but S3 measured the crate's need for
 //!   `provider_auth` at one item (`headers::expand_map`) and left `refresh.rs`
-//!   desktop, so the edge never crosses the boundary.
-//! - **`ProviderSource` for `budget.rs` — CANCELLED** for the same reason: the
-//!   `settings.json` read the REVIEW ROUND correctly spotted at `budget.rs:732`
-//!   stays in the desktop because `budget.rs` stays in the desktop.
+//!   desktop, so the edge never crosses the boundary. **Still cancelled after
+//!   T7:** `refresh.rs` is the ONE file of that directory that stayed desktop
+//!   (it holds `tauri::AppHandle` + `session::SessionManager`), so the edge it
+//!   was written for is still entirely desktop-side.
+//! - **`ProviderSource` — LIVE as of T7/S7.2, and the ONE seam of this set that
+//!   the crate CALLS.** It is declared in `budget.rs` rather than here, because
+//!   its only consumer is `BudgetPoller` and a trait with one consumer belongs
+//!   beside it. S3
+//!   cancelled it because `budget.rs` stayed put, and that reasoning was sound
+//!   at the time ("a seam is only justified by a measured crossing edge") — the
+//!   seam was premature, not wrong. T7 moved `budget.rs`, and the two edges the
+//!   review round measured are exactly what it now crosses: `budget.rs:48` was
+//!   `use crate::config::load_settings` and `budget.rs:732` was
+//!   `load_settings(&self.config_dir)` inside `reload_providers`, a
+//!   `settings.json` read on EVERY 15 s poll tick. The trait is
+//!   [`crate::provider_auth::budget::ProviderSource`]; the
+//!   desktop implements it at
+//!   `src-tauri/src/agent/provider_auth/mod.rs::SettingsProviderSource` and
+//!   constructs the poller through that file's `budget_poller_for`. **The crate
+//!   holds no settings directory at all** — `BudgetPoller`'s `config_dir` field
+//!   is gone, so the poller cannot ask for the file even by accident. Unlike the
+//!   two traits above, this one does NOT rest on an instantiation pin alone: the
+//!   desktop impl is instantiated by the production `lib.rs` call site, so
+//!   deleting it fails to compile, and the crate-side behaviour (re-read per arm,
+//!   LiteLLM filter crate-side) is pinned in `budget.rs`'s own tests.
 //! - **E6 [`crate::mcp::OpenRequester`] — already LIVE**, landed in S3 with three
 //!   working pins, because `mcp` moved then. It is the contrast case for the two
 //!   traits here: the shape a seam has when it has a caller.

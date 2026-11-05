@@ -8,34 +8,42 @@
 //! Wiring `resolve_bearer` into `resolve` is T2/T4's seam; this module owns
 //! the resolution, the store and the refresh lifecycle.
 //!
-//! # T7/S7.1 — this directory is SPLIT across the package boundary
+//! # T7 — this directory is SPLIT across the package boundary
 //!
-//! Six of the desktop's nine `provider_auth/` files moved here (`store`,
-//! `key_helper`, `gcloud`, `cli_sso`, `litellm_oauth`, `oidc`) together with
-//! this file's three free functions (`gcloud_token_auth_enabled`,
-//! `resolve_bearer`, `resolve_bearer_at`). THREE files stayed desktop, and this
-//! module deliberately declares none of them:
+//! Seven of the desktop's nine `provider_auth/` files moved here: S7.1 brought
+//! `store`, `key_helper`, `gcloud`, `cli_sso`, `litellm_oauth`, `oidc` together
+//! with this file's three free functions (`gcloud_token_auth_enabled`,
+//! `resolve_bearer`, `resolve_bearer_at`), and S7.2 brought `budget.rs`. TWO
+//! files stayed desktop and this module deliberately declares neither:
 //!
 //! * `refresh.rs` — the `tauri` half (`SupervisorRefresherDeps<R:
-//!   tauri::Runtime>`, `tauri::AppHandle`, `session::SessionManager`).
-//! * `budget.rs` — still desktop at this commit; it reads `load_settings`, and
-//!   the `ProviderSource` seam that lets it move is S7.2's, not S7.1's.
+//!   tauri::Runtime>`, `tauri::AppHandle`, `session::SessionManager`). It is the
+//!   split shell's only real desktop file;
 //! * `headers.rs` — moved in T5/S3 as the crate's `provider_headers`.
 //!
-//! The desktop's `src-tauri/src/agent/provider_auth/mod.rs` is now a re-export
-//! shell that keeps `pub mod refresh;` + `pub mod budget;` desktop and
-//! re-exports this module, so every pre-existing desktop spelling
-//! (`crate::agent::provider_auth::store::…`, `budget.rs`'s own
-//! `use super::{resolve_bearer_at, store};`) resolves UNCHANGED through the
-//! shell. That re-export is why the two staying desktop files needed ZERO edits.
+//! `budget.rs` could not move as a pure move: its `reload_providers` re-read the
+//! provider rows off `settings.json` on every poll tick, and that read is the
+//! desktop's disk boundary. It crossed as a seam instead —
+//! [`budget::ProviderSource`], implemented by the desktop shell's
+//! `SettingsProviderSource` — so the crate holds the SHAPE (`ProviderConfig`) and
+//! the polling rules, and the desktop keeps the FILE (ADR 0091).
+//!
+//! The desktop's `src-tauri/src/agent/provider_auth/mod.rs` is a re-export shell
+//! that keeps `pub mod refresh;` desktop, re-exports this module (both as module
+//! aliases and by name), and holds the desktop half of that seam
+//! (`budget_poller_for`). Every pre-existing desktop spelling
+//! (`crate::agent::provider_auth::store::…`, `crate::agent::provider_auth::
+//! budget::…`) resolves UNCHANGED through the shell.
 //!
 //! The dependency graph inside this directory is a DAG, which is what makes the
 //! cut legal: `store` / `key_helper` / `gcloud` are leaves; `cli_sso → store`;
-//! `litellm_oauth → cli_sso, store`; `oidc → litellm_oauth, store`; and the
-//! three functions below call `gcloud`, `oidc`, `store` — and NEVER `refresh::`.
-//! `refresh.rs` never calls `resolve_bearer_at` either, so the two halves of the
-//! split directory are not a cycle in either direction.
+//! `litellm_oauth → cli_sso, store`; `oidc → litellm_oauth, store`; `budget →
+//! store` + the three functions below; and the three functions call `gcloud`,
+//! `oidc`, `store` — and NEVER `refresh::`. `refresh.rs` never calls
+//! `resolve_bearer_at` either, so the two halves of the split directory are not
+//! a cycle in either direction.
 
+pub mod budget;
 pub mod cli_sso;
 pub mod gcloud;
 pub mod key_helper;
@@ -44,10 +52,16 @@ pub mod oidc;
 pub mod store;
 
 // The named surface this directory's `mod.rs` exported before the move, minus
-// the three staying files' blocks (`budget`, `refresh`) and `headers` (whose
-// names the desktop shell still re-exports from `provider_headers`). A module
-// re-export is a module path like any other, so the desktop shell re-issues
-// these same names through `fulcrum_core::provider_auth::{…}`.
+// the two staying files' blocks (`budget` — moved here at S7.2 — and `refresh`)
+// and `headers` (whose names the desktop shell still re-exports from
+// `provider_headers`). A module re-export is a module path like any other, so
+// the desktop shell re-issues these same names through
+// `fulcrum_core::provider_auth::{…}`.
+pub use budget::{
+    classify_status, poll_all, poll_key_info, poll_team_info, poll_user_info, run_budget_tick,
+    should_probe, BudgetEndpoint, BudgetFacts, BudgetPoller, DenialMemory, KeyBudget, PollStatus,
+    ProviderSource, TeamBudget, UserBudget, BUDGET_POLL_INTERVAL_MILLIS,
+};
 pub use gcloud::{adc_file_path, describe_error, parse_adc, token as gcloud_token, AdcCredential};
 pub use key_helper::run as run_key_helper;
 pub use oidc::{authenticate_oidc, credential_from_session, OidcSession};

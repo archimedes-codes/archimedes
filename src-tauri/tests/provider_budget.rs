@@ -24,9 +24,14 @@
 use std::sync::Arc;
 
 use archimedes_lib::agent::provider_auth::budget::{
-    poll_all, poll_key_info, poll_user_info, run_budget_tick, BudgetEndpoint, BudgetPoller,
-    DenialMemory,
+    poll_all, poll_key_info, poll_user_info, run_budget_tick, BudgetEndpoint, DenialMemory,
 };
+// S7.2: the poller's constructor changed shape (it takes a `ProviderSource`, not
+// a settings dir), so these two fixtures build through the DESKTOP SHELL's
+// helper — which wraps the real `load_settings`, so the scratch `settings.json`
+// each test writes is read by the same code production reads. `BudgetPoller`
+// itself is no longer named here (nothing else in this file constructs one).
+use archimedes_lib::agent::provider_auth::budget_poller_for;
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -426,7 +431,7 @@ async fn a_provider_whose_token_cannot_resolve_is_never_polled_and_never_errors(
         .await;
     write_litellm_provider(dir.path(), &server.uri(), "", "oauth");
 
-    let poller = std::sync::Arc::new(std::sync::Mutex::new(BudgetPoller::new(
+    let poller = std::sync::Arc::new(std::sync::Mutex::new(budget_poller_for(
         dir.path().to_path_buf(),
         dir.path().join("provider-auth.json"),
         archimedes_lib::agent::provider_auth::budget::BUDGET_POLL_INTERVAL_MILLIS,
@@ -520,7 +525,7 @@ async fn a_forced_refresh_re_probes_only_the_provider_the_user_asked_about() {
     )
     .expect("settings written");
 
-    let poller = Arc::new(std::sync::Mutex::new(BudgetPoller::new(
+    let poller = Arc::new(std::sync::Mutex::new(budget_poller_for(
         dir.path().to_path_buf(),
         dir.path().join("provider-auth.json"),
         archimedes_lib::agent::provider_auth::budget::BUDGET_POLL_INTERVAL_MILLIS,
