@@ -1220,144 +1220,55 @@ async fn pasted_token_and_cli_sso_refresh_are_noops() {
 
 // ── the structural lints ──────────────────────────────────────────────────
 
-/// Read a source file relative to the crate root (the census-lint precedent:
-/// vacuity-guarded — an unreadable file PANICS rather than passing silently).
+/// Read a DESKTOP source file relative to this package's root (the census-lint
+/// precedent: vacuity-guarded — an unreadable file PANICS rather than passing
+/// silently).
 ///
 /// Line endings are NORMALISED to LF first, for the reason
 /// `definition_permission::…::parse_value_copy` documents: a Windows runner's
 /// git defaults to `core.autocrlf=true`, so the working tree carries CRLF while
 /// the object store keeps LF. A needle carrying a bare `\n` (below, the `"\n}\n"`
-/// that closes the wait handler) matches on Linux/macOS and matches NOTHING on
-/// Windows — which is how these structural pins go red on `windows-latest` while
-/// green everywhere else. Normalising makes the lint measure the CONTENT it
-/// means to measure, never the platform's checkout convention.
+/// that closes a handler) matches on Linux/macOS and matches NOTHING on Windows —
+/// which is how these structural pins go red on `windows-latest` while green
+/// everywhere else. Normalising makes the lint measure the CONTENT it means to
+/// measure, never the platform's checkout convention.
 ///
-/// T5/S3 added the `crate_kind` argument, and it is NOT decoration: the one file
-/// this helper lints (`mcp/callback.rs`) moved to `crates/fulcrum-core`, so "the
-/// crate root" now means TWO different roots depending on which package the
-/// linted file lives in. A single root would have made this lint read a path that
-/// no longer exists — and because the read PANICS, that failure is loud rather
-/// than the fail-open shape this repo keeps recording. The two kinds are named
-/// rather than resolved by probing, so a wrong kind cannot quietly find a
-/// same-named file in the other tree.
+/// T5/S3 added a `crate_kind` argument, because the file one of this file's lints
+/// read (`mcp/callback.rs`) had moved to `crates/fulcrum-core` and "the crate root"
+/// then meant two different roots. T8b/S8b.4 removed that need: the crate-source
+/// half of this file's lints moved INTO the engine crate (a git dependency has no
+/// stable path to read), so exactly ONE root is left and `CrateRoot` now has
+/// exactly one variant. The enum stays rather than collapsing into a bare path
+/// join on purpose — a second root is a real possibility for a later move, and the
+/// named-variant shape is what stops a wrong root quietly finding a same-named
+/// file in the other tree.
 fn crate_source(kind: CrateRoot, relative: &str) -> String {
     let path = match kind {
         CrateRoot::Desktop => Path::new(env!("CARGO_MANIFEST_DIR")).join(relative),
-        // `CARGO_MANIFEST_DIR` is `src-tauri/`, so the sibling member is one up.
-        CrateRoot::FulcrumCore => Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../crates/fulcrum-core")
-            .join(relative),
     };
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("reading {kind:?} {relative:?}: {e}"))
         .replace("\r\n", "\n")
 }
 
-/// Which package's tree a structural lint reads (T5/S3 — the move made this a
-/// real question, where before there was only one crate to read).
+/// Which package's tree a structural lint reads. One variant since T8b/S8b.4:
+/// the engine crate's source is no longer reachable by path from here, so the
+/// `FulcrumCore` variant and its single caller went together (see
+/// `crates/fulcrum-core/src/source_lints.rs`).
 #[derive(Debug, Clone, Copy)]
 enum CrateRoot {
     /// `src-tauri/` — the desktop package.
     Desktop,
-    /// `crates/fulcrum-core/` — the engine crate T5 is extracting into.
-    FulcrumCore,
 }
 
-#[test]
-fn callback_state_check_is_constant_time_lint() {
-    // The load-bearing STRUCTURAL pin (plan §5a): `cargo test` cannot observe
-    // timing, so what is pinned is the SHAPE of the comparison — the callback's
-    // production region must route the `state` guard through `constant_time_eq`
-    // and must NOT contain a `String !=` comparison that a revert would
-    // reintroduce. Behavior is pinned by `callback.rs`'s own tests (equal /
-    // first-byte / last-byte / length-mismatch, plus MCP's matching/mismatched
-    // state tests staying green). NO test here claims to measure timing.
-    // T5/S3: `mcp/callback.rs` moved into `crates/fulcrum-core`, so this reads
-    // the CRATE's tree. The needles below are otherwise unchanged — this lint
-    // still pins the `state` guard's shape and the helper's absence of an early
-    // exit; only the file's home moved. (The `pub(crate) fn` → `pub fn` needle
-    // change is at `tests/provider_oidc.rs`, which asserts the visibility; the
-    // needle here is the bare `pub(crate) fn constant_time_eq(` used to LOCATE
-    // the helper, so it tracks the same widening — see the note there for why a
-    // package boundary forced it.)
-    let source = crate_source(CrateRoot::FulcrumCore, "src/mcp/callback.rs");
-    // Vacuity guard: the region we lint exists at all.
-    let wait_start = source
-        .find("pub async fn wait(")
-        .expect("the wait handler exists");
-    let wait_end = source[wait_start..]
-        .find("\n}\n")
-        .map(|i| wait_start + i)
-        .expect("the wait handler closes");
-    let wait_region = &source[wait_start..wait_end];
-    let wait_code: String = wait_region
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        wait_code.contains("constant_time_eq(state.as_bytes(), expected_state.as_bytes())"),
-        "the `state` guard goes through the constant-time helper:\n{wait_code}"
-    );
-    // The revert detectors: any of these texts in the handler means the guard is
-    // back to a short-circuiting comparison.
-    for forbidden in [
-        "state != expected_state",
-        "!= expected_state",
-        "state.as_str() !=",
-        "expected_state !=",
-        "state == expected_state",
-    ] {
-        assert!(
-            !wait_code.contains(forbidden),
-            "the callback must not compare `state` with `{forbidden}`: a `String !=` \
-             comparison short-circuits on the first differing byte",
-        );
-    }
-    // And the helper itself has no early exit inside its byte loop. The lint
-    // runs over the CODE ONLY — comment lines are stripped first, or the helper's
-    // own doc comment (which NAMES the forbidden constructs to explain why they
-    // are absent) would trip every detector.
-    let helper_start = source
-        .find("pub fn constant_time_eq(")
-        .expect("the ONE constant-time helper exists (ruling R4)");
-    let helper_end = source[helper_start..]
-        .find("\n}\n")
-        .map(|i| helper_start + i)
-        .expect("the helper closes");
-    let helper: String = source[helper_start..helper_end]
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    for forbidden in [
-        "?;",
-        "return true",
-        "break",
-        "continue",
-        ".position(",
-        ".iter().any(",
-    ] {
-        assert!(
-            !helper.contains(forbidden),
-            "the helper must not contain `{forbidden}` — an early exit on a byte \
-             mismatch is exactly the timing leak this exists to avoid:\n{helper}"
-        );
-    }
-    // Reachable by the importer, per R4 — the desktop's `oidc.rs` IMPORTS this
-    // rather than writing a second implementation of a security primitive. The
-    // spelling is `pub` and not `pub(crate)` since T5/S3 moved the file into
-    // `fulcrum-core`: a package boundary erases `pub(crate)`, so the narrower
-    // form would not reach the desktop importer at all. "reachable crate-wide"
-    // was the old wording for "reachable by every importer"; the substance — one
-    // definition, reachable, never duplicated — is what the assertion still
-    // measures.
-    assert!(
-        helper.contains("pub fn constant_time_eq"),
-        "R4 needs the helper reachable by its importers (`pub`, because a \
-         package boundary erases `pub(crate)`)"
-    );
-}
+// `callback_state_check_is_constant_time_lint` MOVED into the engine crate in
+// T8b/S8b.4 — it is now `fulcrum_core::source_lints::callback_state_check_is_constant_time_lint`,
+// beside the `mcp/callback.rs` it lints. It read
+// `../crates/fulcrum-core/src/mcp/callback.rs` by path, and a git dependency has
+// no stable path to read (a cargo git checkout lands under
+// `~/.cargo/git/checkouts/<name>-<hash>/<rev>/`), so this half could not stay.
+// Its needles, its vacuity guards and its five revert detectors came with it
+// unchanged; see the crate-side docs for the region choice it had to make.
 
 #[test]
 fn login_commands_are_registered_in_generate_handler() {
