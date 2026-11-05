@@ -2,14 +2,19 @@
 //!
 //! Three things this file exists to make CI-red:
 //!
-//! 1. **Zero `gcloud` CLI subprocess** — a childproc-style source census over
-//!    `provider_auth/gcloud.rs`'s PRODUCTION region (that file moved to
-//!    `crates/fulcrum-core/src/provider_auth/` in T7/S7.1; see `CRATE_GCLOUD_RS`).
-//!    The exchange is a `reqwest`
-//!    POST; nothing in this flow may spawn a child process.
-//! 2. **The ADC path never touches the credential store** — the same census shape
-//!    looking for `store::` calls, plus a runtime assertion that a successful mint
-//!    leaves the provider-auth file ABSENT. This is the flow's central security
+//! 1. **Zero `gcloud` CLI subprocess** — MOVED to the engine crate in T8b/S8b.4
+//!    (`fulcrum_core::source_lints::gcloud_rs_never_spawns_a_subprocess`). It was
+//!    a childproc-style source census reading
+//!    `../crates/fulcrum-core/src/provider_auth/gcloud.rs` by PATH, and after T8b
+//!    the desktop consumes that crate as a GIT dependency, whose cargo checkout
+//!    has no stable path at all — so the lint had to move with the source it
+//!    lints. Nothing about the guarantee changed; only its home did.
+//! 2. **The ADC path never touches the credential store** — the census half of
+//!    this moved with (1) (`gcloud_rs_never_calls_store`). What stays HERE is the
+//!    runtime assertion that a successful mint leaves the provider-auth file
+//!    ABSENT, which is the desktop-side half of the same rule and reaches the
+//!    whole call graph (a census cannot see a write reached from a different
+//!    module; this one can). This is the flow's central security
 //!    rule: the minted access token lives only in the 50-minute in-memory cache,
 //!    never in a plaintext file beside the refresh token and client secret.
 //! 3. **The dispatcher arm** — `resolve_bearer_at` with the ADC flow on serves the
@@ -174,111 +179,27 @@ fn install(adc_file: AdcFileSource, endpoint: Option<String>) -> gcloud::TestAdc
 /// (`gcloud::CACHE_TTL_MS`), never waited out.
 const TEST_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 
-// ── 1. the zero-subprocess census ─────────────────────────────────────────
-
-/// Where `gcloud.rs` lives since T7/S7.1: the ENGINE CRATE, one package over.
-/// Named once, as a constant, so both censuses lint the same file and a future
-/// move has exactly one line to follow. The path is relative to
-/// `CARGO_MANIFEST_DIR` (`src-tauri/`), hence the `../` into the sibling member.
-#[cfg(not(windows))]
-const CRATE_GCLOUD_RS: &str = "../crates/fulcrum-core/src/provider_auth/gcloud.rs";
-
-/// The census scanner shared by both source scans: the PRODUCTION region of one
-/// file (every code line before the first item-position `#[cfg(test)]`, comments
-/// dropped), `panic`-ing on an unreadable file — a census that quietly stops at
-/// the first odd file passes for the wrong reason (the `agent/childproc.rs`
-/// precedent, including its vacuity rule).
-///
-/// `rel` is relative to THIS package's root (`CARGO_MANIFEST_DIR` = `src-tauri/`),
-/// NOT to `src/`: T7/S7.1 moved `gcloud.rs` into `crates/fulcrum-core`, so the
-/// linted file now lives OUTSIDE this package's tree and a helper that forced a
-/// `src/` prefix could not name it. `../crates/fulcrum-core/...` is the sibling-
-/// member spelling the S3/S5b precedent uses (`tests/provider_oidc.rs:1023`,
-/// `tests/provider_oauth_flow.rs:1248`). The read PANICS on a miss, so a wrong
-/// root is loud — the fail-open shape this repo keeps recording.
-///
-/// `#[cfg(not(windows))]` like the childproc precedent: Windows keeps no
-/// source-scan census (the repo's own recorded gap).
-#[cfg(not(windows))]
-fn production_region(rel: &str) -> Vec<(usize, String)> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("census cannot read {}: {e}", path.display()));
-    let is_comment = |t: &str| ["//", "/*", "*", "*/"].iter().any(|p| t.starts_with(p));
-    let mut out = Vec::new();
-    for (idx, raw) in text.lines().enumerate() {
-        let trimmed = raw.trim();
-        if trimmed.starts_with("#[cfg(test)]") && !is_comment(trimmed) {
-            break;
-        }
-        if is_comment(trimmed) {
-            continue;
-        }
-        out.push((idx + 1, raw.to_string()));
-    }
-    out
-}
-
-/// The flow's headline claim: **zero `gcloud` CLI subprocess**. The token comes
-/// from a `reqwest` POST to Google's endpoint — no CLI, no PATH dependency, no
-/// user machine state beyond the ADC file.
-///
-/// A LINT, not a parser: it matches TEXT, so a string literal containing one of
-/// these needles would also trip it (the honest trade every grep-level lint makes
-/// — a false alarm costs one rename, a false pass costs a subprocess per
-/// resolve).
-#[cfg(not(windows))]
-#[test]
-fn gcloud_rs_never_spawns_a_subprocess() {
-    const NEEDLES: [&str; 3] = ["Command::new(", "process::Command", "tokio::process"];
-    let region = production_region(CRATE_GCLOUD_RS);
-    assert!(
-        region.len() > 100,
-        "the census is vacuous — it scanned {} lines of gcloud.rs",
-        region.len()
-    );
-    let hits: Vec<String> = region
-        .iter()
-        .filter(|(_, text)| NEEDLES.iter().any(|n| text.contains(n)))
-        .map(|(line, text)| format!("gcloud.rs:{line}: {}", text.trim()))
-        .collect();
-    assert!(
-        hits.is_empty(),
-        "the ADC flow must never spawn a subprocess (issue #128 — the exchange is a \
-         reqwest POST):\n{}",
-        hits.join("\n")
-    );
-}
-
-// ── 2. the never-write-store census ───────────────────────────────────────
-
-/// The security census: the ADC module must never reach the provider-auth store.
-/// A stray `store::store_credential` would persist the minted access token into
-/// `provider-auth.json` beside the ADC refresh token and client secret — exactly
-/// the secret-at-rest this flow exists to keep out of a plaintext file (the
-/// in-memory 50-minute cache is its ONLY home).
-#[cfg(not(windows))]
-#[test]
-fn gcloud_rs_never_calls_store() {
-    const NEEDLES: [&str; 3] = ["store_credential", "store::save", "store::"];
-    let region = production_region(CRATE_GCLOUD_RS);
-    assert!(
-        region.len() > 100,
-        "the census is vacuous — it scanned {} lines of gcloud.rs",
-        region.len()
-    );
-    let hits: Vec<String> = region
-        .iter()
-        .filter(|(_, text)| NEEDLES.iter().any(|n| text.contains(n)))
-        .map(|(line, text)| format!("gcloud.rs:{line}: {}", text.trim()))
-        .collect();
-    assert!(
-        hits.is_empty(),
-        "the ADC flow must never write the credential store (issue #128 — the minted token \
-         lives only in the in-memory cache):\n{}",
-        hits.join("\n")
-    );
-}
+// ── 1./2. the two source censuses: MOVED to the engine crate in T8b/S8b.4 ──
+//
+// `gcloud_rs_never_spawns_a_subprocess` and `gcloud_rs_never_calls_store` now live
+// in `fulcrum_core::source_lints`, beside the `gcloud.rs` they lint. They read
+// `../crates/fulcrum-core/src/provider_auth/gcloud.rs` by PATH from here, and that
+// is the read a GIT dependency makes impossible: a cargo git checkout lands under
+// `~/.cargo/git/checkouts/<name>-<hash>/<rev>/`, so no path from the desktop can
+// name the engine's source after T8b — not a relative path, not an absolute one,
+// and not a "keep a copy on both sides" hack (the crate-side copy would have
+// nothing to point at either, once the desktop is not its workspace).
+//
+// Deleting the two tests here without moving them would have been the silent half
+// of this task: no compile error, no red test, just a guarantee that stopped being
+// policed. `crates/fulcrum-core/src/source_lints.rs` records the windows-gating
+// decision that came with them (the `#[cfg(not(windows))]` gates were DROPPED, on
+// purpose) and re-derives the vacuity floors over the crate's own tree.
+//
+// The private `production_region` scanner this file grew for those two lints is
+// gone with them — the crate has ONE such scanner (`lint_scan::production_region`,
+// which `childproc`'s census shares) and a moved lint must not leave a stale
+// second definition behind on the wrong side of the boundary.
 
 // ── 3. the runtime never-persist assertion ────────────────────────────────
 
