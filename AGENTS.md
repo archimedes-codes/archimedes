@@ -40,6 +40,38 @@ looking plausible. Enumerate them with `cargo test --workspace -- --list`; do
 `#[cfg(windows)]`-only tests that never reach the compiler on Linux (measured: 6
 too many), so a grep-based "no test lost" is confidently wrong.
 
+**Any test COUNT is compiler-derived or it is wrong, and the two ways a grep
+disagrees point in opposite directions.** Measured on one file
+(`crates/fulcrum-core/src/worker/manager/tests/mod.rs`): a loose grep for
+`#[test` reported **31**, a strict `^\s*#\[test\]$` grep reported **29**, and
+`cargo test -- --list` reported **30** — which is also the exact-form attribute
+count (7 `#[test]` + 23 `#[tokio::test]` + 1 `#[tokio::test(flavor = …)]`). The
+loose grep over-counted because a doc comment at `:2650` mentions `#[tokio::test]`
+in prose; the strict grep under-counted because it misses an attribute that takes
+arguments. **Three instruments, three answers, one authority.** This bit a plan
+that "corrected" a correct count to a wrong one and then had to be corrected back.
+Report which uniqueness metric you used — `--list` gives **leaf-unique** or
+**full-path-unique**, and they differ for two unrelated reasons. Measured at
+the tip of PR **#158**: **2226** listed, **2221** full-path unique, **2215**
+leaf-unique (cited by PR number, not the head SHA, per the squash-orphan rule below).
+- **2226→2221: `--list` does NOT prefix test names with their target, so same-named
+  tests in DIFFERENT binaries are indistinguishable and dedupe to one line.** Five such
+  collisions: two `test_support::tests::*` names defined in **both** crates (the deliberate
+  `test_support` duplication — `archimedes` and `fulcrum-core` each list the identical path),
+  and three identically-named tests in two integration targets each (`harness_store.rs` +
+  `storage.rs` share two scratch-leak tests; `harness_dispatch_native.rs` +
+  `harness_subagent_worker.rs` share one). **Consequence: a workspace-level `--list` diff cannot
+  see one of a colliding pair vanish** — it survives on the other target's line. Not a blocker
+  for the loss check (the collision is symmetric and pre-existing), but do not claim a `--list`
+  diff proves per-target coverage.
+- **2221→2215: 5 leaf names shared by 11 distinct full paths**
+  (`pkce_challenge_is_the_s256_of_the_verifier` alone has 3), which is what a desktop→crate MOVE
+  produces — the leaf survives, the path changes. So a leaf-unique diff reads "nothing lost"
+  exactly when a full-path diff reads "everything churned".
+
+**Use leaf-unique to prove loss, and expect the full-path set to churn by 2× the number of tests
+moved.** The assertion is **loss = 0**, never the total.
+
 The Rust compiler is pinned in the repo-root `rust-toolchain.toml`, so plain
 `cargo …` from the repo root (the workspace) is the pinned one — CI installs
 from that same file rather than naming a version. Do not float it: a newer rustc adds lints,
@@ -505,6 +537,20 @@ These are properties of the repo, not of any branch:
   and failed once on `main` right after an unrelated merge. Same advice: re-run
   before investigating, and do not "fix" it by tightening or loosening the
   threshold, which only moves the flake.
+- **`harness::provider::transport::tests::a_slow_stream_completes_but_a_silent_stream_errors`
+  flakes on ubuntu and needs an owner — not a drive-by fix.** It dribbles one body byte every
+  **50 ms** against a **200 ms `read_timeout`** and asserts the dribbling stream COMPLETES while a
+  silent one ERRORS, so a scheduler stall longer than the 150 ms margin reads as "the slow stream
+  was cut". **Two failures, one per CI event type, in two runs of PR #158:** run
+  **`41944729705`** (a `pull_request` run) failed while its sibling `push` run at the same SHA
+  passed; then run **`41947586793`** (a `push` run) failed on **attempt 1** and went green on the
+  re-run, while its sibling `pull_request` run `41947592114` passed at that same SHA. **That
+  cross-event split at an unchanged SHA is the load signature** — cite these run IDs, not the SHAs,
+  per the squash-orphan rule below. **Passed on re-run both times.** **Pre-existing, not
+  introduced by the crate extraction** — verified by diffing the test body against
+  `origin/main:src-tauri/src/agent/harness/provider/transport.rs`: **0 differing lines**, only its
+  path moved (`agent/harness/` → `crates/fulcrum-core/src/harness/`). Same advice as the two above:
+  re-run before investigating, and do not touch the 50/200 ms thresholds, which only moves the flake.
 - **`scripts/check-temp-dir-census.test.sh` case 13 (`--self-test leaves the real
   census base unchanged`) reddens on a loaded Linux box, and the assertion is
   correct.** Its metric is `count_entries` — `find /tmp -mindepth 1 -maxdepth 1`,
@@ -557,6 +603,51 @@ These are properties of the repo, not of any branch:
   Cargo.toml" means the command never ran, and re-running it to confirm a flake will simply fail again.
 - **Plans carry stale baselines within hours** on a busy branch: re-measure test
   counts at your own HEAD rather than trusting the plan's.
+- **Moving a file between the two packages breaks three things that no path grep finds.** The crate
+  extraction (T5–T8, **13 sub-commits**: S1–S5b, S7.1–S7.2, S8.1–S8.5) hit each of these repeatedly:
+  1. **The orphan rule (E0117) is invisible to every audit that works on paths.**
+     `impl From<&BudgetFacts> for Vec<ProviderBudgetDto>` compiled for its whole life while
+     `BudgetFacts` was desktop-local; moving that type into `fulcrum-core` made BOTH the trait
+     (`From`) and the `Vec<…>` target foreign, so the impl became illegal and had to be rewritten as
+     a function (`commands/settings.rs::budget_rows`). Coherence depends on **where a type lives**,
+     so no `crate::X::` census, boundary pin, or `Cargo.toml` diff predicts it — only rustc does.
+     Before a move: `grep -n '^impl .* for ' <file>` and flag any impl whose Self type AND target
+     type are both foreign.
+  2. **Integration tests that read SOURCE TEXT by PATH break, and they are not symbol references.**
+     `tests/provider_gcloud_adc.rs` and `tests/provider_oidc.rs` lint `gcloud.rs` / `oidc.rs` by
+     `read_to_string`, so a move reddens them with no compile error anywhere. **A plan's "zero edits
+     under `src-tauri/tests/`" claim is wrong the moment a moved file is text-linted** — enumerate
+     with `grep -rn CARGO_MANIFEST_DIR src-tauri/tests | grep -E 'join|read_to_string'` and open
+     every hit. Cross-package source reads are legal (an integration target reads files, not
+     symbols — no cycle), so the fix is a `../crates/…` path, matching the `mcp/callback.rs`
+     precedent. **Then check any vacuity floor in that lint: scanning one directory after the split
+     would pass GREEN having opened 3 of 9 files.**
+  3. **`Path::is_file()` does not append `EXE_SUFFIX`; `CreateProcessW` does.** A fixture resolver
+     returning a suffix-less `fake_worker` SPAWNS fine on Windows and fails an existence witness —
+     so the bug is invisible until a test *observes* the file instead of exec'ing it. Both
+     `worker/client.rs` and `worker/manager/tests/mod.rs` carried it and only CI's Windows leg saw
+     it; `test_support::fixture_bin()` now owns the name (suffix as a **parameter**, so the rule is
+     assertable on Linux, where `EXE_SUFFIX` is `""` and reading the constant would pass vacuously).
+     Keep `target_debug_dir()` **directory-only**: appending the suffix there
+     would break every caller that joins a directory and then supplies its own file name. The `mcp`
+     spawners are unaffected by the missing suffix precisely because they hand the path to a
+     `Command` and never OBSERVE the file (`grep -c is_file` over their `fake_mcp_stdio` sites: 0) —
+     `CreateProcess` fills the suffix in. **Note the residual gap the helper itself records: those
+     `mcp` spawners have no vacuity guard of their own, so only
+     `childproc::target_debug_dir_is_where_cargo_actually_builds` stands between a wrong root and a
+     silently-green suite.**
+- **A pin that passes on the broken thing is worse than no pin, and three shapes hide it.** Measured
+  live during the extraction: (a) a fixture path asserting `starts_with(pkg_root.parent())` **and**
+  `!starts_with(pkg_root.join("target"))` — **both true of the wrong path**, so it printed "verified"
+  while ~45 spawners would hit `ENOENT`; assert **equality** against the known-good root instead.
+  (b) A file-wide `contains` on a parameter's signature text, satisfied by a *different* function
+  with an identically-typed parameter — scope the scan to the function's own body. (c) **A seam can
+  be fully wired and return nothing:** deleting a shell helper proves it is *instantiated*
+  (`E0425`), but making its `providers()` return `Vec::new()` compiles clean and silently changes
+  behaviour. Only a mutation that **still compiles** and changes what something **returns** tests
+  behaviour — so to falsify a source-text lint, hoist a value into a local rather than deleting it
+  (a non-compiling mutation never reaches the lint: two attempts died as `E0433`/`E0425` first).
+  Aim at least one break at each NEW assert, not only the thing you already know about.
 - **Do not `git add -f` a file under `docs/roadmap/` to get it into a sibling worktree — `cp` it there.**
   The directory is gitignored (`.gitignore:36`, the `docs/roadmap/` entry — locate by that string,
   the number moves whenever a rule is added above it) and plan families are working memory: they belong
