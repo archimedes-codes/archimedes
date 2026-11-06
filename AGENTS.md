@@ -440,6 +440,28 @@ workflow can do — is writing notes a person would read.
   way reported "all 11 commits present on GitHub" for 11 commits that were all absent. Branch on
   exit status (`gh api … >/dev/null 2>&1 && …`), never on captured output. Hit live while
   measuring the bullet above; the wrong answer was confident and well-formed.
+- **`gh api … /issues/comments` without an issue number returns the REPO-WIDE latest comment, and a
+  PATCH against it destroys an unrelated human comment.** Hit live: to fix a typo in a comment just
+  posted on #155, the id was fetched with `--jq '.[-1]'` on the repo-wide list rather than from
+  `issues/<n>/comments`, which returned a 2026-10-17 comment on #35 — and the `PATCH` overwrote it.
+  **GitHub stores only the current body**, so the original is unrecoverable: the API, the issue
+  timeline, and search all return the post-overwrite text. Two things saved the content: the comment
+  said it was a *mirror* of a doc, and that doc survives in a **reachable** squash commit
+  (`git show f8450d42:docs/roadmap/…`). Note the mirror was ~9 KB of a ~23 KB doc, so it was
+  **condensed** — the restore is the full source plus a provenance note, not a verbatim recovery, and
+  saying so is part of the fix. The discipline: resolve a comment id from
+  `issues/<n>/comments` (issue-scoped), or echo the id you are about to PATCH and confirm its
+  `html_url` points at the issue you meant. Never derive an id from "latest" or from a repo-wide list.
+- **A grounding report's silence is not a measurement of absence.** On this same run, the report for
+  the Windows-console area never mentioned the reporter's §3 headline (`CREATE_NO_WINDOW` +
+  `start "" cmd /c` → 3/3 visible), so the implementer concluded the harness had *never run* that
+  combination, the reviewer praised the resulting caveat as exemplary, and it shipped into a research
+  doc and an ADR as "unmeasured, not refuted". It was measured, and the flag **lost** — which is the
+  opposite finding and changes what the fix has to be (root suppression goes from candidate to
+  required; job-object reaping is confirmed to fix *lingering* only). When a doc claims some case was
+  "never measured", **read the primary source it is summarizing** — the issue body or comment, here
+  `gh issue view <n> --json comments` — before writing that claim. A sub-claim resting on an
+  upstream report's coverage is resting on someone else's completeness.
 
 These are properties of the repo, not of any branch:
 
