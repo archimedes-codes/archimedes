@@ -93,6 +93,11 @@ const renderCard = (props: {
 const glyphClass = (row: HTMLElement): string =>
   row.querySelector("svg")?.getAttribute("class") ?? "";
 
+// The card starts collapsed; the header toggle opens the body. It is always
+// the FIRST button in DOM order (the copy buttons live in the body), so
+// [0] disambiguates even when a row/script copy button is present.
+const openCard = () => fireEvent.click(screen.getAllByRole("button")[0]);
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -112,9 +117,12 @@ describe("CodemodeCard — nested calls from rawOutput.details.calls", () => {
       ]),
     });
 
-    // The header shell is present (open by default — no click needed). The
-    // header never sets `aria-expanded` (it is the tooltip trigger), so the
-    // proof is the visible title text, following the subagent precedent.
+    openCard();
+
+    // The header shell is present while collapsed, then the body opens on the
+    // header toggle click. The header never sets `aria-expanded` (it is the
+    // tooltip trigger), so the proof is the visible title text, following the
+    // subagent precedent.
     expect(screen.getByText("codemode")).toBeTruthy();
 
     const rows = screen.getAllByTestId("codemode-call-row");
@@ -129,19 +137,24 @@ describe("CodemodeCard — nested calls from rawOutput.details.calls", () => {
     expect(within(rows[1]).getByText(JSON.stringify({ command: "ls" }))).toBeTruthy();
   });
 
-  it("opens by default and toggles closed", () => {
+  it("starts collapsed and toggles open", () => {
     // `text: ""` so the row carries no copy button — the ONE button in the card
     // is then the header toggle.
     renderCard({ rawOutput: parentResult([nested({ text: "" })]) });
 
-    // Open by default: the nested row is in the DOM without any click.
-    expect(screen.getAllByTestId("codemode-call-row")).toHaveLength(1);
+    // Collapsed by default, like every other tool card: the nested row is NOT in
+    // the DOM before any click.
+    expect(screen.queryByTestId("codemode-call-row")).toBeNull();
 
     // The header row is the card's ONLY button (the failure tooltip renders
     // through a Portal and only when the parent failed, so it is absent here).
     fireEvent.click(screen.getByRole("button"));
-    // The collapse is proven by the row LEAVING the DOM — not by an
+    // The expansion is proven by the row ENTERING the DOM — not by an
     // `aria-expanded` attribute the header never sets.
+    expect(screen.getAllByTestId("codemode-call-row")).toHaveLength(1);
+
+    // And the other way: a second click collapses it again.
+    fireEvent.click(screen.getByRole("button"));
     expect(screen.queryByTestId("codemode-call-row")).toBeNull();
   });
 
@@ -162,6 +175,9 @@ describe("CodemodeCard — nested calls from rawOutput.details.calls", () => {
         isStreaming
       />,
     );
+    // One click is enough: `rerender` below reconciles the SAME component
+    // instance, so the `open` state persists across it.
+    openCard();
     expect(screen.getAllByTestId("codemode-call-row")).toHaveLength(2);
     expect(screen.getByText("working")).toBeTruthy();
 
@@ -201,6 +217,8 @@ describe("CodemodeCard — nested calls from rawOutput.details.calls", () => {
       ]),
     });
 
+    openCard();
+
     const rows = screen.getAllByTestId("codemode-call-row");
     expect(rows).toHaveLength(4);
     // The glyph classes are the REAL `SubagentStatusIcon` classes — the caller
@@ -217,12 +235,14 @@ describe("CodemodeCard — nested calls from rawOutput.details.calls", () => {
       rawOutput: { details: {} },
       status: "pending",
     });
+    openCard();
     expect(screen.getByText("No nested calls yet.")).toBeTruthy();
     expect(screen.queryByTestId("codemode-call-row")).toBeNull();
     unmount();
 
     // An ABSENT result reads defensively to the same empty state.
     renderCard({ status: "completed" });
+    openCard();
     expect(screen.getByText("No nested calls yet.")).toBeTruthy();
   });
 
@@ -251,6 +271,7 @@ describe("CodemodeCard — nested calls from rawOutput.details.calls", () => {
     ];
     for (const { shape, rows } of malformed) {
       const { unmount } = renderCard({ rawOutput: shape, status: "completed" });
+      openCard();
       expect(screen.queryAllByTestId("codemode-call-row")).toHaveLength(rows);
       if (rows === 0) expect(screen.getByText("No nested calls yet.")).toBeTruthy();
       unmount();
@@ -264,6 +285,7 @@ describe("CodemodeCard — nested calls from rawOutput.details.calls", () => {
       rawOutput: parentResult([]),
       status: "completed",
     });
+    openCard();
 
     // The header is there on the FIRST paint (the block never changes shape) and
     // so is the fallback `<pre>` — neither is the signal that the highlight
@@ -301,6 +323,7 @@ describe("CodemodeCard — nested calls from rawOutput.details.calls", () => {
     });
 
     renderCard({ rawInput: { code }, rawOutput: parentResult([]) });
+    openCard();
     fireEvent.click(await screen.findByRole("button", { name: "Copy code" }));
     expect(await screen.findByRole("button", { name: "Copied" })).toBeTruthy();
     expect(writeText).toHaveBeenCalledWith(code);
@@ -313,6 +336,8 @@ describe("CodemodeCard — nested calls from rawOutput.details.calls", () => {
         nested({ status: "error", isError: true, text: "boom" }),
       ]),
     });
+
+    openCard();
 
     const row = screen.getByTestId("codemode-call-row");
     expect(within(row).getByText("boom")).toBeTruthy();
@@ -341,6 +366,8 @@ describe("CodemodeCard — nested calls from rawOutput.details.calls", () => {
       ]),
     });
 
+    openCard();
+
     const rows = screen.getAllByTestId("codemode-call-row");
     // A row with output offers the copy affordance; a row without does not.
     fireEvent.click(within(rows[0]).getByRole("button", { name: "Copy bash output" }));
@@ -359,6 +386,8 @@ describe("CodemodeCard — nested calls from rawOutput.details.calls", () => {
         nested({ text: "second copy" }),
       ]),
     });
+
+    openCard();
 
     // LAST-WRITER-WINS (the Map reconcile): ONE row, showing the last element.
     const rows = screen.getAllByTestId("codemode-call-row");
@@ -381,6 +410,8 @@ describe("CodemodeCard — nested calls from rawOutput.details.calls", () => {
       isStreaming: true,
       rawOutput: { details: { calls: [withoutStatus] } },
     });
+
+    openCard();
 
     const row = screen.getByTestId("codemode-call-row");
     expect(glyphClass(row)).toContain("animate-spin text-warning");

@@ -14,9 +14,11 @@ import { cn } from "./lib/utils";
  * The `codemode` tool-call card: ONE expandable card whose body lists the
  * script's NESTED calls (`tools.<name>(args)` inside the QuickJS script).
  *
- * Shape precedent: `SubagentDelegatingCard` — the standard `ToolCallCardHeader`
- * shell, open by default, a `divide-y` nested-row list in the expanded body,
- * `StatusIcon` per row. The structural difference is where the children come
+ * Starts COLLAPSED like every other tool card (the `ToolCallCard` no-auto-open
+ * rule): the standard `ToolCallCardHeader` shell, a `divide-y` nested-row list
+ * in the expanded body, `StatusIcon` per row, opened on click so a live codemode
+ * call never pushes the transcript into a wall of rows on arrival. The structural
+ * difference is where the children come
  * from: the subagent card subscribes to a separate store; THIS card is
  * props-driven. Its rows come from the parent message's own `rawOutput`, which
  * the reducer replaces wholesale on every frame for that message
@@ -300,9 +302,10 @@ export default function CodemodeCard({
   rawOutput?: unknown;
   isStreaming?: boolean;
 }) {
-  // Open by default (the `SubagentDelegatingCard` precedent): the nested calls
-  // ARE the interesting part of a codemode call.
-  const [open, setOpen] = useState(true);
+  // Collapsed by default, like every other tool card — the nested-call body is
+  // one click away, and a streaming call must not auto-open into a wall of
+  // rows (the `ToolCallCard` no-auto-open rule).
+  const [open, setOpen] = useState(false);
 
   const rawOutputObject =
     typeof rawOutput === "object" && rawOutput !== null
