@@ -1997,14 +1997,19 @@ impl SessionManager {
         Ok(true)
     }
 
-    /// Set a session config option (the model or the thinking level) on a
-    /// live session.
+    /// Set a session config option (the model or the thinking level).
     ///
-    /// Applies the change through the loop's control channel (`AgentLoop::set_model`
-    /// / `set_thinking_level` — applied when the loop is idle), then
-    /// re-synthesizes the config options FROM THE `ModelCatalog` (a native
-    /// session has no `get_state`) and emits a `config_option_update` (the
-    /// agent does not emit one itself — the client owns the frame).
+    /// A LIVE session (one with an attached Worker handle) gets the change
+    /// through the loop's control channel (`AgentLoop::set_model` /
+    /// `set_thinking_level` — applied when the loop is idle). A session with NO
+    /// live Worker — stored, cleanly closed, or crashed — is NOT refused
+    /// (issue #154): the change is persisted to the session's own
+    /// `capabilities_json` row instead, so the next `resume_session` boots on
+    /// the new values. Either way the options are re-synthesized FROM THE
+    /// `ModelCatalog` (a native session has no `get_state`) and a
+    /// `config_option_update` is emitted (the agent does not emit one itself —
+    /// the client owns the frame); the returned array is POPULATED on both
+    /// paths (the frontend reads `option.currentValue` from it).
     pub async fn set_config_option(
         &self,
         session_id: &str,
@@ -2018,12 +2023,35 @@ impl SessionManager {
         let wm = self.worker_manager.get().cloned().ok_or_else(|| {
             SessionError::Io("the session's WorkerManager is not attached".to_string())
         })?;
-        let state = self
-            .with_session(session_id, |s| s.config_state.clone())
-            .flatten()
+        // (#154) The row is the ONE existence proof that a session exists. It
+        // replaces the old `config_state` pre-check, which was the REAL trap
+        // for a stopped session: the per-session map row is removed wholesale
+        // on a clean close (`router.rs::on_session_exited_expected`) and a
+        // stored session never had one, so the pre-check failed with
+        // `UnknownSession` before the transport was even consulted. The row
+        // guard — not the persist — must be the unknown-session source,
+        // because `update_session_capabilities` is a SILENT NO-OP on a missing
+        // row and `with_session_entry` CREATES a map row: without this read a
+        // ghost id would return `Ok(populated_options)`, emit
+        // `config_option_update`, and leak a phantom `SessionState` entry.
+        // Every LIVE session has a row (`establish_worker_session` records it
+        // for a start AND a resume), so the guard never fires on a live path.
+        // Kept BEFORE the catalog fetch, i.e. the same precedence the
+        // pre-check had: an unknown id fails before any discovery I/O.
+        let db = self.driver.db.clone().ok_or_else(|| {
+            SessionError::Io("a native session requires an attached database".to_string())
+        })?;
+        let row = db
+            .session(session_id)
+            .map_err(|e| SessionError::Io(format!("failed to read the session row: {e}")))?
             .ok_or_else(|| SessionError::UnknownSession {
                 id: session_id.to_string(),
             })?;
+        // ONE liveness probe decides every transport call below: with a handle
+        // the change goes over IPC exactly as before, without one it is
+        // persisted (the `send_config_*` helpers' miss arms stay as they were —
+        // they are now only reached when a handle exists).
+        let live = wm.handle_for(session_id).is_some();
 
         // The `Model` lookup + the re-synthesizer run against the EFFECTIVE
         // catalog (the base catalog + the user's providers — a user-provider
@@ -2050,7 +2078,12 @@ impl SessionManager {
                     .ok_or_else(|| SessionError::Command {
                         error: format!("unknown model: {value}"),
                     })?;
-                self.send_config_to(&wm, session_id, Some(&model), None, None)?;
+                // (#154) The transport only when a Worker is LIVE; with no
+                // handle there is nothing to send to, and the row write below
+                // is what carries the change.
+                if live {
+                    self.send_config_to(&wm, session_id, Some(&model), None, None)?;
+                }
                 self.update_config_state(session_id, |s| s.model = model.clone());
                 // (ADR 0015) Minimal-surprise reset: the current level is KEPT across
                 // the switch when valid for the new model (its `thinking_levels` are
@@ -2059,13 +2092,27 @@ impl SessionManager {
                 // doesn't support it. The second `send_config` mirrors ONLY on success
                 // (finding 12): a failed send leaves the mirror untouched. The arm does
                 // NOT write memory.
+                //
+                // With no `config_state` mirror (the stopped-session case) the
+                // CURRENT level comes from the stored row's `thinkingLevel` —
+                // parsed tolerantly, exactly as `resume_native_session` reads it —
+                // so a stored level is not silently dropped from the row this arm
+                // rewrites (row and memory agree on the next resume).
+                let stored_caps: Value =
+                    serde_json::from_str(&row.capabilities_json).unwrap_or(Value::Null);
                 let mut current_level = self
                     .with_session(session_id, |s| {
                         s.config_state
                             .as_ref()
                             .and_then(|c| c.thinking_level.clone())
                     })
-                    .flatten();
+                    .flatten()
+                    .or_else(|| {
+                        stored_caps
+                            .get("thinkingLevel")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    });
                 if let Some(level) = &current_level {
                     // Issue #146: `supports_thinking_level` soft-passes an EMPTY
                     // advertised set (right for dispatch, where the parent's model is
@@ -2081,14 +2128,20 @@ impl SessionManager {
                             &model,
                         );
                         // A `None` reset must CLEAR the worker's level: `thinking: None`
-                        // alone means "leave it alone" (issue #146).
-                        let sent = self.send_config_clearing_to(
-                            &wm,
-                            session_id,
-                            None,
-                            reset.as_deref(),
-                            reset.is_none(),
-                        );
+                        // alone means "leave it alone" (issue #146). With no live
+                        // Worker there is nothing to clear — the row write below
+                        // carries the reset (`None` → no `thinkingLevel` key).
+                        let sent = if live {
+                            self.send_config_clearing_to(
+                                &wm,
+                                session_id,
+                                None,
+                                reset.as_deref(),
+                                reset.is_none(),
+                            )
+                        } else {
+                            Ok(())
+                        };
                         if sent.is_ok() {
                             self.update_config_state(session_id, |s| {
                                 s.thinking_level = reset.clone();
@@ -2097,15 +2150,28 @@ impl SessionManager {
                         }
                     }
                 }
-                if let Some(db) = &self.driver.db {
-                    let caps = native_capabilities(&model, current_level.as_deref());
-                    if let Err(e) = db.update_session_capabilities(session_id, &caps.to_string()) {
-                        // Log to stderr for dev console, and debuglog for packaged runtime logs.
-                        eprintln!("update_session_capabilities failed for {session_id}: {e}");
-                        crate::agent::debuglog::log(&format!(
-                            "update_session_capabilities failed for {session_id}: {e}"
-                        ));
-                    }
+                let caps = native_capabilities(&model, current_level.as_deref());
+                if let Err(e) = db.update_session_capabilities(session_id, &caps.to_string()) {
+                    // Log to stderr for dev console, and debuglog for packaged runtime logs.
+                    eprintln!("update_session_capabilities failed for {session_id}: {e}");
+                    crate::agent::debuglog::log(&format!(
+                        "update_session_capabilities failed for {session_id}: {e}"
+                    ));
+                }
+                // (#154) Seed the mirror when there is none (the stopped
+                // session), so the tail re-synthesizer can run and the returned
+                // array is POPULATED. Safe: the row guard above means this can
+                // only ever fire for a REAL row — never a phantom id.
+                if self
+                    .with_session(session_id, |s| s.config_state.is_none())
+                    .unwrap_or(true)
+                {
+                    self.with_session_entry(session_id, |state| {
+                        state.config_state = Some(NativeConfigState {
+                            model: model.clone(),
+                            thinking_level: current_level.clone(),
+                        });
+                    });
                 }
             }
             "thought_level" => {
@@ -2118,7 +2184,56 @@ impl SessionManager {
                         error: "a thinking level must be non-empty".to_string(),
                     });
                 }
-                self.send_config_to(&wm, session_id, None, Some(value), None)?;
+                // (#154) The transport only when a Worker is LIVE (the same
+                // probe as the `model` arm, the same reason).
+                if live {
+                    self.send_config_to(&wm, session_id, None, Some(value), None)?;
+                }
+                // ONE model for BOTH writes below (the remembered-key write and the
+                // new row write), and it is the POST-change model — never a
+                // pre-change snapshot — so the row and the remembered map agree on
+                // what the next resume boots. The `config_state` mirror holds the
+                // live session's own model; with no mirror (the stopped session) the
+                // model comes from the stored row's composed key, resolved against
+                // the EFFECTIVE catalog (the same tolerant read
+                // `resume_native_session` does). The mirror is copied OUT first —
+                // the lock dies with the call, no guard is held across an `await`.
+                let state_model = self
+                    .with_session(session_id, |s| s.config_state.clone())
+                    .flatten()
+                    .map(|state| state.model);
+                let stored_key: Option<String> = if state_model.is_none() {
+                    serde_json::from_str(&row.capabilities_json)
+                        .unwrap_or(Value::Null)
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                } else {
+                    None
+                };
+                let resolved = stored_key
+                    .as_deref()
+                    .and_then(|key| resolve_composed_model(&catalog, key));
+                let (model, write_row) = match (state_model, resolved) {
+                    (Some(model), _) => (model, true),
+                    (None, Some(model)) => (model, true),
+                    // The stored key is MALFORMED or unknown to the catalog: the
+                    // session's model identity must NOT be silently replaced by a
+                    // fallback that is not its own, so the ROW IS LEFT ALONE and
+                    // only the remembered level is written — keyed by the same
+                    // fallback the resume path would boot (its resolution chain).
+                    // The level change is still valid for the model the next
+                    // resume boots. If even the chain yields nothing (a catalog
+                    // with no selectable model), propagate its error — never a
+                    // panic, never a silent accept.
+                    (None, None) => (
+                        resolve_native_model(
+                            &catalog,
+                            &load_settings(&self.config_dir).default_model,
+                        )?,
+                        false,
+                    ),
+                };
                 self.update_config_state(session_id, |s| {
                     s.thinking_level = Some(value.to_string());
                 });
@@ -2126,13 +2241,49 @@ impl SessionManager {
                 // (best-effort: a write failure is logged and does NOT fail the config
                 // change — the level is applied in the loop either way; the value is
                 // guaranteed non-empty — an empty one is rejected above).
-                let key = ModelKey::from(&state.model).to_string();
+                //
+                // (#154) ADR 0015's TWO RUNGS: the effective boot level is
+                // remembered > stored > settings default
+                // (`establish_worker_session`), so this change sticks on the next
+                // resume ONLY because BOTH rungs it writes carry the NEW value — the
+                // REMEMBERED one here, and the STORED one (the row's
+                // `thinkingLevel`) in the row write below. A pre-existing remembered
+                // entry for a DIFFERENT level would otherwise beat the stored rung.
+                let key = ModelKey::from(&model).to_string();
                 let mut settings = load_settings(&self.config_dir);
                 settings
                     .default_thinking_levels
                     .insert(key, value.to_string());
                 if let Err(e) = write_settings(&self.config_dir, &settings) {
                     eprintln!("remembered thinking level: save failed: {e}");
+                }
+                // (#154) THE STORED RUNG: this arm used to write `settings.json`
+                // ONLY, so a level change never reached the session's own row —
+                // invisible to `list_sessions` and to a resume whose remembered
+                // rung was empty. The POST-change value, in the same envelope the
+                // `model` arm writes. Skipped on the unresolvable-stored-key rung
+                // above (writing it would rewrite the row's model identity too).
+                if write_row {
+                    let caps = native_capabilities(&model, Some(value));
+                    if let Err(e) = db.update_session_capabilities(session_id, &caps.to_string()) {
+                        // Log to stderr for dev console, and debuglog for packaged runtime logs.
+                        eprintln!("update_session_capabilities failed for {session_id}: {e}");
+                        crate::agent::debuglog::log(&format!(
+                            "update_session_capabilities failed for {session_id}: {e}"
+                        ));
+                    }
+                }
+                // (#154) Seed the mirror when there is none (see the `model` arm).
+                if self
+                    .with_session(session_id, |s| s.config_state.is_none())
+                    .unwrap_or(true)
+                {
+                    self.with_session_entry(session_id, |state| {
+                        state.config_state = Some(NativeConfigState {
+                            model: model.clone(),
+                            thinking_level: Some(value.to_string()),
+                        });
+                    });
                 }
             }
             other => {
@@ -2172,6 +2323,11 @@ impl SessionManager {
     /// the `set_config_option` model / thinking changes). A `WorkerError` (the
     /// Worker died / the pipe closed) maps to the "config change could not be
     /// applied" error (finding 12 — a failed send leaves the mirror untouched).
+    ///
+    /// The CALLER has already probed `handle_for` and reaches this only when a
+    /// handle EXISTS (#154 — with no live Worker the change is persisted to the
+    /// session's row instead, so the miss arms below are the "the Worker died
+    /// mid-call" case, not the stopped-session case).
     fn send_config_to(
         &self,
         wm: &WorkerManager,
@@ -6341,6 +6497,338 @@ mod session_tests {
                 decision: RuleDecision::Allow,
             },
             "the persisted rule is the `value` verbatim, ReadWrite/Allow"
+        );
+    }
+
+    // ── (#154) `set_config_option` with NO live Worker ─────────────────────
+
+    /// (#154) A `set_config_option` model change with NO live Worker and NO
+    /// `config_state` entry (a stored / cleanly-closed session) persists to the
+    /// row and is OBSERVED on the next resume (a write nothing reads would be a
+    /// pin that passes on the broken thing).
+    #[tokio::test]
+    async fn a_model_change_persists_without_a_live_worker_and_resume_observes_it() {
+        let catalog = ModelCatalog {
+            models: vec![
+                level_test_model("tama", "a", &["off", "high"]),
+                level_test_model("tama", "b", &["off", "low", "medium", "xhigh"]),
+            ],
+            default_model: Some("tama/a".to_string()),
+            compaction: crate::agent::harness::catalog::CompactionConfig::default(),
+        };
+        let dir = temp_config_dir();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+        write_settings_json(&dir, serde_json::json!({}));
+        // NO start_session: the manager works from a plain stored row (the
+        // `config_state` map is empty — the state a clean close / a stored
+        // session has).
+        let (manager, _wm, db) = build_worker_manager(&dir, catalog, &sink);
+        db.record_session(&SessionInfo {
+            session_id: "nat-nolive-1".to_string(),
+            cwd: dir.to_path_buf(),
+            capabilities: json!({
+                "native": true,
+                "model": "tama/a",
+                "thinkingLevel": "high",
+                "loadSession": true,
+            }),
+            config_options: None,
+            archived: false,
+            title: None,
+            context_usage: None,
+            cost_usd: None,
+            is_subagent: false,
+        })
+        .expect("record_session should succeed");
+        assert!(
+            !manager
+                .with_session("nat-nolive-1", |s| s.config_state.is_some())
+                .unwrap_or_default(),
+            "precondition: no config_state entry (that is the stopped-session trap)"
+        );
+
+        // The seam: NO live worker exists (nothing was started), so the change
+        // must PERSIST, not error, and return the re-synthesized options.
+        let options = manager
+            .set_config_option("nat-nolive-1", "model", "tama/b", &sink)
+            .await
+            .expect("a stored session accepts a model change (persist, not error)");
+        let model_opt = options
+            .iter()
+            .find(|o| o["id"] == "model")
+            .expect("the model selector is returned");
+        assert_eq!(
+            model_opt["currentValue"], "tama/b",
+            "the returned options reflect the new value (the frontend reads currentValue)"
+        );
+        let row = db
+            .session("nat-nolive-1")
+            .expect("db.session should succeed")
+            .expect("the row exists");
+        let caps: serde_json::Value =
+            serde_json::from_str(&row.capabilities_json).expect("valid capabilities_json");
+        assert_eq!(
+            caps["model"], "tama/b",
+            "the persisted row carries the new composed key"
+        );
+
+        // OBSERVED on the next resume: the boot model comes from the row.
+        let resumed = manager
+            .resume_session("nat-nolive-1", dir.to_path_buf(), &sink)
+            .await
+            .expect("the stored session resumes on the persisted model");
+        assert_eq!(
+            resumed.capabilities["model"], "tama/b",
+            "the persisted change is observed on the subsequent resume"
+        );
+        let _ = manager.close_session(&resumed.session_id).await;
+    }
+
+    /// (#154) A `set_config_option` "thought_level" change with NO live Worker
+    /// persists to the row (the STORED rung) AND to the remembered
+    /// `default_thinking_levels` map (the REMEMBERED rung, ADR 0015), and the
+    /// change is OBSERVED on resume. The settings file is seeded EMPTY so the
+    /// remembered map cannot smuggle the value in: the STORED rung alone must
+    /// win — with an empty map it is the only rung that can (remembered >
+    /// stored > settings default; `establish_worker_session`).
+    #[tokio::test]
+    async fn a_thought_level_change_persists_without_a_live_worker_and_resume_observes_it() {
+        let catalog = ModelCatalog {
+            models: vec![level_test_model("tama", "a", &["off", "high", "xhigh"])],
+            default_model: Some("tama/a".to_string()),
+            compaction: crate::agent::harness::catalog::CompactionConfig::default(),
+        };
+        let dir = temp_config_dir();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+        // EMPTY remembered map (the precondition).
+        write_settings_json(&dir, serde_json::json!({}));
+        let (manager, _wm, db) = build_worker_manager(&dir, catalog, &sink);
+        db.record_session(&SessionInfo {
+            session_id: "nat-nolive-lvl-1".to_string(),
+            cwd: dir.to_path_buf(),
+            capabilities: json!({
+                "native": true,
+                "model": "tama/a",
+                "thinkingLevel": "high",
+                "loadSession": true,
+            }),
+            config_options: None,
+            archived: false,
+            title: None,
+            context_usage: None,
+            cost_usd: None,
+            is_subagent: false,
+        })
+        .expect("record_session should succeed");
+
+        let options = manager
+            .set_config_option("nat-nolive-lvl-1", "thought_level", "xhigh", &sink)
+            .await
+            .expect("a stored session accepts a thinking-level change");
+        let level = options
+            .iter()
+            .find(|o| o["id"] == "thought_level")
+            .expect("the thinking-level selector is present");
+        assert_eq!(
+            level["currentValue"], "xhigh",
+            "the returned option carries the new value"
+        );
+
+        // STORED rung: the row's capability envelope carries the new level.
+        let row = db
+            .session("nat-nolive-lvl-1")
+            .expect("db.session should succeed")
+            .expect("the row exists");
+        let caps: serde_json::Value =
+            serde_json::from_str(&row.capabilities_json).expect("valid capabilities_json");
+        assert_eq!(
+            caps["thinkingLevel"], "xhigh",
+            "the STORED rung carries the new level"
+        );
+
+        // REMEMBERED rung: the settings file also received the new value (keyed
+        // by the session's model). Both rungs carry the new value — which is the
+        // ONLY way "whichever rung wins, it is the new value" is true.
+        let settings = load_settings(&dir);
+        assert_eq!(
+            settings.default_thinking_levels.get("tama/a"),
+            Some(&"xhigh".to_string()),
+            "the REMEMBERED rung also carries the new level (the existing remembered write kept)"
+        );
+
+        // OBSERVED on resume: with the empty remembered map the STORED rung is
+        // the decisive one (the precondition the seeding of `{}` enforces).
+        let resumed = manager
+            .resume_session("nat-nolive-lvl-1", dir.to_path_buf(), &sink)
+            .await
+            .expect("the stored session resumes on the persisted level");
+        assert_eq!(
+            resumed.capabilities["thinkingLevel"], "xhigh",
+            "the persisted level is observed on the subsequent resume"
+        );
+        let _ = manager.close_session(&resumed.session_id).await;
+    }
+
+    /// (#154) The gap the `"thought_level"` arm had on the LIVE path too: it
+    /// wrote ONLY `settings.json`'s remembered level, so a level changed on a
+    /// running session never reached the session's own row. A live level change
+    /// must land in `capabilities_json` AND be observed on the next resume (the
+    /// optional live-path pin the plan allows — it is the arm's row write under
+    /// a handle, where the transport still runs).
+    #[tokio::test]
+    async fn a_native_thought_level_change_persists_the_level_to_the_row() {
+        let catalog = ModelCatalog {
+            models: vec![level_test_model(
+                "tama",
+                "a",
+                &["off", "low", "medium", "high"],
+            )],
+            default_model: Some("tama/a".to_string()),
+            compaction: crate::agent::harness::catalog::CompactionConfig::default(),
+        };
+        let dir = temp_config_dir();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+        write_settings_json(&dir, serde_json::json!({}));
+        let (manager, _wm, db) = build_worker_manager(&dir, catalog, &sink);
+        let info = manager
+            .start_session(dir.to_path_buf(), &sink)
+            .await
+            .expect("the native session started");
+
+        manager
+            .set_config_option(&info.session_id, "thought_level", "medium", &sink)
+            .await
+            .expect("the live level change applies");
+
+        let row = db
+            .session(&info.session_id)
+            .expect("db.session should succeed")
+            .expect("the row exists");
+        let caps: serde_json::Value =
+            serde_json::from_str(&row.capabilities_json).expect("valid capabilities_json");
+        assert_eq!(
+            caps["thinkingLevel"], "medium",
+            "a LIVE level change reaches the row (the arm wrote only settings.json before)"
+        );
+
+        let _ = manager.close_session(&info.session_id).await;
+        let resumed = manager
+            .resume_session(&info.session_id, dir.to_path_buf(), &sink)
+            .await
+            .expect("the session resumes");
+        assert_eq!(
+            resumed.capabilities["thinkingLevel"], "medium",
+            "the live level change survives the restart"
+        );
+        let _ = manager.close_session(&resumed.session_id).await;
+    }
+
+    /// (rev/2 finding 1) (#154) A session id with NO row and NO live Worker is
+    /// UNKNOWN: `set_config_option` must return `UnknownSession`, create NO row,
+    /// and create NO `config_state` map entry. Without the row guard this would
+    /// have returned `Ok(populated_options)`, emitted `config_option_update` and
+    /// leaked a phantom `SessionState` entry (`update_session_capabilities` is a
+    /// silent no-op on a missing row; `with_session_entry` CREATES map rows).
+    #[tokio::test]
+    async fn a_ghost_session_id_still_returns_unknown_session_and_creates_nothing() {
+        let catalog = ModelCatalog {
+            models: vec![level_test_model("tama", "a", &["off", "high"])],
+            default_model: Some("tama/a".to_string()),
+            compaction: crate::agent::harness::catalog::CompactionConfig::default(),
+        };
+        let dir = temp_config_dir();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+        write_settings_json(&dir, serde_json::json!({}));
+        let (manager, _wm, db) = build_worker_manager(&dir, catalog, &sink);
+
+        let err = manager
+            .set_config_option("ghost-id", "model", "tama/a", &sink)
+            .await
+            .expect_err("an id with no row is unknown, on every path");
+        assert!(
+            matches!(err, SessionError::UnknownSession { ref id } if id == "ghost-id"),
+            "the unknown session guard fires, got {err:?}"
+        );
+        assert!(
+            db.session("ghost-id").expect("db read").is_none(),
+            "no row was created (the persist is a silent no-op, never a create)"
+        );
+        assert!(
+            manager
+                .with_session("ghost-id", |s| s.config_state.is_none())
+                .is_none(),
+            "no phantom `SessionState` map entry was created"
+        );
+    }
+
+    /// (#154) The fallback config arm (an unknown config id) has NO persistence
+    /// semantics: it must keep returning `Command("unknown config option: …")`
+    /// even for a stored session (whose row the new guard passes), and leave the
+    /// row (and the map) untouched.
+    #[tokio::test]
+    async fn a_stored_session_still_rejects_an_unknown_config_option() {
+        let catalog = ModelCatalog {
+            models: vec![level_test_model("tama", "a", &["off", "high"])],
+            default_model: Some("tama/a".to_string()),
+            compaction: crate::agent::harness::catalog::CompactionConfig::default(),
+        };
+        let dir = temp_config_dir();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+        write_settings_json(&dir, serde_json::json!({}));
+        // The settings file as the fixture left it — the byte-for-byte pin that
+        // the rejected change wrote NOTHING (the plan's `["defaultThinkingLevels"]`
+        // indexing would compare `Null` against `{}` for a key the seed omits).
+        let settings_before = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+        let (manager, _wm, db) = build_worker_manager(&dir, catalog, &sink);
+        db.record_session(&SessionInfo {
+            session_id: "nat-reject-1".to_string(),
+            cwd: dir.to_path_buf(),
+            capabilities: json!({
+                "native": true,
+                "model": "tama/a",
+                "thinkingLevel": "high",
+                "loadSession": true,
+            }),
+            config_options: None,
+            archived: false,
+            title: None,
+            context_usage: None,
+            cost_usd: None,
+            is_subagent: false,
+        })
+        .expect("record_session should succeed");
+
+        let err = manager
+            .set_config_option("nat-reject-1", "bogus", "x", &sink)
+            .await
+            .expect_err("an unknown config id is rejected");
+        assert!(
+            matches!(err, SessionError::Command { ref error } if error == "unknown config option: bogus"),
+            "the fallback arm keeps failing, got {err:?}"
+        );
+        let row = db
+            .session("nat-reject-1")
+            .expect("db.session should succeed")
+            .expect("the row exists");
+        let caps: serde_json::Value =
+            serde_json::from_str(&row.capabilities_json).expect("valid capabilities_json");
+        assert_eq!(caps["model"], "tama/a", "the row is unchanged");
+        assert_eq!(caps["thinkingLevel"], "high", "the row is unchanged");
+        assert!(
+            !manager
+                .with_session("nat-reject-1", |s| s.config_state.is_some())
+                .unwrap_or_default(),
+            "no config_state was seeded for a rejected change"
+        );
+        let settings_after = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+        assert_eq!(
+            settings_after, settings_before,
+            "settings.json is untouched by a rejected change"
         );
     }
 }
