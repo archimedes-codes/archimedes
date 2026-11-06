@@ -1,8 +1,11 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { Brain } from "lucide-react";
 import SessionConfigSelect from "./SessionConfigSelect";
 import { cn } from "./lib/utils";
 import { Button } from "./ui/button";
+import type { ModelPickerItem } from "./ModelPickerDialog";
+import { selectModelsByProvider, useModelCatalog } from "../store/modelCatalog";
+import { useSettings } from "../store/settings";
 
 /**
  * C7: the context PERCENTAGE (the hover trigger for the token counts) is a
@@ -91,6 +94,18 @@ import {
  * pane reads STORES and never the draft, so typing cannot re-render these
  * controls at all.
  *
+ * Both selectors are ENABLED for EVERY session, stored or live (#154). They used
+ * to carry `disabled={!isLive}` on the theory that a stored session has no agent
+ * process to deliver `set_config_option` to; the backend now persists the change
+ * and returns the re-synthesized options even when no Worker runs, so the only
+ * thing that gates a trigger is the in-flight request (the `pending` join inside
+ * `SessionConfigSelect`). The one control that keeps a hard `disabled` is the
+ * `null`-option Model stub — a session with NO config options has no data and no
+ * persist path, and enabling it would make the UI lie. The Model line's OPTION
+ * list also comes from a store rather than from the session's snapshot: the live
+ * `useModelCatalog` filtered to the configured providers, so a Settings change
+ * reaches an already-open session (see `catalogItems` below).
+ *
  * Three placement decisions, each load-bearing:
  *
  * - **A sibling AFTER the pane's scroll area, never inside it.** The content
@@ -133,14 +148,12 @@ export default function SessionConfigBlock({ collapsed }: { collapsed: boolean }
   const contextUsage = useSessions((s) =>
     contextUsageOf(s, s.activeSessionId),
   );
-  // A stored (non-live) session: its transcript is read-only unless the agent
-  // negotiated `loadSession`. `!!liveSession` — found by id in `sessions`, NOT a
-  // truthiness test on `activeSessionId` (a stored session has an id too, and its
-  // selectors must be populated but DISABLED: there is no agent process to
-  // deliver `set_config_option` to).
-  const isLive = useSessions(
-    (s) => !!s.sessions.find((x) => x.sessionId === s.activeSessionId),
-  );
+  // A stored (non-live) session is NO LONGER a reason to disable anything
+  // (#154): the backend (`set_session_config_option`) persists the change and
+  // returns the re-synthesized options even when no Worker runs, so both
+  // selectors stay ENABLED for a stored session and the only thing that ever
+  // gates them here is the in-flight request (`pending`, inside
+  // `SessionConfigSelect`). The old `isLive` selector is gone with its gate.
   const activeSessionId = useSessions((s) => s.activeSessionId);
   const applyConfigOptions = useSessions((s) => s.applyConfigOptions);
 
@@ -165,6 +178,54 @@ export default function SessionConfigBlock({ collapsed }: { collapsed: boolean }
   const contextPercent = contextPercentOf(contextUsage);
   const contextRamp = contextRampFor(contextPercent);
   const modelOption = findConfigOption(configOptions, "model", "model");
+  // THE MODEL PICKER'S OPTIONS COME FROM THE LIVE CATALOG, not from the
+  // session's snapshot (#154). The harness bakes the model option's `options` at
+  // start / resume / every set (`synthesize_catalog_config_options`), so an
+  // option-derived list can NEVER show a provider the user added in Settings
+  // after the session opened; the global `useModelCatalog` store does, and plain
+  // zustand propagates it to every subscriber (the precedent is
+  // `SubagentDelegatingCard`, whose test proves a seeded `models` re-renders it).
+  //
+  // `models` is the store's OWN array — a STABLE reference (the invariant
+  // `src/lib/sessionLookup.ts` states). Subscribe to the slice, NEVER to a
+  // selector that mints a fresh array: zustand v5 re-runs a selector on every
+  // snapshot read and re-renders forever when the result is not `Object.is`
+  // stable, which HANGS the suite (documented in `sessionLookup.ts`,
+  // `SubagentModals.tsx`, `SessionCostLine.tsx`, `SidePane.tsx`). So
+  // `selectModelsByProvider` is called INSIDE the memo over `getState()`, and
+  // the subscription that guarantees the re-render is the stable slice below —
+  // which is also a dependency of the memo.
+  const catalogModels = useModelCatalog((s) => s.models);
+  // The settings document — the CONFIGURED provider ids the catalog is filtered
+  // against (a provider removed in Settings drops its rows reactively, with no
+  // re-fetch; `ModelDto` carries no "still configured" flag on the wire).
+  const settings = useSettings((s) => s.settings);
+  const configuredProviderIds = useMemo(
+    () => new Set(settings?.providers.map((p) => p.id) ?? []),
+    [settings],
+  );
+  // The picker rows, in the shape `ModelPickerItem` wants: `value` the composed
+  // `provider/id` key (what `set_config_option` receives), `name` the BARE model
+  // id (the provider rides as the cue, so keeping the prefix printed it twice),
+  // `provider` the RAW key — `SessionConfigSelect` decorates it into the
+  // provider's display name, the one decoration these rows still need.
+  //
+  // MEMOISED ON PURPOSE: `SessionConfigSelect` is `memo`ized (the perf fix — a
+  // fresh prop identity every render re-renders the whole catalog subtree), so a
+  // fresh `items` array per render would defeat it exactly like a fresh `onSet`
+  // closure did. A new array per render is fine in the render body only because
+  // it is assembled here (no subscription) and memoised by these two stable deps.
+  const catalogItems: ModelPickerItem[] = useMemo(
+    () =>
+      selectModelsByProvider(configuredProviderIds)(
+        useModelCatalog.getState(),
+      ).map((m) => ({
+        value: `${m.provider}/${m.id}`,
+        name: m.id,
+        provider: m.provider,
+      })),
+    [catalogModels, configuredProviderIds],
+  );
   const thinkingOption = findConfigOption(
     configOptions,
     "thought_level",
@@ -201,7 +262,7 @@ export default function SessionConfigBlock({ collapsed }: { collapsed: boolean }
             kind="model"
             option={modelOption ?? null}
             onSet={onSet}
-            disabled={!isLive}
+            items={catalogItems}
             fullWidth
           />
         </div>
@@ -224,7 +285,6 @@ export default function SessionConfigBlock({ collapsed }: { collapsed: boolean }
               kind="thinking"
               option={thinkingOption}
               onSet={onSet}
-              disabled={!isLive}
               fullWidth
             />
           </div>
