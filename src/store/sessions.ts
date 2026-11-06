@@ -2380,7 +2380,8 @@ export const useSessions = create<SessionsState>((set, get) => ({
         closeReasons: { ...state.closeReasons, [sessionId]: reason },
         // The config options + context usage STAY (a pause, not a
         // discard): the last known values populate the stored session's
-        // bottom bar — the selectors render disabled; a resume's
+        // bottom bar, and since #154 the selectors are ENABLED there —
+        // `set_config_option` persists without a Worker — while a resume's
         // `config_option_update` / `context_usage_update` frames refresh
         // them. (The row's own `configOptions` / `contextUsage` — the Rust
         // `list_sessions` shape, persisted on every frame — is the

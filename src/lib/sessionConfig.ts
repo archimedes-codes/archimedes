@@ -43,8 +43,10 @@ export type { SessionConfigSource };
  * keeps its last known entry, the close no longer drops it), falling back to
  * the session row's `configOptions` (the Rust `list_sessions` shape —
  * synthesized from the stored `model` / `thinkingLevel`): a STORED session's
- * config block is POPULATED (the selectors render disabled — a stored session
- * can't set config; a resume re-emits the fresh values).
+ * config block is POPULATED, and since #154 its selectors are ENABLED like a
+ * live session's — `set_config_option` persists the change to the session's own
+ * row when no Worker runs, so "stored" is no longer a reason to freeze them.
+ * A resume's `config_option_update` frames then refresh the values.
  *
  * `null` (not `[]`) when nothing knows the id, so "no config" stays
  * distinguishable from "config with zero options". That is why the `?? null`

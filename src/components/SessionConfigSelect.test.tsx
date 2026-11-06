@@ -250,7 +250,7 @@ describe("SessionConfigSelect", () => {
     await waitFor(() => expect(trigger.hasAttribute("disabled")).toBe(false));
   });
 
-  it("the disabled prop disables the trigger even with a real option (a stored session's selector is populated but read-only)", () => {
+  it("the disabled prop disables the trigger even with a real option (a caller can still gate a populated selector)", () => {
     render(
       <SessionConfigSelect
         option={mockOption}

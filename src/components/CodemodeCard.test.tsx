@@ -17,9 +17,22 @@ import type { ToolCallUiStatus } from "../store/sessions";
  * - Each element carries `toolCallId = "<parentCallId>/<n>"`, and rows are
  *   reconciled by that id LAST-WRITER-WINS — a repeat collapses to one row
  *   showing the last element (tests 3 and 8).
- * - The card is PROPS-DRIVEN: no store, so no `resetStores()` and no
- *   `vi.mock("../lib/tauri")` here — the card imports no store and no tauri
- *   barrel, and these tests prove that by needing neither.
+ * - The card is PROPS-DRIVEN for everything it RENDERS (the nested calls come
+ *   from the `rawOutput` prop, not from a store), so no `resetStores()` and no
+ *   `vi.mock("../lib/tauri")` here. The tauri half is literally true — the card
+ *   imports no tauri barrel (see the note at `CodemodeCard.tsx`'s top: a nested
+ *   row is not external-openable).
+ *
+ * DO NOT READ THAT AS "NO STORE": the card DOES import one — `useSettings`, and
+ * it subscribes to it for exactly one thing, the syntax-highlight palette
+ * (`useSettings((s) => s.settings?.palette ?? "zai")`, which picks the shiki
+ * theme). No test in this file dirties the settings store, so `settings` stays
+ * `null` and the palette resolves to the `"zai"` default on every run — that is
+ * what makes the highlight output deterministic here WITHOUT a reset. The
+ * determinism is an accident of nothing seeding it, not a property of the card.
+ * So: a future test in this file that sets a palette (or a `resetStores()`
+ * added for some other reason, which would restore the initial `null`) changes
+ * the theme the shiki highlighter renders and must be written against that.
  *
  * The card is exercised as a pure component, so the live path is modelled the way the card
 actually sees it: as a `tool_call_update`-folded `rawOutput` prop, replaced by a later one.

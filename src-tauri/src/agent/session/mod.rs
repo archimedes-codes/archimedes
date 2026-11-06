@@ -1617,8 +1617,9 @@ impl SessionManager {
     /// resolution as `resume_native_session` — the stored composed key →
     /// the effective catalog; an absent / unresolvable key falls back to
     /// the resolution chain, never a hard error) so a STORED session's
-    /// composer selectors are populated (the frontend renders them
-    /// disabled — a stored session can't receive `set_config_option`),
+    /// composer selectors are populated AND ENABLED (#154: a stored session
+    /// DOES receive `set_config_option` — it persists through
+    /// `Db::update_session_capabilities` with no live Worker),
     /// `title` read straight from the row (`None` until the naming pass
     /// writes one — the sidebar's label for a CLOSED session, whose live
     /// `SessionInfo` is long gone), and `context_usage` read from the row's
@@ -2038,6 +2039,9 @@ impl SessionManager {
         // for a start AND a resume), so the guard never fires on a live path.
         // Kept BEFORE the catalog fetch, i.e. the same precedence the
         // pre-check had: an unknown id fails before any discovery I/O.
+        // Hard-errors on an absent `Db`: converges with the DB-backed commands
+        // (`resume_native_session`, `start_session`, `list_sessions`); deliberately NOT the
+        // transport helpers' `if let Some(db)` — a session cannot exist without an attached `Db`.
         let db = self.driver.db.clone().ok_or_else(|| {
             SessionError::Io("a native session requires an attached database".to_string())
         })?;

@@ -1437,8 +1437,10 @@ describe("contextUsage (the context-percentage state)", () => {
     ]);
     useSessions.getState().handleSessionClosed("s1", "user");
     // A close is a PAUSE: the last known values STAY (the stored session's
-    // bottom bar is populated — the selectors render disabled; a resume's
-    // `config_option_update` / `context_usage_update` frames refresh them).
+    // bottom bar is populated — and since #154 its selectors are ENABLED, not
+    // disabled, because `set_config_option` persists without a Worker; a
+    // resume's `config_option_update` / `context_usage_update` frames
+    // refresh them).
     expect(useSessions.getState().contextUsage["s1"]).toEqual({
       used: 12000,
       window: 128000,

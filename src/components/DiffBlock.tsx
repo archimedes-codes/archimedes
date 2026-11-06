@@ -5,6 +5,18 @@ import { memo } from "react";
  * regression (the component is a leaf with no child component to mock,
  * so the suite's child-mock memo test is impossible here): the memo
  * skips this body entirely on an identical-props re-render.
+ *
+ * TEST-ONLY STATE, DEAD-CODED OUT OF THE SHIPPED BUNDLE. The increment runs
+ * only under vitest (`MODE === "test"`), so production pays nothing but the
+ * one comparison, and the unbounded module global never accumulates in a user
+ * session. `import.meta.env` exists because `src/vite-env.d.ts` carries
+ * `/// <reference types="vite/client" />`; the `?.` guard is the cheap
+ * insurance for an environment that strips the env object (a plain `esbuild`
+ * transform of this file, e.g.), which would otherwise throw on the read
+ * inside a render. Gating it on `MODE` rather than `DEV` matters: a production
+ * `vite build` runs with `MODE === "production"`, so the counter stays off
+ * there, and vitest reports `MODE === "test"`, so the regression test keeps
+ * counting — which is what keeps that test a proof and not a decoration.
  */
 let renderCount = 0;
 export const diffBlockRenderCount = (): number => renderCount;
@@ -24,7 +36,7 @@ function DiffBlock({
   path: string;
   patch: string;
 }) {
-  renderCount += 1;
+  if (import.meta.env?.MODE === "test") renderCount += 1;
   const lines = patch.split("\n");
 
   return (
