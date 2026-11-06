@@ -378,8 +378,23 @@ async fn seed_default_model(dirs: &TestDirs) -> tokio::task::JoinHandle<()> {
         serde_json::to_string(&settings).unwrap(),
     )
     .expect("settings.json writes");
-    archimedes_lib::test_support::raw_json_server(listener, 200, r#"{"data":[{"id":"m/1"}]}"#, None)
-        .await
+    // (#154) `reasoningLevels` + `supportsReasoningEffort` are what the
+    // discovery mapping (fulcrum `harness/catalog.rs`) turns into
+    // `DiscoveredMeta.thinking_levels` / `supports_thinking`. They are NOT
+    // cosmetic: `synthesize_catalog_config_options` emits the `thought_level`
+    // selector ONLY when the current model advertises a non-empty level set,
+    // so without them a test that drives that selector finds nothing. No
+    // existing consumer of this helper reads `thinking_levels`, the
+    // synthesized options, `capabilities`, or the `supports_*` flags (the two
+    // context-window tests build their own servers), so widening the metadata
+    // is inert for all of them — the `cargo test --test ipc` gate is the proof.
+    archimedes_lib::test_support::raw_json_server(
+        listener,
+        200,
+        r#"{"data":[{"id":"m/1","reasoningLevels":["off","medium","xhigh"],"supportsReasoningEffort":true}]}"#,
+        None,
+    )
+    .await
 }
 
 /// (a) `start_session` spawns the `fake_worker` (the `WorkerManager`'s
@@ -1675,6 +1690,102 @@ async fn refreshing_a_provider_with_unchanged_metadata_pushes_nothing() {
         &webview,
         "close_session",
         json!({ "sessionId": session_id }),
+    )
+    .await;
+}
+
+/// (#154 IPC contract) A `set_session_config_option` on a STOPPED session (no
+/// live Worker after `close_session`) PERSISTS the change and returns a
+/// POPULATED `SessionConfigOption[]` — never `Ok(vec![])`, never a unit type
+/// (the frontend reads `option.currentValue` from that array). This is the
+/// half of the contract the integration gate cannot see: the frontend task
+/// mocks the IPC wrapper, so only a Rust test can prove the no-live-worker
+/// path hands back real options. The `thought_level` selector exists here only
+/// because `seed_default_model` now advertises `reasoningLevels` (the discovery
+/// mapping, fulcrum `harness/catalog.rs:40-51`) — without levels the selector
+/// is not synthesized at all.
+#[tokio::test]
+async fn set_config_option_on_a_closed_session_persists_and_returns_populated_options() {
+    let dirs = TestDirs::new();
+    // Discovers `tama/m/1` WITH reasoning levels.
+    let _server = seed_default_model(&dirs).await;
+    let app = build_app(&dirs);
+    let webview = app.webview.clone();
+
+    let info: SessionInfo = value_to(
+        invoke_ok(
+            &webview,
+            "start_session",
+            json!({ "cwd": dirs.cwd().display().to_string() }),
+        )
+        .await,
+    );
+    invoke_ok(
+        &webview,
+        "close_session",
+        json!({ "sessionId": info.session_id }),
+    )
+    .await;
+    // Cheap insurance that the async `Exited` teardown ran (`close_session`
+    // already detached the Worker handle, so `handle_for` misses immediately;
+    // the teardown only clears the map row).
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let options: Value = invoke_ok(
+        &webview,
+        "set_session_config_option",
+        json!({
+            "sessionId": info.session_id,
+            "configId": "thought_level",
+            "value": "medium",
+        }),
+    )
+    .await;
+    assert!(
+        options.as_array().map(|a| !a.is_empty()).unwrap_or(false),
+        "the stopped-session path returns a POPULATED options array, got {options}"
+    );
+    let level = options
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == "thought_level")
+        .expect("the thinking-level selector is present (the helper advertises reasoningLevels)");
+    assert_eq!(
+        level["currentValue"], "medium",
+        "the returned option reflects the persisted change"
+    );
+
+    // The row persisted (the STORED rung).
+    let d = db(&app);
+    let row = d
+        .session(&info.session_id)
+        .expect("db session")
+        .expect("the row exists");
+    let caps: Value = serde_json::from_str(&row.capabilities_json).unwrap();
+    assert_eq!(
+        caps["thinkingLevel"], "medium",
+        "the row carries the new level"
+    );
+
+    // And the RESUME observes it (the request also remembered the level, so the
+    // ADR 0015 chain yields "medium" whichever rung wins).
+    let resumed: SessionInfo = value_to(
+        invoke_ok(
+            &webview,
+            "resume_session",
+            json!({ "sessionId": info.session_id, "cwd": dirs.cwd().display().to_string() }),
+        )
+        .await,
+    );
+    assert_eq!(
+        resumed.capabilities["thinkingLevel"], "medium",
+        "the persisted level is observed on the subsequent resume"
+    );
+    let _ = invoke_ok(
+        &webview,
+        "close_session",
+        json!({ "sessionId": resumed.session_id }),
     )
     .await;
 }

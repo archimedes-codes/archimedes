@@ -192,8 +192,12 @@ pub async fn resume_session(
     )
 }
 
-/// Set a session config option (model / thinking level) on a live
-/// session; returns the re-synthesized config options.
+/// Set a session config option (model / thinking level), returning the
+/// re-synthesized config options. A LIVE session gets the change over IPC; a
+/// session with no live Worker (stored / cleanly closed / crashed) has it
+/// persisted to its own stored row instead, so the next `resume_session` boots
+/// on the new values (issue #154). The returned array is populated on BOTH
+/// paths — the frontend reads `option.currentValue` from it.
 #[tauri::command]
 pub async fn set_session_config_option(
     sink: State<'_, Arc<dyn EventSink>>,

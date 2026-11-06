@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-import { useModelCatalog } from "./modelCatalog";
+import { selectModelsByProvider, useModelCatalog } from "./modelCatalog";
 import { listModels, type ModelDto } from "../lib/tauri";
 
 // The SPREAD form (`vi.importActual`) — the shape 34 of the 35 barrel mockers
@@ -82,5 +82,37 @@ describe("useModelCatalog", () => {
     vi.mocked(listModels).mockResolvedValue([dto("m1", "p", 2000)]);
     await useModelCatalog.getState().loadModels("p");
     expect(useModelCatalog.getState().models).toEqual([dto("m1", "p", 2000)]);
+  });
+
+  it("selectModelsByProvider filters to configured providers (no reordering)", () => {
+    // The picker's option list must follow Settings: a provider the user
+    // removed disappears from an ALREADY-OPEN session's picker without any
+    // re-fetch, because the picker filters the stored catalog against the
+    // CONFIGURED provider ids (`settings.providers`).
+    useModelCatalog.setState({
+      models: [dto("b", "keep", 1000), dto("a", "drop", 2000), dto("c", "keep", 3000)],
+    });
+    const ids = new Set(["keep"]);
+    const got = selectModelsByProvider(ids)(useModelCatalog.getState());
+    // The filter PRESERVES catalog order (`b` before `c`, as seeded); the
+    // picker re-sorts by name itself (`ModelPickerDialog.tsx`).
+    expect(got.map((m) => m.id)).toEqual(["b", "c"]);
+    // A caller that wants sorted output sorts AFTER filtering (this selector
+    // deliberately never sorts — the dialog owns the ordering).
+    expect(
+      got
+        .map((m) => m.id)
+        .sort((a, b) => a.localeCompare(b)),
+    ).toEqual(["b", "c"]);
+    // An empty configured set filters EVERYTHING out (a provider-less install),
+    // and it never mutates the stored catalog.
+    expect(selectModelsByProvider(new Set())(useModelCatalog.getState())).toEqual(
+      [],
+    );
+    expect(useModelCatalog.getState().models.map((m) => m.id)).toEqual([
+      "b",
+      "a",
+      "c",
+    ]);
   });
 });

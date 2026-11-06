@@ -10,7 +10,10 @@ import {
   SelectLabel,
 } from "../components/ui/select";
 import ModelPicker from "./ModelPicker";
-import { modelItemsFromCatalog } from "./ModelPickerDialog";
+import {
+  modelItemsFromCatalog,
+  type ModelPickerItem,
+} from "./ModelPickerDialog";
 import { useSettings } from "../store/settings";
 import type { SessionConfigOption } from "../lib/tauri";
 import { THINKING_GLYPHS } from "../lib/toolOutput";
@@ -63,6 +66,12 @@ const COMPOSER_THINKING_EDGE = "pl-1";
  * a model with no thinking levels has nothing to select, so the caller
  * (`SessionConfigBlock`) gates the whole reasoning line on the option existing
  * rather than passing `null` here.
+ *
+ * `items` (MODEL ONLY — the thinking line ignores it) is the picker's option
+ * list from OUTSIDE the session snapshot: the live model catalog the pane
+ * assembles from `useModelCatalog`. When it is absent the picker falls back to
+ * the option's own `options` (see `modelItems` below for the one derivation that
+ * honours both).
  */
 type SessionConfigSelectProps =
   | {
@@ -71,6 +80,7 @@ type SessionConfigSelectProps =
       kind?: "model" | "thinking";
       disabled?: boolean;
       fullWidth?: boolean;
+      items?: ModelPickerItem[];
     }
   | {
       option: null;
@@ -78,7 +88,23 @@ type SessionConfigSelectProps =
       onSet: OnSet;
       disabled?: boolean;
       fullWidth?: boolean;
+      items?: ModelPickerItem[];
     };
+
+/**
+ * The provider key → its configured display `name` (the `tama` key → `Tama`),
+ * falling back to the raw key when unconfigured — the SAME rule
+ * `modelItemsFromCatalog` applies via its own `providerDisplayName`
+ * (`ModelPickerDialog.tsx`). Duplicated here on purpose: the display decoration
+ * belongs to THIS component (see `modelItems` below) and a module-local copy
+ * keeps `ModelPickerDialog.tsx`'s private helper private.
+ */
+function displayNameFor(
+  providerId: string,
+  providers: { id: string; name: string }[],
+): string {
+  return providers.find((p) => p.id === providerId)?.name ?? providerId;
+}
 
 /**
  * The thinking-level indicator (the pi-archimedes footer's
@@ -124,6 +150,7 @@ function SessionConfigSelect({
   onSet,
   disabled,
   fullWidth,
+  items,
 }: SessionConfigSelectProps) {
   // `pending` is the hook's `busy`, renamed at the destructure so every reader
   // in this file keeps its name (the trigger's `disabled`, the `isDisabled`
@@ -136,10 +163,12 @@ function SessionConfigSelect({
   const { busy: pending, error, run, clearError } = useAsyncAction({
     guard: true,
   });
-  // The base disabled state (the call site — a STORED session's selector
-  // is populated but read-only: no agent process to deliver
-  // `set_config_option` to) OR the in-flight `onSet` (one change at a
-  // time). Both disable the trigger.
+  // The base disabled state — the `disabled` prop from the call site (still
+  // honoured: `SessionConfigBlock` no longer passes `!isLive`, because the
+  // backend now persists a stored session's change without a Worker (issue
+  // #154), but the prop's `disabled || pending` JOIN remains and the
+  // component-level cases pin it) — OR the in-flight `onSet` (one change at a
+  // time). Either one disables the trigger.
   const isDisabled = disabled || pending;
   // The settings document — the model picker's provider display names
   // (the `tama` key → the configured provider's `name` `Tama`; the raw
@@ -216,19 +245,45 @@ function SessionConfigSelect({
     );
   }
   const thinkingIndicator = thinkingLevelIndicator(value);
-  // The model picker's items (the SHARED derivation — `ModelPicker` is
-  // the one component every model picker uses): the config option's
-  // options flattened to their VALUES (the Rust
-  // `synthesize_catalog_config_options` shape — flat `{ value:
-  // "provider/id" }` entries; grouped entries flattened too) → the row
-  // name is the value MINUS its provider prefix + the provider's display
-  // name as the muted-grey inline cue (the `Qwen3.8-27B (Tama)` shape).
-  const modelItems = modelItemsFromCatalog(
-    (option.options ?? []).flatMap((opt) =>
-      "options" in opt ? opt.options.map((sub) => sub.value) : [opt.value],
-    ),
-    settings?.providers ?? [],
-  );
+  // The model picker's items — TWO SOURCES, ONE derivation, stated once here.
+  //
+  //  - `items` (the normal path, `SessionConfigBlock`): the LIVE catalog,
+  //    assembled by the caller from the `useModelCatalog` store filtered to the
+  //    configured providers. This is what makes a Settings change (add / refresh
+  //    a provider, remove one) reach an ALREADY-OPEN session's picker — the
+  //    session's own snapshot could never carry it, because the harness bakes
+  //    `configOptions` at start / resume / set (issue #154). Those rows arrive
+  //    already shaped for the picker (`name` the BARE model id, `value` the
+  //    composed `provider/id` key, `provider` the RAW key), so they need only
+  //    the provider display-name decoration. `modelItemsFromCatalog` must NOT be
+  //    re-run over them: it splits `value` on its first `/` and looks the
+  //    remainder up as if it were an id, so re-running it over already-decorated
+  //    rows is the double-decoration bug.
+  //  - the fallback (no `items` prop): the config option's OWN options — the
+  //    session snapshot (`SessionConfigSelect.test.tsx` renders without `items`).
+  //    Flat `{ value: "provider/id" }` entries (the Rust
+  //    `synthesize_catalog_config_options` shape, grouped entries flattened) →
+  //    `modelItemsFromCatalog` derives name + cue from the composed key.
+  //
+  // Both paths decorate the provider display name (the `tama` key → the
+  // configured `Tama`, the raw key when unconfigured). The `null`-option stub
+  // above keeps its own `items={[]}` — no data, no persist path.
+  const modelItems =
+    items !== undefined
+      ? items.map((it) =>
+          it.provider
+            ? {
+                ...it,
+                provider: displayNameFor(it.provider, settings?.providers ?? []),
+              }
+            : it,
+        )
+      : modelItemsFromCatalog(
+          (option.options ?? []).flatMap((opt) =>
+            "options" in opt ? opt.options.map((sub) => sub.value) : [opt.value],
+          ),
+          settings?.providers ?? [],
+        );
 
   const handleValueChange = (val: string) =>
     run(() => onSet(option.id, val));

@@ -313,6 +313,15 @@ export default function SettingsPage({ onBack }: { onBack: () => void }): ReactE
       nextSettings.agentOverrides = remappedOverrides;
     }
     update(nextSettings);
+    // The STORE catalog is deliberately NOT refreshed here: `saveSettings` is
+    // fire-and-forget (`useSettingsDocument.patch` returns `void` and swallows
+    // rejection) and the backend's `list_models` re-reads `settings.json` from
+    // disk on every call, so a refresh fired from this commit can resolve the
+    // PRE-SAVE file — for a RENAME that means a catalog still carrying the OLD
+    // id, silently. The picker's provider cue updates reactively anyway (it reads
+    // `useSettings.settings`, which `patch` publishes synchronously), and the new
+    // id's catalog rows arrive on the next plain catalog re-read. This call stays
+    // PAGE-LOCAL (this page's own pickers).
     void listModels(id).then(setModels).catch(() => {});
   };
 
@@ -335,11 +344,14 @@ export default function SettingsPage({ onBack }: { onBack: () => void }): ReactE
     const slug = slugify(name);
     const base = slug !== "" ? slug : `provider-${settings.providers.length + 1}`;
     const existing = new Set(settings.providers.map((p) => p.id));
+    // The id the row is actually written under (de-duped) — captured so the
+    // catalog refresh below can NAME it (see the note after `update`).
+    const addedId = uniqueSlug(base, existing);
     update({
       providers: [
         ...settings.providers,
         {
-          id: uniqueSlug(base, existing),
+          id: addedId,
           name,
           baseUrl: template?.baseUrl ?? "",
           apiKey: "",
@@ -348,10 +360,29 @@ export default function SettingsPage({ onBack }: { onBack: () => void }): ReactE
         },
       ],
     });
+    // The session config block's Model picker reads the STORE catalog, not this
+    // page's local `models` — so an add must push the new provider's rows there,
+    // or they stay invisible in an already-open session until the next explicit
+    // Refresh or a restart (#154). It must be a FORCED read: a plain
+    // `loadModels()` early-returns the moment the store has loaded
+    // (`if (get().loadedOk && forceRefresh === undefined) return`) and `App.tsx`
+    // already ran a boot read, so an unforced call would be a NO-OP — exactly the
+    // bug this closes. Naming the new provider bypasses that guard and re-reads
+    // `settings.json` (which by then contains the new provider). The total
+    // `.catch` mirrors `refreshProvider`: a discovery failure never fails the
+    // add the user just performed.
+    useModelCatalog.getState().loadModels(addedId).catch(() => {});
   };
 
   const removeProvider = (id: string) => {
     if (settings === null) return;
+    // No catalog refresh here, deliberately: the picker filters the store's
+    // `models` against the CONFIGURED providers (`settings.providers`), and
+    // `patch` publishes the new provider list to `useSettings` synchronously — so
+    // the removed provider's rows drop out of every picker on the next render
+    // with no network call. The stale rows the store still holds are never
+    // rendered for an unconfigured provider, and a re-fetch could only return
+    // them again.
     update({ providers: settings.providers.filter((p) => p.id !== id) });
   };
 

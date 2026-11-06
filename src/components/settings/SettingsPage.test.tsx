@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeAll, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeAll, afterEach, beforeEach } from "vitest";
 import {
   render,
   screen,
@@ -21,6 +21,7 @@ import {
 } from "@/lib/tauri";
 import { brailleLoaderVariants } from "@/lib/braille-loader";
 import { useSessions } from "@/store/sessions";
+import { useModelCatalog } from "@/store/modelCatalog";
 import { humanizeVariant } from "./primitives";
 
 // The page's single source of truth (the `getSettings` fixture): a full
@@ -357,6 +358,17 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+// The MODEL CATALOG store is module-global and this file never reset it (it is
+// not in `src/test/resetStores.ts`'s `ALL_STORES`), so a provider ADD's catalog
+// refresh would otherwise leak rows into the next case. Seed it EMPTY and
+// LOADED: `loadedOk: true` is what makes a no-op refresh DETECTABLE — the store
+// early-returns on a plain `loadModels()` once loaded (and `App.tsx` runs a boot
+// read in production), so an add that forgot to FORCE its read leaves `models`
+// empty and the assertions below fail instead of passing on a fresh store.
+beforeEach(() => {
+  useModelCatalog.setState({ models: [], loadStarted: true, loadedOk: true });
+});
+
 /** Wait for the page's `getSettings` load to land in state (a marker row). */
 async function loaded(): Promise<void> {
   await screen.findByText("Default model");
@@ -565,6 +577,15 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
     // The read only happens on a REFRESH, and it is a `list_sessions` over the
     // stored rows (archived included — the boot list's flag).
     expect(listSessions).toHaveBeenCalledWith(true);
+    // …and the STORE catalog ends up populated (the session config block's Model
+    // picker reads that store, so a refresh must land there — asserted as the
+    // RESULT, never as a call count, because `loadModels` shares one in-flight
+    // fetch with boot/mount). `loadedOk` is seeded `true` by this file's
+    // `beforeEach`, so a refresh that failed to FORCE its read would leave this
+    // empty.
+    await waitFor(() =>
+      expect(useModelCatalog.getState().models.length).toBeGreaterThan(0),
+    );
   });
 
   it("add_provider_appends_a_row_and_the_name_commit_derives_the_id", async () => {
@@ -580,6 +601,15 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
     expect(nameInputs).toHaveLength(2);
     const newInput = nameInputs[1] as HTMLInputElement;
     expect(newInput.value).toBe("");
+    // The ADD also pushes the new provider's models into the STORE catalog
+    // (#154) — the session config block's Model picker reads that store, so
+    // without this a newly-added provider's models never reach an already-open
+    // session. It has to be a FORCED read (a plain `loadModels()` is a no-op once
+    // `loadedOk`, which this file's `beforeEach` seeds deliberately), so a
+    // forgot-the-force bug leaves this empty and fails here.
+    await waitFor(() =>
+      expect(useModelCatalog.getState().models.length).toBeGreaterThan(0),
+    );
     // Type the SAME name as the existing provider + commit: the id is
     // derived from the name (the slug `tama`) and de-duped against the
     // existing provider's id (`tama` → `tama-2`). The ADD already saved
@@ -743,6 +773,23 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
   });
 
   it("remove_provider_confirms_then_saves", async () => {
+    // Seed the STORE catalog with the provider's row, so the "remove does not
+    // re-fetch" pin below has something to lose: a refresh fired here would
+    // replace (or empty) it, while the real contract leaves the store alone and
+    // lets the picker's provider filter drop the row reactively.
+    useModelCatalog.setState({
+      models: [
+        {
+          id: "Qwen3.8",
+          provider: "tama",
+          contextWindow: 128000,
+          supportsThinking: true,
+          thinkingLevels: ["high"],
+        },
+      ],
+      loadStarted: true,
+      loadedOk: true,
+    });
     render(<SettingsPage onBack={vi.fn()} />);
     await loaded();
     await go("Providers");
@@ -757,6 +804,14 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
         expect.objectContaining({ providers: [] }),
       ),
     );
+    // REMOVE deliberately does NOT re-fetch the catalog: the picker filters the
+    // store's rows against the CONFIGURED providers, and `patch` publishes the new
+    // provider list synchronously, so the removed provider's rows vanish from
+    // every picker on the next render with no network call. This pins the
+    // no-refresh: the seeded `tama/Qwen3.8` row is still what the store holds.
+    expect(useModelCatalog.getState().models.map((m) => m.id)).toEqual([
+      "Qwen3.8",
+    ]);
   });
 
   it("the_default_model_picker_dialog_lists_the_catalog_and_system_default", async () => {

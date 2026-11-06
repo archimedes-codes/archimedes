@@ -511,6 +511,9 @@ describe("MessageBubble", () => {
       at: 1,
     };
     render(<MessageBubble message={message} sessionId="s1" isStreaming={true} />);
+    // The card starts collapsed; the header toggle (always first in DOM order —
+    // after expanding this bubble has three buttons) reveals the body.
+    fireEvent.click(screen.getAllByRole("button")[0]);
 
     // The nested row is the card's own marker (the plain card would dump the
     // result as JSON text, and the subagent card would list subagents).
@@ -539,8 +542,9 @@ describe("MessageBubble", () => {
       at: 1,
     };
     render(<MessageBubble message={message} sessionId="s1" isStreaming={true} />);
-    // Open by default, so the empty state is visible without a click — the
-    // branch is taken regardless of result shape.
+    fireEvent.click(screen.getAllByRole("button")[0]);
+    // The card starts collapsed; the header toggle reveals the empty state —
+    // the branch is taken regardless of result shape.
     expect(screen.getByText("No nested calls yet.")).toBeTruthy();
     expect(screen.queryByText("No output.")).toBeNull();
     expect(screen.queryByText("No subagents yet.")).toBeNull();
