@@ -1,11 +1,14 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import SidePane from "./SidePane";
 import { useSubagents } from "../store/subagents";
 import { useInteractive } from "../store/interactive";
 import { useSessions } from "../store/sessions";
 import type { Message } from "../store/sessions";
 import { usePermissions } from "../store/permissions";
+import { useModelCatalog } from "../store/modelCatalog";
+import { useSettings } from "../store/settings";
+import type { ModelDto } from "../lib/tauri";
 import { loadHistory, setSessionConfigOption } from "../lib/tauri";
 import { getSidePaneCollapsed, setSidePaneCollapsed, SIDE_PANE_RAIL } from "../lib/sidePaneState";
 
@@ -103,7 +106,35 @@ beforeEach(() => {
     contextUsage: {},
     compacting: {},
   });
+  // The block now derives the Model picker's rows from the CATALOG store (issue
+  // #154). This file's `beforeEach` did not reset it — the catalog store is NOT
+  // in `src/test/resetStores.ts`'s `ALL_STORES` — so without this a case's seed
+  // would leak into the NEXT case (a model row appearing in a picker that should
+  // show none). Seed it EMPTY and LOADED: `loadedOk: true` means any plain
+  // `loadModels()` path early-returns instead of reaching the (un-mocked here)
+  // `listModels` IPC, so a no-op refresh cannot hide behind a freshly-reset store.
+  useModelCatalog.setState({ models: [], loadStarted: true, loadedOk: true });
+  // Same for the settings store: the block reads `settings.providers` for the
+  // configured-provider filter, and this file never loaded settings. `null` =
+  // "not loaded" (the picker then shows raw provider keys and filters nothing
+  // configured, so an unseeded case renders NO catalog rows).
+  useSettings.setState({ settings: null } as never);
 });
+
+/**
+ * A catalog row (the `ModelDto` shape `list_models` returns) — the seed the
+ * block's Model picker now reads its rows from. `provider` is the RAW provider
+ * key (the display cue comes from `settings.providers`).
+ */
+function catalogModel(id: string, provider = "tama"): ModelDto {
+  return {
+    id,
+    provider,
+    contextWindow: 128000,
+    supportsThinking: false,
+    thinkingLevels: [],
+  };
+}
 
 /**
  * Seed a LIVE session (the shape `ChatStream.test.tsx`'s `seedLiveSession`
@@ -129,8 +160,11 @@ function seedLiveSession(): void {
 
 /**
  * Seed a STORED (non-live) session: `sessions` is empty, the session lives in
- * `historySessions`, so the pane's block treats it as closed (the selectors are
- * populated but DISABLED).
+ * `historySessions`, so the pane's block has no LIVE row for it. Since #154 that
+ * changes NOTHING about the selectors — they are populated AND enabled (the
+ * backend persists a stored session's change without a Worker); the only control
+ * a stored session with no `configOptions` shows is the disabled Model stub, and
+ * that is because it has no data, not because the session is stored.
  */
 function seedStoredSession(capabilities: Record<string, unknown> = {}): void {
   useSessions.setState({
@@ -1085,7 +1119,12 @@ describe("SidePane (the status panel)", () => {
   // `ChatStream`'s derivations and now in `src/lib/sessionConfig.ts`:
   //   - the four-way fallback for BOTH config options and context usage (the
   //     live map → `sessions` → `historySessions` → `archivedSessions`),
-  //   - `disabled` for a session that is not live,
+  //   - the selectors are ENABLED for a stored session (the backend persists the
+  //     change without a Worker, #154) and disabled only while a set request is
+  //     in flight; the `null`-option Model stub stays disabled (no data, no
+  //     persist path),
+  //   - the Model picker's rows come from the live `useModelCatalog` store
+  //     filtered to the configured providers, NOT from the session's snapshot,
   //   - the traffic-light ramp (success < 50, caution < 70, warning < 90,
   //     destructive from 90).
   // ===========================================================================
@@ -1422,7 +1461,19 @@ describe("SidePane (the status panel)", () => {
     expect(screen.queryByTestId("context-usage")).toBeNull();
   });
 
-  it("renders the block POPULATED for a stored session (config options + context usage from the session row — the selectors are disabled)", () => {
+  it("renders the block POPULATED for a stored session (config options + context usage from the session row — the selectors are ENABLED)", () => {
+    // The Model picker's rows now come from the CATALOG store filtered to the
+    // configured providers (#154), so this case seeds both: the row for `m1` and
+    // the provider it belongs to (display name deliberately LOWERCASE `tama`, so
+    // the trigger reads `m1 · tama` — the same string the assertion below pins).
+    useModelCatalog.setState({
+      models: [catalogModel("m1")],
+      loadStarted: true,
+      loadedOk: true,
+    });
+    useSettings.setState({
+      settings: { providers: [{ id: "tama", name: "tama" }] },
+    } as never);
     // The `list_sessions` shape: the row carries `configOptions` (the
     // stored `model` / `thinkingLevel` synthesized) + `contextUsage` (the
     // last known usage — persisted on every `context_usage_update` frame).
@@ -1469,15 +1520,17 @@ describe("SidePane (the status panel)", () => {
     const bar = screen.getByRole("progressbar", { name: "Context used" });
     expect(bar.getAttribute("aria-valuenow")).toBe("42");
     expect(screen.getByTestId("context-usage").textContent).toBe("42%");
-    // The model selector is POPULATED with the stored model's name, but
-    // DISABLED (a stored session can't set config — no agent process to
-    // deliver `set_config_option` to).
+    // The model selector is POPULATED with the stored model's name and it is
+    // ENABLED: a stored session has no agent process, but the backend persists
+    // the change and returns the re-synthesized options without a Worker, so the
+    // selector is no longer read-only (issue #154 flipped the old
+    // `disabled={!isLive}` gate away).
     const model = screen.getByRole("button", { name: "Model" });
-    expect(model.hasAttribute("disabled")).toBe(true);
+    expect(model.hasAttribute("disabled")).toBe(false);
     expect(model.textContent).toContain("m1 · tama");
-    // The thinking selector is POPULATED with the stored level + disabled.
+    // The thinking selector is POPULATED with the stored level + enabled too.
     const thinking = screen.getByRole("combobox");
-    expect(thinking.hasAttribute("disabled")).toBe(true);
+    expect(thinking.hasAttribute("disabled")).toBe(false);
     expect(thinking.textContent).toContain("High");
   });
 
@@ -1488,6 +1541,17 @@ describe("SidePane (the status panel)", () => {
     // DB's (persisted on the same frame — same value, but the store's
     // map is the primary source).
     seedStoredSession();
+    // The picker's rows come from the CATALOG (#154): seed the `m2` row (the
+    // value the store's map carries) + its provider, or the trigger would fall
+    // back to the raw composed value with no provider cue.
+    useModelCatalog.setState({
+      models: [catalogModel("m2")],
+      loadStarted: true,
+      loadedOk: true,
+    });
+    useSettings.setState({
+      settings: { providers: [{ id: "tama", name: "tama" }] },
+    } as never);
     useSessions.setState({
       configOptions: {
         s1: [
@@ -1511,6 +1575,18 @@ describe("SidePane (the status panel)", () => {
 
   it("choosing a model item invokes setSessionConfigOption (the pane owns the write path now)", async () => {
     seedLiveSession();
+    // The picker's rows come from the CATALOG now (#154), so the row the test
+    // clicks (`beta`) must exist THERE: the option's own snapshot no longer feeds
+    // the dialog when the pane passes `items`. Provider `acme` is configured so
+    // the cue resolves; the SENT value stays the composed key `acme/beta`.
+    useModelCatalog.setState({
+      models: [catalogModel("alpha", "acme"), catalogModel("beta", "acme")],
+      loadStarted: true,
+      loadedOk: true,
+    });
+    useSettings.setState({
+      settings: { providers: [{ id: "acme", name: "acme" }] },
+    } as never);
     useSessions.setState({
       configOptions: {
         s1: [
@@ -1538,6 +1614,123 @@ describe("SidePane (the status panel)", () => {
     await waitFor(() =>
       expect(setSessionConfigOption).toHaveBeenCalledWith("s1", "model", "acme/beta"),
     );
+  });
+
+  it("a STORED session's model selection round-trips through setSessionConfigOption and updates the trigger (#154: the selectors are ENABLED and the write reaches the backend)", async () => {
+    // The whole point of the always-enabled change: a session with no Worker
+    // running still persists the change, and the command's response (the
+    // re-synthesized options) replaces the store's map — so the trigger visibly
+    // moves to the new model WITHOUT a resume.
+    seedStoredSession();
+    useSessions.setState({
+      configOptions: {
+        s1: [
+          {
+            id: "model",
+            name: "Model",
+            type: "select",
+            currentValue: "tama/old",
+            options: [{ value: "tama/old", name: "old" }],
+          },
+        ],
+      },
+    });
+    // The picker's rows (and therefore what the trigger can resolve to a display
+    // name) come from the CATALOG, not from the option's snapshot (#154). Seed
+    // both models so the click sends a value DIFFERENT from the current one —
+    // closer to the live write-path case's semantics.
+    useModelCatalog.setState({
+      models: [catalogModel("old"), catalogModel("m1")],
+      loadStarted: true,
+      loadedOk: true,
+    });
+    useSettings.setState({
+      settings: { providers: [{ id: "tama", name: "tama" }] },
+    } as never);
+    render(<SidePane />);
+    const model = screen.getByRole("button", { name: "Model" });
+    // THE (b) FLIP: a stored session's selector is enabled.
+    expect(model.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(model);
+    // RESOLVE the mock with the new options BEFORE the click: `useAsyncAction`
+    // invokes `onSet` synchronously on the click, so a `mockResolvedValueOnce`
+    // installed afterwards would be consumed by the file's default
+    // `mockResolvedValue([])` and the trigger would never move.
+    vi.mocked(setSessionConfigOption).mockResolvedValueOnce([
+      {
+        id: "model",
+        name: "Model",
+        type: "select",
+        currentValue: "tama/m1",
+        options: [{ value: "tama/m1", name: "m1" }],
+      },
+    ]);
+    fireEvent.click(screen.getByText("m1"));
+    // The call SHAPE is the contract with the backend sibling task: the session
+    // id, the config id, and the COMPOSED `provider/id` value.
+    await waitFor(() =>
+      expect(setSessionConfigOption).toHaveBeenCalledWith("s1", "model", "tama/m1"),
+    );
+    // The response went through `applyConfigOptions`, so the trigger now shows
+    // the NEW current model (with the provider cue).
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Model" }).textContent,
+      ).toContain("m1 · tama"),
+    );
+  });
+
+  it("seeding useModelCatalog changes an ALREADY-OPEN session's picker options without creating a session (#154: the options come from the live catalog)", () => {
+    // The defect this closes: the picker used to read the session's snapshotted
+    // `configOptions`, which the harness bakes at start / resume / set — so a
+    // provider added or refreshed in Settings could never reach a session that
+    // was already open. The rows now come from the store, and plain zustand
+    // propagates the change to the OPEN dialog (the precedent is
+    // `SubagentDelegatingCard.test.tsx`, which proves the same re-render).
+    seedLiveSession();
+    useSessions.setState({
+      configOptions: {
+        s1: [
+          {
+            id: "model",
+            name: "Model",
+            type: "select",
+            currentValue: "tama/m1",
+            options: [{ value: "tama/m1", name: "m1" }],
+          },
+        ],
+      },
+    });
+    useModelCatalog.setState({
+      models: [catalogModel("m1")],
+      loadStarted: true,
+      loadedOk: true,
+    });
+    useSettings.setState({
+      settings: { providers: [{ id: "tama", name: "tama" }] },
+    } as never);
+    render(<SidePane />);
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    // Scoped to the dialog: the trigger's own text is `m1 · tama`, so a bare
+    // `getByText("m1")` would match the trigger AND the row.
+    const dialog = within(
+      document.querySelector("[data-slot=dialog-content]") as HTMLElement,
+    );
+    expect(dialog.getByText("m1")).toBeTruthy();
+    expect(dialog.queryByText("new-m2")).toBeNull();
+
+    // Settings adds / refreshes a provider → the store catalog gains a row.
+    act(() => {
+      useModelCatalog.setState({
+        models: [catalogModel("m1"), catalogModel("new-m2")],
+      });
+    });
+
+    // The SAME already-open dialog shows the new row — no re-render from scratch,
+    // no second session, and the trigger keeps its current model.
+    expect(dialog.getByText("new-m2")).toBeTruthy();
+    expect(dialog.getByText("m1")).toBeTruthy();
+    expect(useSessions.getState().sessions).toHaveLength(1);
   });
 
   it("a live session WITHOUT configOptions renders neither selector (the Model stub and the empty track are the whole block)", () => {
@@ -1608,9 +1801,13 @@ describe("SidePane (the status panel)", () => {
       },
     });
     render(<SidePane />);
-    // The original meaning survives the move: a stored session's model option
-    // is never an interactive combobox — the pane renders the model trigger as
-    // a (disabled) dialog BUTTON, so `queryByRole("combobox")` stays null.
+    // What this case pins is the control's ROLE, not its enabled state: the
+    // model option is a DIALOG trigger (a `button` — the catalog is too long for
+    // a Radix dropdown), never a Radix `combobox`, so `queryByRole("combobox")`
+    // stays null for a stored session exactly as for a live one. (The title's
+    // "read-only" parenthetical predates #154 — a stored session's selectors are
+    // ENABLED now; the enabled flip is pinned by the POPULATED case above and
+    // the round-trip case below. The role distinction is what survives it.)
     expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
   });
 

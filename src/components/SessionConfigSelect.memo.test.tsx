@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeAll } from "vitest";
 import { fireEvent, render } from "@testing-library/react";
 import { createElement, useCallback, useState } from "react";
 import type { SessionConfigOption } from "../lib/tauri";
+import type { ModelPickerItem } from "./ModelPickerDialog";
 
 /**
  * Regression test (perf): a live session mounts the config selects in the
@@ -67,7 +68,13 @@ const mockOption: SessionConfigOption = {
 };
 
 /** A parent whose re-render simulates the composer's per-keystroke render. */
-function KeystrokeParent({ option }: { option: SessionConfigOption }) {
+function KeystrokeParent({
+  option,
+  items,
+}: {
+  option: SessionConfigOption;
+  items?: ModelPickerItem[];
+}) {
   const [, setDraft] = useState("");
   // The FIXED ChatStream passes ONE stable callback for both selects
   // (useCallback) — not a per-option closure minted per render.
@@ -78,7 +85,7 @@ function KeystrokeParent({ option }: { option: SessionConfigOption }) {
   return (
     <div>
       <button onClick={() => setDraft("x")}>type</button>
-      <SessionConfigSelect option={option} onSet={onSet} />
+      <SessionConfigSelect option={option} onSet={onSet} items={items} />
     </div>
   );
 }
@@ -116,6 +123,39 @@ describe("SessionConfigSelect memoization", () => {
 
     // The model picker re-renders: memo must not swallow real config
     // updates.
+    expect(pickerRenders).toBeGreaterThan(1);
+  });
+
+  it("re-renders when the ITEMS prop changes (a live catalog change must not be swallowed by memo)", async () => {
+    // The other half of the prop-threading decision (#154): the pane threads the
+    // catalog rows as `items` rather than subscribing inside this component, so
+    // a Settings change reaching the store must reach the picker through this
+    // prop. Memo compares props by reference — a DIFFERENT `items` array is a
+    // real change and must re-render, exactly as a new `option` does; and the
+    // same reference (the pane's `useMemo`) must keep the skip fast path the
+    // case above pins.
+    pickerRenders = 0;
+    const items: ModelPickerItem[] = [
+      { value: "acme/alpha", name: "alpha", provider: "acme" },
+    ];
+    const utils = render(<KeystrokeParent option={mockOption} items={items} />);
+    expect(pickerRenders).toBe(1);
+
+    // The SAME array reference + a parent re-render: still skipped.
+    await utils.findByText("type");
+    fireEvent.click(utils.getByText("type"));
+    expect(pickerRenders).toBe(1);
+
+    // A NEW array (the catalog changed): the picker re-renders.
+    utils.rerender(
+      <KeystrokeParent
+        option={mockOption}
+        items={[
+          ...items,
+          { value: "acme/beta", name: "beta", provider: "acme" },
+        ]}
+      />,
+    );
     expect(pickerRenders).toBeGreaterThan(1);
   });
 });

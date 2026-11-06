@@ -67,6 +67,37 @@ interface ModelCatalogState {
  */
 let inFlight: Promise<ModelDto[]> | null = null;
 
+/**
+ * The catalog filtered to the CONFIGURED providers (`settings.providers[id]`).
+ *
+ * WHY THIS EXISTS. `ModelDto` carries no "my provider is still configured" flag
+ * on the wire, so the only way a picker can drop the rows of a provider the user
+ * just REMOVED in Settings — without re-fetching anything — is to filter the
+ * stored catalog against the settings document's provider list, which the picker
+ * already reads reactively (`useSettings.settings` is published synchronously by
+ * `useSettingsDocument.patch`). A provider ADD needs no filter change either:
+ * the forced re-read in `SettingsPage.addProvider` puts the new rows in `models`
+ * and the new id is already in `settings.providers`.
+ *
+ * A PURE FUNCTION OVER THE SNAPSHOT (never a store field), so it composes with
+ * `useModelCatalog(selector)` in shape.
+ *
+ * ⚠️ IT RETURNS A **FRESH ARRAY PER CALL** — `.filter` mints a new array every
+ * time. That makes it UNSAFE as a zustand selector: zustand v5 re-runs a
+ * selector on every snapshot read and re-renders forever when the result is not
+ * `Object.is`-stable (the trap `src/lib/sessionLookup.ts` documents, also cited
+ * in `SubagentModals.tsx` / `SessionCostLine.tsx` / `SidePane.tsx`). Call it
+ * over `useModelCatalog.getState()` (or over the stable `models` slice) inside a
+ * `useMemo` instead — see `SessionConfigBlock.tsx`.
+ *
+ * It deliberately does NOT sort: `ModelPickerDialog` re-sorts its rows
+ * alphabetically, so a sort here would be dead code. Catalog order is preserved.
+ */
+export const selectModelsByProvider =
+  (configuredProviderIds: ReadonlySet<string>) =>
+  (s: ModelCatalogState): ModelDto[] =>
+    s.models.filter((m) => configuredProviderIds.has(m.provider));
+
 export const useModelCatalog = create<ModelCatalogState>()((set, get) => ({
   models: [],
   loadStarted: false,
