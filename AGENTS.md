@@ -75,6 +75,56 @@ leaf-unique (cited by PR number, not the head SHA, per the squash-orphan rule be
 **Use leaf-unique to prove loss, and expect the full-path set to churn by 2× the number of tests
 moved.** The assertion is **loss = 0**, never the total.
 
+**Split a test region by SUBJECT, not by line ratio — one `describe` / one `#[cfg(test)]` module =
+one subject, and >~25 tests in one block is a tripwire to go find that boundary, not a number to
+satisfy.** The trigger is **subject count**: no single `describe` block and no single `#[cfg(test)]`
+module may hold more than ~25 **unrelated** tests. A block that crosses ~25 is a signal to go find
+where the subjects actually divide — a 40-test block over ONE subject is fine; a 20-test block that
+spans two is already wrong. **Splitting a file without splitting the block relocates the problem** —
+a split is done when no `describe` spans two subjects, not when the file count went up; several
+subject-named `describe`s living in one file is a legitimate outcome and costs no new mocks. The
+shape that works is `mod tests;` + a `tests/` directory (e.g. `src/foo/tests/mod.rs`), **not** a
+`tests.rs` sibling — `find src-tauri/src -name 'tests.rs'` reports **0** sites, while the directory
+shape already exists at `src-tauri/src/commands/files/tests` and `src-tauri/src/storage/db/tests`.
+
+Do **not** use the old trigger "split when the test body exceeds the production body": it fires on
+**15 of 16 candidates** and orders splits that remove no pain (`errors.rs`, `settings.rs`,
+`router.rs`, `refresh.rs` have coherent tests over small production bodies, so splitting them buys
+nothing) — and because it is a **file-level** ratio it cannot name a block, so it is blind to the
+worst navigation hazard in the tree: the `describe("ChatStream", () => { … })` region in
+`src/components/ChatStream.test.tsx`, **3,483 lines** — instrument: `grep -n
+'^describe(' src/components/ChatStream.test.tsx` prints that block's open at 224 and its first
+sibling `describe` at 3707, so the region (open line through the line before the sibling) is
+3707 − 224 = 3,483; the brace-balanced block itself measures 3,468 lines — instrument: the same file
+scanned from the block's open with a brace counter, `awk
+'/^describe\("ChatStream",/{f=1} f{n=gsub(/{/,"{"); m=gsub(/}/,"}"); d+=n-m; if(d==0){print NR; exit}}'
+src/components/ChatStream.test.tsx` reports the closing brace at 3691 — and the region counted
+without its open line is 3,482 — plan and rule quote 3,483, the review's figure. The ratio points at
+that FILE (4,156 test lines over a 710-line `ChatStream.tsx`) and stops there; it never says which
+`describe` to split, and splitting the file would move the whole block intact. Cite the oversized
+regions by **content** (a `describe` name, a module name, a test title) — never by `file:line`, which
+decays as files move (this file's own rule: match on the test name, never the line). The three
+regions measured at HEAD, each re-runnable as written:
+
+- `src/components/ChatStream.test.tsx` — the `describe("ChatStream", …)` block holds **149 `it(`
+  calls** (the review says ~157 tests; 149 is the `it(`-line count at HEAD) across ~8 unrelated
+  subjects — mention pickers `$`/`@`/`#`/`?`, resume-stored-session semantics, attachment staging and
+  send-race safety, directory completion, compaction, Esc/cancel routing, composer styling,
+  working-indicator truncation — and it carries one `it.each` over the three mention pickers.
+  Re-run: `awk '/^describe\("ChatStream",/{f=1;next} /^describe\(/&&f{exit}
+  f' src/components/ChatStream.test.tsx | grep -c "it("` → `149`. Content anchors: `it("the $prefix
+  picker is UNCAPPED and note-free with more matches than the render cap ($kind catalog)"`,
+  `it("a mixed draft lists only the prefix of the token at the caret"`.
+- `src/components/SpacesList.test.tsx` — the `describe("SpacesList")` block holds **37 `it(` calls**.
+  Re-run: `awk '/^describe\("SpacesList",/{f=1;next} /^describe\(/&&f{exit}
+  f' src/components/SpacesList.test.tsx | grep -c "it("` → `37`. Content anchors: `it("renders its
+  labelled action buttons with their labels and kbd hints"`, `it("opens the Open Space dialog from
+  the action button"`.
+- `src-tauri/src/agent/session/mod.rs` — the `mod session_tests { … }` region holds **71
+  `#[test]`/`#[tokio::test]` attributes**. Re-run: `awk '/^mod session_tests \{/{f=1} f'
+  src-tauri/src/agent/session/mod.rs | grep -cE '^\s*#\[(tokio::)?test\]$'` → `71`. Content anchors:
+  `fn mint_session_id_format()`, `fn session_manager_builder_cyclic_weak_reference_drops_cleanly()`.
+
 The Rust compiler is pinned in the repo-root `rust-toolchain.toml`, so plain
 `cargo …` from the repo root (the workspace) is the pinned one — CI installs
 from that same file rather than naming a version. Do not float it: a newer rustc adds lints,
@@ -397,6 +447,30 @@ workflow can do — is writing notes a person would read.
 
 - **TDD**: write the failing test first, confirm it fails, then make it pass.
 - **Squash-merge** feature branches into `main` (one commit per feature).
+- **A poisoned mutex: recover when the lock guards independent per-key state, panic when it guards
+  one shared resource.** The discriminator, not a preference: `unwrap_or_else(|p| p.into_inner())`
+  when the guarded data is a map of independent per-key rows (one poisoned entry must not wedge the
+  others), `.expect(…)`/panic when the lock guards a SINGLE shared resource a panic may have left
+  genuinely unusable. **Both existing behaviours are correct and must not change.** The session
+  registry recovers, and documents why in the comment block above its per-session state accessors in
+  `src-tauri/src/agent/session/mod.rs` ("a panic while holding a registry lock must not wedge every
+  later session read") — one map of independent per-session rows, **25 production recovery sites**
+  across `agent/session/`: `grep -rn "unwrap_or_else(|p| p.into_inner())" src-tauri/src/agent/session/
+  | grep -v "//" | wc -l` → **29** call-site lines, of which 4 sit in test modules (16 `mod.rs` = 15
+  production + 1 in `session_tests`; 6 `naming.rs` = 3 + 3; 7 `router.rs` = all 7 production), so
+  production = 15 + 3 + 7 = **25**. `src-tauri/src/storage/db.rs` panics with
+  `.expect("db mutex poisoned")` at **28 production sites** (`grep -c 'expect("db mutex poisoned")
+  src-tauri/src/storage/db.rs` → 28) because `Db` holds ONE `rusqlite::Connection` in a `StdMutex`
+  and a panic mid-transaction can leave that single connection unusable. Note the asymmetry in the
+  evidence, not just the code: `db.rs` carries **no rationale anywhere in the file** — `grep -n
+  "poison" src-tauri/src/storage/db.rs | grep -v 'expect("db mutex poisoned")'` prints nothing — so a
+  new file that opens `session/mod.rs` first copies recovery and one that opens `db.rs` first copies
+  panic, and the written discriminator above is what makes the choice deliberate rather than
+  inherited. Hence the obligation: **any NEW panic-on-poison site must carry a one-line rationale for
+  why its resource is single and shared**, so `db.rs`'s bare `.expect("db mutex poisoned")` — which
+  asserts rather than argues — does not propagate. (Do not conflate counts: the tree-wide `grep -rn
+  "into_inner()" src-tauri/src/ | wc -l` → **37** includes test modules and non-lock uses; that is
+  the review's "37 sites" figure, not the 25 production recover sites.)
 - **Docs**: durable design decisions live in `docs/decisions/NNNN-slug.md`
   (ADR format); in-flight plans live in `docs/roadmap/<feature>.md` and are
   deleted on ship. Anything a roadmap records that must survive that deletion
