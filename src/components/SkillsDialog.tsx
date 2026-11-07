@@ -118,7 +118,7 @@ const SKILL_ROW_INERT = "cursor-not-allowed opacity-50";
  * serve is exactly that shape (ADR 0065).
  */
 function shadowHeading(winnerScope: "space" | "user", count: number): string {
-  return `${count} ${count === 1 ? "skill is" : "skills are"} hidden by a ${
+  return `${count} ${count === 1 ? "skill is" : "skills are"} shadowed by a ${
     winnerScope === "space" ? "space" : "global"
   } skill with the same name`;
 }

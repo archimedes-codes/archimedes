@@ -565,7 +565,7 @@ describe("SkillsDialog", () => {
   //    the WINNER — a row for the loser is a button that loads a different file
   //    than the one you are reading. So: a non-clickable block, and the winner
   //    stays the only row for that name.
-  // 2. The "hidden by" clause comes from the WINNER's scope, never the loser's.
+  // 2. The "shadowed by" clause comes from the WINNER's scope, never the loser's.
   //    `space_roots()` contributes two roots per level (`.agents/skills`, then
   //    `.pi/skills`) and `user_roots()` returns TWO User roots
   //    (`~/.agents/skills`, then `~/.pi/agent/skills`), so a `user` loser CAN
@@ -595,6 +595,15 @@ describe("SkillsDialog", () => {
       />,
     );
     await screen.findByText("alpha");
+    // ABSENCE-OF-THE-WHOLE-REPORT pin, kept verbatim through the Shadowing copy
+    // change (F14). Both rows carry `shadowed: []`, so NO report block renders and
+    // neither the retired "hidden by" wording nor the shipped "shadowed by a …"
+    // wording can appear. Two readings, both live: the report block is absent from
+    // a clean render, and — since the shipped heading no longer contains this
+    // substring — the RETIRED wording stays out of the DOM, which is the rule
+    // `CONTEXT.md`'s model-hidden entry states ("avoid: hidden alone"). It never
+    // keyed on the old copy's phrasing to pass, so the new copy cannot make it
+    // green by accident.
     expect(screen.queryByText(/hidden by/)).toBeNull();
   });
 
@@ -609,7 +618,7 @@ describe("SkillsDialog", () => {
       />,
     );
     await screen.findByText(
-      "1 skill is hidden by a space skill with the same name",
+      "1 skill is shadowed by a space skill with the same name",
     );
     // The loser's own line carries its name AND the path the user can check.
     const path = await screen.findByText("/u/.pi/agent/skills/alpha/SKILL.md");
@@ -634,9 +643,16 @@ describe("SkillsDialog", () => {
       />,
     );
     await screen.findByText(
-      "2 skills are hidden by a space skill with the same name",
+      "2 skills are shadowed by a space skill with the same name",
     );
-    expect(screen.queryByText(/1 skill is hidden/)).toBeNull();
+    // MIGRATED with the copy change (F14): this pin discriminates on WORDING, not
+    // on the report's absence — it demands the COUNT-ONE heading is absent beside
+    // the count-two one. Left on the old substring it would have gone vacuously
+    // green (the shipped copy contains no "/1 skill is hidden/" whatever the
+    // component renders), so it now pins the singular Shadowing headline the copy
+    // actually uses: this render says "2 skills are shadowed…", which does not
+    // contain "1 skill is shadowed".
+    expect(screen.queryByText(/1 skill is shadowed/)).toBeNull();
   });
 
   it("a_shadow_whose_winner_is_a_global_skill_says_global", async () => {
@@ -665,9 +681,14 @@ describe("SkillsDialog", () => {
       />,
     );
     await screen.findByText(
-      "1 skill is hidden by a global skill with the same name",
+      "1 skill is shadowed by a global skill with the same name",
     );
-    expect(screen.queryByText(/hidden by a space skill/)).toBeNull();
+    // MIGRATED with the copy change (F14): a WINNER-SCOPE discriminator, so it
+    // keys on wording and would have gone vacuously green on the old substring
+    // (the shipped copy contains no "/hidden by a space skill/"). It now guards the
+    // same mutation the same way — this render's winner is a GLOBAL skill, so the
+    // SPACE-winner headline must be absent from its DOM.
+    expect(screen.queryByText(/shadowed by a space skill/)).toBeNull();
   });
 
   it("the_shadow_report_is_not_clickable", async () => {
@@ -742,7 +763,7 @@ describe("SkillsDialog", () => {
     expect(screen.getByText("/u/.pi/agent/skills/alpha/SKILL.md")).toBeTruthy();
     // The COUNT follows the filter too (beta's group is gone, not hidden).
     expect(
-      screen.getByText("1 skill is hidden by a space skill with the same name"),
+      screen.getByText("1 skill is shadowed by a space skill with the same name"),
     ).toBeTruthy();
   });
 
@@ -751,6 +772,11 @@ describe("SkillsDialog", () => {
     // into — a shadow riding along under "No skills found." would be absurd.
     render(<SkillsDialog skills={[]} onClose={() => {}} />);
     await screen.findByText("No skills found.");
+    // ABSENCE-OF-THE-WHOLE-REPORT pin, kept verbatim through the Shadowing copy
+    // change (F14): the empty state is a SIBLING branch, so with no rows at all
+    // there is no heading in either wording — the assertion holds for the shipped
+    // "shadowed by a …" copy exactly as it did for the retired one, and it also
+    // keeps the retired phrase out of the DOM.
     expect(screen.queryByText(/hidden by/)).toBeNull();
   });
 
@@ -765,6 +791,11 @@ describe("SkillsDialog", () => {
       target: { value: "zzz" },
     });
     await screen.findByText('No skills match "zzz".');
+    // ABSENCE-OF-THE-WHOLE-REPORT pin, kept verbatim through the Shadowing copy
+    // change (F14): a shadow EXISTS here, but the same needle that drops the rows
+    // drops the report block (heading + loser line), so no heading renders in
+    // either wording. The next line proves the block's other half went too — this
+    // pin is about the heading, and the shipped copy leaves it absent.
     expect(screen.queryByText(/hidden by/)).toBeNull();
     expect(screen.queryByText("/u/.pi/agent/skills/alpha/SKILL.md")).toBeNull();
   });
@@ -794,6 +825,11 @@ describe("SkillsDialog", () => {
     );
     await screen.findByText("unshadowed");
     expect(screen.getByText("alpha")).toBeTruthy();
+    // ABSENCE-OF-THE-WHOLE-REPORT pin, kept verbatim through the Shadowing copy
+    // change (F14): the row genuinely LACKS `shadowed`, so the dialog renders no
+    // report block at all — no heading in either the retired or the shipped
+    // wording — while the dialog itself survives. The copy change cannot make this
+    // green by accident: it asserts the block's absence, not a phrase's.
     expect(screen.queryByText(/hidden by/)).toBeNull();
   });
 });

@@ -485,17 +485,27 @@ describe("the scanner actually reads the tree", () => {
     // other half of that split dissolved the residual `describe("ChatStream")`
     // into subject-named sibling describes inside the same file, and a
     // `describe` is not a module — dissolving a block costs no mocks at all.
-    expect(mockers).toHaveLength(46);
-    // 45 of the 46 SPREAD `vi.importActual`, which is the shape that makes the
+    // The same arithmetic holds for 46 -> 47 when FE4 split `SpacesList.test.tsx`'s
+    // Agents-modal cluster into `src/components/SpacesList.agents.test.tsx`, which
+    // mocks the barrel the documented way (the Agents modal's own three catalog
+    // sources plus the `saveSettings` write path, and the `getSettings` re-read its
+    // read-modify-write pins); `SpacesList.test.tsx` keeps its mock for the 18 tests
+    // that stayed, so again ONE new mocker and not two — and the dissolve half (the
+    // 2 Skills-button tests into a sibling `describe` in the file that already
+    // mocks) costs nothing, exactly as above.
+    expect(mockers).toHaveLength(47);
+    // 46 of the 47 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. The new mocker spreads
-    // too, so the remaining one is still `hooks/useWindowMaximized.test.ts`,
-    // which replaces the module wholesale — so a name it forgets is `undefined`,
-    // the case the pinned-surface assertion below covers.
+    // too (it lists the 17 arms its own tests drive and leaves every other barrel
+    // export — `invoke` included — to the real module), so the remaining one
+    // is still `hooks/useWindowMaximized.test.ts`, which replaces the module
+    // wholesale — so a name it forgets is `undefined`, the case the pinned-surface
+    // assertion below covers.
     expect(
       mockers.filter((f) =>
         /vi\.importActual/.test(readFileSync(f, "utf8")),
       ).length,
-    ).toBe(45);
+    ).toBe(46);
   });
 });
 
