@@ -104,7 +104,7 @@ function toolsInheritLabel(source: OverrideSource): string {
  * already in hand.
  */
 function shadowHeading(winnerScope: "space" | "user", count: number): string {
-  return `${count} ${count === 1 ? "agent is" : "agents are"} hidden by a ${
+  return `${count} ${count === 1 ? "agent is" : "agents are"} shadowed by a ${
     winnerScope === "space" ? "space" : "global"
   } agent with the same name`;
 }
