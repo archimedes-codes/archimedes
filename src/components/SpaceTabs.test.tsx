@@ -255,7 +255,7 @@ describe("SpaceTabs (the Spaces as browser-style tabs at the top of the chat)", 
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("the tab bar holds NO `...` menu, NO pane toggle and NO warning dot (the menu lives in the sidebar's `Sessions` header; the pane toggles live in the chrome bar's `ChromeControls`, never in the strip)", () => {
+  it("the tab bar holds NO `...` menu, NO pane toggle and NO warning dot (the new-session command lives in the sidebar's `Sessions` header as a single `New Session` `+`; the pane toggles live in the chrome bar's `ChromeControls`, never in the strip)", () => {
     useSessions.setState({
       spaces: [space("/w/alpha")],
       activeSpacePath: "/w/alpha",

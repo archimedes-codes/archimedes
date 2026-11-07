@@ -192,10 +192,10 @@ function tabStatusOf(
  * strip is not the dialog's owner — the flag has one, and this component is
  * not where it renders.
  *
- * The `...` menu (`New Session in this Space`) moved to the sidebar's
- * `Sessions` header (right-aligned, next to the word `Sessions`), and the
- * side-pane toggle moved to the `SidePane`'s footer — the tab bar is
- * tabs + `+` + a close control per tab.
+ * The new-session command lives in the sidebar's `Sessions` header, not here:
+ * that header holds a single `New Session` `+` button (right-aligned, next to
+ * the word `Sessions`). The side-pane toggle moved to the `SidePane`'s footer —
+ * the tab bar is tabs + `+` + a close control per tab.
  *
  * THE STRIP IS DRAG-REORDERABLE (ADR 0075). It renders the store's `spaces`
  * array verbatim — that array IS the Manual order — and a drag writes through
@@ -348,7 +348,7 @@ export default function SpaceTabs() {
     // level.
     //
     // ACCEPTED ARIA LIMITATION — record, do NOT "fix". The per-tab ✕ and the
-    // `New space` button stay SIBLINGS of the tabs inside this tablist, and the
+    // `New Space` button stay SIBLINGS of the tabs inside this tablist, and the
     // pill `div`s are generic children of it. The ARIA tabs pattern has no owned
     // slot for a per-tab close button: a `tab` may not hold an interactive child
     // (it is dropped from the accessibility tree and `<button>`'s content model

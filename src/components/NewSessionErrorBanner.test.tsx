@@ -67,7 +67,7 @@ describe("NewSessionErrorBanner (the view-independent reason for a failed start)
   });
 
   it("dismissal HIDES the notice without clearing the store's reason", () => {
-    // The field is ALSO the sidebar actions-menu trigger's `title`
+    // The field is ALSO the sidebar's `New Session` `+` button's `title`
     // (`SpacesList`), and its contract says it is cleared only by the reset at
     // the top of the next run. Clearing it from a dismiss button would let one
     // surface's housekeeping un-inform another, so dismissal is local.
