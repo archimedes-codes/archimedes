@@ -8,7 +8,7 @@ import { Button } from "./ui/button";
  *
  * WHY THIS COMPONENT EXISTS. `startSessionInActiveSpace` records a rejection in
  * `newSessionError`, and until now the ONLY thing that read it was the sidebar's
- * `Session actions` trigger `title` (`SpacesList`) — the component the Settings
+ * `New Session` `+` button `title` (`SpacesList`) — the component the Settings
  * view UNMOUNTS. So `⌘N` pressed on the Settings page could fail and say nothing
  * anywhere: no dialog, no message, no toast. That hole is this branch's own
  * doing: before it the chord did not exist on the Settings page at all, so
@@ -23,8 +23,9 @@ import { Button } from "./ui/button";
  * `warning` tokens with a dismiss button. This copies that shape. A toast would
  * expire on a failure the user cannot fix in one keystroke (a folder that
  * vanished, a harness that will not start) — and that message IS the payload.
- * The sidebar's `title` stays as it was: a tooltip on a menu item is the right
- * surface for "why is this item dead", not for "your keystroke did nothing".
+ * The sidebar's `title` stays as it was: a tooltip on the control you just
+ * pressed is the right surface for "why is this control dead", not for "your
+ * keystroke did nothing".
  *
  * DISMISSAL HIDES THE CURRENT NOTICE AND NOTHING AFTER IT, which is the one
  * subtle thing here. This component never unmounts, so unlike
@@ -37,8 +38,9 @@ import { Button } from "./ui/button";
  * always re-arms the notice. The effect below is the repo's "adjust state when
  * the store changes" bookkeeping, not a render-time guess.
  *
- * THE FIELD IS NOT CLEARED HERE — deliberately. It is also the sidebar menu's
- * `title`, and its own contract in `store/sessions.ts` says it is cleared ONLY by
+ * THE FIELD IS NOT CLEARED HERE — deliberately. It is also the sidebar's `New
+ * Session` `+` button's `title`, and its own contract in `store/sessions.ts` says
+ * it is cleared ONLY by
  * the reset at the top of the next run (the branch deleted the old hook's
  * `clearError` because no consumer ever called one). Dismissing from here would
  * let one surface's housekeeping un-inform another, so dismissal is local state.

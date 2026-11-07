@@ -709,8 +709,8 @@ export interface SessionsState {
   closeSpace: (path: string, stopSessionIds?: string[]) => Promise<void>;
   /**
    * Start a new Session in the SELECTED Space (`activeSpacePath`) — the one
-   * flow the sidebar's "New Session" button, the collapsed rail's icon, the
-   * `Sessions` header's `…` menu item and the `⌘N` chord all share.
+   * flow the sidebar's `Sessions` header `+`, the collapsed rail's `+` and the
+   * `⌘N` chord all share.
    *
    * It lives in the store rather than in a hook closure because its callers
    * do not share a component: a root-level chord listener has to reach it
@@ -727,9 +727,9 @@ export interface SessionsState {
   /**
    * Why the last `startSessionInActiveSpace` failed, as the command's message
    * (`null` when the last run succeeded or none has run) — what the sidebar's
-   * actions-menu item shows as its `title`, so a dead menu item says why.
+   * `New Session` `+` button shows as its `title`, so a dead control says why.
    * Cleared ONLY by the reset at the top of the next run: a stale message on
-   * an item that has since worked would blame the wrong thing.
+   * a control that has since worked would blame the wrong thing.
    */
   newSessionError: string | null;
   /**

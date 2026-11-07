@@ -472,7 +472,7 @@ function App() {
           the view ternary for the same reason the ⌘N chord is mounted at this root
           (`useAppShortcuts`) and for the same reason `SubagentModals` and the root
           `NewSpaceDialog` are: the surface that used to be the ONLY reader of
-          `newSessionError` — the sidebar's `Session actions` trigger `title` —
+          `newSessionError` — the sidebar's `New Session` `+` button `title` —
           unmounts on the Settings page, so a chord that works there could fail
           there in total silence. A strip in the column (not inside the content
           row) so it spans the window instead of squeezing a pane, and it needs no

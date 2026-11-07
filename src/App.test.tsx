@@ -1471,7 +1471,7 @@ describe("App (a failed ⌘N says why on the SETTINGS page)", () => {
   // The other half of "the chord is app-wide" (the describe above covers the
   // success path). `startSessionInActiveSpace` records a rejection in
   // `newSessionError`, and the only thing that used to read it was the sidebar's
-  // `Session actions` trigger `title` — the component the Settings view
+  // `New Session` `+` button `title` — the component the Settings view
   // UNMOUNTS. So a chord that now works everywhere could fail everywhere
   // silently, which is strictly worse than a chord that does not exist: nothing
   // happens and nothing says so. `NewSessionErrorBanner` is mounted at `App`

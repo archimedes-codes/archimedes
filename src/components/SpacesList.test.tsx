@@ -380,45 +380,51 @@ afterEach(() => {
 });
 
 describe("SpacesList", () => {
-  it("renders its labelled action buttons with their labels and kbd hints", () => {
-    // The row holds FOUR labelled buttons (Open Space, New Session, Skills,
-    // Agents) since Agents landed — this name used to say "two", which was true only
-    // of the two that carry a chord. The kbd assertions below stay on those two on
-    // purpose: `Skills` and `Agents` render no `Kbd` at all (matching each other), so
-    // a `⌘`-hint assertion for them would pin copy the component never renders.
+  it("holds ONE New Session + and NO Open Space row and NO chord chips", () => {
+    // THE REMOVAL PIN. The pane used to hold FOUR labelled command buttons
+    // (Open Space, New Session, Skills, Agents) with a `<Kbd>` chord chip on the
+    // first two. `Open Space` and `New Session` are GONE: the command is now one
+    // `+` icon button in the `Sessions` header (`aria-label="New Session"`, so the
+    // accessible name is the bare label — hence the exact-name query, not a regex),
+    // and `Open Space` has no sidebar surface at all any more (the chrome bar's `+`
+    // and ⌘O are its doors). `Skills` and `Agents` stay as labelled rows and are
+    // pinned by their own blocks below — this case pins what was REMOVED, and grep
+    // confirms no other assertion anywhere checked that `Open Space` is absent, so
+    // without the `queryByRole` line below the row could come back green.
     render(<SpacesList />);
-    expect(screen.getByRole("button", { name: /New Session/ })).toBeTruthy();
-    expect(screen.getByText("⌘N")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Open Space/ })).toBeTruthy();
-    expect(screen.getByText("⌘O")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New Session" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Open Space" })).toBeNull();
+    // The two `<Kbd>` chips died with the rows: ⌘N now lives only in the `+`'s
+    // `title` (pinned below) and ⌘O only in the chrome bar's tooltip.
+    expect(screen.queryByText("⌘N")).toBeNull();
+    expect(screen.queryByText("⌘O")).toBeNull();
     expect(screen.getByText("Sessions")).toBeTruthy();
+    // `Skills` and `Agents` are the TWO labelled rows that survive (each pinned in
+    // detail by its own describe block below; named here so this case reads as the
+    // whole post-change shape: two labelled rows + one header `+`).
+    expect(screen.getByRole("button", { name: "Skills" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Agents" })).toBeTruthy();
+    // …and the `Sessions` header row holds exactly ONE control — the `+`. This is
+    // the "one +" half of the change; a second icon in that row (a re-added menu
+    // trigger, say) is what this count catches.
+    expect(screen.getByText("Sessions").parentElement!.querySelectorAll("button")).toHaveLength(1);
   });
 
-  it("opens the Open Space dialog from the action button", () => {
-    render(<SpacesList />);
-    fireEvent.click(screen.getByRole("button", { name: /Open Space/ }));
-    // Asserted on the SHARED FLAG, not on the dialog's "New space" title: this
-    // pane RAISES the flag and no longer renders the dialog (`App` root owns the
-    // render site), so a text query here can only ever fail. The dialog's own
-    // title is pinned in `NewSpaceDialog.test.tsx`, and its root render in
-    // `App.test.tsx`.
-    expect(getNewSpaceDialogOpen()).toBe(true);
-  });
-
-  it("opens the Open Space dialog from the New Session button when no space is selected", () => {
+  it("raises the New Space dialog from the Sessions header + when no space is selected", () => {
     useSessions.setState({ activeSpacePath: null });
     render(<SpacesList />);
-    fireEvent.click(screen.getByRole("button", { name: /New Session/ }));
+    fireEvent.click(screen.getByRole("button", { name: "New Session" }));
     // The no-Space routing is the STORE command's now (`startSessionInActiveSpace`
-    // → `openNewSpaceDialog`), so the button just delegates. Same flag assertion
+    // → `openNewSpaceDialog`), so the `+` just delegates. Same flag assertion
     // as above — the dialog itself is rendered at `App` root.
     expect(getNewSpaceDialogOpen()).toBe(true);
     expect(mockedStartSession).not.toHaveBeenCalled();
   });
 
   it("raises the flag but renders NO dialog of its own (the render site is `App` root)", () => {
-    // The one-dialog rule, pinned from this side: this pane is one of the flag's
-    // FOUR raisers, so if it also mounted a dialog the app would paint two (and
+    // The one-dialog rule, pinned from this side: this pane can still RAISE the
+    // flag (its `New Session` `+` falls through to the dialog via the store when no
+    // Space is open), so if it also mounted a dialog the app would paint two (and
     // `App.test.tsx` would see a doubled title). Put the flag-gated dialog render
     // back in `SpacesList.tsx` and this goes red.
     setNewSpaceDialogOpen(true);
@@ -740,8 +746,9 @@ describe("SpacesList", () => {
 describe("SpacesList — the Skills button and empty-state modal", () => {
   it("the_skills_button_sits_in_the_button_row", async () => {
     render(<SpacesList />);
-    // The third button in the `New Session` / `Open Space` row (the skill
-    // LIST no longer renders in the pane — the button opens a modal).
+    // The first of the command row's TWO surviving labelled buttons (the skill
+    // LIST no longer renders in the pane — the button opens a modal; and the
+    // `New Session` / `Open Space` rows that used to lead this block are gone).
     expect(await screen.findByText("Skills")).toBeTruthy();
     expect(screen.getByText("Sessions")).toBeTruthy();
     // The one-fetch property (single consumer): one `listSkills` call.
@@ -1197,7 +1204,7 @@ describe("SpacesList (archive, ADR 0016)", () => {
     expect(screen.getAllByText(/^Both lists/)).toHaveLength(1);
   });
 
-  it("New Session with an archived session active starts a conversation in that space (not the Open Space dialog)", async () => {
+  it("New Session with an archived session active starts a conversation in that space (not the New Space dialog)", async () => {
     seedArchived();
     render(<SpacesList />);
     fireEvent.click(screen.getByRole("button", { name: /New Session/ }));
@@ -1291,34 +1298,49 @@ describe("SpacesList (archive, ADR 0016)", () => {
     ).toBe(true);
   });
 
-  // -- The `...` menu (moved from the tab bar to the `Sessions` header,
-  // -- right-aligned, next to the word `Sessions`) --
+  // -- The `+` in the `Sessions` header (it replaced the `...` menu that used to
+  // -- sit there, right-aligned next to the word `Sessions`) --
 
-  it("the `...` menu in the Sessions header starts a session in the ACTIVE space", async () => {
+  it("the `+` in the Sessions header starts a session in the ACTIVE space", async () => {
     const { startSession } = await import("../lib/tauri");
     // The seed's active space is `/tmp/alpha`.
     render(<SpacesList />);
-    // The menu sits in the `Sessions` header row (right of the label).
+    // The `+` sits in the `Sessions` header row (right of the label) — scoping the
+    // query to the header is what distinguishes it from the rail's `+` in a
+    // collapsed render, and it also pins the PLACEMENT, not just the name.
     const header = screen.getByText("Sessions").parentElement!;
-    expect(
-      header.querySelector('[aria-label="Session actions"]'),
-    ).toBeTruthy();
-    // Radix opens on `pointerDown` (`click` does not open the menu in
-    // jsdom).
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Session actions" }));
-    // NO Resume / NO Pause (the pause concept is gone — the old header's
-    // dropdown invariant now applies to this menu): the menu holds ONLY
-    // the item below.
-    expect(screen.queryByRole("menuitem", { name: /Resume/ })).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: /Pause/ })).toBeNull();
-    // Selection: `Enter` on the item (Radix's keyboard selection model).
-    fireEvent.keyDown(
-      screen.getByRole("menuitem", { name: "New Session in this Space" }),
-      { key: "Enter" },
-    );
+    const plus = header.querySelector('[aria-label="New Session"]');
+    expect(plus).toBeTruthy();
+    // A plain `click` now: this is a `<Button>`, not a Radix menu trigger, so
+    // there is no `pointerDown`-to-open / `Enter`-to-select dance left to perform.
+    fireEvent.click(plus!);
     await waitFor(() =>
       expect(vi.mocked(startSession)).toHaveBeenCalledWith("/tmp/alpha"),
     );
+  });
+
+  it("shows the last new-session failure as the + button's title", () => {
+    // The `title` arm this change MOVES: the deleted `···` trigger carried
+    // `newSessionError ?? undefined`, so a dead control said why. The `+` inherits
+    // that, and nothing else in this file read a `title` off it before (the only
+    // other `getAttribute("title")` here is the Stop button), so without this case
+    // the error arm is unguarded.
+    useSessions.setState({ newSessionError: "boom" });
+    render(<SpacesList />);
+    expect(
+      screen.getByRole("button", { name: "New Session" }).getAttribute("title"),
+    ).toBe("boom");
+  });
+
+  it("falls back to the ⌘N hint in the + button's title when nothing failed", () => {
+    // The OTHER arm — and the only place the ⌘N chord is written down now that the
+    // `<Kbd>` chip is gone with the labelled row. Drop the `??` fallback in the
+    // component and this is what goes red.
+    useSessions.setState({ newSessionError: null });
+    render(<SpacesList />);
+    expect(
+      screen.getByRole("button", { name: "New Session" }).getAttribute("title"),
+    ).toBe("New Session  ⌘N");
   });
 
   // -- The pane holds NO controls at all: the collapse toggle and the Settings
@@ -1335,8 +1357,8 @@ describe("SpacesList (archive, ADR 0016)", () => {
       const { container } = render(<SpacesList />);
       // Every label the toggle has ever carried, plus the gear's, so a rename
       // cannot quietly re-add one of these two controls here and leave this
-      // test vacuous. The pane's OWN commands (`Open Space`, `New Session`,
-      // `Skills`, `Agents`) are NOT in this list — they legitimately survive the
+      // test vacuous. The pane's OWN commands (the `New Session` `+`, `Skills`,
+      // `Agents`) are NOT in this list — they legitimately survive the
       // collapse as rail icons, which is what the rail's own tests assert.
       for (const label of [
         "Collapse session list",
@@ -1458,7 +1480,10 @@ describe("SpacesList (archive, ADR 0016)", () => {
     // takes the content AND ITS SCROLLBAR out of the paint while leaving it
     // mounted (`hidden` would unlayout it, and clipping alone is what produced
     // the wrapped text and the stray scrollbar).
-    for (const label of ["Open Space", "New Session", "Skills", "Agents", "Sessions", "Archived"]) {
+    // (`Open Space` used to be in this list and left with its labelled row. The
+    // `if (node)` guard below meant the stale entry could never fail — it is prose
+    // hygiene, not a fix.)
+    for (const label of ["New Session", "Skills", "Agents", "Sessions", "Archived"]) {
       const node = screen.queryByText(label);
       if (node) {
         expect(painted(node), `${label} bleeds into the sliver`).toBe(false);
@@ -1572,22 +1597,23 @@ describe("SpacesList (archive, ADR 0016)", () => {
 
   // -- The rail's action strip: the pane's commands survive the collapse --
 
-  it("offers the pane's four commands as icons while collapsed (not Settings)", () => {
+  it("offers the pane's three commands as icons while collapsed (not Settings)", () => {
     act(() => {
       setLeftPaneCollapsed(true);
     });
     const { container } = render(<SpacesList />);
-    // The list's own four buttons survive the collapse as icons. `Settings` is
+    // The list's own buttons survive the collapse as icons. `Settings` is
     // deliberately NOT among them: the gear lives in the chrome bar in both
     // states, so the rail used to carry a second copy and that tail strip is
     // gone (see `SessionRail`'s doc).
     //
-    // FOUR, not three: `Agents` is the fourth, and it is on the rail because the
-    // labelled button sits inside the region the collapse hides — dropping it
-    // here would give the command a vanishing door, which is the exact defect the
-    // `railActions` comment exists to prevent. Widening the count and this name
-    // together is intentional, not a broken pin.
-    for (const label of ["Open Space", "New Session", "Skills", "Agents"]) {
+    // THREE, not four: `Open Space` left the pane with its labelled row, so the
+    // rail lost its twin. `Agents` is on the rail because the labelled button
+    // sits inside the region the collapse hides — dropping a command here would
+    // give it a vanishing door, which is the exact defect the `railActions`
+    // comment exists to prevent. Narrowing the count and this name together is
+    // intentional, not a broken pin.
+    for (const label of ["New Session", "Skills", "Agents"]) {
       expect(
         within(screen.getByTestId("session-rail-actions")).getByRole("button", {
           name: label,
@@ -1597,19 +1623,22 @@ describe("SpacesList (archive, ADR 0016)", () => {
     }
     expect(
       within(screen.getByTestId("session-rail-actions")).getAllByRole("button"),
-    ).toHaveLength(4);
+    ).toHaveLength(3);
     // And nothing here reaches for Settings, in either strip or anywhere else.
     expect(container.querySelector('[data-testid="session-rail-tail-actions"]')).toBeNull();
     expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
   });
 
-  it("wires each rail icon to the SAME handler the labelled button uses", () => {
-    // Split from the presence test on purpose: `Skills` and `Open Space` open
+  it("wires each rail icon to the SAME handler the labelled control uses", () => {
+    // Split from the presence test on purpose: `Skills` and `Agents` open
     // MODALS, and a modal `aria-hidden`s the rest of the app — so a second
     // query against the rail after one opens fails for the correct reason
     // (testing-library honours it) and would read as a broken rail.
     // (`Settings` used to be asserted here too, through an `onOpenSettings`
     // prop — the gear is the chrome bar's now, and the pane has no such prop.)
+    // `getByTitle` matches EXACTLY, not as a substring, so the header `+`'s
+    // `title="New Session  ⌘N"` does NOT collide here: this still resolves to the
+    // rail's icon alone, which is the point of the assertion.
     act(() => {
       setLeftPaneCollapsed(true);
     });
@@ -1623,37 +1652,19 @@ describe("SpacesList (archive, ADR 0016)", () => {
     expect(screen.getByPlaceholderText("Search skills…")).toBeTruthy();
   });
 
-  it("opens the Open Space dialog from the rail icon", () => {
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
-    render(<SpacesList />);
-    fireEvent.click(screen.getByTitle("Open Space"));
-    // The rail's icon and the labelled button are the SAME closure, so they raise
-    // the same flag — asserted on the flag, because the dialog renders at `App`
-    // root now (see the button case above for why a text query is the wrong probe
-    // in this file).
-    expect(getNewSpaceDialogOpen()).toBe(true);
-  });
-
-  it("the `…` menu's \"New Session in this Space\" gets the no-Space dialog fallback too", () => {
-    // The deliberate behaviour change of this task. The menu item used to call the
-    // (now deleted) hook DIRECTLY, which no-oped with no Space selected — unlike
-    // the button path, it had NO dialog fallback, so it was a menu item that looked
-    // alive and did nothing. Routing it through `startSessionInActiveSpace` gives it
-    // the store's fallback; this is the only test that would notice it going back to
-    // the direct call (the button path's fallback is pinned above).
+  it("the Sessions header + gets the no-Space dialog fallback", () => {
+    // The no-Space fallback must fire from a SIDEBAR surface, and this is the only
+    // test that pins that. It used to be pinned through the `…` menu's item, which
+    // had called the (now deleted) hook DIRECTLY and so had NO fallback at all — a
+    // control that looked alive and did nothing. The header `+` goes through
+    // `startSessionInActiveSpace`, so the store raises the dialog; a component that
+    // started calling `startSession` directly (or swallowed the null case) is what
+    // this would catch.
     useSessions.setState({ activeSpacePath: null });
     render(<SpacesList />);
-    // Radix opens on `pointerDown` (`click` does not open the menu in jsdom) and
-    // selects on `Enter` — the same two steps the menu's other test here uses.
-    fireEvent.pointerDown(
-      screen.getByRole("button", { name: "Session actions" }),
-    );
-    fireEvent.keyDown(
-      screen.getByRole("menuitem", { name: "New Session in this Space" }),
-      { key: "Enter" },
-    );
+    fireEvent.click(screen.getByRole("button", { name: "New Session" }));
+    // Asserted on the FLAG: this pane raises it and `App` root renders the dialog,
+    // so a text query here could not express the claim (see the case above).
     expect(getNewSpaceDialogOpen()).toBe(true);
     // …and it did NOT try to start a Session in a Space that does not exist.
     expect(mockedStartSession).not.toHaveBeenCalled();
