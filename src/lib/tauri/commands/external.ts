@@ -33,8 +33,9 @@ export async function externalOpen(
   // no `catch`, and the wire error IS the `OpenError` envelope (ADR 0063,
   // task14) whose `message` is the typed refusal code verbatim
   // (`denied-scheme:…`, `relative-without-cwd`, `os-error:…`);
-  // `describeIpcError` renders the message, `OpenErrorKind` in `@/lib/errors`
-  // mirrors the frozen kind table.
+  // `describeIpcError` renders the message; the `OpenErrorKind` spellings are
+  // frozen in `src-tauri/src/agent/errors.rs` — there is no TS-side union (the
+  // mirror `src/lib/errors.ts` was deleted, nothing imports it).
   try {
     await invoke("external_open", { href, cwd: cwd ?? null });
   } catch (err) {
