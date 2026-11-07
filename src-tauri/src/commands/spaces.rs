@@ -45,7 +45,18 @@ pub async fn space_for_path(
     state: State<'_, Arc<Db>>,
     path: String,
 ) -> Result<SpaceCheck, SpacesError> {
-    resolve_space_for_path(&state, &path)
+    // Canonicalizing a path is blocking (disk I/O), so it runs on a worker
+    // thread — the SAME `tauri::async_runtime::spawn_blocking` the file rule in
+    // `commands/files/mod.rs` prescribes, not `tokio::task::spawn_blocking`,
+    // which also compiles but would make one file speak two dialects.
+    // `resolve_space_for_path` stays a sync `pub fn`: the in-file tests call it
+    // directly. The `JoinError` arm is UNTESTABLE (the closure is pure against
+    // an `Arc<Db>` + owned `path`, so it panics only on a genuine lock poison —
+    // the same class `files/mod.rs` documents); it is stated, not implied.
+    let db = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || resolve_space_for_path(&db, &path))
+        .await
+        .map_err(|join| SpacesError::Other(join.to_string()))?
 }
 
 /// All spaces, in the user's manual order (`sort_order`; see `Db::list_spaces`).
@@ -104,7 +115,26 @@ pub async fn set_space_trusted(
     path: String,
     trusted: bool,
 ) -> Result<(), SpacesError> {
-    match state.set_space_trusted(&path, trusted) {
+    // `Db::set_space_trusted` canonicalizes the path (blocking disk I/O) via
+    // `space_key` in `storage/db.rs`, so the whole `Db` call runs on a worker
+    // thread — the SAME `tauri::async_runtime::spawn_blocking` the file rule in
+    // `commands/files/mod.rs` prescribes, not `tokio::task::spawn_blocking`.
+    // The wrap lives HERE in the command file: the canonicalize is deep inside
+    // `Db`/`space_key`, and `storage/db.rs` is intentionally untouched.
+    // `wm.send_config_to_space` stays OUTSIDE the closure (no filesystem, and a
+    // `State` must not be moved into it). The `JoinError` arm is UNTESTABLE —
+    // the closure is pure against an `Arc<Db>` + owned `path`; it is stated,
+    // not implied, and mapped rather than left silent.
+    let db = state.inner().clone();
+    // `path` is cloned because the closure is `move`: the ORIGINAL stays in
+    // scope for the post-await uses below (`wm.send_config_to_space`, the
+    // no-op log line). `trusted` is `bool` — `Copy`, no clone needed.
+    let path_for_db = path.clone();
+    let set =
+        tauri::async_runtime::spawn_blocking(move || db.set_space_trusted(&path_for_db, trusted))
+            .await
+            .map_err(|join| SpacesError::Other(join.to_string()))?;
+    match set {
         Ok(true) => {
             // The running-Workers `config` update (the `StaticTrustSource`
             // flip — a dead / absent Worker is a no-op, not an error).
