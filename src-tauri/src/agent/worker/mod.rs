@@ -51,11 +51,9 @@
 // before the moves, so nothing downstream had to be touched.
 pub use fulcrum_core::worker::{client, core, dispatch, manager, protocol, sink, store};
 pub use fulcrum_core::worker::{
-    decode_inbound, decode_outbound, default_build_loop, encode_inbound, encode_outbound,
-    spawn_stdin_reader, stamp_outbound, ClosureHooks, Inbound, IpcDispatcher, IpcEventSink,
-    IpcStore, LoopControl, LoopHandles, Outbound, ProtoError, SubagentCapture, WorkerCore,
+    decode_inbound, decode_outbound, encode_inbound, Inbound, IpcStore, Outbound, WorkerCore,
     WorkerError, WorkerErrorKind, WorkerFactory, WorkerHandle, WorkerHooks, WorkerInboundEvent,
-    WorkerManager, DEFAULT_SUBAGENT_DEAD_BOUND, PROTOCOL_VERSION,
+    WorkerManager, DEFAULT_SUBAGENT_DEAD_BOUND,
 };
 // The five S4 wire DATA types this file used to re-export through `protocol`
 // (which re-exports them from `fulcrum_core::worker_types`); the names must stay

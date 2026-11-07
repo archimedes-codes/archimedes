@@ -46,25 +46,6 @@ impl WorkerFactory for ProductionWorkerFactory {
     }
 }
 
-/// The shared app setup (the `test_support` seam): the session manager
-/// (settings-driven native sessions), the persistence database in
-/// `app_data_dir/archimedes.db`, and the `WorkerManager` (ADR 0025 — the
-/// session's `AgentLoop` runs in the Worker; the `SessionManager` is the
-/// Supervisor-side coordinator).
-///
-/// Factored out of [`run`] so the real command surface can be exercised in
-/// tests without a GUI (see `tests/ipc.rs`). The `WorkerFactory` is the
-/// PRODUCTION one (`current_exe()`); the test variant is
-/// [`setup_dirs_with_factory`] (the injectable factory — the `test_support`
-/// pattern).
-pub fn setup_dirs<R: tauri::Runtime>(
-    app: &tauri::App<R>,
-    config_dir: PathBuf,
-    app_data_dir: PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
-    setup_dirs_with_factory(app, config_dir, app_data_dir, None)
-}
-
 /// The provider-credential refresher's start seam: a factory turns the deps
 /// into a live [`SupervisorRefresher`], or into `None` (no loop). A FUNCTION
 /// POINTER (not a closure / trait object) because the choice is made by the
@@ -72,22 +53,12 @@ pub fn setup_dirs<R: tauri::Runtime>(
 pub type RefresherFactory<R> =
     fn(&provider_auth::SupervisorRefresherDeps<R>) -> Option<provider_auth::SupervisorRefresher>;
 
-/// The `test_support` seam — a factory that starts NO loop: a test that runs the
-/// whole `setup_dirs` app never inherits a background refresher (ADR 0078 — an
-/// un-joined loop outliving its test is the census-leak route). The production
-/// loop is started only by [`setup_dirs_with_factory_refresher`].
-///
-/// Re-exported at the lib root from `agent::provider_auth` (the plan names it in
-/// both §2b and §4c; ONE definition, so the two names can never drift): a test
-/// that wants the loop-typed seam passes this, and the test-facing `setup_dirs*`
-/// entries pass `None` for the same effect.
-pub use crate::agent::provider_auth::noop_refresher_factory;
-
 /// The `setup_dirs` seam (the `test_support` pattern — the injectable
 /// `WorkerFactory`): `None` = the production factory (`current_exe()`);
 /// `Some(factory)` = the test factory (the `fake_worker` fixture — the
-/// `tests/ipc.rs` headless command-surface test). Everything else is
-/// IDENTICAL to [`setup_dirs`].
+/// `tests/ipc.rs` headless command-surface test). This is the entry `run` would
+/// call were it not for the credential refresher, so it is the whole-app path
+/// every test drives.
 ///
 /// Starts NO credential refresher (the `None` factory below): the signature is
 /// the one `tests/ipc.rs` calls, and the tests that run this whole-app path must
@@ -241,7 +212,7 @@ fn init_dir_deps<R: tauri::Runtime>(
     let refresher_slot: Arc<std::sync::Mutex<Option<provider_auth::SupervisorRefresher>>> =
         Arc::new(std::sync::Mutex::new(None));
     // T7's budget ledger (issue #132). Constructed ONLY on the production
-    // branch: a test-facing entry point (`setup_dirs` / `setup_dirs_with_factory`)
+    // branch: a test-facing entry point (`setup_dirs_with_factory`)
     // manages NO poller at all, so `get_provider_budget` takes its documented
     // degrade (`Ok(vec![])`) in a test app, and no test inherits budget work
     // (the poller spawns nothing by itself — it is a passive ledger the refresher
@@ -642,8 +613,8 @@ pub fn run() {
                 },
             )?;
             // The production entry: the shared core WITH the credential
-            // refresher (`setup_dirs` / `setup_dirs_with_factory` are the
-            // test-facing entries and start NO loop — see the seam's docs).
+            // refresher (`setup_dirs_with_factory` is the test-facing entry
+            // and starts NO loop — see the seam's docs).
             setup_dirs_with_factory_refresher(app, config_dir, app_data_dir, None)?;
 
             #[cfg(target_os = "linux")]

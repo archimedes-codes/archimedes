@@ -56,13 +56,11 @@ pub use fulcrum_core::harness::{
 pub use fulcrum_core::harness::{model_key, wire};
 
 pub use fulcrum_core::harness::{
-    build_child_system_message, build_main_prompt, build_provider, discover_models,
-    load_project_context, merge_catalog, split_for_compaction, AgentLoop, AnthropicProvider,
-    CompactionConfig, Compactor, ControlCmd, DiscoveredMeta, InProcessDispatcher, MockDispatcher,
-    Model, ModelCatalog, ModelKey, ModelOptions, ModelRef, ModelRequest, OpenAiCompatibleProvider,
-    OpenAiResponsesProvider, Prompt, PromptContext, PromptTurn, Provider, ProviderDiscovery,
-    ProviderError, ProviderEvent, RetryPolicy, SubagentDispatcher, SudoDeps, ToolCall,
-    ToolCallDelta, ToolSpec, Usage, DEFAULT_CONTEXT_WINDOW,
+    build_child_system_message, build_main_prompt, build_provider, discover_models, merge_catalog,
+    AgentLoop, CompactionConfig, InProcessDispatcher, Model, ModelCatalog, ModelKey, ModelOptions,
+    ModelRequest, OpenAiCompatibleProvider, Prompt, PromptContext, PromptTurn, Provider,
+    ProviderDiscovery, ProviderError, ProviderEvent, RetryPolicy, SubagentDispatcher, SudoDeps,
+    ToolCall, ToolCallDelta, ToolSpec, Usage, DEFAULT_CONTEXT_WINDOW,
 };
 // `tool_specs` is NOT named in this block on purpose: the MODULE alias above already
 // brings BOTH namespaces (the module `harness::tool_specs` and the function

@@ -20,23 +20,35 @@
 //!    `session/`, `commands/`, `bin/fake_worker.rs` and the 23 integration tests
 //!    were NOT edited — they are the pin.
 //!
-//! ## Non-vacuity — the deletion that reddens each pin (all were run)
+//! ## Non-vacuity — the deletion that reddens each pin
 //!
 //! A compile-time assertion is worth only its failure mode, so each pin names the
-//! deletion that breaks it. Measured results are in the S4 report:
+//! deletion that breaks it. The measurements for the desktop-side deletions are in
+//! the S4 report; the two bullets marked CRATE-SIDE name deletions this checkout
+//! cannot perform (T8 moved those files into the rev-pinned crate) and are marked
+//! as proven in the crate's own CI instead of being silently dropped:
 //!
 //! - Delete `impl FulcrumPersistence for Db` (`storage/db.rs`) → `E0277: the trait
 //!   bound Db: FulcrumPersistence is not satisfied` here, at every `Arc<dyn
 //!   FulcrumPersistence>` coercion in this file, and at
 //!   [`the_persistence_surface_round_trips_through_a_real_db`].
-//! - Delete `impl Dispatcher for WorkerManager` (`worker/manager/mod.rs`) →
-//!   `E0277` on `WorkerManager` at [`worker_manager_satisfies_dispatcher`] and at
-//!   the `Arc<dyn Dispatcher>` coercion.
-//! - Delete the `pub use fulcrum_core::worker_types::{…}` block in
-//!   `agent/worker/protocol.rs` → this file fails AND the desktop fails, in
-//!   `worker/**`, `session/`, `commands/`, `bin/fake_worker.rs` and the two-sided
-//!   integration tests, because every consumer reaches these types through that
-//!   path.
+//! - Delete `impl Dispatcher for WorkerManager` — CRATE-SIDE since T8/S8.3
+//!   (`fulcrum-core/src/worker/manager/mod.rs`, `impl crate::seams::Dispatcher for
+//!   WorkerManager`). That impl and the type are both owned by the crate, so the
+//!   `E0277` proof runs in `archimedes-codes/fulcrum`'s CI, NOT here: this
+//!   checkout has no `worker/manager/mod.rs`. What stays provable HERE is the
+//!   re-export seam: drop the `manager` token from
+//!   `pub use fulcrum_core::worker::{…}` in `agent/worker/mod.rs` →
+//!   [`worker_manager_satisfies_dispatcher`] and the `Arc<dyn Dispatcher>`
+//!   coercion fail to resolve the name (`unresolved import`).
+//! - Delete the `pub use crate::worker_types::{…}` block in
+//!   `fulcrum-core/src/worker/protocol.rs` — CRATE-SIDE since T8/S8.1, so its
+//!   consumers fail in the crate's CI; there is no `agent/worker/protocol.rs` in
+//!   this checkout to delete. What stays provable HERE is the desktop half: drop
+//!   the `protocol` token from `pub use fulcrum_core::worker::{…}` in
+//!   `agent/worker/mod.rs` → [`moved_wire_types_keep_every_existing_desktop_path_resolving`]
+//!   fails, because the desktop spells these types at
+//!   `crate::agent::worker::protocol::…` through that module alias.
 //! - Delete the `pub use fulcrum_core::store_rows::{…}` in `storage/db.rs`, or the
 //!   one in `src/types.rs` → the row/DTO pins fail at the `Db::session` /
 //!   `Db::messages_for` / `record_session` sites, and the desktop's `commands/` +
@@ -535,7 +547,28 @@ fn the_subagent_vocabulary_is_one_type_across_the_boundary() {
 /// the desktop's `Settings` agree), which is what the first build after the crate
 /// gained `config_types` proved the hard way — six
 /// `expected ProviderConfig, found config::ProviderConfig` errors at
-/// `session/mod.rs:1527`, `worker/core.rs:288/355/356`, `worker/manager/mod.rs:445`.
+/// `session/mod.rs:1527`, `worker/core.rs:288/355/356`, `worker/manager/mod.rs:445`
+/// (paths AS THEY WERE THEN — `worker/**` is crate-owned since T8, so only
+/// `session/mod.rs` still exists on the desktop disk).
+///
+/// # Non-vacuity — the mutation that reddens each half of this pin
+///
+/// Two independent mechanisms, because they catch different breakages:
+///
+///   * **The identity fns** prove the TYPE. Each takes the `archimedes_lib::`
+///     spelling and returns the `fulcrum_core::` spelling of the same value. If
+///     the two spellings ever denote two DIFFERENT structs (a desktop twin, or a
+///     re-export quietly replaced by a local mirror), the `return` is `E0308` —
+///     the pin does not compile, so it cannot pass on a broken tree. A source-text
+///     `contains` on this file could be satisfied by some OTHER function holding
+///     an identically-typed parameter, which is exactly why this half is a
+///     compile-time identity fn and not a grep.
+///   * **The serde assertions** prove the BYTES. An identity fn cannot notice a
+///     field rename or a re-case on one side (both spellings are still one type,
+///     so it keeps compiling), so each DTO also round-trips JSON and asserts the
+///     wire key spelling and the missing-field defaults. Drop
+///     `rename_all = "camelCase"` from the crate's `FontSettings`, or change
+///     `default_font_size()` from 14, and the assertion below fails on the JSON.
 #[test]
 fn the_config_dtos_are_one_type_across_the_boundary() {
     fn providers_move_across(
@@ -548,6 +581,31 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
     ) -> fulcrum_core::config_types::AgentOverrideFields {
         o
     }
+    fn settings_move_across(
+        s: archimedes_lib::config::Settings,
+    ) -> fulcrum_core::config_types::Settings {
+        s
+    }
+    fn fonts_move_across(
+        f: archimedes_lib::config::FontSettings,
+    ) -> fulcrum_core::config_types::FontSettings {
+        f
+    }
+    fn oidc_move_across(
+        c: archimedes_lib::config::OidcConfig,
+    ) -> fulcrum_core::config_types::OidcConfig {
+        c
+    }
+    // `WebSettings` is NOT in the `config_types` block — S2 moved it to
+    // `fulcrum_core::web::config` and `config.rs` re-exports it from there, so the
+    // desktop spelling is the `agent::web::config` module-alias path.
+    fn web_settings_move_across(
+        w: archimedes_lib::agent::web::config::WebSettings,
+    ) -> fulcrum_core::web::config::WebSettings {
+        w
+    }
+    // Each identity fn above is CALLED in the assertions below (not merely
+    // mentioned), which is what keeps the type pin from being deletable dead code.
     // A pre-feature `settings.json` row still parses to the same defaults — the
     // serde default FUNCTIONS moved with the struct, and `load_settings`'s
     // corrupt-file fallback depends on that not changing.
@@ -571,6 +629,124 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
         "`skip_serializing_if` is ADR 0067's absence rule, not cosmetics"
     );
 
+    // ── `Settings` — the whole app-settings document ──────────────────────────
+    // Serialize the DESKTOP spelling, read the crate's bytes: the camelCase keys
+    // and the `true`-by-default bools are the wire contract the renderer's
+    // `AppSettings` declares required.
+    let settings_json = serde_json::to_string(&settings_move_across(
+        archimedes_lib::config::Settings::default(),
+    ))
+    .expect("the settings document is always encodable");
+    assert!(
+        settings_json.contains("\"theme\":\"dark\""),
+        "`theme` keeps its spelling and `default_theme()`'s value — got {settings_json}"
+    );
+    assert!(
+        settings_json.contains("\"sessionNamingEnabled\":true"),
+        "`sessionNamingEnabled` is `default_true`, not `false` — got {settings_json}"
+    );
+    assert!(
+        settings_json.contains("\"attentionAlertsEnabled\":true"),
+        "`attentionAlertsEnabled` is `default_true` — got {settings_json}"
+    );
+    assert!(
+        settings_json.contains("\"attentionAlertDelaySecs\":15"),
+        "the attention delay is 15 SECONDS on the wire (`delaySecs`, not millis) — got {settings_json}"
+    );
+    assert!(
+        settings_json.contains("\"sessionNamingModel\":null"),
+        "`session_naming_model` carries NO `skip_serializing_if`, so absence is an explicit null — got {settings_json}"
+    );
+    // And the reverse direction: a pre-feature sparse file parses to the same
+    // defaults through the CRATE spelling.
+    let sparse: fulcrum_core::config_types::Settings =
+        serde_json::from_str("{}").expect("a pre-feature settings file parses to the defaults");
+    assert_eq!(sparse.theme, "dark");
+    assert!(sparse.session_naming_enabled);
+    assert_eq!(sparse.session_naming_model, None);
+    assert_eq!(sparse.font.size_px, 14);
+    assert_eq!(sparse.attention_alert_delay_secs, 15);
+
+    // ── `FontSettings` — 3 fields, and TWO different defaults for one field ───
+    // The hand-written `Default` ships the app's font families; serde's
+    // missing-field default leaves them `None` (the frontend's own CSS stack
+    // applies then). So parsing `{}` is NOT `FontSettings::default()`, and this is
+    // where that asymmetry is recorded.
+    let bare_font: fulcrum_core::config_types::FontSettings =
+        serde_json::from_str("{}").expect("an absent font block is legal");
+    assert_eq!(
+        bare_font.size_px, 14,
+        "`default_font_size()` travels with the struct"
+    );
+    assert!(
+        bare_font.ui_family.is_none(),
+        "serde absence is `None`, not the app's stack"
+    );
+    assert!(bare_font.code_family.is_none());
+    assert_ne!(
+        bare_font,
+        archimedes_lib::config::FontSettings::default(),
+        "the hand-written `Default` names the shipped families; serde absence does not"
+    );
+    let font_json =
+        serde_json::to_string(&fonts_move_across(archimedes_lib::config::FontSettings {
+            size_px: 16,
+            ui_family: Some("Inter".to_string()),
+            code_family: None,
+        }))
+        .expect("encodable");
+    assert!(
+        font_json.contains("\"sizePx\":16") && font_json.contains("\"uiFamily\":\"Inter\""),
+        "`FontSettings` serializes camelCase — got {font_json}"
+    );
+
+    // ── `OidcConfig` — 4 fields, two of them REQUIRED ─────────────────────────
+    let oidc_json = serde_json::to_string(&oidc_move_across(archimedes_lib::config::OidcConfig {
+        issuer: "https://idp.example".to_string(),
+        client_id: "archimedes".to_string(),
+        scope: None,
+        redirect_ports: Vec::new(),
+    }))
+    .expect("encodable");
+    assert!(
+        oidc_json.contains("\"clientId\":\"archimedes\""),
+        "`client_id` crosses as `clientId` — got {oidc_json}"
+    );
+    let parsed_oidc: fulcrum_core::config_types::OidcConfig = serde_json::from_str(
+        r#"{"issuer":"https://idp.example","clientId":"archimedes"}"#,
+    )
+    .expect("scope/redirect_ports are `#[serde(default)]` — a bare issuer+client block is valid");
+    assert_eq!(parsed_oidc.scope, None);
+    assert!(
+        parsed_oidc.redirect_ports.is_empty(),
+        "an empty port list means one ephemeral port"
+    );
+    assert!(
+        serde_json::from_str::<fulcrum_core::config_types::OidcConfig>(r#"{"issuer":"https://x"}"#)
+            .is_err(),
+        "`client_id` is REQUIRED: an `oidc` block that omits it fails the whole document"
+    );
+
+    // ── `WebSettings` — 6 `String` fields, all-default-empty ──────────────────
+    let bare_web: fulcrum_core::web::config::WebSettings =
+        serde_json::from_str("{}").expect("an absent web block is legal");
+    assert_eq!(
+        bare_web,
+        archimedes_lib::agent::web::config::WebSettings::default(),
+        "an absent `web` block is exactly `WebSettings::default()` (all empty ⇒ only the keyless Search provider is live)"
+    );
+    let web_json = serde_json::to_string(&web_settings_move_across(
+        archimedes_lib::agent::web::config::WebSettings {
+            brave_api_key: "k".to_string(),
+            ..Default::default()
+        },
+    ))
+    .expect("encodable");
+    assert!(
+        web_json.contains("\"braveApiKey\":\"k\""),
+        "`brave_api_key` crosses as `braveApiKey` — got {web_json}"
+    );
+
     // And the packaged envelope carries the SAME types (`StartEnv.providers` is a
     // `Vec<ProviderConfig>` — the field that forced this move).
     let env = minimal_start_env();
@@ -583,11 +759,13 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
 ///
 /// The desktop path (`crate::agent::session::…`, which `subagent_flow.rs:14`
 /// imports) is inside a private `mod`, so an integration test cannot name it —
-/// the proof for that half is that `session/mod.rs` and `worker/manager/
-/// subagent_flow.rs` compile UNEDITED, which the lib build establishes. What is
-/// checkable from here is the behaviour that moved: the first-`/` rule, the
-/// unknown-key `None`, and the fact that a `:<level>` suffix is the CALLER's
-/// problem (which `harness/launch.rs:173` depends on for its soft rung).
+/// the proof for that half is that `session/mod.rs` compiles UNEDITED, which the
+/// lib build establishes (`subagent_flow.rs` is crate-owned since T8/S8.3 —
+/// `fulcrum-core/src/worker/manager/subagent_flow.rs` — so its half of that proof
+/// runs in the crate's CI). What is checkable from here is the behaviour that
+/// moved: the first-`/` rule, the unknown-key `None`, and the fact that a
+/// `:<level>` suffix is the CALLER's problem (which `harness/launch.rs:173` —
+/// crate-owned since T8 — depends on for its soft rung).
 #[test]
 fn resolve_composed_model_keeps_its_lookup_rules_after_the_move() {
     let deep = Model {
@@ -832,13 +1010,19 @@ fn test_model_shape() -> Model {
 /// impl that no test instantiates is exactly the S4 failure mode, so: the generic
 /// bound, a `dyn` coercion, and one real call through each object.
 ///
-/// # The deletion that reddens it (measured — see the S5b report for counts)
+/// # The deletion that reddens it
 ///
-///   * delete `impl Store for SessionStore` (`agent/harness/store.rs`) →
-///     `E0277: SessionStore: Store is not satisfied` at the bound, at the
-///     `Arc<dyn Store>` coercion, and at the identity fn below;
-///   * delete `impl Store for IpcStore` (`agent/worker/store.rs`) → the same three
-///     for `IpcStore`;
+///   * delete `impl Store for SessionStore` (`agent/harness/store.rs` — EXISTS
+///     here) → `E0277: SessionStore: Store is not satisfied` at the bound, at the
+///     `Arc<dyn Store>` coercion, and at the identity fn below (measured; see the
+///     S5b report for counts);
+///   * delete `impl Store for IpcStore` — CRATE-SIDE since T8/S8.3
+///     (`fulcrum-core/src/worker/store.rs`, `impl Store for IpcStore` at :51).
+///     There is no `agent/worker/store.rs` in this checkout, so that deletion is
+///     proven in `archimedes-codes/fulcrum`'s CI. What stays provable HERE is the
+///     seam: drop the `IpcStore` token from `pub use fulcrum_core::worker::{…}` in
+///     `agent/worker/mod.rs` → the same three failures for `IpcStore`, because the
+///     name reaches this file only through that re-export;
 ///   * delete the `pub use fulcrum_core::harness::store::{DisplayRow, NoopStore,
 ///     Store};` line in `agent/harness/mod.rs` → this file AND the desktop's
 ///     `harness/**` consumers fail: the re-export seam is the other half of proof.

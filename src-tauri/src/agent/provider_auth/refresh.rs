@@ -13,8 +13,9 @@
 //! the still-valid stored token keeps serving, persists a successful refresh
 //! and pushes the new bearer to live sessions. It is stoppable (its handle is
 //! kept reachable — ADR 0078: an un-joined loop outliving its test is the
-//! census-leak route) and suppressible from the `setup_dirs` seam (see
-//! [`noop_refresher_factory`]).
+//! census-leak route) and suppressible from the `setup_dirs` seam: the
+//! test-facing entries pass `None` for the `RefresherFactory`, so a test app
+//! starts no loop at all.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -418,7 +419,7 @@ impl Drop for SupervisorRefresher {
 /// The decline-on-no-runtime guarantee still holds where it matters: the
 /// test-facing [`SupervisorRefresher::start`] keeps the `try_current` probe, and
 /// no test path ever reaches this factory (the test-facing `setup_dirs*` entries
-/// pass [`noop_refresher_factory`]).
+/// pass `None` for the refresher, so no loop is started at all).
 pub fn production_refresher_factory<R: tauri::Runtime>(
     deps: &SupervisorRefresherDeps<R>,
 ) -> Option<SupervisorRefresher> {
@@ -434,14 +435,6 @@ pub fn production_refresher_factory<R: tauri::Runtime>(
         deps.session_manager.clone(),
         deps.budget_poller.clone(),
     )
-}
-
-/// A no-op factory (returns `None`) — the `test_support` seam: a test that runs
-/// the whole `setup_dirs` app must never inherit a background loop.
-pub fn noop_refresher_factory<R: tauri::Runtime>(
-    _deps: &SupervisorRefresherDeps<R>,
-) -> Option<SupervisorRefresher> {
-    None
 }
 
 /// The test-facing spawn: the current-runtime probe (which DECLINES on a bare
