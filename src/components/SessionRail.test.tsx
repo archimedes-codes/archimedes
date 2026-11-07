@@ -196,7 +196,6 @@ describe("SessionRail (the session list as icons, for the collapsed left rail)",
   // -- two. --
 
   const actions: SessionRailAction[] = [
-    { id: "open", label: "Open Space", icon: <i />, onClick: vi.fn() },
     { id: "new", label: "New Session", icon: <i />, onClick: vi.fn() },
     { id: "skills", label: "Skills", icon: <i />, onClick: vi.fn() },
   ];

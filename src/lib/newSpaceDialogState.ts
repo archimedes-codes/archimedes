@@ -3,11 +3,16 @@
  * React) mirroring `leftPaneState` / `sidePaneState`, and for the same reason:
  * the flag needs ONE owner across a subtree that unmounts.
  *
- * WHY A MODULE AND NOT A `useState`: four surfaces raise this dialog — the
- * `App`-root chord listener (which has no component closure it could call for
- * the flag, because the sidebar it used to live in is unmounted in the
- * Settings view), the root-rendered dialog itself, the sidebar's `Open Space`
- * button and rail icon, and the tab strip's `+`. A `useState` in any one of
+ * WHY A MODULE AND NOT A `useState`: FOUR call sites outside this module touch
+ * this flag and none of them owns it — THREE raise it (the `App`-root chord
+ * listener for ⌘O, which has no component closure it could call for the flag
+ * because the sidebar it used to live in is unmounted in the Settings view; the
+ * tab strip's `+`; and the store's no-Space routing in
+ * `startSessionInActiveSpace`, which is how the sidebar's `New Session` `+` and
+ * the ⌘N chord reach the dialog — a store path, not a button wired to
+ * `openNewSpaceDialog`, since the sidebar's own `Open Space` button and rail
+ * icon are gone), and ONE closes it (the root-rendered dialog's `onClose`). A
+ * `useState` in any one of
  * them is invisible to the others, and two owners of one dialog is how two
  * dialogs end up mounted at once (`getByText("New space")` → "Found multiple
  * elements"). `SpacesList` unmounts when the Settings page opens, so the flag
@@ -45,7 +50,8 @@ export function setNewSpaceDialogOpen(v: boolean): void {
  * The zero-arg opener. NOT sugar for `setNewSpaceDialogOpen(true)`: the flag
  * setter takes an argument, so it is assignable to neither `() => void` (a
  * `SessionRailAction.onClick`) nor `MouseEventHandler` (a button's `onClick`)
- * — `TS2322` both ways. Every call site here is one of those two shapes.
+ * — `TS2322` both ways. The tab strip's `+` needs the second shape; the chord
+ * listener and the store's no-Space routing call it directly.
  */
 export function openNewSpaceDialog(): void {
   setNewSpaceDialogOpen(true);

@@ -62,9 +62,9 @@ describe("newSpaceDialogState", () => {
     const unsubscribe = subscribeNewSpaceDialog(notify);
     setNewSpaceDialogOpen(true);
     setNewSpaceDialogOpen(true);
-    // `openNewSpaceDialog()` on an already-open dialog is the same echo: the
-    // `Open Space` button clicked twice while the dialog is up re-renders
-    // nothing.
+    // `openNewSpaceDialog()` on an already-open dialog is the same echo: the ⌘O
+    // chord (or the tab strip's `+`) pressed twice while the dialog is up
+    // re-renders nothing.
     openNewSpaceDialog();
     expect(notify).toHaveBeenCalledTimes(1);
     setNewSpaceDialogOpen(false);

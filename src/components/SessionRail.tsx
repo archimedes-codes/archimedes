@@ -52,7 +52,8 @@ export interface SessionRailRow {
  * pane keeps its controls, it does not hand them to another surface and make
  * them teleport.
  *
- * THE THREE ARE THE LIST'S OWN BUTTONS (Open Space, New Session, Skills), so
+ * THE THREE ARE THE PANE'S OWN CONTROLS (the `New Session` `+`, `Skills`,
+ * `Agents`), so
  * they sit ABOVE the marks at a fixed offset and the marks keep their
  * positional contract (the Nth mark is the Nth row). `Settings` is NOT one of
  * them: the gear lives in the chrome bar's `ChromeControls` in both states, so

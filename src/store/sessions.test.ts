@@ -4503,10 +4503,11 @@ describe("useSessions.startSessionInActiveSpace", () => {
   });
 
   it("records the rejection message in newSessionError, and clears it on the next run", async () => {
-    // The sidebar's actions-menu `title` is the only surface that shows this,
-    // and it re-reads the flag on every open — which is why the action clears
-    // it at the top of its own run instead of carrying a `clearError` the way
-    // the hook did (no consumer ever called one).
+    // Two surfaces show this: the sidebar's `New Session` `+` carries it as its
+    // `title`, and the `NewSessionErrorBanner` mounted at `App` root renders it
+    // as a strip. Both re-read the store rather than caching a copy — which is
+    // why the action clears it at the top of its own run instead of carrying a
+    // `clearError` the way the hook did (no consumer ever called one).
     useSessions.setState({
       spaces: [row("/tmp/alpha", 1)],
       activeSpacePath: "/tmp/alpha",

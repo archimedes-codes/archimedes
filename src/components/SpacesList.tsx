@@ -11,9 +11,7 @@ import {
   BotIcon,
   ChevronDownIcon,
   ChevronRightIcon,
-  FolderOpenIcon,
-  MessageCirclePlusIcon,
-  MoreHorizontalIcon,
+  PlusIcon,
   SparklesIcon,
   SquareIcon,
   Trash2Icon,
@@ -34,7 +32,6 @@ import {
   LEFT_PANE_WIDTH,
   subscribeLeftPane,
 } from "../lib/leftPaneState";
-import { openNewSpaceDialog } from "../lib/newSpaceDialogState";
 import { archivedInSpace, useSessions, spaceViewFor } from "../store/sessions";
 import {
   useDragReorder,
@@ -58,14 +55,7 @@ import { SessionListRow } from "./SessionListRow";
 import { RowButton } from "./RowButton";
 import { EmptyListLine } from "./EmptyListLine";
 import { cn } from "./lib/utils";
-import { Kbd } from "./ui/kbd";
 import { Button } from "./ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "./ui/dropdown-menu";
 
 function spaceNameFor(cwd: string, spaces: { path: string }[]): string {
   const match = spaces.find((s) => s.path === cwd);
@@ -73,18 +63,21 @@ function spaceNameFor(cwd: string, spaces: { path: string }[]): string {
 }
 
 /**
- * THE SIDEBAR'S FOUR LABELLED COMMAND BUTTONS (Open Space, New Session, Skills,
- * Agents) — one ghost `<Button>` recipe, spelled ONCE because all four drew the
- * identical box.
+ * THE SIDEBAR'S TWO LABELLED COMMAND BUTTONS (Skills, Agents) — one ghost
+ * `<Button>` recipe, spelled ONCE because both drew the identical box. (The two
+ * that used to ride this recipe — `Open Space` and `New Session` — are gone: the
+ * first left the sidebar for the chrome bar, the second is now the `+` in the
+ * `Sessions` header, which is an icon button and does NOT use this recipe.)
  *
  * The FIRST argument is what `Button`'s base and the `default` size would add
- * that these four never had, and each entry only names a group the row below
+ * that these two never had, and each entry only names a group the row below
  * does NOT spell (so the row always wins a group it owns — see C7's recipe):
  *  - `border-0` — the base's `border` is a 1px ring; with `h-8` it would make
  *    the row 34px and inset the label by 1px. `border-0` removes the width
  *    outright (the base's `border-transparent` alone keeps 28px→30px).
  *  - `justify-start` — the size centres content; these rows are labelled and
- *    read left-to-right (the `Kbd` sits at the end via its own `flex-1` label).
+ *    read left-to-right (the label carries the `flex-1` that pushes any trailing
+ *    element to the end — the chord `Kbd` chips that used to sit there are gone).
  *  - `transition-none` — the base fades hover colour over 150 ms; this band
  *    has never had a fade, and it stays as drawn.
  *  - `select-auto` — the base makes the label unselectable.
@@ -94,7 +87,7 @@ function spaceNameFor(cwd: string, spaces: { path: string }[]): string {
  *    base would force it onto one line and overflow the 244px column.
  *  - `shrink` — the base's `shrink-0` is `flex-shrink: 0`. The parent is a
  *    `flex flex-col` box, so shrink applies to HEIGHT here, and a short pane
- *    would otherwise stop these four from compressing as they always have.
+ *    would otherwise stop these two from compressing as they always have.
  *    `shrink` is `flex-shrink: 1`, i.e. the value they had before.
  *  - `[user-select:auto]` — the base's `select-none` makes the label
  *    unselectable. The two spellings are NOT interchangeable and the difference
@@ -130,10 +123,10 @@ function spaceNameFor(cwd: string, spaces: { path: string }[]): string {
  *  - `outline-none` — `base.css:53-57` already forces
  *    `outline: none !important` on every `:focus`/`:focus-visible`, in every
  *    browser and again under `forced-colors`;
- *  - `disabled:*` / `aria-invalid:*` / `aria-expanded:*` — none of these four
+ *  - `disabled:*` / `aria-invalid:*` / `aria-expanded:*` — none of these two
  *    is ever disabled, nothing sets `aria-invalid` on them, and none carries
- *    `aria-expanded` (the `DropdownMenuTrigger` beside them does; these do not),
- *    so the arm's `aria-expanded:bg-hover` has no element to fire on;
+ *    `aria-expanded`, so the arm's `aria-expanded:bg-hover` has no element to
+ *    fire on;
  *  - `[&_svg]:pointer-events-none` — the handler is on the button, so the click
  *    is handled either way;
  *  - `[&_svg]:shrink-0` — the icons are fixed `size-4`;
@@ -141,17 +134,16 @@ function spaceNameFor(cwd: string, spaces: { path: string }[]): string {
  *    an explicit `size-4`, so the `:not([class*=size-])` guard excludes all of
  *    them (this is the C2 chrome-bar trap, and it does not bite here);
  *  - `has-data-[icon=inline-*]:pr/pl` — no child carries `data-icon`
- *    (lucide-react v1.47's `createLucideIcon` sets no such attribute, and
- *    `Kbd`'s slot attribute is `data-slot="kbd"`, which that selector does not
- *    match).
+ *    (lucide-react v1.47's `createLucideIcon` sets no such attribute, and the two
+ *    rows' only children are a lucide icon and a plain `<span>` label).
  */
 const SIDEBAR_COMMAND_BUTTON =
   "border-0 justify-start transition-none whitespace-normal shrink [user-select:auto]";
 
 /**
- * The box all four sidebar command buttons drew, VERBATIM, before C7 routed
+ * The box both sidebar command buttons drew, VERBATIM, before C7 routed
  * them through `<Button>`. It is the SECOND argument to `cn()` at every one of
- * the four sites, so it wins every tailwind-merge group it spells against
+ * the two sites, so it wins every tailwind-merge group it spells against
  * `Button`'s base and the `default` size — that ordering is what makes the swap
  * paint-neutral, and it is why this string is kept whole rather than folded
  * into the constant above. `hover:bg-surface-hover` is one of them: the ghost
@@ -265,14 +257,14 @@ export default function SpacesList() {
   // THE new-session command (Task 2's store action). This pane no longer decides
   // what "no Space selected" means — the command does, and it routes that case to
   // the Open Space dialog itself. That is why every new-session surface below
-  // (the labelled button, the rail icon, the `…` menu item, and the root ⌘N
+  // (the `Sessions` header's `+`, the rail's `+`, and the root ⌘N
   // chord) is now the same one call and cannot drift apart.
   const startSessionInActiveSpace = useSessions(
     (s) => s.startSessionInActiveSpace,
   );
   // The Skills modal (the left pane has NO skill list — ZCode parity: the
-  // skills UI is a searchable modal, opened from the third button in the
-  // row). The catalog fetch lives in `useSkillCatalog` below (the modal
+  // skills UI is a searchable modal, opened from the first of the row's two
+  // remaining buttons). The catalog fetch lives in `useSkillCatalog` below (the modal
   // receives the rows as props — same hook key as the composer → one
   // shared fetch).
   const [skillsOpen, setSkillsOpen] = useState(false);
@@ -312,9 +304,10 @@ export default function SpacesList() {
   // removed) — which is also why the list renders nothing.
   const activeView = views.find((v) => v.path === activeSpacePath);
   // Why the last new-session attempt failed (`null` when it did not fail) — the
-  // actions-menu trigger's `title`, so a dead menu item says why. It replaced the
-  // deleted `useStartNewConversation` hook's local `error` state: the command
-  // lives in the store now, so its failure has to be readable from the store too.
+  // sidebar's `New Session` `+` button's `title`, so a dead control says why. It
+  // replaced the deleted `useStartNewConversation` hook's local `error` state: the
+  // command lives in the store now, so its failure has to be readable from the
+  // store too.
   const newSessionError = useSessions((s) => s.newSessionError);
   // NO ordering subscription here, on purpose (ADR 0075): the pane used to
   // subscribe to each row's last message stamp — as a primitive key, so
@@ -424,42 +417,39 @@ export default function SpacesList() {
     getLeftPaneCollapsed,
   );
 
-  // Both handlers are STABLE: `openNewSpaceDialog` is a zero-arg module function
-  // (so it is assignable to `SessionRailAction.onClick` and to a button's
-  // `MouseEventHandler`, which `setNewSpaceDialogOpen` — arity 1 — is not), and
-  // `startSessionInActiveSpace` is a store action, stable across renders. That
-  // replaces the old pair, where `useStartNewConversation` returned a FRESH
-  // object every render and so re-subscribed the pane's keydown listener on every
-  // render; the listener is gone (it lives at `App` root now) and so is the churn.
-  const handleOpenSpace = openNewSpaceDialog;
+  // The ONE new-session closure, STABLE because `startSessionInActiveSpace` is a
+  // store action (stable across renders). The header `+` and the rail's `+` both
+  // reference THIS closure, so the two renderings of the command cannot drift
+  // apart. It replaces the old pair, where `useStartNewConversation` returned a
+  // FRESH object every render and so re-subscribed the pane's keydown listener on
+  // every render; the listener is gone (it lives at `App` root now) and so is the
+  // churn. There is no `Open Space` handler here any more: that command left the
+  // sidebar, and the store routes the no-Space case to the dialog itself.
   const handleNewSession = useCallback(
     () => void startSessionInActiveSpace(),
     [startSessionInActiveSpace],
   );
 
   // The collapsed rail's command strip. These are the SAME handlers the open
-  // pane's labelled buttons call — one closure each, referenced from both, so
-  // the two renderings of a command cannot drift apart. The icons are the open
-  // buttons' icons verbatim (the rail is the same control at the same size, not
-  // a new control), and the labels are carried as `aria-label` + `title`
+  // pane's controls call — one closure each, referenced from both, so the two
+  // renderings of a command cannot drift apart. The icons are the open pane's
+  // icons verbatim (the rail is the same control at the same size, not a new
+  // control), and the labels are carried as `aria-label` + `title`
   // because a 40px column has no room for text.
   //
-  // Four commands, all at the HEAD, because they are the pane's own buttons.
+  // Three commands, all at the HEAD, because they are the pane's own buttons. The
+  // head entry is the twin of the `Sessions` header's `+` (it used to be the twin
+  // of a labelled `New Session` ROW, and before that of an `Open Space` row too —
+  // both rows are gone, so the rail lost those twins).
   // `Settings` used to ride here as a second strip at the rail's BOTTOM — the
   // gear lived in the footer while open, so the rail kept it at the same height
   // on collapse. The gear now lives in the chrome bar for both states, so the
   // tail strip is gone and with it the rail's `mt-auto` tail block.
   const railActions: SessionRailAction[] = [
     {
-      id: "open",
-      label: "Open Space",
-      icon: <FolderOpenIcon className="size-4" />,
-      onClick: handleOpenSpace,
-    },
-    {
       id: "new",
       label: "New Session",
-      icon: <MessageCirclePlusIcon className="size-4" />,
+      icon: <PlusIcon className="size-4" />,
       onClick: handleNewSession,
     },
     {
@@ -486,7 +476,7 @@ export default function SpacesList() {
     // Collapse = `LEFT_PANE_RAIL` + `overflow: hidden` (a SLIVER, not 0 — the
     // content stays mounted, clipped; the `fixed` dialogs escape clipping).
     // The sliver exists so the collapsed rail has somewhere to draw: the
-    // session marks and the four command icons (`SessionRail`). The pane's
+    // session marks and the three command icons (`SessionRail`). The pane's
     // collapse toggle is NOT here any more — it lives in the chrome bar's
     // `ChromeControls` beside the window controls, in both states — which is
     // also why the footer row this pane used to end with is gone.
@@ -516,28 +506,6 @@ export default function SpacesList() {
           type="button"
           variant="ghost"
           size="default"
-          onClick={handleOpenSpace}
-          className={cn(SIDEBAR_COMMAND_BUTTON, PANE_COMMAND_ROW)}
-        >
-          <FolderOpenIcon className="size-4" />
-          <span className="flex-1 text-left">Open Space</span>
-          <Kbd className="text-foreground-subtlest">⌘O</Kbd>
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="default"
-          onClick={handleNewSession}
-          className={cn(SIDEBAR_COMMAND_BUTTON, PANE_COMMAND_ROW)}
-        >
-          <MessageCirclePlusIcon className="size-4" />
-          <span className="flex-1 text-left">New Session</span>
-          <Kbd className="text-foreground-subtlest">⌘N</Kbd>
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="default"
           onClick={() => setSkillsOpen(true)}
           className={cn(SIDEBAR_COMMAND_BUTTON, PANE_COMMAND_ROW)}
         >
@@ -558,35 +526,24 @@ export default function SpacesList() {
           <span className="flex-1 text-left">Agents</span>
         </Button>
       </div>
-      {/* The Sessions header: the label + the `...` menu (the old tab
-          bar's `...` menu moved here — right-aligned, next to the word
-          `Sessions`). */}
+      {/* The Sessions header: the label + the `New Session` `+` (right-aligned,
+          next to the word `Sessions`). This replaces the `...` menu that used to
+          sit here — the menu held exactly ONE item (`New Session in this Space`),
+          so the affordance was a two-step gesture to reach one command. It is the
+          same store action through the same closure the rail's `+` calls, so the
+          no-Space dialog fallback comes from the store and is not re-decided here. */}
       <div className="flex items-center justify-between px-2.5 py-2">
         <span className="text-ui-base text-foreground-subtlest">Sessions</span>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Session actions"
-              title={newSessionError ?? undefined}
-            >
-              <MoreHorizontalIcon className="size-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent>
-            {/* The SAME command as the `New Session` button and the ⌘N chord now.
-                It used to call the (deleted) hook directly, which no-oped with no
-                Space selected — so this item was the one new-session surface with
-                no dialog fallback: with no Space it looked alive and did nothing.
-                Routing it through the store action gives it the fallback too. */}
-            <DropdownMenuItem
-              onSelect={() => void startSessionInActiveSpace()}
-            >
-              New Session in this Space
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label="New Session"
+          title={newSessionError ?? "New Session  ⌘N"}
+          onClick={handleNewSession}
+        >
+          <PlusIcon className="size-4" />
+        </Button>
       </div>
       {/* The list scroller (inside the content region above, which is what
           hides it while collapsed — see the note there). */}

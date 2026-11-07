@@ -103,7 +103,7 @@ describe("SpaceTabs (the Spaces as browser-style tabs at the top of the chat)", 
     }
   });
 
-  it("the `New space` control is not exposed as a tab (the tablist's tabs are Spaces only)", () => {
+  it("the `New Space` control is not exposed as a tab (the tablist's tabs are Spaces only)", () => {
     // The `+` is a sibling control inside the tablist (see the accepted
     // limitation documented on the container in `SpaceTabs.tsx`). It must stay
     // a plain button: if it ever picked up `role="tab"` it would announce itself
@@ -115,10 +115,10 @@ describe("SpaceTabs (the Spaces as browser-style tabs at the top of the chat)", 
     const names = within(tablist)
       .queryAllByRole("tab")
       .map((el) => el.getAttribute("aria-label") ?? el.textContent?.trim());
-    expect(names).not.toContain("New space");
+    expect(names).not.toContain("New Space");
     // And it is still reachable as what it is — a button, not a tab.
-    expect(screen.getByRole("button", { name: "New space" })).toBeTruthy();
-    expect(screen.queryByRole("tab", { name: "New space" })).toBeNull();
+    expect(screen.getByRole("button", { name: "New Space" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "New Space" })).toBeNull();
   });
 
   it("renders a spinner on the tab when a space has an active running session", () => {
@@ -240,7 +240,7 @@ describe("SpaceTabs (the Spaces as browser-style tabs at the top of the chat)", 
     useSessions.setState({ spaces: [space("/w/alpha")] });
     render(<SpaceTabs />);
     expect(getNewSpaceDialogOpen()).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "New space" }));
+    fireEvent.click(screen.getByRole("button", { name: "New Space" }));
     expect(getNewSpaceDialogOpen()).toBe(true);
   });
 
@@ -251,11 +251,11 @@ describe("SpaceTabs (the Spaces as browser-style tabs at the top of the chat)", 
     // and `getByText("New space")` would become "Found multiple elements".
     useSessions.setState({ spaces: [space("/w/alpha")] });
     render(<SpaceTabs />);
-    fireEvent.click(screen.getByRole("button", { name: "New space" }));
+    fireEvent.click(screen.getByRole("button", { name: "New Space" }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("the tab bar holds NO `...` menu, NO pane toggle and NO warning dot (the menu lives in the sidebar's `Sessions` header; the pane toggles live in the chrome bar's `ChromeControls`, never in the strip)", () => {
+  it("the tab bar holds NO `...` menu, NO pane toggle and NO warning dot (the new-session command lives in the sidebar's `Sessions` header as a single `New Session` `+`; the pane toggles live in the chrome bar's `ChromeControls`, never in the strip)", () => {
     useSessions.setState({
       spaces: [space("/w/alpha")],
       activeSpacePath: "/w/alpha",
@@ -815,10 +815,15 @@ describe("the tab label and the `+` route through <Button> (C7)", () => {
   it("the `+` is a <Button variant=\"ghost\" size=\"icon-lg\"> that stays a rounded-md square", () => {
     useSessions.setState({ spaces: [space("/w/alpha")], activeSpacePath: "/w/alpha" });
     render(<SpaceTabs />);
-    const plus = screen.getByRole("button", { name: "New space" });
+    const plus = screen.getByRole("button", { name: "New Space" });
     expect(plus.getAttribute("data-slot")).toBe("button");
     expect(plus.getAttribute("data-variant")).toBe("ghost");
     expect(plus.getAttribute("data-size")).toBe("icon-lg");
+    // The ⌘O hint lives HERE now (the sidebar `<Kbd>` chip that carried it is
+    // gone). `getAttribute` rather than `getByTitle` so the EXACT spelling —
+    // two spaces before the glyph, matching `"New Session  ⌘N"` in the
+    // sidebar — is what is pinned, not a substring of it.
+    expect(plus.getAttribute("title")).toBe("New Space  ⌘O");
     const was = tokensOf(
       "size-8 shrink-0 rounded-md text-foreground-subtle hover:bg-surface-hover",
     );
