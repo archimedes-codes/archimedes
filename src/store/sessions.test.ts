@@ -9,9 +9,11 @@ import {
   liveSessionsInSpace,
   mostRecentLiveInSpace,
   OLDER_HISTORY_PAGE,
+  SESSION_KEYED_FIELDS,
   spaceViewFor,
   useSessions,
   type Message,
+  type SessionsState,
 } from "./sessions";
 // The reducer helpers and the ACP frame type come from their OWN modules — the
 // store's re-export barrel is gone (finding 13b).
@@ -5735,5 +5737,191 @@ describe("reorderSpaces (the tab-strip drag write path, ADR 0075)", () => {
     expect(reorderSpacesCommand).toHaveBeenNthCalledWith(1, ["/b", "/a", "/c"]);
     expect(reorderSpacesCommand).toHaveBeenNthCalledWith(2, ["/c", "/b", "/a"]);
     expect(stripPaths()).toEqual(["/c", "/b", "/a"]);
+  });
+});
+
+describe("clearSessionState write-set contract (the session-keyed maps, finding 13/B4)", () => {
+  // This file is ORDER-DEPENDENT (its blocks hand-reset the fields they happen
+  // to remember), so this block owns the store wholesale on both sides of every
+  // case — `resetStores` replaces each store with zustand's captured initial
+  // state rather than merging, so no neighbour's leftovers can reach these
+  // residue assertions and nothing here leaks forward. (`resetStores` cannot
+  // reach the four module-`let`s of `sessions.ts`; nothing here needs them.)
+  beforeEach(() => resetStores());
+  afterEach(() => resetStores());
+
+  /**
+   * Every session-keyed map seeded for one surrogate id, plus all three row
+   * lists and the active pointer holding the same id — so a retirement path
+   * cannot pass by having cleared the easy field only. Two of the seeds are
+   * DELIBERATELY at odds with what the close writes, to make a dropped merge
+   * observable: `closeReasons` starts at `"error"` while the close closes with
+   * `"user"` (a dropped merge leaves `"error"`), and `messages` holds a
+   * PENDING tool-call so the close's `finalizeSessionMessages` shows up as a
+   * `status: "failed"` flip.
+   */
+  const seed = {
+    closeReasons: { s1: "error" as const },
+    sessionRecency: { s1: 7 },
+    sessionOrder: { s1: 3 },
+    messages: {
+      s1: [
+        {
+          kind: "tool-call" as const,
+          id: "t1",
+          title: "T",
+          status: "pending" as const,
+          at: 1,
+        },
+      ],
+    },
+    configOptions: { s1: [] },
+    contextUsage: { s1: { used: 1, window: 128000 } },
+    compacting: { s1: "manual" as const },
+    history: {
+      s1: {
+        oldestRowId: 1,
+        hasMore: false,
+        loadingMore: false,
+        generation: 1,
+        epoch: 0,
+      },
+    },
+    inTurn: { s1: true },
+    stopReasons: { s1: "end_turn" as const },
+    stalled: { s1: { at: 1, crashLog: null } },
+    sessions: [info("s1", "/x")],
+    historySessions: [info("s1", "/x")],
+    archivedSessions: [info("s1", "/x")],
+    activeSessionId: "s1",
+  };
+
+  it("deleteSession clears ALL 11 session-keyed maps (failing-first: residue pin)", async () => {
+    useSessions.setState(seed);
+    await useSessions.getState().deleteSession("s1");
+    const st = useSessions.getState();
+    for (const field of SESSION_KEYED_FIELDS) {
+      // ONE-ARG matcher, message on `expect`: `not.toHaveProperty("s1")` fails
+      // iff the key survived (or holds a non-undefined value — for the widened
+      // clear both are residue). The two-arg `not.toHaveProperty("s1", msg)`
+      // would compare the value to a message STRING and pass vacuously.
+      expect(st[field], `${field} left a stale key`).not.toHaveProperty("s1");
+    }
+    expect(st.sessions).toEqual([]);
+    expect(st.historySessions).toEqual([]);
+    expect(st.archivedSessions).toEqual([]);
+    expect(st.activeSessionId).toBeNull();
+  });
+
+  it("handleSessionClosed clears ONLY inTurn/stalled/compacting (the allowed subset)", () => {
+    useSessions.setState(seed);
+    useSessions.getState().handleSessionClosed("s1", "user");
+    const st = useSessions.getState();
+    for (const field of ["inTurn", "stalled", "compacting"] as const) {
+      // ONE-ARG matcher, message on `expect` (same vacuity trap as above).
+      expect(
+        st[field],
+        `${field} must be cleared by close`,
+      ).not.toHaveProperty("s1");
+    }
+    // The deliberately-kept pause state must SURVIVE the close:
+    // Finalize is observable: the seeded pending tool-call flips to `failed`
+    // (finalizeSessionMessages maps pending tool-calls to failed; pass-through
+    // for everything else). If the finalize-merge is dropped from the close
+    // path, this assertion fails.
+    expect(st.messages["s1"]).toEqual([
+      { kind: "tool-call", id: "t1", title: "T", status: "failed", at: 1 },
+    ]);
+    // Seeded `"error"`, closed with `"user"`: the closeReasons merge MUST land
+    // the closed reason — a dropped merge leaves the seeded "error" and fails.
+    expect(st.closeReasons["s1"]).toBe("user");
+    expect(st.configOptions["s1"]).toEqual([]);
+    expect(st.contextUsage["s1"]).toEqual({ used: 1, window: 128000 });
+    expect(st.history["s1"]).toEqual(seed.history.s1); // untouched by close
+    expect(st.sessionOrder["s1"]).toEqual(3); // untouched by close
+    expect(st.sessionRecency["s1"]).toEqual(7); // untouched by close
+    expect(st.stopReasons["s1"]).toEqual("end_turn"); // untouched by close
+    // A close is a PAUSE, not a discard: the row lists and the pointer are the
+    // close's OWN retained writes (never the helper's `rows`/`activeSessionId`).
+    // The session is filed into history (the archived branch is sticky, so this
+    // seed keeps it out of `sessions` and leaves the other two lists holding it).
+    expect(st.sessions).toEqual([]);
+    expect(st.activeSessionId).toBe("s1");
+    expect(st.historySessions.length).toBe(1);
+    expect(st.archivedSessions.length).toBe(1);
+  });
+
+  it("enumeration pins: SESSION_KEYED_FIELDS is exactly the 11 session-keyed fields of SessionsState", () => {
+    // Every session-keyed `Record<string, …>` field of the REAL store shape —
+    // derived, not hand-listed, so it is the thing the list above is checked
+    // against. A field added to `SessionsState` without being listed shows up
+    // in `Missing` and fails `pnpm build` at the `const` below.
+    type SessionKeyedFieldOfStore = {
+      [K in keyof SessionsState]: SessionsState[K] extends Record<string, unknown>
+        ? K
+        : never;
+    }[keyof SessionsState];
+    type AssertEqual<A, B> = [A] extends [B]
+      ? [B] extends [A]
+        ? true
+        : false
+      : false;
+    // The 11 names spelled a SECOND time, in interface order: the tamper seal on
+    // `SESSION_KEYED_FIELDS` (drop / add / reorder a key ⇒ `pnpm build` fails).
+    type FrozenTuple = readonly [
+      "closeReasons",
+      "sessionRecency",
+      "sessionOrder",
+      "messages",
+      "configOptions",
+      "contextUsage",
+      "compacting",
+      "history",
+      "inTurn",
+      "stopReasons",
+      "stalled",
+    ];
+    /** Typed `true` only while `typeof SESSION_KEYED_FIELDS` is exactly the
+     *  frozen 11-name tuple — a dropped/added/reordered key fails HERE. */
+    const FROZEN_TUPLE_PIN: AssertEqual<
+      typeof SESSION_KEYED_FIELDS,
+      FrozenTuple
+    > = true;
+    type Missing = Exclude<
+      SessionKeyedFieldOfStore,
+      (typeof SESSION_KEYED_FIELDS)[number]
+    >;
+    type Guard = Missing extends never
+      ? true
+      : { MISSING_FROM_SESSION_KEYED_FIELDS: Missing };
+    // A 12th session-keyed `Record<string, …>` on `SessionsState` that is not in
+    // `SESSION_KEYED_FIELDS` makes this `const`'s declared type
+    // `{ MISSING_FROM_SESSION_KEYED_FIELDS: "theNewField" }`, so `true` stops
+    // being assignable: TS2322 on `pnpm build`, not merely a red test.
+    const SESSION_KEYED_FIELDS_COMPLETENESS_PIN: Guard = true;
+
+    // The runtime reads are load-bearing: `noUnusedLocals` fails the build on a
+    // pin `const` nobody reads (TS6133) — green code would not build.
+    expect(FROZEN_TUPLE_PIN).toBe(true);
+    expect(SESSION_KEYED_FIELDS_COMPLETENESS_PIN).toBe(true);
+    expect(SESSION_KEYED_FIELDS.length).toBe(11);
+    expect(new Set(SESSION_KEYED_FIELDS).size).toBe(SESSION_KEYED_FIELDS.length);
+    // The list is in INTERFACE order (the order a reader meets the fields in),
+    // NOT alphabetical — so the sortedness pin the frozen-tuple idiom uses for
+    // `PRODUCER_KEYS` would be wrong here; interface order is pinned by the
+    // `FrozenTuple` type above instead.
+    expect([...SESSION_KEYED_FIELDS]).toEqual([
+      "closeReasons",
+      "sessionRecency",
+      "sessionOrder",
+      "messages",
+      "configOptions",
+      "contextUsage",
+      "compacting",
+      "history",
+      "inTurn",
+      "stopReasons",
+      "stalled",
+    ]);
   });
 });
