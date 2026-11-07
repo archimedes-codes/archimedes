@@ -1461,7 +1461,7 @@ describe("contextUsage (the context-percentage state)", () => {
  *
  * The two maps above live in THIS store, so `handleSessionClosed` keeps them by
  * simply not touching them. Cost does not: it lives in `useInteractive.cost`,
- * and `lib/sessionLifecycle.ts`'s `onSessionClosed` calls `dismissSession`,
+ * and `store/sessionLifecycle.ts`'s `onSessionClosed` calls `dismissSession`,
  * which DELETES the entry, before `handleSessionClosed` files the row. The
  * figure therefore has to be captured before the dismiss and handed to the
  * reducer — which is what these tests drive, through the real `onSessionClosed`

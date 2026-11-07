@@ -453,7 +453,7 @@ describe("the scanner actually reads the tree", () => {
           stripJsComments(readFileSync(f, "utf8")),
         ),
     );
-    // SET SIZE, pinned: 47 files mock the barrel by path. The number may only
+    // SET SIZE, pinned: 48 files mock the barrel by path. The number may only
     // move when a test file is added or removed, in a commit that says so — this
     // one moved 34 -> 35 when D2 wired `useAgentOverridesWrites` into `SpacesList`
     // and landed its test file, which mocks the barrel the documented way, and
@@ -489,10 +489,12 @@ describe("the scanner actually reads the tree", () => {
     // Agents-modal cluster into `src/components/SpacesList.agents.test.tsx`, which
     // mocks the barrel the documented way (the Agents modal's own three catalog
     // sources plus the `saveSettings` write path, and the `getSettings` re-read its
-    // read-modify-write pins); `SpacesList.test.tsx` keeps its mock for the 18 tests
-    // that stayed, so again ONE new mocker and not two — and the dissolve half (the
-    // 2 Skills-button tests into a sibling `describe` in the file that already
-    // mocks) costs nothing, exactly as above.
+    // read-modify-write pins); `SpacesList.test.tsx` keeps its mock for the 74 tests
+    // that stayed (93 before the split, 19 moved out, none lost), so again ONE new
+    // mocker and not two — and the dissolve half (the 2 Skills-button tests into a
+    // sibling `describe` in the file that already mocks) costs nothing, exactly as
+    // above: those 2 are inside the 74, because a `describe` that moves within its
+    // own file changes no mock at all.
 
     //
     // And 47 -> 48 when FE2 moved

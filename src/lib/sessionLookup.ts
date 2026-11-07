@@ -77,9 +77,10 @@ export type SessionRow = Pick<
 
 /**
  * The slice of the `useSessions` state the walk reads. Structural, not
- * `SessionsState` (the store does not export it): a component passes its WHOLE
- * state object from inside a selector — the store's other keys are simply not
- * part of the parameter type — and a test builds a plain one.
+ * `SessionsState` (which the store DOES export — so the structural shape is a
+ * choice, not a necessity): a component passes its WHOLE state object from
+ * inside a selector — the store's other keys are simply not part of the
+ * parameter type — and a test builds a plain one.
  */
 export interface SessionLookupSource {
   /** Live (in-memory) sessions for this app run — the CURRENT truth. */

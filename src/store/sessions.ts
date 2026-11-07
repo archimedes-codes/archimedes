@@ -862,7 +862,7 @@ export interface SessionsState {
    *
    * `closedCostUsd` carries the figure this app run accumulated
    * (`useInteractive.cost[id].costUsd`), which the CALLER must read BEFORE it
-   * dismisses that map: `lib/sessionLifecycle.ts`'s `onSessionClosed` calls
+   * dismisses that map: `store/sessionLifecycle.ts`'s `onSessionClosed` calls
    * `dismissSession`, which DELETES the cost entry, and only then lands here, so
    * by the time this reducer runs the run's money exists nowhere else. Without
    * the argument the filed row keeps no figure (a session started this run) or
