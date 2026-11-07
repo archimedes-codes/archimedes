@@ -922,7 +922,7 @@ mod tests {
         ProviderEvent, ToolCall,
     };
     use crate::agent::harness::SessionStore;
-    use crate::agent::session::session_tests::{
+    use crate::agent::session::tests::{
         level_test_model, open_db, temp_config_dir, write_settings_json, TestSink,
     };
     use crate::agent::session::{LiveWorkerSession, NativeConfigState};
@@ -958,9 +958,9 @@ mod tests {
         text(ChatRole::Assistant, t)
     }
 
-    /// A catalog `Model` literal (`session_tests::level_test_model`'s shape;
-    /// that helper is private to `session::session_tests` and is widened by
-    /// Task 4, which is the task that needs it FROM `naming.rs`).
+    /// A catalog `Model` literal (`tests::level_test_model`'s shape;
+    /// that helper is private to `session::tests` and is widened by
+    /// R1, which is the task that needs it FROM `naming.rs`).
     fn test_model(provider: &str, id: &str, levels: &[&str]) -> Model {
         Model {
             id: id.to_string(),
@@ -2111,7 +2111,7 @@ mod tests {
 
     /// Restores the global debug log to DISABLED on scope exit — INCLUDING on a
     /// panicking assertion, which the plain "call `init(false, None)` last"
-    /// shape does not (the `commands/sessions.rs` / `session_tests` guard, the
+    /// shape does not (the `commands/sessions.rs` / `tests` guard, the
     /// same reason `debuglog.rs`'s own tests keep the teardown).
     struct DisableDebuglogOnExit;
     impl Drop for DisableDebuglogOnExit {
@@ -2121,7 +2121,7 @@ mod tests {
     }
 
     /// The `#[allow(clippy::await_holding_lock)]` is INTENTIONAL (the
-    /// `session_tests` / `commands/sessions.rs` precedent): the guard holds the
+    /// `tests` / `commands/sessions.rs` precedent): the guard holds the
     /// process-global `debuglog` target for the whole test, so a sibling's
     /// `debuglog::init` cannot repoint `DIR` between the spawn and the read.
     #[allow(clippy::await_holding_lock)]
