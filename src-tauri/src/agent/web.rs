@@ -14,7 +14,12 @@
 //! `web/` module tree: `crate::agent::web` (desktop) and `fulcrum_core::web`
 //! (crate) are two packages and can never be one module. This file is the
 //! DESKTOP's `web` module. It declares the one submodule that stayed (`render`,
-//! still a real file on the desktop disk) and re-exports the six that moved.
+//! still a real file on the desktop disk) and re-exports the moved ones whose
+//! MODULE alias a desktop path still spells — `cache, config, net, providers,
+//! tools`. (`extract` is not among them: no desktop path names it at any
+//! spelling, so its alias was pruned rather than kept as a second spelling of a
+//! crate module nobody here reaches. The crate's own `web::extract` is untouched
+//! by that — this is the desktop surface, not the crate's.)
 //!
 //! # Why the re-export half is not the forbidden shape
 //!
@@ -28,41 +33,44 @@
 //!
 //! What the re-export half does is the narrow, allowed direction, and it is the
 //! SAME mechanism Step A.2 established in `agent/mod.rs` for S1's leaf modules:
-//! it keeps the DESKTOP's existing paths compiling with zero edits. Two consumers
-//! require it and neither may be touched:
+//! it keeps the DESKTOP's existing paths compiling with zero edits. Two live
+//! consumers require it and neither may be touched:
 //!
 //! * `commands/settings.rs` (OUTSIDE `agent/` — the acceptance criterion is zero
 //!   edits to the 20 such files) names `crate::agent::web::config::{WebConfig,
-//!   SEARCH_PROVIDERS}` and `crate::agent::web::providers::registry::*`;
-//! * `worker/core.rs` implements the crate's `crate::agent::web::RenderRequester`
-//!   and builds `crate::agent::web::RenderedPage`.
+//!   SEARCH_PROVIDERS}` (verified at `commands/settings.rs:221-222`, inside a live
+//!   `#[tauri::command]` body) and `crate::agent::web::providers::registry::*`;
+//! * `session/router.rs` names `crate::agent::web::render::{RenderRequest,
+//!   render}`, which resolves to the local `pub mod render` above.
 //!
-//! And `session/router.rs` keeps naming `crate::agent::web::render::{RenderRequest,
-//! render}`, which resolves to the local `pub mod render` above. One path prefix,
-//! two packages underneath — which is what a re-export seam IS, and which is why
-//! the two halves stay separately compilable: the crate builds with no knowledge
-//! that this file exists (it is a rev-pinned git dependency now, and its own tests
-//! run in its own repo, not from this checkout).
+//! `worker/core.rs` is NOT a consumer of this file: it is CRATE-OWNED since
+//! T8/S8.2, its `impl crate::web::RenderRequester for IpcRenderRequester` lives in
+//! `fulcrum-core/src/worker/core.rs`, and the trait + the `RenderedPage` DTO are
+//! declared in the crate's `fulcrum_core::web` module. The desktop reaches neither
+//! name, so this file re-exports neither.
+//!
+//! One path prefix over two packages — which is what a re-export seam IS, and
+//! which is why the two halves stay separately compilable: the crate builds with
+//! no knowledge that this file exists (it is a rev-pinned git dependency now, and
+//! its own tests run in its own repo, not from this checkout).
 //!
 //! # The direction of the one edge between the halves
 //!
 //! `render.rs` imports nothing from the crate. It owns `RenderRequest`/`RenderReply`
 //! and `session/router.rs` drives them. The crate's `RenderRequester` trait —
 //! declared in the crate's `web/mod.rs`, NOT in `render.rs`, which is why the
-//! trait could move and the renderer could stay — was implemented by the desktop's
-//! `worker/core.rs::IpcRenderRequester` (desktop → crate, the allowed direction)
-//! until T8/S8.2 moved `core.rs` into `fulcrum-core`; the renderer is still the
-//! only half that touches a `WebviewWindow`, and it still names nothing in the
-//! crate's `web` tree, which is the reason the split works either way.
+//! trait could move and the renderer could stay — used to be implemented by the
+//! desktop's `worker/core.rs::IpcRenderRequester` (desktop → crate, the allowed
+//! direction). T8/S8.2 moved `core.rs` into the crate, so that impl is now
+//! crate-side inside `fulcrum_core::worker::core` and the edge is intra-crate; the
+//! renderer is still the only half that touches a `WebviewWindow`, and it still
+//! names nothing in the crate's `web` tree, which is the reason the split works
+//! either way.
 
 pub mod render;
 
-// The six submodules that moved, re-exported so every pre-existing
-// `crate::agent::web::<module>::…` path in the desktop keeps resolving (the
-// Step A.2 rule: re-export the MODULE, not just named symbols — a named-only
-// block leaves every module-qualified consumer dangling).
-pub use fulcrum_core::web::{cache, config, extract, net, providers, tools};
-
-// The two names the desktop reaches at the `web` ROOT rather than through a
-// submodule: the trait the Worker implements and the DTO it returns.
-pub use fulcrum_core::web::{RenderRequester, RenderedPage};
+// The moved submodules whose MODULE alias a desktop path still spells, re-exported
+// so every pre-existing `crate::agent::web::<module>::…` path in the desktop keeps
+// resolving (the Step A.2 rule: re-export the MODULE, not just named symbols — a
+// named-only block leaves every module-qualified consumer dangling).
+pub use fulcrum_core::web::{cache, config, net, providers, tools};

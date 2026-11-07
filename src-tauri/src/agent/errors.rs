@@ -1,6 +1,23 @@
-//! Errors for the session and files layers: `SessionError` and `FilesError`.
-//! (the read-only pre-approval `FsBackend` has its own local `FsError`
-//! in `fs_backend.rs`).
+//! All IPC error families live here: the ten `{kind, message, …}`-envelope enums
+//! (`SessionError`, `HistoryError`, `AttentionError`, `ClipboardError`,
+//! `OpenError`, `FilesError`, `SettingsError`, `SpacesError`, `McpError`,
+//! `AgentsError`) plus the `UpdateError` tuple struct — eleven families, each with
+//! its OWN hand-written `impl From<…> for tauri::ipc::InvokeError`, because none
+//! of them derives `Serialize`. Four (`SettingsError`, `SpacesError`, `McpError`,
+//! `AgentsError`) hand the finished map to `InvokeErrorExt::from_value`; the other
+//! seven build `InvokeError(Value::Object(..))` inline. `DbError`/`FsError` stay
+//! with their own layers (`storage` / the crate's `fs_backend.rs`) because they are
+//! NOT IPC types — the wire contract fixes the envelope, and the error type is
+//! chosen by the WIRE, not by the file. So do NOT split this file by layer, and do
+//! NOT move an IPC family out of it with the argument that it belongs next to its
+//! callers.
+//!
+//! DECISION (F7): the TypeScript side keeps NO error-kind mirror.
+//! `src/lib/errors.ts` — ten `kind` unions — was deleted in this run (FE5) because
+//! nothing imported it and Rust owns every `kind()` vocabulary below. That
+//! absence is a real gap, not an oversight: `src/` branches on `.kind` in ~128
+//! places against strings this file alone defines. Do not re-add a TS mirror; the
+//! `kind()` strings here are the single source of truth.
 //!
 //! The wire contract this file implements — the `{kind, message, …}` envelope,
 //! the rule that RUST owns the sentence the user reads, and why there is no
@@ -65,7 +82,7 @@ impl SessionError {
     /// produced, so anything already reading `kind` keeps working. Exhaustive:
     /// a new variant has to be named here AND in the `From` impl below, which
     /// is the point — the bug class this file used to hide.
-    fn kind(&self) -> &'static str {
+    pub fn kind(&self) -> &'static str {
         match self {
             SessionError::Io(_) => "io",
             SessionError::Command { .. } => "command",
@@ -491,6 +508,15 @@ pub enum FilesError {
     Io(String),
 }
 
+// `FilesError` deliberately has NO `kind()` method. Its kind is discriminated
+// INLINE by this `From` impl, and this impl is the ONLY reader of that
+// discrimination — every other site that names `FilesError` (`commands/files`,
+// `commands/files/image.rs`) constructs or matches the variants, never asks for a
+// `kind` string — so a method would be dead code exercised nowhere. Making it
+// match the other families' shape (a `pub fn kind()` this impl calls) is a
+// zero-behaviour refactor and is explicitly OUT OF SCOPE for the boundary-residue
+// work — see the run's F8 record. Do not "fix" the inconsistency by adding a
+// method nothing calls.
 impl From<FilesError> for tauri::ipc::InvokeError {
     fn from(e: FilesError) -> Self {
         let kind = match &e {

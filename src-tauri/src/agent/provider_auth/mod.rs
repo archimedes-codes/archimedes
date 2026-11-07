@@ -56,25 +56,28 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 // NOTE: the seam's two types are spelled `budget::BudgetPoller` /
-// `budget::ProviderSource` below, NOT imported. The named re-export block at
-// the bottom of this file already brings BOTH names into this module's namespace
-// (`BudgetPoller` has always been part of the surface this file exports, and
-// `ProviderSource` joins it at S7.2), and a second `use` of the same name is
-// E0252 — the same reason the `pub use gcloud::{…}` block below can follow the
-// `gcloud` module alias without collision.
+// `budget::ProviderSource` below, NOT imported. `BudgetPoller` reaches this
+// module's namespace through the named re-export block at the bottom of this file
+// (it has been part of the surface this file exports since before the move), so a
+// second `use` of that name would be E0252; `ProviderSource` is spelled
+// module-qualified through the `budget` MODULE alias and is deliberately NOT named
+// in that block, because no desktop consumer ever reaches it at the
+// `provider_auth::ProviderSource` root — the trait is named here, in this impl,
+// and nowhere else on the desktop.
 
 // ── the one file that stayed desktop ────────────────────────────────────────
 pub mod refresh;
 
-// ── T7/S7.1 + S7.2: the seven files that moved, as MODULE aliases ───────────
+// ── T7/S7.1 + S7.2: the seven files that moved, as MODULE aliases (six today) ─
 // The exact list this file declared before the move, minus `refresh` (declared
-// above) and `headers` (aliased below). Module aliases first because they carry
+// above), `headers` (aliased below) and `key_helper` (the crate owns it, but no
+// desktop path names it at ANY spelling — `resolve_bearer_at` reaches it
+// crate-internally — so the alias was pruned rather than kept as a spelling
+// nothing uses). Module aliases first because they carry
 // the traffic: `crate::agent::provider_auth::gcloud::TestAdcOverride`
 // (`session/mod.rs`'s cfg(test) ADC fixture + `tests/provider_gcloud_adc.rs`)
 // needs the MODULE, not just the named symbols.
-pub use fulcrum_core::provider_auth::{
-    budget, cli_sso, gcloud, key_helper, litellm_oauth, oidc, store,
-};
+pub use fulcrum_core::provider_auth::{budget, cli_sso, gcloud, litellm_oauth, oidc, store};
 
 // ── the desktop half of the `ProviderSource` seam (T7/S7.2, ADR 0091) ───────
 
@@ -125,19 +128,22 @@ pub fn budget_poller_for(
 // `tests/provider_headers.rs` still address `provider_auth::headers::…`.
 pub use fulcrum_core::provider_headers as headers;
 
-// ── the named surface, exactly as this file exported it before the move ─────
+// ── the named surface, as this file exported it before the move, minus the
+// names no desktop path ever spelled ──────────────────────────────────────────
 // Everything here resolves through `fulcrum_core::provider_auth` via the module
 // aliases above — `budget` included since S7.2, `refresh` the one desktop
 // module. The three free functions that used to be DEFINED here are re-exported
 // from the crate — `resolve_bearer_at` is named by `commands/settings.rs`,
 // `tests/*.rs` and the crate's own `budget.rs` (`use super::{…}`).
-// `ProviderSource` is NEW to this block (S7.2): the trait is crate-owned and the
-// desktop's impl lives in THIS file, so the trait name is part of the surface a
-// desktop consumer would need to name.
+// `ProviderSource` is NOT in this block: the trait is crate-owned, the desktop's
+// ONLY impl is the one in this file, and it spells the trait
+// `budget::ProviderSource` through the module alias. A named root re-export of it
+// had zero consumers, so it was pruned — the `budget` MODULE alias is what keeps
+// the name reachable, and it stays.
 pub use budget::{
-    classify_status, poll_all, poll_key_info, poll_team_info, poll_user_info, run_budget_tick,
-    should_probe, BudgetEndpoint, BudgetFacts, BudgetPoller, DenialMemory, KeyBudget, PollStatus,
-    ProviderSource, TeamBudget, UserBudget, BUDGET_POLL_INTERVAL_MILLIS,
+    classify_status, poll_all, poll_key_info, poll_user_info, run_budget_tick, BudgetEndpoint,
+    BudgetFacts, BudgetPoller, DenialMemory, KeyBudget, PollStatus, TeamBudget,
+    BUDGET_POLL_INTERVAL_MILLIS,
 };
 // The three functions this file USED TO DEFINE, now crate-owned.
 pub use fulcrum_core::provider_auth::{
@@ -146,21 +152,20 @@ pub use fulcrum_core::provider_auth::{
 // From here down, the named block VERBATIM as it landed before the move — the
 // module aliases above resolve each of these to the crate's file, so the
 // spelling of every consumer stays byte-identical.
-pub use gcloud::{adc_file_path, describe_error, parse_adc, token as gcloud_token, AdcCredential};
+pub use gcloud::{describe_error, parse_adc, AdcCredential};
 pub use headers::{expand_map, validate_base_url};
-pub use key_helper::run as run_key_helper;
 pub use oidc::{authenticate_oidc, credential_from_session, OidcSession};
 // T5's login surface (issue #126): the PKCE DCR orchestrator + the legacy CLI
 // SSO device flow. `ProviderLoginStep`/`TeamDto` are declared in
 // `litellm_oauth` (the flow that PRODUCES them) and re-exported by
 // `commands::settings` as its wire surface — ONE type, never a mirror struct.
-pub use litellm_oauth::{login as litellm_oauth_login, ProviderLoginStep, TeamDto};
+// The flow's entry (`litellm_oauth::login`) is reached through the module alias
+// by `commands/settings.rs`, never by a named re-export from this root.
+pub use litellm_oauth::{ProviderLoginStep, TeamDto};
 pub use refresh::{
-    noop_refresher_factory, production_refresher_factory, refresh, SupervisorRefresher,
-    SupervisorRefresherDeps,
+    production_refresher_factory, refresh, SupervisorRefresher, SupervisorRefresherDeps,
 };
 pub use store::{
-    auth_file_path, is_expiring_soon, load, now_epoch_millis, remove_credential, save,
-    store_credential, OAuthCredential, OidcCredential, ProviderAuthStore, ProviderCredential,
-    REFRESH_LEAD_MILLIS,
+    auth_file_path, is_expiring_soon, load, now_epoch_millis, store_credential, OAuthCredential,
+    OidcCredential, ProviderAuthStore, ProviderCredential, REFRESH_LEAD_MILLIS,
 };

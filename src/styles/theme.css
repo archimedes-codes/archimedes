@@ -16,11 +16,6 @@
   --text-ui-caption: calc(var(--ui-font-size) - 1px);
   --text-ui-sm: calc(var(--ui-font-size) - 2px);
   --text-ui-xs: calc(var(--ui-font-size) - 4px);
-  /* 例外刻度：仅限工作流图轴面（刻度标签、通道码、单位后缀），不得用于内容文本。
-   * 见 DESIGN.md「UI font tokens」。 */
-  --text-ui-2xs: calc(var(--ui-font-size) - 5px);
-  /* 大写等宽微标签（CAUSALITY GRAPH / TIMEBASE / KEY）在 9-10px 需要加宽字距。 */
-  --tracking-wf-label: 0.09em;
   /* iOS Safari 会缩放小于 16px 的聚焦输入；该平台下限不能跟随界面字号降低。 */
   --text-mobile-input-safe: 16px;
   --animated-gradient-text-strong: rgba(10, 10, 10, 1);

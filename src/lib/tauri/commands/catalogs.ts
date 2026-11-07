@@ -61,8 +61,9 @@ export async function listMcpServersEffective(spacePath: string | null): Promise
  * PATH is inserted, never the contents). `null` = no Space: the Rust
  * command degrades to the empty Listing rather than erroring. A rejection (the
  * Rust signature's `Err` arm is a phantom task14c retypes) arrives as the
- * `FilesError` envelope (`{kind, message}` — ADR 0063; `FilesErrorKind` in
- * `@/lib/errors` mirrors the frozen kinds).
+ * `FilesError` envelope (`{kind, message}` — ADR 0063; the `FilesErrorKind`
+ * spellings are frozen in `src-tauri/src/agent/errors.rs` — there is no TS-side
+ * union: the mirror `src/lib/errors.ts` was deleted, nothing imports it).
  */
 export async function listSpaceListing(spacePath: string | null): Promise<ListingDto> {
   return invoke<ListingDto>("list_space_listing", { spacePath: spacePath ?? null });

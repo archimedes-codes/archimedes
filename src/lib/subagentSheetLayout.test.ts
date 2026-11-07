@@ -228,6 +228,15 @@ describe("the Subagent sheet geometry has one home", () => {
     // — must carry the variant prefix, and the module's own literal is the only
     // place the bare number is spelled as a class at all.
     const offenders: string[] = [];
+    // Vacuity floor on the prose read (the suite's only doc↔code coupling). A
+    // deleted doc still throws (readFileSync) and must keep reddening; a truncated
+    // one would sail past every "no offenders" assertion below while reading almost
+    // nothing, so it must read as vacuity instead — the themeTokens.test.ts shape.
+    const proseDoc = readFileSync(PROSE[0], "utf8");
+    expect(
+      proseDoc.length,
+      "the sweep found almost nothing to read",
+    ).toBeGreaterThan(10000);
     for (const file of [...SOURCES, ...PROSE]) {
       const text = readFileSync(file, "utf8");
       if (file === SOURCES[0]) continue;

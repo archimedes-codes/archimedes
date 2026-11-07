@@ -453,7 +453,7 @@ describe("the scanner actually reads the tree", () => {
           stripJsComments(readFileSync(f, "utf8")),
         ),
     );
-    // SET SIZE, pinned: 44 files mock the barrel by path. The number may only
+    // SET SIZE, pinned: 48 files mock the barrel by path. The number may only
     // move when a test file is added or removed, in a commit that says so — this
     // one moved 34 -> 35 when D2 wired `useAgentOverridesWrites` into `SpacesList`
     // and landed its test file, which mocks the barrel the documented way, and
@@ -477,18 +477,48 @@ describe("the scanner actually reads the tree", () => {
     // way, and 44 -> 45 when #143 added `hooks/useSessionTitleRecovery.test.ts`
     // (the focus-driven title re-read), which mocks the barrel the documented
     // way — it needs `listSessions` mocked, and this file's own rule is that a
-    // mocker must spread, so an unlisted export still resolves.
-    expect(mockers).toHaveLength(45);
-    // 44 of the 45 SPREAD `vi.importActual`, which is the shape that makes the
+    // mocker must spread, so an unlisted export still resolves — and 45 -> 46
+    // when FE3 split `ChatStream.test.tsx`'s mention / file-completion picker
+    // cluster into `src/components/ChatStreamMentionPicker.test.tsx`, which
+    // mocks the barrel the documented way. The residual `ChatStream.test.tsx`
+    // keeps its own barrel mock, so this is ONE new mocker and not two: the
+    // other half of that split dissolved the residual `describe("ChatStream")`
+    // into subject-named sibling describes inside the same file, and a
+    // `describe` is not a module — dissolving a block costs no mocks at all.
+    // The same arithmetic holds for 46 -> 47 when FE4 split `SpacesList.test.tsx`'s
+    // Agents-modal cluster into `src/components/SpacesList.agents.test.tsx`, which
+    // mocks the barrel the documented way (the Agents modal's own three catalog
+    // sources plus the `saveSettings` write path, and the `getSettings` re-read its
+    // read-modify-write pins); `SpacesList.test.tsx` keeps its mock for the 74 tests
+    // that stayed (93 before the split, 19 moved out, none lost), so again ONE new
+    // mocker and not two — and the dissolve half (the 2 Skills-button tests into a
+    // sibling `describe` in the file that already mocks) costs nothing, exactly as
+    // above: those 2 are inside the 74, because a `describe` that moves within its
+    // own file changes no mock at all.
+
+    //
+    // And 47 -> 48 when FE2 moved
+    // `src/lib/sessionLifecycle.ts` to `src/store/sessionLifecycle.ts`. That move
+    // adds NO file — but the module had to re-spell its own mock from
+    // `vi.mock("./tauri")` to `vi.mock("../lib/tauri")`, and it is the PATH this
+    // assertion counts, so the file crossed from "not a barrel mocker by path" to
+    // "one". This is the pin working, not drifting: from `store/` there is no
+    // spelling of the barrel that does not name `lib/tauri`, and a barrel mocker
+    // is exactly what the seam needs. It is NOT a new mock — the same factory,
+    // the same `importActual` spread, one directory deeper.
+    expect(mockers).toHaveLength(48);
+    // 47 of the 48 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. The new mocker spreads
-    // too, so the remaining one is still `hooks/useWindowMaximized.test.ts`,
-    // which replaces the module wholesale — so a name it forgets is `undefined`,
-    // the case the pinned-surface assertion below covers.
+    // too (it lists the 17 arms its own tests drive and leaves every other barrel
+    // export — `invoke` included — to the real module), so the remaining one
+    // is still `hooks/useWindowMaximized.test.ts`, which replaces the module
+    // wholesale — so a name it forgets is `undefined`, the case the pinned-surface
+    // assertion below covers.
     expect(
       mockers.filter((f) =>
         /vi\.importActual/.test(readFileSync(f, "utf8")),
       ).length,
-    ).toBe(44);
+    ).toBe(47);
   });
 });
 

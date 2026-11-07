@@ -92,6 +92,60 @@ export function discardSessionMessages(sessionId: string): void {
   });
 }
 
+export type SessionClearOpts = {
+  /** The 11 session-keyed maps to clear (an independent opt-in per map). */
+  maps: readonly SessionKeyedField[];
+  /** Also clear the `sessions`/`historySessions`/`archivedSessions` row lists of this id. */
+  rows?: boolean;
+  /** Also null out `activeSessionId` when it points at this id. */
+  activeSessionId?: boolean;
+};
+type SessionKeyedField = (typeof SESSION_KEYED_FIELDS)[number];
+
+/**
+ * Retire a session id from the store's session-keyed state — the write-set
+ * contract every retirement path routes through. Per-field opt-in ONLY:
+ * a map is cleared iff its name is in `opts.maps`; a map NOT in the list is
+ * left untouched byte-for-byte. `rows`/`activeSessionId` clear the row lists
+ * and the active-session pointer (explicitly NOT in `SESSION_KEYED_FIELDS`).
+ * Isolating the write set here is what makes "which fields may a lifecycle
+ * action clear" a testable, enumerated contract instead of two ad-hoc sets.
+ * Deleting a key (rest-object spread) keeps `Object.keys(map)` clean; the
+ * store's optional-valued maps also tolerate `{ [sessionId]: undefined }`
+ * clears — both shapes count as "cleared" for the contract tests.
+ *
+ * This function is PURE: it returns a `set`-callback (state => patch), it
+ * never calls `set` itself. Call sites compose it with retained writes by
+ * spreading its result inside their own callback:
+ *   set((state) => ({ ...clearSessionState(sessionId, opts)(state), …retained… }))
+ */
+export function clearSessionState(
+  sessionId: string,
+  opts: SessionClearOpts,
+): (state: SessionsState) => Partial<SessionsState> {
+  return (state) => {
+    const patch: Partial<SessionsState> = {};
+    for (const field of opts.maps) {
+      const map = state[field];
+      const { [sessionId]: _gone, ...rest } = map as Record<string, unknown>;
+      (patch as Record<string, unknown>)[field] = rest;
+    }
+    if (opts.rows) {
+      patch.sessions = state.sessions.filter((s) => s.sessionId !== sessionId);
+      patch.historySessions = state.historySessions.filter(
+        (s) => s.sessionId !== sessionId,
+      );
+      patch.archivedSessions = state.archivedSessions.filter(
+        (s) => s.sessionId !== sessionId,
+      );
+    }
+    if (opts.activeSessionId && state.activeSessionId === sessionId) {
+      patch.activeSessionId = null;
+    }
+    return patch;
+  };
+}
+
 /**
  * **Ordering note.** Both read queries the store boots from — `Db::list_spaces`
  * and `Db::list_sessions` — return the user's MANUAL ORDER, so the store's input
@@ -387,7 +441,34 @@ export function detachedSessions(
   );
 }
 
-interface SessionsState {
+/**
+ * THE session-keyed fields of `SessionsState`, in interface order — the ONE
+ * hand-written list of the store's session-keyed maps, current count **11**.
+ * Adding a session-keyed `Record<string, …>` field to `SessionsState` without
+ * adding it here fails the type-level completeness pin in
+ * `src/store/sessions.test.ts` (`pnpm build`, not merely a runtime test).
+ * Measured by (scoped to the interface STATEMENT, not a line range — the range
+ * the plan measured by drifts the moment this file gains lines above it):
+ *   awk '/^export interface SessionsState \{/,/^\}/' src/store/sessions.ts \
+ *     | grep -cE '^[[:space:]]*[a-zA-Z]+: Record<'
+ * (`grep -nE "[a-z]+: Record<string"` naively misses the multi-line `history`
+ * declaration and catches non-state function parameters / module-scope maps.)
+ */
+export const SESSION_KEYED_FIELDS = [
+  "closeReasons",
+  "sessionRecency",
+  "sessionOrder",
+  "messages",
+  "configOptions",
+  "contextUsage",
+  "compacting",
+  "history",
+  "inTurn",
+  "stopReasons",
+  "stalled",
+] as const;
+
+export interface SessionsState {
   /** Live (in-memory) sessions for this app run. */
   sessions: SessionInfo[];
   /** Stored sessions from the database that are not currently live (archived flag OFF). */
@@ -781,7 +862,7 @@ interface SessionsState {
    *
    * `closedCostUsd` carries the figure this app run accumulated
    * (`useInteractive.cost[id].costUsd`), which the CALLER must read BEFORE it
-   * dismisses that map: `lib/sessionLifecycle.ts`'s `onSessionClosed` calls
+   * dismisses that map: `store/sessionLifecycle.ts`'s `onSessionClosed` calls
    * `dismissSession`, which DELETES the cost entry, and only then lands here, so
    * by the time this reducer runs the run's money exists nowhere else. Without
    * the argument the filed row keeps no figure (a session started this run) or
@@ -1798,23 +1879,13 @@ export const useSessions = create<SessionsState>((set, get) => ({
     // never runs, and without this its queued attachments' object URLs are held
     // by nothing but released by nothing for the process lifetime (ADR 0069).
     useQueuedPrompts.getState().clearSession(sessionId);
-    set((state) => {
-      const { [sessionId]: _gone, ...rest } = state.messages;
-      const { [sessionId]: _goneHist, ...restHist } = state.history;
-      return {
-        sessions: state.sessions.filter((s) => s.sessionId !== sessionId),
-        historySessions: state.historySessions.filter(
-          (s) => s.sessionId !== sessionId,
-        ),
-        archivedSessions: state.archivedSessions.filter(
-          (s) => s.sessionId !== sessionId,
-        ),
-        activeSessionId:
-          state.activeSessionId === sessionId ? null : state.activeSessionId,
-        messages: rest,
-        history: restHist,
-      };
-    });
+    set(
+      clearSessionState(sessionId, {
+        maps: [...SESSION_KEYED_FIELDS],
+        rows: true,
+        activeSessionId: true,
+      }),
+    );
   },
 
   resumeSession: async (sessionId) => {
@@ -2355,6 +2426,19 @@ export const useSessions = create<SessionsState>((set, get) => ({
             )
           : state.archivedSessions;
       return {
+        // The write-set contract: the helper clears ONLY the live-transcript
+        // flags (`inTurn`, `stalled`, `compacting`) named in `maps`. The
+        // deliberate "pause, not discard" retained set (finalize-merged
+        // `messages`, merge-kept `closeReasons`, kept `configOptions` /
+        // `contextUsage`, the row lists + `activeSessionId`) is re-stated
+        // AFTER the spread — its keys are disjoint from the helper's output,
+        // so the spread is safe — and its writes below land in the same `set`
+        // (a close is ONE state write, as today).
+        ...clearSessionState(sessionId, {
+          maps: ["inTurn", "stalled", "compacting"],
+          rows: false,
+          activeSessionId: false,
+        })(state),
         sessions: state.sessions.filter((s) => s.sessionId !== sessionId),
         // The session remains in the database: it moves to the history
         // list — UNLESS it is archived (sticky, ADR 0016): a closing
@@ -2391,17 +2475,15 @@ export const useSessions = create<SessionsState>((set, get) => ({
           ...state.messages,
           [sessionId]: finalizeSessionMessages(state.messages[sessionId] ?? []),
         },
-        inTurn: { ...state.inTurn, [sessionId]: false },
-        // A closed session cannot be stalled (the banner would linger on
-        // the paused transcript — a close supersedes the crash).
-        stalled: { ...state.stalled, [sessionId]: undefined },
-        // Nor compacting: a close ends the Worker, so the closing
-        // `compaction_update` may never arrive, and a lingering entry would
-        // pin `composerLocked` on a session that can no longer compact.
-        // (`contextUsage` above deliberately SURVIVES the close — a pause,
-        // not a discard, pinned by its own test; this flag is not state the
-        // bottom bar reads, so it does not.)
-        compacting: { ...state.compacting, [sessionId]: undefined },
+        // `inTurn` (the turn is over), `stalled` (a close supersedes the crash
+        // — the banner would otherwise linger on the paused transcript) and
+        // `compacting` (a close ends the Worker, so the closing
+        // `compaction_update` may never arrive and a lingering entry would pin
+        // `composerLocked` on a session that can no longer compact) are cleared
+        // by the contract spread ABOVE — key deletes, not `false`/`undefined`
+        // writes, so no dead `Object.keys` entry survives. (`contextUsage`
+        // deliberately SURVIVES the close — a pause, not a discard, pinned by
+        // its own test; this flag is not state the bottom bar reads.)
       };
     });
   },

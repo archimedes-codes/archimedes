@@ -148,8 +148,10 @@ describe("McpSection (the MCP rows, ADR 0019)", () => {
   // stays valid. Unblocking: task14/14c adds the SettingsError auth kind
   // (produced in commands/settings.rs by matching test_server's raw
   // "needs-auth" marker before the McpTestFailed wrap); then McpSection
-  // branches on `kind` (the parked design), McpTestErrorKind in @/lib/errors
-  // gains the frozen spelling, and this case un-skips green.
+  // branches on `kind` (the parked design), the McpTestErrorKind spellings gain
+  // the frozen spelling in src-tauri/src/agent/errors.rs (the old TS-side mirror
+  // src/lib/errors.ts was deleted — there is no union to extend here), and this
+  // case un-skips green.
   it.skip("a reworded needs-auth sentence still shows the badge (the envelope-contract red-first)", async () => {
     // The ensure_connected-style reworded sentence (the agent path's wording)
     // inside a VALID envelope with a STABLE kind: the decision must ride the
