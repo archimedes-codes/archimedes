@@ -626,7 +626,8 @@ export default function SpaceTabs() {
       })}
       <Button
         type="button"
-        aria-label="New space"
+        aria-label="New Space"
+        title="New Space  ⌘O"
         variant="ghost"
         size="icon-lg"
         onClick={openNewSpaceDialog}
