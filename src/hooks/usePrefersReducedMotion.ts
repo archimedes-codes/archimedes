@@ -1,4 +1,50 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
+
+/**
+ * The subscription half of `usePrefersReducedMotion` — the part that is safe to
+ * share. It owns the effect and nothing else: it never decides what the FIRST
+ * render answers, because that is the caller's seed.
+ *
+ * Two details in here are load bearing and were not invented here:
+ *
+ *  - The `typeof window` / `typeof window.matchMedia` guard. jsdom implements
+ *    neither half of `matchMedia`, and without this guard every component that
+ *    reads the preference would throw under test.
+ *  - The `addListener`/`removeListener` fallback. A `MediaQueryList` without
+ *    `addEventListener` is not hypothetical on WebKitGTK, and the modern-only
+ *    version would throw exactly where the app is most fragile.
+ *
+ * Exported so `src/components/ui/braille-loader.tsx` can subscribe through it
+ * while keeping its own synchronous seed — see the note in the hook below about
+ * the difference that IS deliberate.
+ */
+export function usePrefersReducedMotionSubscription(
+  setPrefersReducedMotion: Dispatch<SetStateAction<boolean>>,
+): void {
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => {
+      setPrefersReducedMotion(query.matches);
+    };
+    update();
+
+    if (typeof query.addEventListener === "function") {
+      query.addEventListener("change", update);
+      return () => {
+        query.removeEventListener("change", update);
+      };
+    }
+
+    query.addListener(update);
+    return () => {
+      query.removeListener(update);
+    };
+  }, []);
+}
 
 /**
  * Does the user want less motion? `true` only when the OS says so.
@@ -28,29 +74,7 @@ import { useEffect, useState } from "react";
 export function usePrefersReducedMotion(): boolean {
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return;
-    }
-
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const update = () => {
-      setPrefersReducedMotion(query.matches);
-    };
-    update();
-
-    if (typeof query.addEventListener === "function") {
-      query.addEventListener("change", update);
-      return () => {
-        query.removeEventListener("change", update);
-      };
-    }
-
-    query.addListener(update);
-    return () => {
-      query.removeListener(update);
-    };
-  }, []);
+  usePrefersReducedMotionSubscription(setPrefersReducedMotion);
 
   return prefersReducedMotion;
 }
