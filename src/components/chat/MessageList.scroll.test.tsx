@@ -923,4 +923,619 @@ describe("MessageList scroll behavior", () => {
       expect(icon?.getAttribute("aria-hidden")).toBe("true");
     });
   });
+
+  /**
+   * ARRIVAL SETTLE — the follow that keeps a LOCKED transcript at the bottom
+   * while the transcript is still being measured.
+   *
+   * Opening a **Space** mounts the scroller with the bottom-lock engaged and
+   * asks Virtuoso for `initialTopMostItemIndex: { index: "LAST", align: "end" }`.
+   * That location is computed from ESTIMATEd row heights, and the transcript
+   * then changes size underneath it: the history page lands after the mount
+   * (`openSession` fetches), a code block re-measures when shiki's async
+   * highlight arrives, an image attachment loads. `followOutput` fires on a
+   * changed item COUNT and not on a size change, and the library's own
+   * size-change re-anchor is armed exactly once, 100 ms after mount
+   * (`react-virtuoso` `index.mjs` `setTimeout(B, 100)`) — so anything that
+   * grows the list after that window leaves the viewport above the last row.
+   *
+   * That is the reported bug: opening a Space lands mid-transcript, and because
+   * nothing released the lock (§2/§3 — only a gesture does) the floating button
+   * stays hidden, so there is nothing to click and the user scrolls by hand.
+   *
+   * The settle window therefore re-asserts the bottom on every total-height
+   * change WHILE locked, and closes itself the moment it has landed
+   * (`atBottomStateChange(true)`), when older history is being prepended
+   * (`startReached` — its anchor must survive), or when the cap is hit.
+   */
+  describe("arrival settle: a locked transcript re-pins while its height is still settling", () => {
+    const manyUnits = (n: number): RenderUnit[] =>
+      Array.from({ length: n }, (_, i) => single(textMsg(`m${i}`, `row ${i}`, i + 1)));
+
+    const pinCalls = () =>
+      virtuosoHandleRef.scrollToIndex.mock.calls.filter(
+        ([loc]) => loc?.index === "LAST" && loc?.align === "end",
+      ).length;
+
+    it("a total-height change while locked re-asserts the bottom (late row measurement)", () => {
+      render(
+        <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+      );
+      flushRaf();
+      virtuosoHandleRef.scrollToIndex.mockClear();
+
+      act(() => {
+        capturedVirtuosoProps.totalListHeightChanged(48_000);
+      });
+      flushRaf();
+
+      expect(virtuosoHandleRef.scrollToIndex).toHaveBeenCalledWith({
+        index: "LAST",
+        align: "end",
+      });
+    });
+
+    it("REGRESSION: the settle fires with no floating button, which is the reported state", () => {
+      const { container } = render(
+        <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+      );
+      flushRaf();
+
+      // The lock is engaged from mount and NOTHING releases it on geometry, so
+      // the stranded state has no button — this asserts the premise the fix
+      // exists for, not just its effect.
+      expect(
+        container.querySelector('[data-testid="scroll-to-bottom-button"]'),
+        "a locked transcript has no button, so a stranded arrival is unfixable by clicking",
+      ).toBeNull();
+
+      virtuosoHandleRef.scrollToIndex.mockClear();
+      act(() => {
+        capturedVirtuosoProps.totalListHeightChanged(48_000);
+      });
+      flushRaf();
+
+      expect(pinCalls()).toBeGreaterThan(0);
+    });
+
+    it("closes the settle once the bottom has been reached, so later height changes do NOT re-pin", () => {
+      render(
+        <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+      );
+      flushRaf();
+
+      act(() => {
+        capturedVirtuosoProps.atBottomStateChange(true);
+      });
+      virtuosoHandleRef.scrollToIndex.mockClear();
+
+      act(() => {
+        capturedVirtuosoProps.totalListHeightChanged(48_000);
+      });
+      flushRaf();
+
+      expect(
+        virtuosoHandleRef.scrollToIndex,
+        "once landed, a height change must not yank the viewport (it fights reading and pagination)",
+      ).not.toHaveBeenCalled();
+    });
+
+    it("does NOT close the settle on atBottomStateChange(true) when the scroller measures off-bottom (the spurious early report)", () => {
+      render(
+        <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+      );
+      flushRaf();
+
+      // The shape react-virtuoso actually reports while the initial location is
+      // pending: the flag says "at bottom", the GEOMETRY says 27k px away.
+      const scroller = document.querySelector(
+        '[data-testid="virtuoso-stand-in"]',
+      ) as HTMLElement;
+      Object.defineProperty(scroller, "clientHeight", { value: 557, configurable: true });
+      Object.defineProperty(scroller, "scrollHeight", { value: 48_000, configurable: true });
+      Object.defineProperty(scroller, "scrollTop", { value: 0, configurable: true });
+
+      act(() => {
+        capturedVirtuosoProps.atBottomStateChange(true);
+      });
+      virtuosoHandleRef.scrollToIndex.mockClear();
+
+      act(() => {
+        capturedVirtuosoProps.totalListHeightChanged(48_000);
+      });
+      flushRaf();
+
+      expect(
+        virtuosoHandleRef.scrollToIndex,
+        "closing on the unverified report strands the transcript with no button — the exact bug",
+      ).toHaveBeenCalledWith({ index: "LAST", align: "end" });
+    });
+
+    it("closes on atBottomStateChange(true) once the geometry agrees the bottom is reached", () => {
+      render(
+        <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+      );
+      flushRaf();
+
+      const scroller = document.querySelector(
+        '[data-testid="virtuoso-stand-in"]',
+      ) as HTMLElement;
+      Object.defineProperty(scroller, "clientHeight", { value: 557, configurable: true });
+      Object.defineProperty(scroller, "scrollHeight", { value: 48_000, configurable: true });
+      Object.defineProperty(scroller, "scrollTop", {
+        value: 48_000 - 557, // distance === 0
+        configurable: true,
+      });
+
+      act(() => {
+        capturedVirtuosoProps.atBottomStateChange(true);
+      });
+      virtuosoHandleRef.scrollToIndex.mockClear();
+
+      act(() => {
+        capturedVirtuosoProps.totalListHeightChanged(48_000);
+      });
+      flushRaf();
+
+      expect(virtuosoHandleRef.scrollToIndex).not.toHaveBeenCalled();
+    });
+
+    it("does NOT re-pin while unlocked (the user scrolled up and rows are still measuring)", () => {
+      const { container } = render(
+        <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+      );
+      flushRaf();
+
+      act(() => {
+        simulateScrollUp(container);
+      });
+      expect(capturedVirtuosoProps.followOutput(true)).toBe(false);
+      virtuosoHandleRef.scrollToIndex.mockClear();
+
+      act(() => {
+        capturedVirtuosoProps.totalListHeightChanged(48_000);
+      });
+      flushRaf();
+
+      expect(virtuosoHandleRef.scrollToIndex).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("button", { name: /scroll to bottom/i }),
+        "the button is the user's own escape hatch here, the settle must not steal it",
+      ).not.toBeNull();
+    });
+
+    it("closes the settle on startReached so an older-history prepend keeps its scroll anchor", () => {
+      const onStartReached = vi.fn();
+      render(
+        <MessageList
+          {...makeProps({ units: manyUnits(50), hasMore: true, onStartReached })}
+        />,
+      );
+      flushRaf();
+
+      act(() => {
+        capturedVirtuosoProps.startReached();
+      });
+      expect(onStartReached).toHaveBeenCalledTimes(1);
+      virtuosoHandleRef.scrollToIndex.mockClear();
+
+      // The prepend changes the total height; `useFirstItemIndex` is what must
+      // own the position from here, not the settle.
+      act(() => {
+        capturedVirtuosoProps.totalListHeightChanged(72_000);
+      });
+      flushRaf();
+
+      expect(virtuosoHandleRef.scrollToIndex).not.toHaveBeenCalled();
+    });
+
+    it("bounds the settle: a height change per frame cannot pin forever", () => {
+      // A controlled clock, or this test proves nothing: every iteration lands
+      // inside the 50 ms throttle, so "it stopped early" is true even with the
+      // cap and the duration bound both deleted. Verified — deleting BOTH bounds
+      // leaves this test green unless time actually advances.
+      let clock = 1_000;
+      const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+
+      try {
+        render(
+          <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+        );
+        flushRaf();
+        virtuosoHandleRef.scrollToIndex.mockClear();
+
+        for (let i = 0; i < 40; i++) {
+          clock += 60; // past the throttle, so every change is eligible to pin
+          act(() => {
+            capturedVirtuosoProps.totalListHeightChanged(40_000 + i * 1_000);
+          });
+        }
+
+        const pinned = pinCalls();
+        expect(pinned, "the settle must have done its job").toBeGreaterThan(0);
+        expect(pinned, "40 eligible height changes must not mean 40 viewport yanks").toBeLessThan(40);
+
+        // And it stays closed: the bound is terminal, not a pause.
+        virtuosoHandleRef.scrollToIndex.mockClear();
+        for (let i = 0; i < 10; i++) {
+          clock += 60;
+          act(() => {
+            capturedVirtuosoProps.totalListHeightChanged(90_000 + i * 1_000);
+          });
+        }
+        expect(
+          virtuosoHandleRef.scrollToIndex,
+          "a bounded settle CLOSES, it does not throttle and resume",
+        ).not.toHaveBeenCalled();
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it("closes on the duration bound even when changes trickle in slower than the pin cap", () => {
+      // Spaced at 100 ms, the PIN CAP cannot explain the stop: 24 pins would take
+      // 2.4 s of this clock, so a settle that stops at ~15 pins stopped on the
+      // DURATION bound. (Deleting only the cap, or only the bound, each leaves the
+      // other holding the previous test green — so this is the only thing that
+      // proves the bound exists.)
+      let clock = 5_000;
+      const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+
+      try {
+        render(
+          <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+        );
+        flushRaf();
+        const startClock = clock;
+        virtuosoHandleRef.scrollToIndex.mockClear();
+
+        const lastPinClock = { value: 0 };
+        let lastPinCount = 0;
+        for (let i = 0; i < 40; i++) {
+          clock += 100;
+          act(() => {
+            capturedVirtuosoProps.totalListHeightChanged(40_000 + i * 1_000);
+          });
+          // Record the clock of the LAST pin, not of the last iteration: the
+          // assertion below is "pinning STOPPED by ~1.5 s of this clock", and
+          // reading `calls.length > 0` would record every iteration after the
+          // stop and make the bound unassertable.
+          const calls = pinCalls();
+          if (calls > lastPinCount) {
+            lastPinCount = calls;
+            lastPinClock.value = clock;
+          }
+        }
+
+        const pinned = pinCalls();
+        expect(pinned, "the settle must have pinned at least once").toBeGreaterThan(0);
+        expect(
+          pinned,
+          "the pin cap is 24, so reaching it would mean the duration bound never fired",
+        ).toBeLessThan(24);
+        expect(
+          lastPinClock.value - startClock,
+          "the settle must close on elapsed time, not only on a pin count",
+        ).toBeLessThanOrEqual(1_600);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it("closes on the pin cap when changes arrive fast enough to reach it inside the duration bound", () => {
+      // The mirror of the test above: spaced at 60 ms, the 24-pin cap is reached
+      // at 1.44 s of this clock — BEFORE the 1.5 s duration bound — so a settle
+      // that stops at exactly the cap stopped on the cap. Two redundant guards
+      // need two clocks, or deleting either one stays green.
+      let clock = 10_000;
+      const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+
+      try {
+        render(
+          <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+        );
+        flushRaf();
+        const startClock = clock;
+        virtuosoHandleRef.scrollToIndex.mockClear();
+
+        for (let i = 0; i < 40; i++) {
+          clock += 60;
+          act(() => {
+            capturedVirtuosoProps.totalListHeightChanged(40_000 + i * 1_000);
+          });
+        }
+
+        expect(
+          pinCalls(),
+          "the cap must be what stopped it, at 24 pins and under 1.5 s of this clock",
+        ).toBe(24);
+        expect(clock - startClock, "the loop must have outlived the cap").toBeGreaterThan(1_440);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it("re-arms the settle when the floating button is clicked, so a late measurement after the click cannot strand again", () => {
+      const { container } = render(
+        <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+      );
+      flushRaf();
+
+      // CLOSE the settle first, on the real arrival path. Without this the test
+      // passes with no re-arm at all, because the settle is still open from mount.
+      act(() => {
+        capturedVirtuosoProps.startReached();
+      });
+      virtuosoHandleRef.scrollToIndex.mockClear();
+      act(() => {
+        capturedVirtuosoProps.totalListHeightChanged(72_000);
+      });
+      flushRaf();
+      expect(
+        virtuosoHandleRef.scrollToIndex,
+        "precondition: the settle is closed, so a height change alone pins nothing",
+      ).not.toHaveBeenCalled();
+
+      // Now: scroll up (unlock, button appears), then click it to re-lock.
+      act(() => {
+        simulateScrollUp(container);
+      });
+      const button = screen.getByRole("button", { name: /scroll to bottom/i });
+      act(() => {
+        button.click();
+      });
+      expect(screen.queryByRole("button", { name: /scroll to bottom/i })).toBeNull();
+      virtuosoHandleRef.scrollToIndex.mockClear();
+
+      // The click landed while rows were still measuring, so the list grows again.
+      // With the lock engaged the button stays hidden — so without a re-arm there
+      // is no way back to the bottom but the mouse wheel.
+      act(() => {
+        capturedVirtuosoProps.totalListHeightChanged(80_000);
+      });
+      flushRaf();
+
+      expect(
+        virtuosoHandleRef.scrollToIndex,
+        "the click re-arms the settle: a re-locked transcript must finish landing",
+      ).toHaveBeenCalledWith({ index: "LAST", align: "end" });
+    });
+
+    it("re-arming after an EXHAUSTED settle still pins (the re-arm resets the bounds, not just the flag)", () => {
+      // The case the plain re-arm test cannot reach: the settle was closed by its
+      // OWN bounds, so a re-arm that only flips the flag re-opens something that
+      // closes again on its first height change — a re-arm that does nothing.
+      let clock = 20_000;
+      const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+
+      try {
+        const { container } = render(
+          <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+        );
+        flushRaf();
+        // Drop the mount-time gate-effect pin from the count: `pinCalls()` counts
+        // every LAST/end call, and Effect 1 issues one on mount.
+        virtuosoHandleRef.scrollToIndex.mockClear();
+
+        // Exhaust the PIN CAP: 60 ms spacing reaches 24 pins at 1.44 s of this
+        // clock, inside the 1.5 s duration bound, so the cap is what closes it.
+        // (Spacing at 100 ms would close on the DURATION bound and leave the pin
+        // count under the cap — and then a re-arm that forgets to reset the count
+        // would still pin, hiding the very bug this test exists for.)
+        for (let i = 0; i < 40; i++) {
+          clock += 60;
+          act(() => {
+            capturedVirtuosoProps.totalListHeightChanged(40_000 + i * 1_000);
+          });
+        }
+        expect(
+          pinCalls(),
+          "precondition: the settle ran to its 24-pin cap",
+        ).toBe(24);
+
+        // The settle is closed by its bounds, so a further change pins nothing.
+        clock += 100;
+        virtuosoHandleRef.scrollToIndex.mockClear();
+        act(() => {
+          capturedVirtuosoProps.totalListHeightChanged(90_000);
+        });
+        expect(virtuosoHandleRef.scrollToIndex).not.toHaveBeenCalled();
+
+        // User scrolls up, then clicks the button.
+        act(() => {
+          simulateScrollUp(container);
+        });
+        const button = screen.getByRole("button", { name: /scroll to bottom/i });
+        act(() => {
+          button.click();
+        });
+        virtuosoHandleRef.scrollToIndex.mockClear();
+
+        clock += 100;
+        act(() => {
+          capturedVirtuosoProps.totalListHeightChanged(96_000);
+        });
+
+        expect(
+          virtuosoHandleRef.scrollToIndex,
+          "re-arming must reset the pin count and the clock, or it re-opens a dead settle",
+        ).toHaveBeenCalledWith({ index: "LAST", align: "end" });
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it("does NOT pin on a height DECREASE, and never unlocks the user with its own clamp", () => {
+      // react-virtuoso's own size watcher re-pins only on `SIZE_INCREASED`, and
+      // for the same reason: shrinking the list makes the browser CLAMP scrollTop,
+      // and `handleScroll` reads a clamped decrease as "the user scrolled up". A
+      // settle that pins on a decrease therefore unlocks itself and flashes the
+      // very button it exists to make unnecessary. A decrease also cannot strand:
+      // clamping lands you at the bottom, not above it.
+      //
+      // A controlled clock, or this asserts nothing: the baseline call and the
+      // decrease would fall inside one 50 ms throttle window, and "it did not
+      // pin" would be the throttle's doing, not the decrease rule's. Verified —
+      // deleting the decrease guard leaves this test GREEN without the clock.
+      let clock = 60_000;
+      const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+
+      try {
+        const { container } = render(
+          <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+        );
+        flushRaf();
+
+        const scroller = document.querySelector(
+          '[data-testid="virtuoso-stand-in"]',
+        ) as HTMLElement;
+        // Start parked at the bottom of a 48 000px list.
+        Object.defineProperty(scroller, "clientHeight", { value: 557, configurable: true });
+        Object.defineProperty(scroller, "scrollHeight", { value: 48_000, configurable: true });
+        const scrollTop = { value: 48_000 - 557 };
+        Object.defineProperty(scroller, "scrollTop", {
+          configurable: true,
+          get: () => scrollTop.value,
+          set: (v) => {
+            scrollTop.value = v;
+          },
+        });
+
+        // Establish the height first: until the first report nothing is measured,
+        // so reporting 40 000 cold would be an INCREASE and correctly pin.
+        act(() => {
+          capturedVirtuosoProps.totalListHeightChanged(48_000);
+        });
+        clock += 100;
+        virtuosoHandleRef.scrollToIndex.mockClear();
+
+        // A row collapses: the list shrinks by 8 000px, well outside the throttle.
+        act(() => {
+          capturedVirtuosoProps.totalListHeightChanged(40_000);
+        });
+
+        expect(
+          virtuosoHandleRef.scrollToIndex,
+          "a decrease cannot strand a locked transcript, so pinning on it is a yank",
+        ).not.toHaveBeenCalled();
+
+        // Now let the browser clamp, as it would after that shrink, and confirm the
+        // component still reads itself as at the bottom (no button).
+        act(() => {
+          scrollTop.value = 40_000 - 557;
+          fireEvent.scroll(scroller, { target: { scrollTop: 40_000 - 557 } });
+        });
+        expect(screen.queryByRole("button", { name: /scroll to bottom/i })).toBeNull();
+        expect(container).toBeTruthy();
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it("re-arming also resets the height baseline, so growth after a shrink still pins", () => {
+      // The click can land while rows are collapsing as well as growing. If the
+      // re-arm kept the pre-click height, a 90 000 → 80 000 collapse followed by
+      // 85 000 of growth would read as a DECREASE against the stale baseline and
+      // the re-armed settle would never pin.
+      let clock = 40_000;
+      const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+
+      try {
+        const { container } = render(
+          <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+        );
+        flushRaf();
+
+        // Park the baseline HIGH while the settle is open...
+        act(() => {
+          capturedVirtuosoProps.totalListHeightChanged(90_000);
+        });
+        clock += 100;
+        // ...then close it, and let the list COLLAPSE while it is closed. The
+        // handler returns before touching the baseline when the settle is shut,
+        // so 90 000 is what survives into the re-arm — that staleness is the bug.
+        act(() => {
+          capturedVirtuosoProps.startReached();
+        });
+        clock += 100;
+        act(() => {
+          capturedVirtuosoProps.totalListHeightChanged(80_000);
+        });
+
+        act(() => {
+          simulateScrollUp(container);
+        });
+        const button = screen.getByRole("button", { name: /scroll to bottom/i });
+        act(() => {
+          button.click();
+        });
+        virtuosoHandleRef.scrollToIndex.mockClear();
+
+        clock += 100;
+        act(() => {
+          capturedVirtuosoProps.totalListHeightChanged(85_000); // growth, but below 90 000
+        });
+        flushRaf();
+
+        expect(
+          virtuosoHandleRef.scrollToIndex,
+          "growth after a re-arm must pin even when the list is smaller than before the click",
+        ).toHaveBeenCalledWith({ index: "LAST", align: "end" });
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it("does NOT close on the vacuous atBottomStateChange(true) of a not-yet-sized list", () => {
+      // Measured in a real browser at mount: react-virtuoso reports
+      // atBottom(true) while the item list still has no height, so
+      // scrollHeight === clientHeight and distance is a VACUOUS 0 — there is
+      // nothing to scroll yet. Closing there strands the transcript on the very
+      // next height report (48 000px lands, distance becomes 47 443), which is
+      // the bug this whole settle exists to fix.
+      render(
+        <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+      );
+      flushRaf();
+
+      const scroller = document.querySelector(
+        '[data-testid="virtuoso-stand-in"]',
+      ) as HTMLElement;
+      Object.defineProperty(scroller, "clientHeight", { value: 557, configurable: true });
+      Object.defineProperty(scroller, "scrollHeight", { value: 557, configurable: true });
+      Object.defineProperty(scroller, "scrollTop", { value: 0, configurable: true });
+
+      act(() => {
+        capturedVirtuosoProps.atBottomStateChange(true);
+      });
+      virtuosoHandleRef.scrollToIndex.mockClear();
+
+      act(() => {
+        capturedVirtuosoProps.totalListHeightChanged(48_000);
+      });
+      flushRaf();
+
+      expect(
+        virtuosoHandleRef.scrollToIndex,
+        "a non-scrollable box has not 'arrived at the bottom', it has not been measured",
+      ).toHaveBeenCalledWith({ index: "LAST", align: "end" });
+    });
+
+    it("coalesces several height changes in one frame into a single pin", () => {
+      render(
+        <MessageList {...makeProps({ units: manyUnits(50), hasMore: true })} />,
+      );
+      flushRaf();
+      virtuosoHandleRef.scrollToIndex.mockClear();
+
+      act(() => {
+        capturedVirtuosoProps.totalListHeightChanged(40_000);
+        capturedVirtuosoProps.totalListHeightChanged(41_000);
+        capturedVirtuosoProps.totalListHeightChanged(42_000);
+      });
+      flushRaf();
+
+      expect(pinCalls()).toBe(1);
+    });
+  });
 });
