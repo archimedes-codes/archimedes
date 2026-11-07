@@ -20,9 +20,17 @@ _Avoid_: Agent (that's the conversation *partner*; a harness *runs* it), loop, b
 A single on-disk folder the Client can open — the workspace in which a conversation and its file access happen. Identified by the folder's canonical path, not a user-supplied name; the display label is the folder's base name. Multiple live Sessions may coexist per Space as well as app-wide; stored conversations of a Space survive. Closing its tab FORGETS the Space and deletes nothing — no `sessions` row is touched, so re-opening the folder returns the Space with its history; a Space still holding a live **Session** confirms first, because the rows live under the Space and a closed tab has removed the very surface the Client's stop control lives on — **Stop** is the sidebar row's button — so the Session keeps running with no surface left to reach it (the Esc path reaches only the Session on screen) — ADR 0043, amended 2026-10-20.
 _Avoid_: Project, workspace, folder, directory, environment
 
+**New Space**:
+The command that opens a folder as a **Space** — the chrome bar's `+` (beside the tab strip) and the ⌘O chord, ONE command with ONE name (`openNewSpaceDialog`, root-rendered `NewSpaceDialog`). It creates nothing on disk; it adds a tab and makes that folder the active **Space**.
+_Avoid_: Open Space (the retired sidebar label for this same command — the split between "Open Space" and "New space" is what this entry closes), New space (lowercase-s, the old `aria-label`), open folder, add project, new workspace
+
 **Session**:
 One live conversation, backed by the desktop's **Agent harness** running in a **Worker process** (a **Native session** — ADR 0022/0025; the external embodiment is removed). The unit of lifecycle, history, and permission state. A Session lives inside one **Space**: its `cwd` is the Space's folder and the seed of the Space's **Boundary** (the **Beyond-boundary policy** decides what happens beyond it — ADR 0030); a Space's active conversation is its most recent Session. _Generalized 2026-10-06: a native session has no external subprocess; embodiment is a harness, not an agent process. 2026-10-04: the harness runs in a Worker process (ADR 0025) — the session's embodiment is a Worker, and the Client is its Supervisor._
 _Avoid_: Conversation, chat, thread, run
+
+**New Session**:
+The command that starts a fresh **Session** in the active **Space** — the sidebar's `+` (right side of the `Sessions` header), the ⌘N chord, and the collapsed rail's `+`; ONE command behind all of them (`startSessionInActiveSpace`), including the fall-through that opens the **New Space** dialog when no Space is open. It is NOT **New Space**: a Session needs a Space to live in, so the two are nested commands that happen to share the `+` glyph, disambiguated by their accessible name and by which strip they sit in.
+_Avoid_: New conversation, new chat, new thread, "New Session in this Space" (the retired `···` menu item this replaced), the bare `+` (two `+`s exist in the window — say which noun)
 
 **Native session**:
 A **Session** — the desktop's own Rust runtime is the **only** **Agent harness** (ADR 0022): no external agent process. Runs in a **Worker process** (ADR 0025) driven by the desktop's own AgentLoop, which calls the model directly (an OpenAI-compatible provider) and executes tools in the Worker (Rust executors); the **Supervisor** persists the transcript to SQLite from the event stream (the Worker has no DB).
