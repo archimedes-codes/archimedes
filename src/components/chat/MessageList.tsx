@@ -114,6 +114,18 @@ export interface MessageListProps {
 const BOTTOM_THRESHOLD = 80;
 
 /**
+ * The arrival settle (§6 of the Lock & Follow Model).
+ *
+ * `SETTLE_PIN_INTERVAL_MS` throttles rather than counts: the pin is a direct
+ * `scrollToIndex` like Effect 2, and a count-only bound would let a burst of
+ * measurements inside one frame each yank the viewport.
+ */
+const SETTLE_PIN_INTERVAL_MS = 50;
+/** A transcript that never confirms its bottom is not settling — it is stuck. */
+const SETTLE_MAX_PINS = 24;
+const SETTLE_MAX_DURATION_MS = 1500;
+
+/**
  * Checks if an event occurred inside a nested scrollable element (e.g. code
  * block, diff viewer, or tool call output) that absorbs the scroll, rather
  * than the main transcript scroller.
@@ -229,6 +241,29 @@ interface TranscriptScrollerProps {
  *    - Clicking the floating button re-locks, scrolls to bottom, and explicitly
  *      focuses the scroller container before unmounting so focus does not drop
  *      to `<body>`.
+ *
+ * 6. **Arrival Settle (re-pin while the transcript is still measuring)**:
+ *    - Opening a Space mounts this component with the lock engaged, and the
+ *      transcript's height keeps changing after that first jump: rows are
+ *      measured against estimates, a code block re-measures when shiki's async
+ *      highlight lands, an image loads. `followOutput` reacts to a changed item
+ *      COUNT and not to a size change, and react-virtuoso's own size-change
+ *      re-anchor is armed ONCE, 100 ms after mount — so a list that grows after
+ *      that window stays stranded above the last row WHILE STILL LOCKED, which
+ *      means the floating button never appears and the user has to scroll by
+ *      hand. While the settle is open, every total-height change re-asserts the
+ *      bottom, throttled to one pin per `SETTLE_PIN_INTERVAL_MS`.
+ *    - It closes on a GEOMETRICALLY CONFIRMED landing — `atBottomStateChange(true)`
+ *      is not enough, because it fires both at `scrollTop: 0` while the initial
+ *      location is pending and on a list that has no height yet — on
+ *      `startReached` (an older-history prepend owns the anchor from then on, see
+ *      `useFirstItemIndex`), and on a pin count / wall-clock bound so a
+ *      permanently off-screen tail cannot pin forever. It pins on height
+ *      INCREASES only (a shrink clamps `scrollTop`, which `handleScroll` would
+ *      read as the user scrolling up) and never fires while unlocked.
+ *    - The floating button re-arms it: clicking the button is a second arrival at
+ *      the bottom, and the same late measurement can strand it again — with the
+ *      lock re-engaged the button is hidden, so nothing else would recover.
  */
 function TranscriptScroller({
   units,
@@ -268,6 +303,99 @@ function TranscriptScroller({
   const prevLastUserKeyRef = useRef<string | null>(null);
   const keys = unitKeys(units);
   const firstItemIndex = useFirstItemIndex(units, activeSessionId, generation);
+
+  // ── The arrival settle (§6) ───────────────────────────────────────────────
+  // Open at mount (this component is keyed on `activeSessionId:generation`, so
+  // "mounted" IS "the user arrived at a transcript"); closed once landed, on
+  // `startReached`, or on the bounds below. A ref, not state: closing must not
+  // re-render, and nothing renders from it.
+  const settleOpenRef = useRef(true);
+  const settlePinsRef = useRef(0);
+  const lastSettlePinAtRef = useRef(0);
+  // The last total-list height react-virtuoso reported, `0` until it reports one.
+  const lastListHeightRef = useRef(0);
+  const settleStartedAtRef = useRef(
+    typeof performance !== "undefined" ? performance.now() : 0,
+  );
+
+  const closeSettle = () => {
+    settleOpenRef.current = false;
+  };
+
+  /**
+   * Re-open the settle for a fresh trip to the bottom, resetting the bounds: a
+   * re-arm that inherits an exhausted pin count or an expired clock closes on
+   * its first height change and does nothing.
+   */
+  const openSettle = () => {
+    settleOpenRef.current = true;
+    settlePinsRef.current = 0;
+    lastSettlePinAtRef.current = 0;
+    // Back to "nothing measured yet". The baseline is what distinguishes a growth
+    // (can strand) from a shrink (cannot), and a stale one carried across the
+    // click makes real growth look like a decrease — so the re-armed settle would
+    // never pin. `0` makes the first height after the re-arm count as growth,
+    // which costs at most one extra jump to where the user just asked to go.
+    lastListHeightRef.current = 0;
+    settleStartedAtRef.current =
+      typeof performance !== "undefined" ? performance.now() : 0;
+  };
+
+  /**
+   * Close the settle if the scroller can PROVE it has landed. Called only from
+   * the `atBottom` branch, and `atBottomStateChange(true)` alone is NOT proof —
+   * two measured ways it lies, both observed in a real browser at mount:
+   *
+   *  1. It publishes `atBottom(true)` at `scrollTop: 0` while the initial
+   *     location is still pending (`scrollHeight 48000 / scrollTop 0`).
+   *  2. It publishes `atBottom(true)` BEFORE the item list has any height, so
+   *     `scrollHeight === clientHeight` and the distance is a VACUOUS 0 — there
+   *     is nothing to scroll yet.
+   *
+   * Trusting either closes the settle before it has pinned anything, which is a
+   * guard that passes on the broken thing. So landing requires a box that can
+   * actually scroll AND sits within the threshold. The one case allowed through
+   * without evidence is an unmeasurable box (`clientHeight <= 0`: pre-layout, or
+   * jsdom) — there is no measurement to refuse with.
+   */
+  const settleConfirmLanding = () => {
+    const scroller = getScrollerElement();
+    if (!scroller || scroller.clientHeight <= 0) {
+      closeSettle();
+      return;
+    }
+    if (scroller.scrollHeight <= scroller.clientHeight) return;
+    const distance =
+      scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight);
+    if (distance <= BOTTOM_THRESHOLD) closeSettle();
+  };
+
+  const handleTotalListHeightChanged = (height: number) => {
+    if (!settleOpenRef.current || !isBottomLockedRef.current) return;
+    // INCREASES ONLY, the same restriction react-virtuoso's own size watcher
+    // applies (`notAtBottomBecause === "SIZE_INCREASED"`). A shrink cannot strand
+    // a locked transcript — the browser clamps `scrollTop` and lands you at the
+    // bottom — but a pin issued around one reads back through `handleScroll` as
+    // an upward scroll and UNLOCKS, flashing the button the settle exists to
+    // make unnecessary. `0` means "nothing measured yet", so the first report of
+    // a real height counts as an increase and pins.
+    const previousHeight = lastListHeightRef.current;
+    lastListHeightRef.current = height;
+    if (height <= previousHeight) return;
+    const now =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (
+      settlePinsRef.current >= SETTLE_MAX_PINS ||
+      now - settleStartedAtRef.current > SETTLE_MAX_DURATION_MS
+    ) {
+      closeSettle();
+      return;
+    }
+    if (now - lastSettlePinAtRef.current < SETTLE_PIN_INTERVAL_MS) return;
+    lastSettlePinAtRef.current = now;
+    settlePinsRef.current += 1;
+    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+  };
 
   const inlineGateCount = childGates.filter(isInlineChildGate).length;
   // Effect 1: Gate cards — scrolls new permission/ask/child gates into view; reacts to gate counts only (not units) so it never fights scroll position.
@@ -331,6 +459,12 @@ function TranscriptScroller({
       scroller.focus();
     }
     setIsBottomLocked(true);
+    // Re-arm the settle: this is a second ARRIVAL at the bottom, and the same
+    // stranding that hides nothing-but-the-transcript at mount can repeat here.
+    // Without the re-arm the button the user just clicked disappears (locking
+    // hides it) while the list is still growing, so the transcript strands again
+    // with no button to click — the reported bug, one click later.
+    openSettle();
     virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
   };
 
@@ -438,10 +572,19 @@ function TranscriptScroller({
           isAtBottomRef.current = atBottom;
           if (atBottom) {
             setIsBottomLocked(true);
+            settleConfirmLanding();
           }
         }}
+        totalListHeightChanged={handleTotalListHeightChanged}
         onScroll={handleScroll}
-        startReached={onStartReached}
+        startReached={() => {
+          // From here the PREPEND owns the scroll position: `useFirstItemIndex`
+          // lowers the anchor by the number of older rows so the viewport stays
+          // put, and a settle pin issued after that reads as "jump back to the
+          // bottom" and throws the anchor away.
+          closeSettle();
+          onStartReached();
+        }}
         increaseViewportBy={{ top: 600, bottom: 600 }}
         className="flex-1 min-w-0 max-w-full overflow-x-hidden focus:outline-none"
         context={{
