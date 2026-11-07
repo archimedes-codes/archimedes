@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import { cn } from "@/components/lib/utils";
+import { usePrefersReducedMotionSubscription } from "@/hooks/usePrefersReducedMotion";
 
 import {
   type BrailleLoaderSpeed,
@@ -36,19 +37,7 @@ function getPrefersReducedMotion() {
 function usePrefersReducedMotion() {
   const [prefersReducedMotion, setPrefersReducedMotion] = React.useState(getPrefersReducedMotion);
 
-  React.useEffect(() => {
-    if (!("matchMedia" in window)) return;
-
-    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const handleChange = () => setPrefersReducedMotion(mediaQuery.matches);
-
-    handleChange();
-    mediaQuery.addEventListener("change", handleChange);
-
-    return () => {
-      mediaQuery.removeEventListener("change", handleChange);
-    };
-  }, []);
+  usePrefersReducedMotionSubscription(setPrefersReducedMotion);
 
   return prefersReducedMotion;
 }
