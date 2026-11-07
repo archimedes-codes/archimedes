@@ -28,7 +28,7 @@ import { useSubagents } from "./subagents";
 // Driven (not mocked) by the close-path tests below: the figure has to be read
 // off `useInteractive.cost` BEFORE `dismissSession` deletes it, so the test must
 // run the real dismiss-then-file ORDER rather than call the reducer directly.
-import { onSessionClosed } from "../lib/sessionLifecycle";
+import { onSessionClosed } from "./sessionLifecycle";
 import { expandMentions } from "../lib/skills";
 import type { AgentDefinitionDto, HistoryPage, McpServerInfo } from "../lib/tauri";
 import {

@@ -1,16 +1,16 @@
 import { beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { onSessionClosed } from "./sessionLifecycle";
-import { useInteractive } from "../store/interactive";
-import { usePermissions } from "../store/permissions";
-import { useQueuedPrompts } from "../store/queuedPrompts";
-import type { ChatComposerAttachment } from "./chatAttachments";
-import * as sessionsModule from "../store/sessions";
+import { useInteractive } from "./interactive";
+import { usePermissions } from "./permissions";
+import { useQueuedPrompts } from "./queuedPrompts";
+import type { ChatComposerAttachment } from "../lib/chatAttachments";
+import * as sessionsModule from "./sessions";
 
 // `deleteSession` (the store action) calls the IPC wrapper, which would
 // `invoke()` and reject in jsdom — no global Tauri mock exists. Everything
 // else in `../lib/tauri` stays REAL (the close-path tests read no IPC).
-vi.mock("./tauri", async () => {
-  const actual = await vi.importActual<Record<string, unknown>>("./tauri");
+vi.mock("../lib/tauri", async () => {
+  const actual = await vi.importActual<Record<string, unknown>>("../lib/tauri");
   return { ...actual, deleteSession: vi.fn().mockResolvedValue(undefined) };
 });
 

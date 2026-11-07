@@ -1,9 +1,9 @@
-import { useInteractive } from "../store/interactive";
-import { usePermissions } from "../store/permissions";
-import { useQueuedPrompts } from "../store/queuedPrompts";
-import { discardSessionMessages, useSessions } from "../store/sessions";
-import type { CostUpdatePayload } from "../store/interactive";
-import type { CloseReasonStr } from "./tauri";
+import { useInteractive } from "./interactive";
+import { usePermissions } from "./permissions";
+import { useQueuedPrompts } from "./queuedPrompts";
+import { discardSessionMessages, useSessions } from "./sessions";
+import type { CostUpdatePayload } from "./interactive";
+import type { CloseReasonStr } from "../lib/tauri";
 
 export function onSessionClosed(sessionId: string, reason: CloseReasonStr): void {
   const board = useInteractive.getState().todos[sessionId];
