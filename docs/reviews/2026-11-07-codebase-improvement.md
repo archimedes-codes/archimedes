@@ -54,6 +54,12 @@ them is empty, so both are valid anchors):
 **Production is 19% of files and 63% of production lines sit in files over 200 lines.** Test:prod is
 **2.5×** (Rust) and **2.2×** (frontend).
 
+## Provenance — this report describes the tree at `73abf9a4`, and the branch that implemented it broke its numbers
+
+**Read this before re-running anything below.** This is a dated point-in-time record, deliberately **not** rewritten — the measurements are what was observed. But `feature/codebase-improvement-1107` landed the fixes, so these are **false at HEAD**: finding **3** (the 3,483-line `describe("ChatStream")` was dissolved by `6690966d`; the file is 2,555 lines and no block holds over 22 tests), finding **4** (`session_tests` moved to `agent/session/tests/mod.rs` by `936dcafe`; `mod.rs` is 2,955 lines not 6,838, `naming.rs` is 902/3,018 not 590/1,591; session **does** have a sibling `tests/` dir now, so the pattern is **three** sites not two), and finding **5**'s site count (`agent/session/*` holds 30 `into_inner()` lines, 25 of them production — 37 is the tree-wide figure, mis-attributed).
+
+**Most likely to be re-trusted wrongly: the two negative verifications.** Finding 5's "`AGENTS.md` has **no lock/poison rule at all** (verified: 0 hits for `poison` / `into_inner` / `Mutex`)" now returns **6 / 3 / 1** matching lines (`grep -c`, case-sensitive as spelled; case-insensitively `Mutex` is 5), and finding 4's "`AGENTS.md` and `CONTEXT.md` contain **no rule** (verified: no hit for `cfg(test)` / `mod tests`)" is **half** false — `AGENTS.md` returns **4 / 4**, `CONTEXT.md` is still 0. Re-running either probe against `AGENTS.md` now gives the **opposite** answer, because this report's own proposal is what put those words there. Both figures are counted **as of the commit that landed this provenance note**, so they move if `AGENTS.md` grows. The durable home for what survived is `docs/features/improvement-boundary-residue-closeout.md`, not this file.
+
 ## Context
 
 - **CONTEXT.md**: loaded (337 lines, 88 glossary entries, 76 `_Avoid_` lists). **No `## Engineering

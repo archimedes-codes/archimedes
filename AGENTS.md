@@ -85,45 +85,99 @@ a split is done when no `describe` spans two subjects, not when the file count w
 subject-named `describe`s living in one file is a legitimate outcome and costs no new mocks. The
 shape that works is `mod tests;` + a `tests/` directory (e.g. `src/foo/tests/mod.rs`), **not** a
 `tests.rs` sibling — `find src-tauri/src -name 'tests.rs'` reports **0** sites, while the directory
-shape already exists at `src-tauri/src/commands/files/tests` and `src-tauri/src/storage/db/tests`.
+shape already exists at `src-tauri/src/commands/files/tests`, `src-tauri/src/storage/db/tests` and
+`src-tauri/src/agent/session/tests` — `find src-tauri/src -type d -name tests` → **3**. The last of the
+three is this rule being applied: `936dcafe` moved the session registry's inline test module out to
+exactly that shape.
 
-Do **not** use the old trigger "split when the test body exceeds the production body": it fires on
-**15 of 16 candidates** and orders splits that remove no pain (`errors.rs`, `settings.rs`,
-`router.rs`, `refresh.rs` have coherent tests over small production bodies, so splitting them buys
-nothing) — and because it is a **file-level** ratio it cannot name a block, so it is blind to the
-worst navigation hazard in the tree: the `describe("ChatStream", () => { … })` region in
-`src/components/ChatStream.test.tsx`, **3,483 lines** — instrument: `grep -n
-'^describe(' src/components/ChatStream.test.tsx` prints that block's open at 224 and its first
-sibling `describe` at 3707, so the region (open line through the line before the sibling) is
-3707 − 224 = 3,483; the brace-balanced block itself measures 3,468 lines — instrument: the same file
-scanned from the block's open with a brace counter, `awk
-'/^describe\("ChatStream",/{f=1} f{n=gsub(/{/,"{"); m=gsub(/}/,"}"); d+=n-m; if(d==0){print NR; exit}}'
-src/components/ChatStream.test.tsx` reports the closing brace at 3691 — and the region counted
-without its open line is 3,482 — plan and rule quote 3,483, the review's figure. The ratio points at
-that FILE (4,156 test lines over a 710-line `ChatStream.tsx`) and stops there; it never says which
-`describe` to split, and splitting the file would move the whole block intact. Cite the oversized
-regions by **content** (a `describe` name, a module name, a test title) — never by `file:line`, which
-decays as files move (this file's own rule: match on the test name, never the line). The three
-regions measured at HEAD, each re-runnable as written:
+Do **not** use the old trigger "split when the test body exceeds the production body". The 2026-11-07
+audit rejected it — it reports that the ratio "fires on 15 of 16 candidates", but **names no instrument
+for that tally, so treat it as the audit's judgement, not a measurement you can re-run**. The judgement
+itself holds on its own terms: the four files it lists (`errors.rs`, `settings.rs`, `router.rs`,
+`refresh.rs`) have coherent tests over small production bodies, so splitting them buys nothing. And the
+deeper reason stands regardless of the tally — a **file-level** ratio cannot name a block, so it is
+blind to the hazard this rule exists to catch: the `describe("ChatStream", () => { … })` region that
+`src/components/ChatStream.test.tsx` used to hold, **3,483 lines over 149 `it(` calls** across ~8
+unrelated subjects. The ratio pointed at that FILE — the audit measured **4,156 test lines over a
+710-line `ChatStream.tsx`** (both verified at `73abf9a4`; that component is still 710 lines) — and
+stopped there. It never said which `describe` to split, and splitting the file moved the whole block
+intact, which is exactly what the earlier split did.
 
-- `src/components/ChatStream.test.tsx` — the `describe("ChatStream", …)` block holds **149 `it(`
-  calls** (the review says ~157 tests; 149 is the `it(`-line count at HEAD) across ~8 unrelated
-  subjects — mention pickers `$`/`@`/`#`/`?`, resume-stored-session semantics, attachment staging and
-  send-race safety, directory completion, compaction, Esc/cancel routing, composer styling,
-  working-indicator truncation — and it carries one `it.each` over the three mention pickers.
-  Re-run: `awk '/^describe\("ChatStream",/{f=1;next} /^describe\(/&&f{exit}
-  f' src/components/ChatStream.test.tsx | grep -c "it("` → `149`. Content anchors: `it("the $prefix
-  picker is UNCAPPED and note-free with more matches than the render cap ($kind catalog)"`,
-  `it("a mixed draft lists only the prefix of the token at the caret"`.
-- `src/components/SpacesList.test.tsx` — the `describe("SpacesList")` block holds **37 `it(` calls**.
-  Re-run: `awk '/^describe\("SpacesList",/{f=1;next} /^describe\(/&&f{exit}
-  f' src/components/SpacesList.test.tsx | grep -c "it("` → `37`. Content anchors: `it("renders its
-  labelled action buttons with their labels and kbd hints"`, `it("opens the Open Space dialog from
-  the action button"`.
-- `src-tauri/src/agent/session/mod.rs` — the `mod session_tests { … }` region holds **71
-  `#[test]`/`#[tokio::test]` attributes**. Re-run: `awk '/^mod session_tests \{/{f=1} f'
-  src-tauri/src/agent/session/mod.rs | grep -cE '^\s*#\[(tokio::)?test\]$'` → `71`. Content anchors:
-  `fn mint_session_id_format()`, `fn session_manager_builder_cyclic_weak_reference_drops_cleanly()`.
+**That 3,483-line region is HISTORIC, and its instruments no longer reproduce it — on purpose, because
+the finding was fixed.** `6690966d` dissolved it into subject describes and moved the mention-picker
+cluster to its own file. Do not re-run the audit's commands expecting the old numbers: `grep -n
+'^describe(' src/components/ChatStream.test.tsx` finds **no `describe("ChatStream",` at all** (every
+block there now carries a subject name in its title), and both the audit's `it(`-count instrument and
+its brace counter **print nothing** against the current file. Its former `it(` content anchors now live
+in `ChatStreamMentionPicker.test.tsx`, not the file the audit named.
+
+Cite oversized regions by **content** (a `describe` name, a module name, a test title) — never by
+`file:line`, which decays as files move (this file's own rule: match on the test name, never the line).
+The audit's own `file:line` citations are the cautionary example: three commits on the branch that
+*implemented* it (`6690966d`, `650bfe55`, `936dcafe`) invalidated every one of them. Everything below
+is named by content and **re-runnable as written at HEAD**; historic figures are labelled and attributed
+to the commit that dissolved them.
+
+**The discriminator made concrete — this case the rule PERMITS:**
+`src/components/ChatStreamMentionPicker.test.tsx`'s
+`describe("ChatStream — the mention/file-completion pickers (ADR 0031/0033)")` holds **62 tests over
+ONE subject** (the `$`/`@`/`#`/`?` pickers and their geometry). That is far over 25 and correct — do not
+split it. Re-run: `npx vitest list src/components/ChatStreamMentionPicker.test.tsx | wc -l` → **60**,
+not 62, because `vitest list` prints one `it.each` template unexpanded instead of its 3 cases; the real
+figure is 59 `it(` + 3 = 62. **Count tests with the runner, not by grepping `it(`** — a grep undercounts
+every `it.each`.
+
+**Known live violations of the rule** (measure them yourself; each holds several subjects in one block,
+which is exactly the shape this rule says to split). Naming them is the point — a rule with unlisted
+exceptions reads as unenforced. **This list is verified but NOT exhaustive**: the candidate set is every
+block over ~25, and only a read of the test titles decides whether a candidate crosses subjects.
+Instrument: `npx vitest list | awk -F' > ' 'NF>=3 {print $1" || "$2}' | sort | uniq -c | sort -rn`
+(3,147 tests today) — which puts `SidePane (the status panel)` (59), `MessageList scroll behavior` (43)
+and `chatAttachments` (37) alongside the first bullet below as candidates to inspect, while
+`ChatStream — out-of-Space Directory completion (ADR 0035)` (34) reads as ONE subject — every title is a
+`?`-completion behaviour — and so is permitted, like the MentionPicker case above.
+
+- `src/components/SpacesList.test.tsx`'s `describe("SpacesList (archive, ADR 0016)")` holds **38 tests
+  across several subjects** — Stop-closes-session semantics, the archive flag itself, hover-action click
+  swallowing, the Archived section's collapse/ordering/empty-state, unarchive, and the collapsed rail's
+  marks and icons. Re-run: `npx vitest list src/components/SpacesList.test.tsx | grep -c "archive, ADR
+  0016"` → `38`.
+- `src-tauri/src/agent/session/naming.rs`'s `#[cfg(test)] mod tests` holds **77 test attributes** across
+  several subjects — excerpt construction, quote/whitespace trimming, title capping (incl. multi-byte),
+  reasoning-level forwarding, and composed-key resolution. Re-run:
+  `sed -n '/^mod tests {/,$p' src-tauri/src/agent/session/naming.rs
+  | grep -cE '#\[(tokio::)?test\]'` → `77`.
+- `src-tauri/src/agent/session/tests/mod.rs` holds **73 test attributes flat** (no inner grouping at all)
+  across session-id format, `SessionInfo` serialisation, settings push, compaction/cancel, titling on
+  close, resume semantics and more. Re-run:
+  `grep -cE '#\[(tokio::)?test\]' src-tauri/src/agent/session/tests/mod.rs` → `73`. **This is the rule's
+  own cautionary tale in its current form**: `936dcafe` moved the pile into the correct *shape* but did
+  not split the *module*, so the navigation hazard survived the move — a completed move, not a completed
+  split.
+
+Splitting `ChatStream.test.tsx` the right way is the counter-example and the proof the rule is
+achievable: after `6690966d` its largest `describe` is
+`describe("ChatStream — the compaction indicator (ADR 0045)")` at **22 tests**, and every block there is
+subject-named. Re-run: `npx vitest list src/components/ChatStream.test.tsx | awk -F' > ' '{print $2}'
+| sort | uniq -c | sort -rn | head -1`.
+
+**Historic, and deliberately unreproducible** — the oversized blocks this branch *dissolved*, kept so the
+numbers above are traceable rather than invented:
+
+- `describe("ChatStream", …)` in `src/components/ChatStream.test.tsx`: **3,483 lines / 149 `it(`**, i.e.
+  **152 runtime tests** once its one 3-case `it.each` is expanded (the review's "~157 tests" overcounts;
+  its "4,156 raw lines, 162 `it`s" for the whole file is exact). Over ~8 subjects. Dissolved by
+  **`6690966d`**. Its former instruments now print `0` / nothing against HEAD; they reproduce only
+  against `6690966d^`.
+- `describe("SpacesList")` in `src/components/SpacesList.test.tsx`: **37 `it(`**. Now **16** — the
+  Agents-modal cluster left for `SpacesList.agents.test.tsx` in **`650bfe55`**.
+- `mod session_tests` in `src-tauri/src/agent/session/mod.rs`: **71 test attributes**. That module
+  **no longer exists anywhere**; **`936dcafe`** moved it to `src-tauri/src/agent/session/tests/mod.rs`,
+  which holds **73** (the same commit added 2). Re-run against HEAD:
+  `grep -cE '^\s*#\[tokio::test\]$|^\s*#\[test\]$' src-tauri/src/agent/session/tests/mod.rs` → `73`.
+  Its anchors `fn mint_session_id_format()` and
+  `fn session_manager_builder_cyclic_weak_reference_drops_cleanly()` still exist — **in `tests/mod.rs`,
+  not `mod.rs`**.
 
 The Rust compiler is pinned in the repo-root `rust-toolchain.toml`, so plain
 `cargo …` from the repo root (the workspace) is the pinned one — CI installs
@@ -456,9 +510,13 @@ workflow can do — is writing notes a person would read.
   `src-tauri/src/agent/session/mod.rs` ("a panic while holding a registry lock must not wedge every
   later session read") — one map of independent per-session rows, **25 production recovery sites**
   across `agent/session/`: `grep -rn "unwrap_or_else(|p| p.into_inner())" src-tauri/src/agent/session/
-  | grep -v "//" | wc -l` → **29** call-site lines, of which 4 sit in test modules (16 `mod.rs` = 15
-  production + 1 in `session_tests`; 6 `naming.rs` = 3 + 3; 7 `router.rs` = all 7 production), so
-  production = 15 + 3 + 7 = **25**. `src-tauri/src/storage/db.rs` panics with
+  | grep -vE ':\s*//' | wc -l` → **29** call-site lines, of which 4 sit in test modules. Per file:
+  `session/mod.rs` **15** (all production), `naming.rs` **6** = 3 production + 3 inside its
+  `#[cfg(test)] mod tests`, `router.rs` **7** (all production), `session/tests/mod.rs` **1** (test).
+  Production = 15 + 3 + 7 = **25**. Use the comment-anchored filter, not `grep -v "//"`: the raw grep
+  prints **30** because a prose comment in `session/mod.rs` quotes the very pattern, and `grep -v "//"`
+  happens to give 29 today but would silently drop any real call site carrying a trailing `//` comment.
+  `src-tauri/src/storage/db.rs` panics with
   `.expect("db mutex poisoned")` at **28 production sites** (`grep -c 'expect("db mutex poisoned")
   src-tauri/src/storage/db.rs` → 28) because `Db` holds ONE `rusqlite::Connection` in a `StdMutex`
   and a panic mid-transaction can leave that single connection unusable. Note the asymmetry in the
@@ -469,8 +527,10 @@ workflow can do — is writing notes a person would read.
   inherited. Hence the obligation: **any NEW panic-on-poison site must carry a one-line rationale for
   why its resource is single and shared**, so `db.rs`'s bare `.expect("db mutex poisoned")` — which
   asserts rather than argues — does not propagate. (Do not conflate counts: the tree-wide `grep -rn
-  "into_inner()" src-tauri/src/ | wc -l` → **37** includes test modules and non-lock uses; that is
-  the review's "37 sites" figure, not the 25 production recover sites.)
+  "into_inner()" src-tauri/src/ | wc -l` → **37** includes test modules and non-lock uses; that is the
+  figure the review attributed to `agent/session/*`, which is a mis-attribution — `agent/session/`
+  itself holds **30** raw / **29** after dropping the comment line above, 25 of them production. Still
+  verify with the tree-wide command, since it is the one that reproduces.)
 - **Docs**: durable design decisions live in `docs/decisions/NNNN-slug.md`
   (ADR format); in-flight plans live in `docs/roadmap/<feature>.md` and are
   deleted on ship. Anything a roadmap records that must survive that deletion
