@@ -16,7 +16,7 @@ import {
 } from "./lib/tauri";
 import { createBatchedSessionUpdate } from "./lib/batchSessionUpdates";
 import { INTERACTIVE_EVENTS } from "./lib/ipc/events";
-import { onSessionClosed } from "./lib/sessionLifecycle";
+import { onSessionClosed } from "./store/sessionLifecycle";
 import { discardSessionMessages, useSessions } from "./store/sessions";
 import { useModelCatalog } from "./store/modelCatalog";
 import { usePermissions } from "./store/permissions";

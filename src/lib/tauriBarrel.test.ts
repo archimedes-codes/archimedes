@@ -453,7 +453,7 @@ describe("the scanner actually reads the tree", () => {
           stripJsComments(readFileSync(f, "utf8")),
         ),
     );
-    // SET SIZE, pinned: 46 files mock the barrel by path. The number may only
+    // SET SIZE, pinned: 47 files mock the barrel by path. The number may only
     // move when a test file is added or removed, in a commit that says so — this
     // one moved 34 -> 35 when D2 wired `useAgentOverridesWrites` into `SpacesList`
     // and landed its test file, which mocks the barrel the documented way, and
@@ -485,8 +485,17 @@ describe("the scanner actually reads the tree", () => {
     // other half of that split dissolved the residual `describe("ChatStream")`
     // into subject-named sibling describes inside the same file, and a
     // `describe` is not a module — dissolving a block costs no mocks at all.
-    expect(mockers).toHaveLength(46);
-    // 45 of the 46 SPREAD `vi.importActual`, which is the shape that makes the
+    // And 46 -> 47 when FE2 moved
+    // `src/lib/sessionLifecycle.ts` to `src/store/sessionLifecycle.ts`. That move
+    // adds NO file — but the module had to re-spell its own mock from
+    // `vi.mock("./tauri")` to `vi.mock("../lib/tauri")`, and it is the PATH this
+    // assertion counts, so the file crossed from "not a barrel mocker by path" to
+    // "one". This is the pin working, not drifting: from `store/` there is no
+    // spelling of the barrel that does not name `lib/tauri`, and a barrel mocker
+    // is exactly what the seam needs. It is NOT a new mock — the same factory,
+    // the same `importActual` spread, one directory deeper.
+    expect(mockers).toHaveLength(47);
+    // 46 of the 47 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. The new mocker spreads
     // too, so the remaining one is still `hooks/useWindowMaximized.test.ts`,
     // which replaces the module wholesale — so a name it forgets is `undefined`,
@@ -495,7 +504,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(readFileSync(f, "utf8")),
       ).length,
-    ).toBe(45);
+    ).toBe(46);
   });
 });
 
