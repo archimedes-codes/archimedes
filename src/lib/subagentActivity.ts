@@ -174,6 +174,27 @@ export interface ActivityInfo {
 }
 
 /**
+ * An **open** Tool Call row — announced, not yet settled.
+ *
+ * `running` is compared through `as string` on purpose: `ToolCallUiStatus`
+ * spells "open" as `pending` (`mapStatus` collapses the wire's `pending` /
+ * `in_progress` onto it, and the wire's `in_progress` is what a tool that is
+ * genuinely executing carries), so the extra comparison is a guard for a
+ * producer that starts naming the state the other way. It was inline in
+ * `getActivityDisplay`; the supersede scan below needs the SAME predicate, and
+ * two copies of an open/closed rule is where they start disagreeing about which
+ * rows count.
+ */
+function isOpenToolCall(
+  m: Message,
+): m is Extract<Message, { kind: "tool-call" }> {
+  return (
+    m.kind === "tool-call" &&
+    (m.status === "pending" || (m.status as string) === "running")
+  );
+}
+
+/**
  * The row shape `getActivityDisplay` reads. 5 fields — the card builds one per
  * delegated Subagent and passes the whole row in (it carries more, but only
  * these five are read here). Exported so the card's two row derivations can type
@@ -232,11 +253,68 @@ export function getActivityDisplay(
 
   // 1. Check live subagent transcript messages if available
   if (sessionMessages && sessionMessages.length > 0) {
-    // In-flight running tool call
-    const inFlightTool = sessionMessages.find(
-      (m): m is Extract<Message, { kind: "tool-call" }> =>
-        m.kind === "tool-call" && (m.status === "pending" || (m.status as string) === "running"),
-    );
+    // The in-flight Tool Call — and WHICH open row qualifies is the whole
+    // problem. A row is announced the moment the model finishes NAMING the call
+    // (`turn.rs` emits `toolcall_end` per `ProviderEvent::ToolCall`, and
+    // `normalize.rs` turns it into a `tool_call` with `status: "in_progress"`),
+    // and it leaves `pending` only when a `tool_call_update` settles it. So an
+    // open row means one of TWO different things, and the transcript alone
+    // cannot tell them apart:
+    //
+    //   - genuinely RUNNING — `run_tool_batch` executes a batch's calls ONE AT A
+    //     TIME after the stream ends, so the batch's later calls are announced
+    //     and waiting; the EARLIEST open row is the one executing; or
+    //   - ORPHANED — the settle never arrived, and the row stays `pending` for
+    //     the life of the child. Three producers, all reachable:
+    //     `settle_error` / `settle_cancelled` emit only `turn_end` +
+    //     `agent_settled` and no `tool_execution_end` (the retry and
+    //     mid-stream-overflow paths DO run that close loop, these two do not),
+    //     `message_retracted` drops agent text but never the tool row, and the
+    //     pump's `Lagged` arm `continue`s — a dropped settle is the same orphan
+    //     (#143 already treats this broadcast as droppable).
+    //
+    // A plain `find()` for the first open row reports the orphan on every render
+    // and reports ITS age, which grows without bound; the card re-renders once a
+    // second, so the line freezes on `bash: cargo test · 1m29s` while the tool
+    // count and the cost — different sources, both still live — keep climbing.
+    // That is the reported symptom, and it is a derivation bug, not a desync:
+    // the child's frames are demonstrably arriving.
+    //
+    // THE DISCRIMINATOR IS POSITION, and the protocol makes it sound rather than
+    // heuristic: nothing is produced WHILE a tool executes, so the rows after a
+    // genuinely running call are only ever its own batch-mates — announced, and
+    // open. A SETTLED row after an open one is therefore something the child did
+    // AFTER that call was abandoned. So: look only at the rows following the
+    // newest settled row, and among those the earliest open one is the executing
+    // tool. An open row with a settled row after it is an orphan and stops
+    // speaking for the child, which lets the arms below report the real latest
+    // action.
+    //
+    // THE RESIDUAL, and it is not fixable here: an orphan followed ONLY by open
+    // rows still wins, because that arrangement is byte-identical to a legitimate
+    // mid-batch transcript, and `at` does not separate them either (a batch's
+    // announces share a stamp, and the executing call is the earliest of them).
+    // Position is the only signal the transcript carries, which is exactly why the
+    // durable fix is Engine-side — settle the row when the attempt is abandoned
+    // and the ambiguity never arises. Until then this is a strict improvement: it
+    // fixes every orphan the child has produced work after, which is the case that
+    // strands a line for minutes.
+    let newestSettledIdx = -1;
+    for (let i = sessionMessages.length - 1; i >= 0; i--) {
+      const m = sessionMessages[i];
+      if (!isOpenToolCall(m)) {
+        newestSettledIdx = i;
+        break;
+      }
+    }
+    let inFlightTool: Extract<Message, { kind: "tool-call" }> | undefined;
+    for (let i = newestSettledIdx + 1; i < sessionMessages.length; i++) {
+      const m = sessionMessages[i];
+      if (isOpenToolCall(m)) {
+        inFlightTool = m;
+        break;
+      }
+    }
     if (inFlightTool) {
       const summary = summarizeToolCall(inFlightTool.title, inFlightTool.rawInput);
       const dur = inFlightTool.at ? ` · ${formatDuration(now - inFlightTool.at)}` : "";

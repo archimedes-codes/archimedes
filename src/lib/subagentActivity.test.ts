@@ -246,13 +246,117 @@ describe("getActivityDisplay (line 3 of a subagent row)", () => {
     });
   });
 
-  it("wins the in-flight tool over a LATER message", () => {
+  it("wins the in-flight tool over a LATER announced-but-unexecuted tool", () => {
+    // THE PROTOCOL, which is what makes the FIRST open row the right one. A
+    // batch's announces ALL arrive during streaming (`turn.rs` emits
+    // `toolcall_end` for every `ProviderEvent::ToolCall`), and only afterwards
+    // does `run_tool_batch` execute them ONE AT A TIME. So while `bash` runs the
+    // transcript reads `bash` open + `edit` open, and `bash` — the EARLIEST open
+    // row — is the one actually executing. Picking the newest here would name
+    // the tool that has not started yet.
     const info = getActivityDisplay(
       { status: "running" },
-      [toolCall("bash", "pending", { command: "ls" }, 1000), agentText("later")],
+      [
+        toolCall("bash", "pending", { command: "ls" }, 1000),
+        toolCall("edit", "pending", { path: "src/a.ts" }, 1000),
+      ],
       6000,
     );
     expect(info?.text).toBe("bash: ls");
+  });
+
+  it("does NOT let an ORPHANED open tool row pin the line once the child moved on", () => {
+    // The bug this replaces the old "wins the in-flight tool over a LATER
+    // message" pin with. A row is announced when the model finishes NAMING the
+    // call, and leaves `pending` only when a `tool_call_update` settles it.
+    // Nothing settles it when an attempt is abandoned without the close loop
+    // (`settle_error` / `settle_cancelled` emit only `turn_end` +
+    // `agent_settled`), when the attempt is retracted, or when the settle frame
+    // is dropped by the pump's `Lagged` arm — so the row stays `pending`
+    // FOREVER while the child keeps working.
+    //
+    // That row is the FIRST open row, so a plain `find()` reports it on every
+    // render — and reports its age, which grows without bound. The card
+    // re-renders once a second, so the user watches the text freeze on
+    // `bash: cargo test` at a climbing ` · 1m28s` while the tool count and the
+    // cost keep moving: the symptom this fix exists to end.
+    //
+    // THE DISCRIMINATOR is position, and the protocol makes it sound: nothing
+    // can be produced while a tool executes — the rows AFTER a genuinely
+    // running tool are only ever its own batch-mates, announced and waiting. So
+    // any LATER settled row (or text/thought/diff) is evidence that this open
+    // row was abandoned rather than started.
+    const orphanThenRealWork = [
+      toolCall("bash", "pending", { command: "cargo test" }, 1000),
+      toolCall("read", "completed", { path: "src/router.rs" }, 2000),
+      agentText("the router forwards the frame verbatim", 3000),
+    ];
+    const info = getActivityDisplay({ status: "running" }, orphanThenRealWork, 90_000);
+    expect(info).toEqual({
+      glyph: "▸",
+      text: "the router forwards the frame verbatim",
+      colorClass: "text-foreground-subtlest",
+    });
+    // The frozen duration goes with the frozen text — nothing renders `1m29s`.
+    expect(info?.duration).toBeUndefined();
+  });
+
+  it("treats a later FAILED row as evidence too (a settled failure is not an open row)", () => {
+    const info = getActivityDisplay(
+      { status: "running" },
+      [
+        toolCall("bash", "pending", { command: "cargo test" }, 1000),
+        toolCall("read", "failed", { path: "missing.ts" }, 2000),
+      ],
+      90_000,
+    );
+    expect(info).toEqual({
+      glyph: "✗",
+      text: "read: missing.ts",
+      colorClass: "text-destructive",
+    });
+  });
+
+  it("still reports the open row when the ONLY later rows are announced-and-waiting", () => {
+    // The complement of the orphan case, and the reason this is not simply
+    // "ignore open rows": a batch mid-execution has nothing but open rows after
+    // the executing one, so the open row must keep winning there.
+    const info = getActivityDisplay(
+      { status: "running" },
+      [
+        toolCall("bash", "pending", { command: "cargo test" }, 1000),
+        toolCall("edit", "pending", { path: "src/a.ts" }, 1000),
+        toolCall("read", "pending", { path: "src/b.ts" }, 1000),
+      ],
+      6000,
+    );
+    expect(info).toEqual({
+      glyph: "▸",
+      text: "bash: cargo test",
+      duration: " · 5s",
+      colorClass: "text-foreground-subtle",
+    });
+  });
+
+  it("reports the NEWEST open row once the earlier one settles (execution moved on)", () => {
+    // `bash` ran and closed; `edit` is the batch's remaining call and is the one
+    // executing now. The first-open rule lands on it for free — pinned so a
+    // "skip only the first row" shortcut cannot pass the case above and fail
+    // this one.
+    const info = getActivityDisplay(
+      { status: "running" },
+      [
+        toolCall("bash", "completed", { command: "cargo test" }, 1000),
+        toolCall("edit", "pending", { path: "src/a.ts" }, 2000),
+      ],
+      7000,
+    );
+    expect(info).toEqual({
+      glyph: "▸",
+      text: "edit: src/a.ts",
+      duration: " · 5s",
+      colorClass: "text-foreground-subtle",
+    });
   });
 
   it("has NO duration segment when the in-flight tool carries no stamp", () => {
