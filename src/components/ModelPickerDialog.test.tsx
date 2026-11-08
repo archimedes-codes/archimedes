@@ -2,6 +2,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
   modelItemsFromCatalog,
+  modelItemsFromModelDtos,
+  modelSelectabilityNotice,
   type ModelPickerItem,
 } from "./ModelPickerDialog";
 import ModelPickerDialog from "./ModelPickerDialog";
@@ -67,6 +69,70 @@ describe("modelItemsFromCatalog (the ONE model-row derivation)", () => {
       value: "bare-model",
       name: "bare-model",
       provider: undefined,
+    });
+  });
+});
+
+describe("modelItemsFromModelDtos / modelSelectabilityNotice (issue #9: the typed catalog keeps its metadata)", () => {
+  const providers = [{ id: "tama", name: "Tama" }];
+
+  it("maps a ModelDto catalog to the SAME display shape as the string variant, and decorates the provider cue", () => {
+    expect(
+      modelItemsFromModelDtos(
+        [
+          {
+            id: "Qwen/Qwen3.8",
+            provider: "tama",
+            selectable: true,
+            supportsTools: true,
+          },
+        ],
+        providers,
+      ),
+    ).toEqual([
+      {
+        value: "tama/Qwen/Qwen3.8",
+        name: "Qwen/Qwen3.8",
+        provider: "Tama",
+        disabled: false,
+        note: undefined,
+      },
+    ]);
+    // An UNCONFIGURED provider key is the cue verbatim (the same fallback
+    // `modelItemsFromCatalog` applies).
+    expect(
+      modelItemsFromModelDtos([{ id: "m", provider: "gone" }], providers)[0]
+        .provider,
+    ).toBe("gone");
+  });
+
+  it("an ABSENT selectable does NOT disable the row (absent is not a claim)", () => {
+    // The failure mode this pins is a FULLY DISABLED PICKER: `!m.selectable` and
+    // `m.selectable === false` differ ONLY here, and the wrong spelling disables
+    // every row the wire said nothing about.
+    expect(modelSelectabilityNotice({})).toEqual({
+      disabled: false,
+      note: undefined,
+    });
+    expect(modelSelectabilityNotice({ selectable: undefined })).toEqual({
+      disabled: false,
+      note: undefined,
+    });
+  });
+
+  it("the two halves of is_selectable() get two different sentences", () => {
+    expect(
+      modelSelectabilityNotice({ selectable: false, supportsTools: false }),
+    ).toEqual({ disabled: true, note: "no tool support advertised" });
+    // Tools ARE advertised, so the wire half failed.
+    expect(
+      modelSelectabilityNotice({ selectable: false, supportsTools: true }),
+    ).toEqual({ disabled: true, note: "unsupported wire" });
+    // An entry that only says `selectable: false` (a hand-built stub that omits
+    // the tool flag) still gets a sentence — the wire arm is the fall-through.
+    expect(modelSelectabilityNotice({ selectable: false })).toEqual({
+      disabled: true,
+      note: "unsupported wire",
     });
   });
 });

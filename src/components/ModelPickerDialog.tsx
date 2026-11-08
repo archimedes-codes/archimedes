@@ -37,6 +37,83 @@ function providerDisplayName(
 }
 
 /**
+ * The two fields of a catalog entry the selectability notice reads, plus the
+ * identity fields the row needs. Structural, so `ModelDto` satisfies it and a
+ * test's stub can carry only what a row is supposed to render.
+ */
+export type ModelSelectabilitySource = {
+  id: string;
+  provider: string;
+  selectable?: boolean;
+  supportsTools?: boolean;
+};
+
+/**
+ * The picker row's selectability notice for one catalog entry — THE one
+ * derivation of the `disabled` + `note` pair, shared by every surface that lists
+ * the live catalog (the session's model option via `SessionConfigBlock`, the
+ * Agents modal's per-agent subagent picker via `modelItemsFromModelDtos`).
+ *
+ * `disabled: m.selectable === false`, NEVER `!m.selectable`: the two differ only
+ * when the field is ABSENT, and the absent-field failure mode would be a fully
+ * disabled picker. Same "absent is not a claim" rule the engine's reduction
+ * adopted when `supports_function_calling` became a tri-state (ADR 0026's
+ * 2026-11-08 amendment).
+ *
+ * The NOTE names WHICH half of the engine's `is_selectable()` failed
+ * (`supports_tools` AND a parseable, supported `api`), because the two halves
+ * have two different fixes: "no tool support advertised" is the provider's
+ * metadata, "unsupported wire" is its API mode. `selectable` alone could only
+ * ever offer one sentence.
+ *
+ * The parameter is the two FIELDS, not `ModelDto`: the gate is about what the
+ * wire omits, so the signature has to admit an entry that omits them.
+ */
+export function modelSelectabilityNotice(model: {
+  selectable?: boolean;
+  supportsTools?: boolean;
+}): Pick<ModelPickerItem, "disabled" | "note"> {
+  return {
+    disabled: model.selectable === false,
+    note:
+      model.selectable !== false
+        ? undefined
+        : model.supportsTools === false
+          ? "no tool support advertised"
+          : "unsupported wire",
+  };
+}
+
+/**
+ * The picker items for a TYPED model catalog (`ModelDto[]` — the `list_models`
+ * payload the live store holds), as opposed to `modelItemsFromCatalog`'s flat
+ * `string[]` of composed keys.
+ *
+ * Same display derivation (name the BARE id, cue the provider's display name,
+ * value the full `provider/id` key) PLUS the selectability notice
+ * `modelSelectabilityNotice` — which is exactly what the string-shaped function
+ * cannot carry, since a key carries no metadata. That loss was issue #9's
+ * subagent half: the Agents modal fed `ModelDto[]` through the string mapper and
+ * so offered an UNSELECTABLE model as fully usable for a subagent, while the
+ * session picker greyed the same row out.
+ *
+ * `models` is expected PRE-FILTERED by the caller when it wants that (the
+ * session picker filters to the configured providers — see
+ * `selectModelsByProvider`); this function decorates what it is handed.
+ */
+export function modelItemsFromModelDtos(
+  models: readonly ModelSelectabilitySource[],
+  providers: { id: string; name: string }[],
+): ModelPickerItem[] {
+  return models.map((model) => ({
+    value: `${model.provider}/${model.id}`,
+    name: model.id,
+    provider: providerDisplayName(providers, model.provider),
+    ...modelSelectabilityNotice(model),
+  }));
+}
+
+/**
  * The picker items for a model catalog (the Rust
  * `synthesize_catalog_config_options` shape — flat `{ value: "provider/id" }`
  * entries): the row NAME is the BARE model id (the provider PREFIX is

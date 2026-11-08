@@ -4,6 +4,7 @@ import SessionConfigSelect from "./SessionConfigSelect";
 import { cn } from "./lib/utils";
 import { Button } from "./ui/button";
 import type { ModelPickerItem } from "./ModelPickerDialog";
+import { modelSelectabilityNotice } from "./ModelPickerDialog";
 import { selectModelsByProvider, useModelCatalog } from "../store/modelCatalog";
 import { useSettings } from "../store/settings";
 
@@ -222,17 +223,14 @@ export default function SessionConfigBlock({ collapsed }: { collapsed: boolean }
       ).map((m) => ({
         value: `${m.provider}/${m.id}`,
         name: m.id,
+        // The RAW key — `SessionConfigSelect` decorates it (see its
+        // `displayNameFor`); the `ModelDto[]` variant below does the decoration
+        // itself because ITS caller (`AgentsDialog`) has no decorating layer.
         provider: m.provider,
-        // `=== false`, never `!m.selectable`: the two differ only when the field is
-        // ABSENT, and the absent-field failure mode would be a fully disabled picker.
-        // Same "absent is not a claim" rule the engine reduction just adopted.
-        disabled: m.selectable === false,
-        note:
-          m.selectable !== false
-            ? undefined
-            : m.supportsTools === false
-              ? "no tool support advertised"
-              : "unsupported wire",
+        // The one shared derivation of `disabled` + `note` (issue #9) — the
+        // Agents modal's subagent picker runs the SAME function, so the two
+        // surfaces cannot disagree about which rows are usable or what they say.
+        ...modelSelectabilityNotice(m),
       })),
     [catalogModels, configuredProviderIds],
   );
