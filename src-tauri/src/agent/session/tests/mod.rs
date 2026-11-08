@@ -3023,9 +3023,10 @@ async fn resolve_non_litellm_provider_byte_identical() {
 
 /// (T3b #131, R5) The REDUCED discovery values reach the `Model` row: a
 /// route whose deployment does NOT advertise `supports_function_calling`
-/// reduces to `supports_tools: false` (the ALL-deployments gate), and the
-/// per-token costs × 1e6 become the row's costs — NOT the defaults (a
-/// wrongly-`true` `supports_tools` would offer an unselectable wire).
+/// reduces to `supports_tools: None` (issue #9 — the key is absent, not
+/// fabricated `false`), so the row's `unwrap_or(true)` keeps the status-quo
+/// `true`: the wire IS selectable, so offering it is correct. The per-token
+/// costs × 1e6 become the row's costs — NOT the defaults.
 #[tokio::test]
 async fn resolve_propagates_reduced_supports_tools_and_costs_for_litellm() {
     let dir = temp_config_dir();
@@ -3039,8 +3040,8 @@ async fn resolve_propagates_reduced_supports_tools_and_costs_for_litellm() {
     let user = user_rows(&effective, "llm");
     assert_eq!(user.len(), 1);
     assert!(
-        !user[0].supports_tools,
-        "a deployment that never advertised `supports_function_calling` reduces to `false`"
+        user[0].supports_tools,
+        "a route that never advertised `supports_function_calling` keeps the status-quo `true` (ADR 0026's 2026-11-08 amendment)"
     );
     assert_eq!(
         user[0].cost_per_mtok_in, 2.5,
