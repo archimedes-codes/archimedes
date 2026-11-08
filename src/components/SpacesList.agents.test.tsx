@@ -11,6 +11,7 @@ import {
   setSessionArchived,
   type AgentDefinitionReportDto,
   type AppSettings,
+  type ModelDto,
 } from "../lib/tauri";
 import { useSessions } from "../store/sessions";
 import { useSettings } from "../store/settings";
@@ -119,6 +120,19 @@ vi.mock("../lib/tauri", async () => {
     cancelSession: vi.fn().mockResolvedValue(undefined),
     // The Agents modal's three catalog sources + its write path.
     listAgentDefinitionReports: vi.fn().mockResolvedValue([agentRow()]),
+    // The effective catalog. TYPED with `satisfies ModelDto[]` — the cheap
+    // annotation, chosen over a hoisted `const models: ModelDto[] = [...]`
+    // because this literal sits INSIDE the hoisted `vi.mock` factory, which runs
+    // before a module-level const's initializer (TDZ — the `agentRow()` above
+    // reaches through a hoisted `function` declaration for the same reason).
+    // Without an annotation `mockResolvedValue`'s parameter is effectively
+    // untyped, so `tsc` never looked at this literal; `satisfies` checks it and
+    // changes no runtime byte.
+    //
+    // The two selectability fields (issue #9) are why that check matters NOW:
+    // this is THE file for the Agents modal, whose per-agent model picker reads
+    // `selectable` to grey a row out, so an entry omitting a REQUIRED `ModelDto`
+    // field is a fixture that lies about the wire.
     listModels: vi.fn().mockResolvedValue([
       {
         id: "Qwen3.8",
@@ -126,8 +140,10 @@ vi.mock("../lib/tauri", async () => {
         contextWindow: 200_000,
         supportsThinking: true,
         thinkingLevels: ["high", "medium", "low"],
+        supportsTools: true,
+        selectable: true,
       },
-    ]),
+    ] satisfies ModelDto[]),
     listTools: vi.fn().mockResolvedValue(["grep", "read_file"]),
     saveSettings: vi.fn().mockResolvedValue(undefined),
   };

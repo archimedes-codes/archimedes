@@ -44,7 +44,7 @@ tauri-build = { version = "2", features = [] }
 # redirects this git source to a sibling checkout and is gitignored, so it can
 # never leak into a commit. `.cargo/config.toml.example` is inert (cargo reads
 # only `config.toml`), which is what makes it safe to ship.
-fulcrum-core = { git = "https://github.com/archimedes-codes/fulcrum", rev = "78e595436ac5612d8ef87f692bee61f48f6e58e7" }
+fulcrum-core = { git = "https://github.com/archimedes-codes/fulcrum", rev = "2ed5f5a6305c8feea438546bd1f82b6f3312dc29" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

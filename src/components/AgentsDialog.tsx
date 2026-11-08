@@ -15,7 +15,7 @@ import { foldAscii, orphanedOverrides, withOverride } from "../lib/agentOverride
 import ModelPicker from "./ModelPicker";
 import { CatalogSearchDialog } from "./CatalogSearchDialog";
 import { MutedCaption } from "./MutedCaption";
-import { modelItemsFromCatalog } from "./ModelPickerDialog";
+import { modelItemsFromModelDtos } from "./ModelPickerDialog";
 import { Button } from "./ui/button";
 import {
   Select,
@@ -598,15 +598,18 @@ function AgentRow({
           value={stored?.model ?? ""}
           placeholder="Inherits"
           items={[
-            // The composed `provider + "/" + id` keys — the exact call the
-            // deleted `SubagentSection` made — plus the "Inherits" item as an
-            // `items` entry (NOT a "leading" flag: `ModelPickerDialog` re-sorts
-            // items alphabetically by name and DISCARDS caller order, so nothing
-            // could lead anywhere). Picking it DELETES the key (ADR 0067).
-            ...modelItemsFromCatalog(
-              models.map((model) => `${model.provider}/${model.id}`),
-              providers,
-            ),
+            // The typed catalog, mapped DIRECTLY (issue #9). This used to route
+            // through `modelItemsFromCatalog`, which takes `string[]` — so it
+            // threw away the `selectable` / `supportsTools` the `ModelDto`s
+            // already carried and offered an unselectable model as fully usable
+            // for a SUBAGENT, the exact asymmetry the session picker closed.
+            // `modelItemsFromModelDtos` keeps that derivation (bare name,
+            // provider display-name cue) AND the disabled + note pair. The
+            // "Inherits" item stays an `items` entry (NOT a "leading" flag:
+            // `ModelPickerDialog` re-sorts items alphabetically by name and
+            // DISCARDS caller order, so nothing could lead anywhere). Picking it
+            // DELETES the key (ADR 0067).
+            ...modelItemsFromModelDtos(models, providers),
             { value: "", name: "Inherits" },
             ...(staleModel !== null
               ? [{ value: staleModel, name: staleModel, disabled: true }]

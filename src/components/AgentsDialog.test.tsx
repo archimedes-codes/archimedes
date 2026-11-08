@@ -121,6 +121,8 @@ const MODELS: ModelDto[] = [
     contextWindow: 200_000,
     supportsThinking: true,
     thinkingLevels: ["high", "medium", "low"],
+    supportsTools: true,
+    selectable: true,
   },
   {
     id: "GPT-5",
@@ -128,6 +130,8 @@ const MODELS: ModelDto[] = [
     contextWindow: 400_000,
     supportsThinking: false,
     thinkingLevels: [],
+    supportsTools: true,
+    selectable: true,
   },
 ];
 
@@ -209,6 +213,8 @@ function openDialog(props: {
   rows?: AgentDefinitionReportDto[];
   agentOverrides?: AgentOverrides;
   noSpaceOpen?: boolean;
+  /** The catalog the per-agent model picker lists. Defaults to `MODELS`. */
+  models?: ModelDto[];
 } = {}) {
   // The spies are always created here (the callers only ever want a fresh one),
   // which also keeps the return type a `Mock` rather than a union with a bare
@@ -220,7 +226,7 @@ function openDialog(props: {
       rows={props.rows ?? [row()]}
       noSpaceOpen={props.noSpaceOpen ?? false}
       settings={settings({ agentOverrides: props.agentOverrides ?? {} })}
-      models={MODELS}
+      models={props.models ?? MODELS}
       tools={TOOLS}
       onPatch={onPatch}
       onClose={onClose}
@@ -443,6 +449,84 @@ describe("AgentsDialog", () => {
     const stale = innerDialog().querySelector("[aria-disabled=true]");
     expect(stale).toBeTruthy();
     expect(stale?.textContent).toContain("gone/m1");
+  });
+
+  // -------------------------------------------------------------------------
+  // The selectability gate (issue #9, the subagent half). The session picker
+  // greys out a model the harness cannot speak; this picker feeds a SUBAGENT,
+  // so the SAME `selectable` flag has to reach it — otherwise the two surfaces
+  // disagree about which models exist for the same user.
+  // -------------------------------------------------------------------------
+  it("an_unselectable_model_renders_disabled_with_its_reason_in_the_subagent_picker", async () => {
+    // `selectable: false` + `supportsTools: false` is the engine's
+    // `is_selectable()` saying "no tool support advertised" — the row must say
+    // so, and clicking it must write NOTHING (a dispatch on it would fail).
+    const { onPatch } = openDialog({
+      models: [
+        ...MODELS,
+        {
+          id: "reader",
+          provider: "tama",
+          contextWindow: 32_000,
+          supportsThinking: false,
+          thinkingLevels: [],
+          supportsTools: false,
+          selectable: false,
+        },
+      ],
+    });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Model for scout" }),
+    );
+    const row = within(innerDialog())
+      .getByText(/^reader/)
+      .closest("[role=button]") as HTMLElement;
+    expect(row.getAttribute("aria-disabled")).toBe("true");
+    expect(row.textContent).toContain("no tool support advertised");
+    // The provider cue survives the direct mapping (the same display name
+    // `modelItemsFromCatalog` used to decorate with).
+    expect(row.textContent).toContain("Tama");
+    fireEvent.click(row);
+    expect(onPatch).not.toHaveBeenCalled();
+  });
+
+  it("an_unselectable_model_on_the_wire_half_says_unsupported_wire", async () => {
+    // The OTHER sentence of the same gate: `supportsTools: true` but the wire
+    // api does not parse. Two halves, two strings — a user fixing a provider
+    // needs to know WHICH half failed.
+    openDialog({
+      models: [
+        ...MODELS,
+        {
+          id: "gemini",
+          provider: "tama",
+          contextWindow: 32_000,
+          supportsThinking: false,
+          thinkingLevels: [],
+          supportsTools: true,
+          selectable: false,
+        },
+      ],
+    });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Model for scout" }),
+    );
+    const row = within(innerDialog())
+      .getByText(/^gemini/)
+      .closest("[role=button]") as HTMLElement;
+    expect(row.getAttribute("aria-disabled")).toBe("true");
+    expect(row.textContent).toContain("unsupported wire");
+  });
+
+  it("a_selectable_model_still_selects_for_a_subagent", async () => {
+    // The guard is PER ROW, not a blanket disable — the whole point of carrying
+    // `selectable` rather than filtering the list.
+    const { onPatch } = openDialog();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Model for scout" }),
+    );
+    fireEvent.click(within(innerDialog()).getByText("Qwen3.8"));
+    expect(onPatch).toHaveBeenCalledWith({ scout: { model: "tama/Qwen3.8" } });
   });
 
   it("the_thinking_select_offers_the_union_of_the_models_levels_plus_Inherits", async () => {

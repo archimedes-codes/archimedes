@@ -16,9 +16,10 @@ gate is safe to change — several of the rules below are exactly the ones a wel
 break.
 
 The four architectural rulings R1–R9 that do not live in ADR 0026 are recorded here (§2–§5). **ADR 0026's
-amendments are NOT restated** — discovery ladder, per-model wire, base-URL normalization, and the two vendor
-quirks are the property of `docs/decisions/0026-litellm-api-mode.md` (amended 2026-11-01 twice); read that ADR
-for them. What is here is everything the ADR does not own.
+amendments are NOT restated** — discovery ladder, per-model wire, base-URL normalization, the two vendor
+quirks, and the tool-support gate that decides whether a model is selectable at all are the property of
+`docs/decisions/0026-litellm-api-mode.md` (amended three times: 2026-11-01, 2026-11-02, 2026-11-08); read
+that ADR for them. What is here is everything the ADR does not own.
 
 ## 1. What shipped — one line per capability, with its wave commit
 

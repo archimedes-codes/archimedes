@@ -129,6 +129,13 @@ vi.mock("../../lib/tauri", async () => {
     // overrides with `mockResolvedValueOnce(false)`.
     shellSandboxAvailable: vi.fn().mockResolvedValue(true),
     listSessions: vi.fn().mockResolvedValue([]),
+    // (issue #9) The two selectability fields are added so the fixture matches
+    // the real `list_models` wire. NOT annotated (`satisfies ModelDto[]`) on
+    // purpose: this file renders `SettingsPage`, whose subtree reads neither
+    // `selectable` nor `supportsTools` — the Settings model lists go through
+    // `modelItemsFromCatalog`, which takes strings — so an annotation here would
+    // only guard a value nothing under test consumes. The two `SpacesList*` files
+    // ARE annotated, because their subtree (the Agents modal) does read them.
     listModels: vi.fn().mockResolvedValue([
       {
         id: "Qwen3.8",
@@ -136,6 +143,8 @@ vi.mock("../../lib/tauri", async () => {
         contextWindow: 128000,
         supportsThinking: true,
         thinkingLevels: ["high", "medium", "low"],
+        supportsTools: true,
+        selectable: true,
       },
       {
         id: "GPT-5",
@@ -143,6 +152,8 @@ vi.mock("../../lib/tauri", async () => {
         contextWindow: 400000,
         supportsThinking: true,
         thinkingLevels: ["medium", "high", "xhigh"],
+        supportsTools: true,
+        selectable: true,
       },
     ]),
     listKnownProviders: vi.fn().mockResolvedValue([]),

@@ -126,13 +126,20 @@ beforeEach(() => {
  * block's Model picker now reads its rows from. `provider` is the RAW provider
  * key (the display cue comes from `settings.providers`).
  */
-function catalogModel(id: string, provider = "tama"): ModelDto {
+function catalogModel(
+  id: string,
+  provider = "tama",
+  selectable = true,
+  supportsTools = true,
+): ModelDto {
   return {
     id,
     provider,
     contextWindow: 128000,
     supportsThinking: false,
     thinkingLevels: [],
+    supportsTools,
+    selectable,
   };
 }
 
@@ -1731,6 +1738,95 @@ describe("SidePane (the status panel)", () => {
     expect(dialog.getByText("new-m2")).toBeTruthy();
     expect(dialog.getByText("m1")).toBeTruthy();
     expect(useSessions.getState().sessions).toHaveLength(1);
+  });
+
+  it("an UNSELECTABLE catalog model still appears in the picker, DISABLED, with the reason (issue #9: the live catalog is unfiltered, so the row must say the harness cannot speak it)", async () => {
+    seedLiveSession();
+    useSessions.setState({
+      configOptions: {
+        s1: [
+          {
+            id: "model",
+            name: "Model",
+            type: "select",
+            currentValue: "tama/m1",
+            options: [{ value: "tama/m1", name: "m1" }],
+          },
+        ],
+      },
+    });
+    useModelCatalog.setState({
+      models: [
+        catalogModel("m1"),
+        // The engine's `is_selectable()` is false and no tools are advertised.
+        catalogModel("dead", "tama", false, false),
+      ],
+      loadStarted: true,
+      loadedOk: true,
+    });
+    useSettings.setState({
+      settings: { providers: [{ id: "tama", name: "tama" }] },
+    } as never);
+    render(<SidePane />);
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    const dialog = within(
+      document.querySelector("[data-slot=dialog-content]") as HTMLElement,
+    );
+    // STILL VISIBLE (the row is the only place the user learns the model
+    // exists but cannot be used) — and it says why.
+    const row = dialog
+      .getByText(/^dead/)
+      .closest("[role=button]") as HTMLElement;
+    expect(row.textContent).toContain("no tool support advertised");
+    expect(row.getAttribute("aria-disabled")).toBe("true");
+    // Clicking it must NOT reach the backend (the session would fail).
+    fireEvent.click(row);
+    expect(setSessionConfigOption).not.toHaveBeenCalled();
+  });
+
+  it("a SELECTABLE catalog model still selects from the picker (issue #9: the guard is per-row, not a blanket disable)", async () => {
+    seedLiveSession();
+    useSessions.setState({
+      configOptions: {
+        s1: [
+          {
+            id: "model",
+            name: "Model",
+            type: "select",
+            currentValue: "tama/m1",
+            options: [{ value: "tama/m1", name: "m1" }],
+          },
+        ],
+      },
+    });
+    useModelCatalog.setState({
+      models: [
+        catalogModel("dead", "tama", false, false),
+        catalogModel("m2"),
+      ],
+      loadStarted: true,
+      loadedOk: true,
+    });
+    useSettings.setState({
+      settings: { providers: [{ id: "tama", name: "tama" }] },
+    } as never);
+    render(<SidePane />);
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    const dialog = within(
+      document.querySelector("[data-slot=dialog-content]") as HTMLElement,
+    );
+    const row = dialog.getByText("m2").closest("[role=button]") as HTMLElement;
+    // The guard is PER ROW: the dead sibling in the SAME dialog is disabled…
+    const dead = dialog
+      .getByText(/^dead/)
+      .closest("[role=button]") as HTMLElement;
+    expect(dead.getAttribute("aria-disabled")).toBe("true");
+    // …and this row is NOT (proof the guard did not become a blanket disable).
+    expect(row.getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(row);
+    await waitFor(() =>
+      expect(setSessionConfigOption).toHaveBeenCalledWith("s1", "model", "tama/m2"),
+    );
   });
 
   it("a live session WITHOUT configOptions renders neither selector (the Model stub and the empty track are the whole block)", () => {

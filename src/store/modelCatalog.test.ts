@@ -17,6 +17,8 @@ const dto = (id: string, provider: string, contextWindow: number): ModelDto => (
   contextWindow,
   supportsThinking: false,
   thinkingLevels: [],
+  supportsTools: true,
+  selectable: true,
 });
 
 describe("useModelCatalog", () => {
