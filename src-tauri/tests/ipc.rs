@@ -1676,7 +1676,53 @@ async fn refreshing_a_provider_with_unchanged_metadata_pushes_nothing() {
     let session_id = info.session_id.clone();
 
     // A refresh whose discovery returns the SAME window.
-    invoke_ok(&webview, "list_models", json!({ "forceRefresh": "tama" })).await;
+    //
+    // The DTO PAYLOAD is bound and pinned here (issue #9) because this is the one
+    // `list_models` call site whose discovery fixture is a single static body —
+    // `{"data":[{"id":"m/1","max_model_len":256000}]}` against the one configured
+    // `tama` provider with `api: "openai-completions"` — so the two values below
+    // are implied by the fixture with no new setup. The other call site (in the
+    // corrected-window test above) serves a DIFFERENT body per read, so pinning a
+    // payload there would mean tracking which pass this is.
+    //
+    // WHY these two values:
+    //  - `supportsTools: true` — an OpenAI-compatible `/v1/models` response
+    //    advertises nothing about function calling, so the discovery reduction
+    //    yields `None` and `EffectiveCatalog::resolve`'s `unwrap_or(true)` keeps it
+    //    `true` (issue #9's whole point: absent is not a claim of absence).
+    //  - `selectable: true` — `Model::is_selectable()` is true for
+    //    `supports_tools: true` + a supported wire (`openai-completions`).
+    //
+    // This is the IPC-level witness that the two fields exist on the wire AT ALL
+    // and in camelCase: the frontend's `ModelDto` declares them as REQUIRED, and a
+    // Rust-side rename or a dropped projection would otherwise be caught only by a
+    // mock-based frontend test — which mocks the payload and so cannot see it.
+    let models = invoke_ok(&webview, "list_models", json!({ "forceRefresh": "tama" })).await;
+    let discovered = models
+        .as_array()
+        .unwrap_or_else(|| panic!("`list_models` returns an array, got: {models}"))
+        .iter()
+        .find(|m| m["provider"] == "tama" && m["id"] == "m/1")
+        .unwrap_or_else(|| panic!("the discovered model is in the payload: {models}"));
+    assert_eq!(
+        discovered["contextWindow"], 256000,
+        "the discovered window rides the same DTO (payload: {discovered})"
+    );
+    assert_eq!(
+        discovered["supportsTools"], true,
+        "the tool-support marker is on the wire in camelCase (payload: {discovered})"
+    );
+    assert_eq!(
+        discovered["selectable"], true,
+        "the selectability state is on the wire in camelCase (payload: {discovered})"
+    );
+    // NOT snake_case — the frontend reads camelCase and would see `undefined`,
+    // which its `=== false` guard would silently read as "selectable". (`selectable`
+    // is spelled identically either way; `supportsTools` is the one that can drift.)
+    assert!(
+        discovered.get("supports_tools").is_none(),
+        "the wire is camelCase only (payload: {discovered})"
+    );
     // Give a spurious push time to land before asserting its absence — a bare
     // "nothing arrived yet" check would pass even for a fix that pushes lazily.
     tokio::time::sleep(Duration::from_millis(750)).await;
