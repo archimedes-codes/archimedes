@@ -20,6 +20,21 @@ green:
 | Rust lint | `cargo clippy --all-targets` | repo root (must be 0 warnings) |
 | Rust formatting | `cargo fmt --all -- --check` | repo root |
 
+`pnpm build` is `tsc && vite build`, and `tsconfig.json` sets `noUnusedLocals:
+true` — so an import left behind by deleting its last JSX use is a **build
+failure** (`error TS6133: 'X' is declared but its value is never read`, exit 2;
+measured with a throwaway file, not inferred). There is no eslint / biome /
+prettier dependency, config file, or CI step, so this is the FRONTEND's only
+unused-code gate — Rust's equivalent is `cargo clippy --all-targets -- -D
+warnings` in the same CI job, a different language's gate and not a substitute.
+Reach, both measured: `tsc` is invoked plain, so it checks `include: ["src"]` —
+which DOES include `src/**/*.test.ts` and `.test.tsx` — and it does NOT build the
+`tsconfig.node.json` reference, so `vite.config.ts` (that file's only `include`
+entry) is outside `pnpm build` entirely: an unused local there is invisible.
+Consequence when removing a component: delete the
+block first, then re-grep each symbol it used before dropping the import line; the
+reverse order breaks the build mid-edit with no hint which block still needed it.
+
 `cd src-tauri && cargo test` is not a substitute for the root run — though since
 T8b/S8b.4-part-3 the reason has changed, and the old reason is now FALSE. There
 used to be a second workspace member (`crates/fulcrum-core`) that a member-scoped
@@ -621,6 +636,24 @@ These are properties of the repo, not of any branch:
   explicitly. So pointing `TMPDIR` at a real disk fixes most tests and breaks
   those four. (Both halves re-measured, not copied from the plan that recorded
   them.)
+- **A full `pnpm test` can report 172 failed files and "no tests" on a full
+  `/tmp`, and that is not a broken suite.** Here `/tmp` is a **tmpfs** shared with
+  everything else on the machine, and vitest creates one jsdom environment per file
+  (the run itself prints `jsdom was created 172 times`), each needing temp space; when
+  the tmpfs fills, every file dies at IMPORT time with
+  `ENOENT: no such file or directory, open '/tmp/<rand>/client/<sha>'` and the summary
+  reads `Test Files 172 failed (172) / Tests no tests`. The tell is **"0 tests ran"** —
+  a real failure runs tests and names them. Confirmed twice at the same SHA: CI was green
+  while the local run was 100% red, and `export TMPDIR=/some/dir/on/real/disk` turned it
+  green (`172 passed / 3483 passed / 1 skipped`). No free-space threshold was measured, so
+  do not encode one — check `df -h /tmp`. Two traps: the failure looks like a code breakage
+  because it names a real source file in the `Caused by:` frame, and a single test file
+  re-run in ISOLATION **passes**, so "it works when I run it alone" is the wrong conclusion.
+  Scope the workaround to the frontend command rather than exporting `TMPDIR` repo-wide — the
+  bullet above shows the Rust suite needs a tmpfs `/tmp` for four tests, so one global
+  export trades a green frontend for four red Rust tests. The honest fix if this ever bites
+  CI (whose `/tmp` does not churn) is `pool: 'vmThreads'` / `isolate: false`, which the
+  vitest perf hint already names.
 - **Component rule: locate by content string, not by path.** When adding or verifying a
   component (e.g. a Rust module, a TS component, a test file), find it by its content
   signature — the `impl`, the trait name, the string literal — rather than by a
