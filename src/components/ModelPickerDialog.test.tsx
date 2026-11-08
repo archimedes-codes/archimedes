@@ -180,6 +180,46 @@ describe("ModelPickerDialog", () => {
     expect(onSelect).toHaveBeenCalledWith("tama/Qwen3.8");
   });
 
+  it("a disabled row with a note says WHY (the note renders, the row stays aria-disabled and unclickable)", async () => {
+    const onSelect = vi.fn();
+    const onOpenChange = vi.fn();
+    render(
+      <ModelPickerDialog
+        open
+        onOpenChange={onOpenChange}
+        items={[
+          item({
+            value: "tama/dead",
+            name: "dead",
+            provider: "tama",
+            disabled: true,
+            note: "no tool support advertised",
+          }),
+          item({ value: "tama/Qwen3.8", name: "Qwen3.8", provider: "tama" }),
+        ]}
+        onSelect={onSelect}
+      />,
+    );
+    const row = (await screen.findByText(/dead/)).closest(
+      "[role=button]",
+    ) as HTMLElement;
+    // The caller's explanation rides the SAME muted inline cue as the
+    // provider: `dead (tama) (no tool support advertised)`.
+    expect(row.textContent).toBe("dead (tama) (no tool support advertised)");
+    expect(
+      row.querySelector("span span:last-child")?.className,
+    ).toContain("text-foreground-subtlest");
+    expect(row.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(row);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    // An enabled row WITHOUT a note renders no trailing parens at all.
+    const enabled = screen.getByText("Qwen3.8").closest(
+      "[role=button]",
+    ) as HTMLElement;
+    expect(enabled.textContent).toBe("Qwen3.8 (tama)");
+  });
+
   it("renders the empty states", async () => {
     render(
       <ModelPickerDialog open onOpenChange={vi.fn()} items={[]} onSelect={vi.fn()} />,

@@ -223,6 +223,16 @@ export default function SessionConfigBlock({ collapsed }: { collapsed: boolean }
         value: `${m.provider}/${m.id}`,
         name: m.id,
         provider: m.provider,
+        // `=== false`, never `!m.selectable`: the two differ only when the field is
+        // ABSENT, and the absent-field failure mode would be a fully disabled picker.
+        // Same "absent is not a claim" rule the engine reduction just adopted.
+        disabled: m.selectable === false,
+        note:
+          m.selectable !== false
+            ? undefined
+            : m.supportsTools === false
+              ? "no tool support advertised"
+              : "unsupported wire",
       })),
     [catalogModels, configuredProviderIds],
   );

@@ -16,6 +16,11 @@ export interface ModelPickerItem {
   name: string;
   provider?: string;
   disabled?: boolean;
+  /**
+   * Shown muted after the provider cue; the caller's explanation for a
+   * `disabled` row (or a caveat on an enabled one).
+   */
+  note?: string;
 }
 
 /**
@@ -176,6 +181,11 @@ export default function ModelPickerDialog({
               {model.provider !== undefined && (
                 <span className="text-foreground-subtlest">
                   {" (" + model.provider + ")"}
+                </span>
+              )}
+              {model.note !== undefined && (
+                <span className="text-foreground-subtlest">
+                  {" (" + model.note + ")"}
                 </span>
               )}
             </span>
