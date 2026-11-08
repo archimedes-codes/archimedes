@@ -38,7 +38,7 @@ reverse order breaks the build mid-edit with no hint which block still needed it
 `cd src-tauri && cargo test` is not a substitute for the root run — though since
 T8b/S8b.4-part-3 the reason has changed, and the old reason is now FALSE. There
 used to be a second workspace member (`crates/fulcrum-core`) that a member-scoped
-run would quietly skip; the crate is a **rev-pinned git dependency** now, so this
+run would quietly skip; the crate is a **tag-pinned git dependency** now, so this
 checkout has exactly ONE member and `cd src-tauri && cargo test` runs the same
 suite as the root. **The crate's own ~1400 tests are no longer runnable from this
 repo at all** — they run in `archimedes-codes/fulcrum`'s CI. What remains true is
@@ -789,7 +789,7 @@ These are properties of the repo, not of any branch:
   test failure (`worker_e2e` flake, once). **That failure mode is gone and a quieter one replaced it:**
   the repo root now holds the `[workspace]` manifest, so plain `cargo …` from the root is correct and
   is where `Cargo.lock` and `target/` live. Since T8b/S8b.4-part-3 the workspace has ONE member
-  (`src-tauri`) — `fulcrum-core` is a rev-pinned git dependency, built as a dependency, never a
+  (`src-tauri`) — `fulcrum-core` is a tag-pinned git dependency, built as a dependency, never a
   member — so `cd src-tauri && cargo …` now runs the SAME suite as the root. The older trap this
   bullet was written for (a second member quietly skipped by a member-scoped run) is gone with it;
   what survives is the shape of the warning, because it reappears the moment a member is added:
