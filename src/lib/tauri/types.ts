@@ -838,6 +838,8 @@ export interface ModelDto {
   contextWindow: number;
   supportsThinking: boolean;
   thinkingLevels: string[];
+  supportsTools: boolean;
+  selectable: boolean;
 }
 
 

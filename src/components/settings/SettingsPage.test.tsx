@@ -785,6 +785,8 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
           contextWindow: 128000,
           supportsThinking: true,
           thinkingLevels: ["high"],
+          supportsTools: true,
+          selectable: true,
         },
       ],
       loadStarted: true,

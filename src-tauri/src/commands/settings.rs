@@ -111,6 +111,12 @@ pub struct ModelDto {
     pub context_window: u32,
     pub supports_thinking: bool,
     pub thinking_levels: Vec<String>,
+    /// The tool-support marker — the picker's REASON cue (an unselectable model on a
+    /// supported wire is a different sentence from one with no tool support).
+    pub supports_tools: bool,
+    /// `Model::is_selectable()` — the STATE. Projected, never recomputed here: a second
+    /// copy of the predicate is how a picker starts offering a model the catalog refuses.
+    pub selectable: bool,
 }
 
 impl From<&Model> for ModelDto {
@@ -121,6 +127,8 @@ impl From<&Model> for ModelDto {
             context_window: m.context_window,
             supports_thinking: m.supports_thinking,
             thinking_levels: m.thinking_levels.clone(),
+            supports_tools: m.supports_tools,
+            selectable: m.is_selectable(),
         }
     }
 }
@@ -1016,8 +1024,30 @@ mod tests {
         assert_eq!(v["contextWindow"], 99999);
         assert_eq!(v["supportsThinking"], true);
         assert_eq!(v["thinkingLevels"], serde_json::json!(["low"]));
+        // The two selectability facts (issue #9): the REASON marker and the
+        // STATE, both projected from the model.
+        assert_eq!(v["supportsTools"], true);
+        assert_eq!(v["selectable"], true);
         // NOT snake_case on the wire.
         assert!(v.get("context_window").is_none());
+        assert!(v.get("supports_tools").is_none());
+
+        // The same fixture minus tool support: `selectable` must follow
+        // `Model::is_selectable()`, so it flips with the marker — proof the DTO
+        // projects the catalog's predicate instead of emitting a constant `true`.
+        let unselectable = crate::agent::harness::Model {
+            supports_tools: false,
+            ..model
+        };
+        let v = serde_json::to_value(ModelDto::from(&unselectable)).unwrap();
+        assert_eq!(
+            v["supportsTools"], false,
+            "the reason cue tracks the marker"
+        );
+        assert_eq!(
+            v["selectable"], false,
+            "a model with no tool support is never selectable"
+        );
     }
 
     #[tokio::test]

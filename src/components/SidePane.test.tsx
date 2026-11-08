@@ -133,6 +133,8 @@ function catalogModel(id: string, provider = "tama"): ModelDto {
     contextWindow: 128000,
     supportsThinking: false,
     thinkingLevels: [],
+    supportsTools: true,
+    selectable: true,
   };
 }
 

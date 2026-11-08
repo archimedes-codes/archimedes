@@ -121,6 +121,8 @@ const MODELS: ModelDto[] = [
     contextWindow: 200_000,
     supportsThinking: true,
     thinkingLevels: ["high", "medium", "low"],
+    supportsTools: true,
+    selectable: true,
   },
   {
     id: "GPT-5",
@@ -128,6 +130,8 @@ const MODELS: ModelDto[] = [
     contextWindow: 400_000,
     supportsThinking: false,
     thinkingLevels: [],
+    supportsTools: true,
+    selectable: true,
   },
 ];
 
