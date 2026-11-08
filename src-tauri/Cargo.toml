@@ -31,12 +31,34 @@ tauri-build = { version = "2", features = [] }
 #
 # T8b/S8b.4-part-3: the crate now lives in its OWN repo
 # (`archimedes-codes/fulcrum`), so this is a git dependency, not a path member.
-# The `rev` is the FULL 40-char commit and MUST stay a full rev, never a branch
-# name: a floating dep (branch/tag) lets the desktop's build change — different
-# engine code, different test outcome — without a single desktop commit, which
-# makes a green `main` a statement about whatever the branch pointed at that day.
-# A full rev makes an engine change require editing THIS line, so it arrives as a
-# reviewable desktop commit. Bump it in the same PR that reviews the engine diff.
+#
+# PIN FORM — TAG + VERSION, and the immutability comes from the LOCK, not the
+# MANIFEST. This line used to carry a full 40-char `rev`, on the reasoning that a
+# floating dep lets the desktop's build change without a desktop commit. Since the
+# crate's v0.1.0 release the pin is `tag` + `version` instead, which is what that
+# release's own tag message asks for ("the intent behind this tag is to move that
+# pin to tag + version, which is what makes the tag load-bearing rather than
+# decorative"). `version = "0.1.0"` is not decoration: cargo honours the
+# tag+version form only when the tagged manifest carries that version, so it is a
+# second check on WHICH tree the tag resolved to, and a tag moved to a manifest
+# with a different version fails to resolve instead of building silently.
+#
+# THE HONEST COST: a tag is a mutable ref. A force-push of `v0.1.0` would let a
+# fresh clone build different engine code with no desktop commit, which is exactly
+# what the `rev` form prevented. What protects `main` now is `Cargo.lock`: cargo
+# records the resolved COMMIT (`?tag=v0.1.0#<40-char sha>`), so every build from a
+# checkout of this commit gets the same tree, and only an explicit
+# `cargo update` — a desktop commit — moves it. So the discipline moved from the
+# manifest to the lockfile, and these two consequences follow:
+#   * a CI or release run that must reproduce this exact engine tree needs
+#     `--locked` (`--locked` refuses any lock change, `--offline` also refuses a
+#     fetch); the bare `cargo test` / `cargo clippy` steps in `ci.yml` are NOT
+#     `--locked`, so they resolve FROM the lock but are free to re-resolve if the
+#     lock stops matching this line —
+#   * when the tag is moved or re-pointed upstream, `cargo update -p fulcrum-core`
+#     changes the lock's sha WITHOUT changing this line, so an engine bump is no
+#     longer guaranteed to be visible in a manifest diff. Read the `Cargo.lock`
+#     diff on every PR that touches it — that file is the review surface now.
 #
 # Working on the crate alongside the desktop? Do NOT edit this line to a path
 # (that would commit a dep that cannot resolve for anyone else). Copy
@@ -44,7 +66,7 @@ tauri-build = { version = "2", features = [] }
 # redirects this git source to a sibling checkout and is gitignored, so it can
 # never leak into a commit. `.cargo/config.toml.example` is inert (cargo reads
 # only `config.toml`), which is what makes it safe to ship.
-fulcrum-core = { git = "https://github.com/archimedes-codes/fulcrum", rev = "2ed5f5a6305c8feea438546bd1f82b6f3312dc29" }
+fulcrum-core = { git = "https://github.com/archimedes-codes/fulcrum", tag = "v0.1.0", version = "0.1.0" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

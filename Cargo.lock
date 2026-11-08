@@ -1662,8 +1662,8 @@ dependencies = [
 
 [[package]]
 name = "fulcrum-core"
-version = "0.11.0"
-source = "git+https://github.com/archimedes-codes/fulcrum?rev=2ed5f5a6305c8feea438546bd1f82b6f3312dc29#2ed5f5a6305c8feea438546bd1f82b6f3312dc29"
+version = "0.1.0"
+source = "git+https://github.com/archimedes-codes/fulcrum?tag=v0.1.0#ae1fe970015b92af681e6cda7acef664d0f88c30"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

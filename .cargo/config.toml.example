@@ -4,8 +4,9 @@
 # .cargo/config.toml.example .cargo/config.toml`, then adjust the path.
 #
 # WHAT IT IS FOR. `src-tauri/Cargo.toml` depends on `fulcrum-core` as a GIT
-# dependency pinned to a full 40-char rev, and the crate's sources are NOT in this
-# checkout any more (they live in https://github.com/archimedes-codes/fulcrum).
+# dependency pinned to the `v0.1.0` tag (with `version = "0.1.0"`), and the crate's
+# sources are NOT in this checkout any more (they live in
+# https://github.com/archimedes-codes/fulcrum).
 # So editing the engine means editing a file you cannot see from here. If you are
 # working on the desktop AND the engine at the same time, this redirects the git
 # source at a sibling checkout, so `cargo build` compiles YOUR engine code and a
@@ -13,30 +14,52 @@
 #
 # WHY `[patch]` AND NOT `[paths]`. Cargo's older `[paths]` override is deprecated
 # and, decisively here, it only rewrites PATH dependencies by package name — it
-# cannot express a GIT source, so it silently does nothing to a rev-pinned dep.
+# cannot express a GIT source, so it silently does nothing to a pinned git dep.
 # `[patch]` is the mechanism that can: it replaces a package coming from a named
 # SOURCE (here, that git URL) with a different one, and the table name is the
 # source URL being overridden, which must match the dependency's URL exactly
 # (same scheme, same host, same repo path — `https://`, not `git@`, and no
 # trailing `.git` difference) or cargo reports the patch as unused.
 #
+# ⚠️ SINCE THE PIN GREW A `version`, THE SIBLING CHECKOUT MUST MATCH IT. This is a
+# NEW failure mode and it is the SILENT one: `version = "0.1.0"` in the dependency
+# is a REQUIREMENT, so `[patch]` only applies if the patched manifest satisfies it.
+# Point it at a checkout whose `Cargo.toml` still says `0.11.0` (any commit before
+# the v0.1.0 bump) and cargo prints
+#     warning: patch `fulcrum-core v0.11.0 (/path/to/fulcrum)` was not used in the crate graph
+# and then BUILDS THE GIT DEP ANYWAY — exit 0, no error, and your engine edits are
+# simply not in the binary. Measured both ways on this tree: a sibling at the
+# pre-bump rev printed that warning and `cargo tree` kept showing the git source;
+# the same sibling checked out at the tagged commit (`0.1.0`) patched cleanly. So
+# the warning is not informational, it is the whole failure — read it. The fix is
+# to check the sibling out at or past the bump commit, or to have the sibling carry
+# a matching `version` while you work there.
+#
 # ⚠️ THIS FILE IS FOR LOCAL WORK ONLY — NEVER COMMIT THE LIVE VERSION.
 # A committed patch would (a) break every other machine, which has no `../fulcrum`
 # directory, with `failed to load source for dependency on fulcrum-core`, and
-# (b) defeat the rev pin: the build would use whatever that tree happens to hold
-# instead of `rev = 78e5954…`. That is the exact failure this rev pin exists to
-# prevent, so `.gitignore` ignores `.cargo/config.toml` and the rev pin stays the
+# (b) defeat the pin: the build would use whatever that tree happens to hold
+# instead of the tagged commit. That is the exact failure this pin exists to
+# prevent, so `.gitignore` ignores `.cargo/config.toml` and the pin stays the
 # only thing that reaches CI.
 #
 # HOW TO TELL IT IS ACTUALLY WORKING. `cargo tree -i fulcrum-core` prints the
 # patched source as a PATH, e.g.
-#     fulcrum-core v0.11.0 (/path/to/fulcrum)
-# rather than the `git+https://…?rev=…` form. If it still prints the git URL, the
-# patch is NOT in effect — the usual cause is a `[patch]` table name that does not
-# match the dependency URL character-for-character. Cargo also prints
-# `Patch … was not used in the crate graph` when the name misses; do not ignore it.
+#     fulcrum-core v0.1.0 (/path/to/fulcrum)
+# rather than the `git+https://…?tag=…` form. If it still prints the git URL, the
+# patch is NOT in effect — the two causes are the `[patch]` table name missing the
+# dependency URL character-for-character, and the version mismatch above. Cargo
+# prints `Patch … was not used in the crate graph` for either; do not ignore it.
 #
-# HOW TO UNDO IT: delete `.cargo/config.toml`. Nothing else to clean up.
+# A SECOND CLEANUP, SPECIFIC TO THE VERSION MISMATCH. When the patch DOES apply,
+# `Cargo.lock` rewrites `fulcrum-core`'s `source` to the path (and drops the
+# `source = "git+…"` line). That is why this file must stay gitignored AND why you
+# must `git checkout Cargo.lock` after deleting `.cargo/config.toml` — the lock
+# change survives the deletion and, unlike the config, the lock IS tracked. Verify
+# with `cargo tree -i fulcrum-core`: it must print the `git+https://…?tag=…` form
+# again before you commit anything.
+#
+# HOW TO UNDO IT: delete `.cargo/config.toml`, then `git checkout Cargo.lock`.
 #
 # ⚠️ THE TABLE NAME IS `[patch."…"]`, WITH THE DOT AND THE QUOTES. `[patch "…"]`
 # (a space, no dot) is NOT valid TOML and cargo dies with
