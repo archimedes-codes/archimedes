@@ -153,6 +153,14 @@ vi.mock("../../lib/tauri", async () => {
     // deduped in FIRST-SEEN order — `medium` / `high` appear in both;
     // the first model's levels are deliberately NOT alphabetical so the
     // order assertion discriminates first-seen from lexicographic).
+    //
+    // (issue #9) The two selectability fields are added so the fixture matches
+    // the real `list_models` wire. NOT annotated (`satisfies ModelDto[]`) on
+    // purpose: this file's subtree reads neither `selectable` nor `supportsTools`
+    // — the Settings model lists go through `modelItemsFromCatalog`, which takes
+    // strings — so an annotation would only guard a value nothing under test
+    // consumes. The two `SpacesList*` files ARE annotated, because their subtree
+    // (the Agents modal) does read them.
     listModels: vi.fn().mockResolvedValue([
       {
         id: "Qwen3.8",
@@ -160,6 +168,8 @@ vi.mock("../../lib/tauri", async () => {
         contextWindow: 128000,
         supportsThinking: true,
         thinkingLevels: ["high", "medium", "low"],
+        supportsTools: true,
+        selectable: true,
       },
       {
         id: "GPT-5",
@@ -167,6 +177,8 @@ vi.mock("../../lib/tauri", async () => {
         contextWindow: 400000,
         supportsThinking: true,
         thinkingLevels: ["medium", "high", "xhigh"],
+        supportsTools: true,
+        selectable: true,
       },
     ]),
     // The known-providers catalog (ADR 0024 — the Providers section's
