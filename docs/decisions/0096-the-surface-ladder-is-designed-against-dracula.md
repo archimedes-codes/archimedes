@@ -55,3 +55,48 @@ sitting on columns at ~1.16, separation carried entirely by borders.
 - **Dracula is now load-bearing as the reference.** A future change that re-anchors Dracula's
   ladder (as the one-step-down amendment to ADR 0027 already did) re-decides this decision's
   premises, not just its colours.
+
+## Amendment (2026-11-09, issue #173): the border that is "already there" is now a token, and Dracula's is retuned
+
+The consequence above — *"if a surface reads flat in zai-light, the fix is the border that is
+already there, not a palette edit"* — was written when every card and column border resolved
+through `--color-border`. That made the fallback and the app-wide divider the **same** value, so
+quieting a resting seam meant editing `--color-border`, which feeds inputs, popovers, tabs and
+every divider in the app and is graded by the LADDER and Selection gates. The Task board shipped
+with five outlined rectangles at 3.68 against their own column fill while the elevation ladder
+steps only 1.22 / 1.21 — outlines dominating fills, which is the failure this ADR exists to avoid.
+
+The fix routes the resting seam through the palette's **existing** seam token
+`--color-card-border` and retunes it in `.theme-dracula` only, to `#21222c`. That value is not
+invented: it is the **exact per-channel midpoint** of the recessed column `#191a21` and the island
+`#282a36` it sits between, so the seam measures **1.10** against the column and **1.11** against
+the island — equidistant, therefore neither a highlight nor a shadow. It is the page step, already
+published by the Dracula spec, so `paletteCompleteness.test.ts`'s "spec publishes this hex" gate
+holds and no new token enters its declaration arithmetic.
+
+What this does **not** change, and why:
+
+- **The four quiet palettes keep `--color-card-border: var(--color-border)`.** Their borders are
+  already a 10% alpha wash; only Dracula's `--color-border` is opaque, which is precisely why a
+  seam that is quiet everywhere else screams there. This is the ADR's own logic applied one level
+  down: design to Dracula, let the others keep the alias.
+- **An opacity modifier was the wrong instrument.** `border-border/50` composites to `#3e4663`
+  over the column and `#4b5575` over the card — **1.87** and **1.60** respectively, still louder
+  than either fill step (1.22 / 1.21) — while cutting zai-light's *only* separation from 1.24 to
+  1.11.
+  A per-palette token quiets one palette; a modifier taxes all four. This is the "a contrast check
+  in one palette proves nothing" consequence, measured rather than asserted.
+- **Borderlessness remains unavailable**, and the reference board this work copied from is
+  borderless. In `.theme-zai-light` `--color-panel == --color-card == #ffffff`, so a borderless
+  column measures 1.08 against the `#f6f6f6` island — invisible. Its monotonic ascending ladder
+  affords no borders; our descending-then-ascending ladder plus the designed no-op does not.
+- **A drag affordance is not a resting seam.** The drop target keeps `border-brand`: it is meant to
+  be loud. `twMerge` resolves `border-brand` over either border token byte-identically, so the
+  affordance's merge outcome did not move, and it stays pinned by `data-over` rather than by a
+  class assertion — a test on the *state* cannot pass by accident because a different utility
+  survived the merge.
+
+A `SettingsGroupCard` detail worth keeping: its shell passed `border border-border` over
+`ui/card.tsx`'s `border border-card-border`. Those are the **same tailwind-merge group**, so the
+override had to be **deleted**, not replaced — a second border utility in the same group silently
+loses to argument order. A pin that only greps for `border-border` would have passed either way.

@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-11-09
-verified-by: read against this tree at the tip of the kanban-task-board run (PR-pending). `grep -rn "DELETE FROM tasks" src-tauri/src` gives 1 hit and it is inside `storage/db/tests/mod.rs` only. `grep -rln "TaskStore" ` plus the published-crate extract of `fulcrum-harness-0.1.0.crate` both give 0 files. Every item below was re-confirmed against the code at this HEAD rather than copied from the roadmap family that found it. Kept to one line and free of interior colons so this front-matter parses as strict YAML, which several other files in this directory do not.
+verified-by: read against this tree at the tip of the kanban-task-board run (PR-pending). `grep -rn "DELETE FROM tasks" src-tauri/src` gives 1 hit and it is inside `storage/db/tests/mod.rs` only. `grep -rln "TaskStore" ` plus the published-crate extract of `fulcrum-harness-0.1.0.crate` both give 0 files. Every item below was re-confirmed against the code at this HEAD rather than copied from the roadmap family that found it. Section 6 was added on the island-parity branch, where its two load-bearing claims were measured directly — the eight `#[tauri::command]`s in `src-tauri/src/commands/tasks.rs` were each opened and none returns a link row, and `specPath` had zero rendering sites across `src/components` and `src/store`. Kept to one line and free of interior colons so this front-matter parses as strict YAML, which several other files in this directory do not.
 ---
 
 # Task board — known gaps
@@ -93,3 +93,29 @@ without the board ever being opened. Seeding runs under the caller's already-hel
 guard — taking a second lock there is the interleave ADR 0090 forbids. Per-Space laziness is
 still pinned (`seeding_one_space_leaves_another_space_unseeded`). This is a deliberate widening
 of the spec's letter, recorded so a future reader does not file it as a bug.
+
+## 6. A card cannot show its Sessions, cost, state, or attachments — tracked as #174
+
+The card anatomy (pill'd number, wrapping title, spec chip, relative time) ships on
+`number` / `title` / `body` / `specPath` / `updatedAt` only. Everything a reference-style board
+would put on a card is missing for one of two distinct reasons, and conflating them sends the
+work to the wrong place.
+
+**Reachable, not exposed.** `task_sessions (task_id, session_id, stage_slug)` exists, is written by
+`link_session` / `write_task_session_link`, and is read INTERNALLY by `move_task`'s compaction
+target picker — but **no `#[tauri::command]` returns a link row**, so the client cannot render a
+session link or count. `SessionInfo.costUsd` is already persisted, so cost follows the same join.
+The fix is one command on THIS repo: the tasks and task_sessions schema live in
+`src-tauri/src/storage/db.rs`, and `fulcrum-harness` is a crates.io dependency owning none of it.
+Aggregate server-side rather than letting the card issue a query per row, and remember
+`costUsd: null` means "never reported", not `0` (ADR 0082).
+
+**No data source at all.** "Finished" has no representation — `CloseReasonStr`
+(`user | agent-exited | error` — a *close reason*, not a terminal state) is the closest thing and
+is not it. "Has a question" is live transcript frames (`InlineGateRow` → `AskQuestionCard`), never
+persisted per Session. Attachments exist only as composer-to-model payloads with no table and no
+link to a Task. Each needs persistence designed first; a command cannot rescue them.
+
+`specPath` was the same story until now: stored, crossing IPC on `edit_task`, and rendered nowhere.
+It is the one field with a chip today, and `TaskCard.test.tsx`'s present/absent case is its only
+guard.
