@@ -707,15 +707,22 @@ describe("TasksBoard — the surface ladder (ADR 0097: island, then recess)", ()
 
   it("the column count is a pill on the island plane", () => {
     // The count is a COUNT, not a caption, so it gets a fill rather than quiet ink.
-    // `bg-chat` is the one token that reads on BOTH surfaces it can sit near: it is
-    // one step ABOVE the column's `bg-panel` (measured 1.22) and one step BELOW the
-    // card's `bg-card` (1.21). `bg-panel` would be 1.00 — invisible — against a card
-    // in every palette, and `bg-card` likewise against the island.
+    // The fill must DIFFER FROM BOTH surfaces it can sit against — the column's
+    // `bg-panel` and the card's `bg-card` — IN EVERY PALETTE. The claim this
+    // replaces read "`bg-chat` is the one token that reads on BOTH surfaces
+    // (1.22 / 1.21)": those were Dracula-only figures, and that single-palette
+    // check is exactly what shipped the bug — in `.theme-zai-dark` `--color-chat`
+    // is `color-mix(… var(--color-background-win-alt) 60%, transparent)` and
+    // `--color-background-win-alt` IS `--color-card` (`#2b2b2b`), so compositing
+    // the pill over a card gives the card back: 1.00, invisible. `bg-background`
+    // measures 1.10 (panel) / 1.34 (card) in Dracula, 1.11 / 1.28 in zai-dark and
+    // 1.06 / 1.06 in zai-light, and its ink stays readable in all three. The
+    // per-palette census lives in `src/lib/slabFloatSeparation.test.ts`.
     seeded();
     const count = within(screen.getByTestId("task-column-backlog")).getByText("1");
     const tokens = classTokens(count);
     expect(tokens).toContain("rounded-full");
-    expect(tokens).toContain("bg-chat");
+    expect(tokens).toContain("bg-background");
     // The number is DATA and not only a class — the column still reports its own
     // count, which is what `renders one column per stage` and the empty-column case
     // read through `textContent`.

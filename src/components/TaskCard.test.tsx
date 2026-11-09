@@ -128,7 +128,15 @@ describe("TaskCard — what it renders", () => {
     const chip = screen.getByText("spec");
     const tokens = classTokens(chip);
     expect(tokens).toContain("rounded-full");
-    expect(tokens).toContain("bg-chat");
+    // The fill must differ from BOTH surfaces a chip can land on — the column's
+    // `bg-panel` and this card's `bg-card` — IN EVERY PALETTE, and `bg-chat` fails
+    // that: its zai-dark `color-mix` base (`--color-background-win-alt`, `#2b2b2b`)
+    // IS `--color-card`, so a chip wearing it over a card composites to the card —
+    // contrast 1.00, invisible. The 1.22 / 1.21 figures that justified it were
+    // Dracula-only (ADR 0096's single-palette-check error). `bg-background`
+    // measures 1.10/1.34 Dracula, 1.11/1.28 zai-dark, 1.06/1.06 zai-light; the
+    // per-palette census is `src/lib/slabFloatSeparation.test.ts`.
+    expect(tokens).toContain("bg-background");
     // The path itself is not the chip's text — it is a pointer, not a title, and
     // rendering it would put an absolute filesystem path on every card.
     expect(chip.textContent).toBe("spec");

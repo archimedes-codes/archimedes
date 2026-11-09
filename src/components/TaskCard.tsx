@@ -83,13 +83,17 @@ export default function TaskCard({ task, drag, active }: TaskCardProps) {
       {/* THREE ROWS: meta / title / chips-and-body. The reference board's anatomy,
           with our ladder and our tokens rather than its. */}
       <div className="flex items-center justify-between gap-2">
-        {/* The number is a PILL now — the same `bg-chat` fill the column's count
-            wears, for the same reason: it is one step above the column's `bg-panel`
-            and one step below this card's `bg-card`, so it reads on either plane
-            (`bg-panel` would be 1.00 against a card in every palette). It stays its
+        {/* The number is a PILL now, and its fill is the PAGE step: it has to
+            differ from BOTH surfaces it can land on — the column's `bg-panel` and
+            this card's `bg-card` — in EVERY palette. `bg-chat` looked fine in
+            Dracula (1.22 / 1.21) and is EXACTLY the card in zai-dark: its
+            `color-mix` base is `--color-background-win-alt` `#2b2b2b`, which IS
+            `--color-card` there, so 0.6·base + 0.4·card = the card. 1.00. Measured
+            per palette in `slabFloatSeparation.test.ts`; `bg-background` is
+            1.10/1.34 Dracula, 1.11/1.28 zai-dark, 1.06/1.06 zai-light. It stays its
             OWN text node — `T3` is the label a person says out loud and both board
             test files resolve a card through `getByText("T3")`. */}
-        <span className="shrink-0 rounded-full bg-chat px-2 py-0.5 font-mono text-ui-xs text-foreground-subtle">
+        <span className="shrink-0 rounded-full bg-background px-2 py-0.5 font-mono text-ui-xs text-foreground-subtle">
           T{task.number}
         </span>
         {/* The same buckets the Session list prints, from a different instant —
@@ -119,7 +123,7 @@ export default function TaskCard({ task, drag, active }: TaskCardProps) {
           itself stays off the card (an absolute filesystem path on every card is not
           information, it is noise) and the chip says what it is. */}
       {task.specPath !== null && (
-        <span className="inline-flex items-center gap-1 rounded-full bg-chat px-2 py-0.5 text-ui-xs text-foreground-subtle">
+        <span className="inline-flex items-center gap-1 rounded-full bg-background px-2 py-0.5 text-ui-xs text-foreground-subtle">
           spec
         </span>
       )}

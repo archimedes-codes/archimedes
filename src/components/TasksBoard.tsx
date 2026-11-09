@@ -355,12 +355,14 @@ function TaskColumn({
         <span className="min-w-0 flex-1 truncate text-ui-base text-foreground-subtle">
           {column.stage.label}
         </span>
-        {/* The count is a COUNT and not a caption, so it gets a fill. `bg-chat` is
-            the one token that reads on BOTH planes it can sit against: one step ABOVE
-            the column's `bg-panel` (measured 1.22) and one step BELOW the card's
-            `bg-card` (1.21). `bg-panel` would be 1.00 — invisible — against a card in
-            every palette, and `bg-card` likewise against the island. */}
-        <span className="shrink-0 rounded-full bg-chat px-2 py-0.5 font-mono text-ui-xs text-foreground-subtle">
+        {/* The count is a COUNT and not a caption, so it gets a fill — and the
+            fill must differ from BOTH surfaces it can sit against (the column's
+            `bg-panel` and the card's `bg-card`) in EVERY palette, which is the
+            check `slabFloatSeparation.test.ts` now runs per palette. `bg-chat`
+            passed that in Dracula (1.22 / 1.21) and is 1.00 — invisible — against
+            `bg-card` in zai-dark by construction, so the pill takes the page step:
+            `bg-background` measures 1.10/1.34, 1.11/1.28, 1.06/1.06. */}
+        <span className="shrink-0 rounded-full bg-background px-2 py-0.5 font-mono text-ui-xs text-foreground-subtle">
           {column.tasks.length}
         </span>
         {/* The column's `on_enter` is what makes a kanban column more than a label, so
