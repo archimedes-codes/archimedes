@@ -181,6 +181,181 @@ describe("floats over the content slab (the accepted collision)", () => {
 });
 
 /**
+ * THE BOARD'S PILLS, AND WHY THEIR FILL IS `--color-background` AND NOT
+ * `--color-chat` (ADR 0096 — "a contrast check in one palette proves nothing").
+ *
+ * The three small pills on the Task board (the `T{n}` number, the spec chip, the
+ * column count) originally shipped on `bg-chat`, justified by a comment that
+ * measured ONE palette: "`bg-chat` is the one token that reads on BOTH surfaces
+ * it can sit near (1.22 / 1.21)". Those are Dracula figures. In `.theme-zai-dark`
+ * the same token is not merely weaker, it is EXACTLY the card — not 1.0X, 1.00 —
+ * by algebra, not by a colour-space approximation:
+ *
+ *   --color-background-win-alt: #2b2b2b
+ *   --color-chat:  color-mix(in oklab, var(--color-background-win-alt) 60%, transparent)
+ *   --color-card:  #2b2b2b
+ *
+ *   chat over card = 0.6·#2b2b2b + 0.4·(#2b2b2b) = #2b2b2b = the card itself.
+ *
+ * A pill is a fill on a surface it must not be. The fill therefore has to differ
+ * from BOTH surfaces it can land on — the column (`bg-panel`) and the card
+ * (`bg-card`) — in EVERY palette, and `bg-chat` fails that in zai-dark.
+ * `bg-background` (the page step) clears both everywhere: 1.10 / 1.34 Dracula,
+ * 1.11 / 1.28 zai-dark, 1.06 / 1.06 zai-light. Its ink
+ * (`text-foreground-subtle`) stays readable on it in all three: 7.04 / 5.78 / 4.70.
+ *
+ * WHY THE SHAPE OF THESE ASSERTIONS IS SPLIT. `--color-chat` and, in the zai
+ * palettes, `--color-background` too are `color-mix(…)` / `var(…)` expressions
+ * that this file's own docblock already refuses to treat as a hex, so the zai
+ * palettes are graded STRUCTURALLY (the fill token must not resolve to either
+ * surface it lands on) and Dracula — literal hexes — is graded NUMERICALLY. And
+ * the zai-dark collision is asserted as a FACT the way the float/slab collision
+ * above is: this file's job is to count the price, not to hope it away.
+ *
+ * WHY `bg-panel` / `bg-input` / `bg-secondary` / `bg-frame` are NOT the fix: each
+ * of them also hits 1.00 somewhere (`input` and `secondary` are literally the
+ * card in zai-dark; `panel` and `frame` are `#ffffff` in zai-light; `panel` is
+ * `#191a21` = `frame` = `input` in Dracula). The 1.00s are a property of the zai
+ * collapses, not of one bad token — so the gate below is an INVARIANT (the fill
+ * must not equal either surface), never a banned-token list.
+ */
+describe("the board pills' fill, per palette (the zai-dark collision)", () => {
+  /** Read one token out of one palette block of the RESOLVED stylesheet — the
+   *  same reader shape as `dracula()` above, parameterised by selector, because
+   *  a single-palette reader is precisely the instrument that missed this. */
+  const themeVar = (selector: string, token: string): string => {
+    const css = stripCssComments(readResolvedIndexCss());
+    const head = css.match(new RegExp(`^\\${selector}\\s*\\{`, "m"));
+    if (!head) {
+      throw new Error(`${selector} is not in the resolved stylesheet`);
+    }
+    const start = css.indexOf(head[0]);
+    const block = css.slice(start, css.indexOf("}", start));
+    const value = block.match(new RegExp(`--color-${token}\\s*:\\s*([^;]+);`));
+    if (!value) {
+      throw new Error(`--color-${token} is not declared in ${selector}`);
+    }
+    return value[1]!.trim().toLowerCase();
+  };
+
+  const PALETTES = [
+    ".theme-dracula",
+    ".theme-zai-dark",
+    ".theme-zai-light",
+  ] as const;
+
+  for (const palette of PALETTES) {
+    it(`${palette}: the pill fill is neither surface it can land on`, () => {
+      // THE invariant that would have caught the bug. A pill sits on a column
+      // (`bg-panel`) and beside a card (`bg-card`); if its fill token resolves to
+      // either of those, the pill is a same-colour patch and no palette test
+      // written against a DIFFERENT palette can see it.
+      const fill = themeVar(palette, "background");
+      expect(fill, `${palette}: --color-card`).not.toBe(themeVar(palette, "card"));
+      expect(fill, `${palette}: --color-panel`).not.toBe(themeVar(palette, "panel"));
+    });
+  }
+
+  it("measures the Dracula separation, where every token is a literal hex", () => {
+    const background = dracula("background");
+    const panel = dracula("panel");
+    const card = dracula("card");
+    // 1.05 is a floor, not a target: the palette simply has no step at a
+    // comfortable distance from `#191a21` / `#343746`, and the pills are small
+    // marks carrying a count, not a boundary that must clear 3:1. It is a FLOOR
+    // in the sense that matters — it fails an equality collision outright.
+    expect(
+      contrast(background, panel),
+      `${background} against the column ${panel}`,
+    ).toBeGreaterThan(1.05);
+    expect(
+      contrast(background, card),
+      `${background} against the card ${card}`,
+    ).toBeGreaterThan(1.05);
+  });
+
+  it("measures the zai-dark collision at exactly 1.00 — the bug is real, not a rumour", () => {
+    // Mirrors `measures the collision at exactly 1.00` above: the failure mode
+    // gets ASSERTED, so a future change that breaks the algebra (giving `chat`
+    // its own step in zai-dark) reddens this and points at the prose.
+    const chat = themeVar(".theme-zai-dark", "chat");
+    const card = themeVar(".theme-zai-dark", "card");
+    // `--color-chat` is a `color-mix(…)` — compare it STRUCTURALLY, as the
+    // docblock above insists, by resolving its base token inside the same block.
+    const base = chat.match(/var\(--color-([a-z-]+)\)/);
+    const percent = chat.match(/(\d+)%/);
+    expect(base, `--color-chat in zai-dark is not a color-mix over a token: ${chat}`).toBeTruthy();
+    expect(percent, `--color-chat carries no percentage: ${chat}`).toBeTruthy();
+    const baseValue = themeVar(".theme-zai-dark", base![1]!);
+    // THE collision, as algebra: the mix's base token IS the card token.
+    expect(baseValue, "--color-background-win-alt vs --color-card").toBe(card);
+    // Compositing `chat` over `card`: 0.6·base + 0.4·card, and base === card, so
+    // the result is the card. Contrast is 1.00 to five places — fill alone
+    // cannot separate the pill from the card it sits next to.
+    const mixOver = (over: string, under: string, weight: number) => {
+      const a = parseInt(over.slice(1), 16);
+      const b = parseInt(under.slice(1), 16);
+      const channel = (shift: number) =>
+        Math.round(((a >> shift) & 255) * weight + ((b >> shift) & 255) * (1 - weight));
+      return (
+        "#" + [16, 8, 0].map((s) => channel(s).toString(16).padStart(2, "0")).join("")
+      );
+    };
+    const composited = mixOver(baseValue, card, Number(percent![1]) / 100);
+    expect(composited, "chat composited over card must BE the card").toBe(card);
+    expect(contrast(composited, card), "zai-dark pill fill vs card").toBeCloseTo(1, 5);
+  });
+
+  /** The three pills, named by the class shape that identifies them, read from
+   *  the COMPONENT SOURCES. This is the half that is red before the fix: the
+   *  palette invariants above hold for `bg-background` AND for the broken
+   *  `bg-chat` fill, because the bug was never in the palette — it was in a
+   *  class list, chosen from one palette's arithmetic. Same reason this file
+   *  already reads the float components for their `shadow-`: a class a palette
+   *  test cannot see is still a palette failure. */
+  const PILLS: Array<{ file: string; label: string }> = [
+    { file: "src/components/TaskCard.tsx", label: "the card's `T{n}` pill and spec chip" },
+    { file: "src/components/TasksBoard.tsx", label: "the column count pill" },
+  ];
+
+  for (const pill of PILLS) {
+    it(`${pill.file}: no pill wears a fill that collapses on a surface`, () => {
+      const cls = code(pill.file);
+      const literals = [...cls.matchAll(/"([^"]*rounded-full[^"]*)"/g)].map((m) => m[1]!);
+      expect(literals.length, `${pill.file} has no pill class literal left`).toBeGreaterThan(0);
+      for (const literal of literals) {
+        // `bg-chat` is the island plane: inside the board it is the COLUMN the
+        // pill's own card sits on, so a pill wearing it is a pill wearing the
+        // surface under it (1.00 in zai-dark, and 1.00 against `bg-card` there).
+        expect(literal, `${pill.label} fell back to the island plane`).not.toMatch(
+          /(^|\s)bg-chat(\s|$)/,
+        );
+        expect(literal, `${pill.label} lost its page-step fill`).toMatch(
+          /(^|\s)bg-background(\s|$)/,
+        );
+      }
+      // A CENSUS, so a pill cannot dodge the gate by losing `rounded-full`.
+      const fills = literals.filter((l) => /(^|\s)bg-background(\s|$)/.test(l));
+      expect(fills.length, `${pill.file} pill count drifted`).toBe(
+        pill.file.endsWith("TaskCard.tsx") ? 2 : 1,
+      );
+    });
+  }
+
+  it("keeps the board island itself on the chat plane — the pill fix is not a ban", () => {
+    // The board root is the ADR 0097 island (`m-1 rounded-xl bg-chat`, pinned by
+    // `TasksBoard.test.tsx`). The defect was a PILL wearing the island plane, not
+    // the island wearing it — so this pins the other side of the line, and stops
+    // someone "fixing" the bug by sweeping every `bg-chat` out of the file.
+    const root = code("src/components/TasksBoard.tsx").match(
+      /"([^"]*m-1[^"]*rounded-xl[^"]*)"/,
+    );
+    expect(root, "the board root lost its rounded-xl recipe").toBeTruthy();
+    expect(root![1]).toMatch(/(^|\s)bg-chat(\s|$)/);
+  });
+});
+
+/**
  * THE SPACE TABS MOVED OUT OF THIS FILE. Active and inactive used to be pinned
  * here by READING THE TAB-STRIP COMPONENT'S SOURCE TEXT: lifting the pill's
  * class literal out of the source with one regex, lifting every

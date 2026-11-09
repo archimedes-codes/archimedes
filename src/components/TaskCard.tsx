@@ -1,5 +1,7 @@
+import { MutedCaption } from "./MutedCaption";
 import type { DragCardHandlers } from "../hooks/useDragCard";
 import type { TaskRow } from "../lib/tauri";
+import { relativeTimeFromInstant } from "../lib/sessionTime";
 import { cn } from "./lib/utils";
 
 /**
@@ -67,19 +69,64 @@ export default function TaskCard({ task, drag, active }: TaskCardProps) {
       // reorder it.
       {...drag}
       className={cn(
-        "flex flex-col gap-1 rounded-lg border border-border bg-surface px-2.5 py-2",
+        // ADR 0097's RAISED rung: a card sits ON a column, so it goes up a step
+        // while the column goes down one — the two used to share a single
+        // translucent token, which made a card the same colour as the surface it
+        // rested on with the separation carried entirely by the border.
+        "flex flex-col gap-2 rounded-lg border border-card-border bg-card px-3 py-2.5",
         // A dragged card reads as LIFTED — its ink drops while it is in the air.
         // That is the card's ONLY state, because the card is what is being carried;
         // "you will land here" belongs to the column (see `data-over` above), so the
         // board never paints one target affordance twice.
       )}
     >
-      <div className="flex min-w-0 items-baseline gap-2">
-        <span className="shrink-0 text-ui-sm text-foreground-subtlest">
+      {/* THREE ROWS: meta / title / chips-and-body. The reference board's anatomy,
+          with our ladder and our tokens rather than its. */}
+      <div className="flex items-center justify-between gap-2">
+        {/* The number is a PILL now, and its fill is the PAGE step: it has to
+            differ from BOTH surfaces it can land on — the column's `bg-panel` and
+            this card's `bg-card` — in EVERY palette. `bg-chat` looked fine in
+            Dracula (1.22 / 1.21) and is EXACTLY the card in zai-dark: its
+            `color-mix` base is `--color-background-win-alt` `#2b2b2b`, which IS
+            `--color-card` there, so 0.6·base + 0.4·card = the card. 1.00. Measured
+            per palette in `slabFloatSeparation.test.ts`; `bg-background` is
+            1.10/1.34 Dracula, 1.11/1.28 zai-dark, 1.06/1.06 zai-light. It stays its
+            OWN text node — `T3` is the label a person says out loud and both board
+            test files resolve a card through `getByText("T3")`. */}
+        <span className="shrink-0 rounded-full bg-background px-2 py-0.5 font-mono text-ui-xs text-foreground-subtle">
           T{task.number}
         </span>
-        <span className="min-w-0 flex-1 truncate text-ui-base">{task.title}</span>
+        {/* The same buckets the Session list prints, from a different instant —
+            `task.updatedAt` is Unix ms (`now_ms()` in `db.rs`), so it goes through
+            the ONE bucket rule rather than a copy of it. Its own element, never
+            concatenated into the title: a merged `textContent` would silently break
+            the board's `within(column).getByText(...)` scoping.
+
+            Rendered through `MutedCaption` rather than by spelling the quiet-caption
+            pair here, because `mutedCaption.test.ts` censuses that pair to ONE file
+            and a card's timestamp IS that caption. `cn()` emits exactly the classes
+            the anatomy calls for (`text-ui-xs text-foreground-subtlest shrink-0`). */}
+        <MutedCaption className="shrink-0">
+          {relativeTimeFromInstant(task.updatedAt)}
+        </MutedCaption>
       </div>
+      {/* WRAPS, and that is the fix: `truncate` was `overflow:hidden` +
+          `white-space:nowrap`, so a two-line title lost its second half with no
+          affordance on the one sentence a card exists to show. `line-clamp-2` still
+          bounds the height a card strip can grow to, but it wraps to get there. */}
+      <span className="line-clamp-2 font-medium leading-snug text-ui-base">
+        {task.title}
+      </span>
+      {/* The chips row, and it renders ONLY when there is a chip to render — no
+          placeholder for an absent field. `specPath` is stored and crosses IPC and
+          nothing rendered it at all, so this is the field's first consumer; the path
+          itself stays off the card (an absolute filesystem path on every card is not
+          information, it is noise) and the chip says what it is. */}
+      {task.specPath !== null && (
+        <span className="inline-flex items-center gap-1 rounded-full bg-background px-2 py-0.5 text-ui-xs text-foreground-subtle">
+          spec
+        </span>
+      )}
       {task.body && (
         <span className="line-clamp-2 text-ui-sm text-foreground-subtlest">
           {task.body}

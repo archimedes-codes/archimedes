@@ -54,6 +54,21 @@ const task = (over: Partial<TaskRow> = {}): TaskRow => ({
   ...over,
 });
 
+/**
+ * The class STRING via the ATTRIBUTE, not `el.className` — the property is an
+ * `SVGAnimatedString` for SVG elements (`MutedCaption.test.tsx` carries the same
+ * note, and this helper is copied from there). It moved from inside the ladder
+ * `describe` to module scope because the ANATOMY cases below read classes too, and
+ * a helper two `describe` blocks away from one of its readers is a trap.
+ */
+function classOf(el: Element): string {
+  return el.getAttribute("class") ?? "";
+}
+
+/** Whole class TOKENS, so a substring of a longer utility cannot satisfy a
+ *  `toContain` the way it would on the raw class string. */
+const classTokens = (el: Element): string[] => classOf(el).split(/\s+/);
+
 /** A spread surface that records which handler ran, so the spread can be asserted
  *  as BEHAVIOUR and not only as an attribute list. */
 const dragSurface = (): DragCardHandlers => ({
@@ -81,6 +96,53 @@ describe("TaskCard — what it renders", () => {
     unmount();
     render(<TaskCard task={task({ body: null })} />);
     expect(screen.getByText("Ship the board")).toBeTruthy();
+  });
+
+  it("a card title wraps instead of clipping", () => {
+    // The title is the card's subject, and a card that clips it to one line hides
+    // the only sentence on it. `truncate` is `overflow:hidden; white-space:nowrap`
+    // — it is a CLIP, so a two-line title lost its second half with no affordance.
+    // `line-clamp-2` bounds the height the same way (a card strip cannot grow
+    // without limit) but WRAPS to get there, and `leading-snug` is the reference's
+    // title rhythm.
+    //
+    // Class tokens and not a rendered height: jsdom performs no layout, so the
+    // honest instrument here is the utility the merge actually emitted.
+    render(<TaskCard task={task()} />);
+    const tokens = classTokens(screen.getByText("Ship the board"));
+    expect(tokens).toContain("line-clamp-2");
+    expect(tokens).toContain("font-medium");
+    expect(tokens).toContain("leading-snug");
+    expect(tokens).not.toContain("truncate");
+  });
+
+  it("a card with a spec shows the spec chip, and one without shows none", () => {
+    // Net-new coverage: `specPath` is stored, crosses IPC and is read by the boost
+    // prompt, but NOTHING rendered it — so no existing pin protected it and a
+    // dropped field would have been silent. The chip is CONDITIONAL on the data
+    // existing rather than a placeholder for its absence, and the query pins the
+    // LABEL and not a `data-testid`: the string is the thing that can drift.
+    const { unmount } = render(
+      <TaskCard task={task({ specPath: "/tmp/spec.md" })} />,
+    );
+    const chip = screen.getByText("spec");
+    const tokens = classTokens(chip);
+    expect(tokens).toContain("rounded-full");
+    // The fill must differ from BOTH surfaces a chip can land on — the column's
+    // `bg-panel` and this card's `bg-card` — IN EVERY PALETTE, and `bg-chat` fails
+    // that: its zai-dark `color-mix` base (`--color-background-win-alt`, `#2b2b2b`)
+    // IS `--color-card`, so a chip wearing it over a card composites to the card —
+    // contrast 1.00, invisible. The 1.22 / 1.21 figures that justified it were
+    // Dracula-only (ADR 0096's single-palette-check error). `bg-background`
+    // measures 1.10/1.34 Dracula, 1.11/1.28 zai-dark, 1.06/1.06 zai-light; the
+    // per-palette census is `src/lib/slabFloatSeparation.test.ts`.
+    expect(tokens).toContain("bg-background");
+    // The path itself is not the chip's text — it is a pointer, not a title, and
+    // rendering it would put an absolute filesystem path on every card.
+    expect(chip.textContent).toBe("spec");
+    unmount();
+    render(<TaskCard task={task({ specPath: null })} />);
+    expect(screen.queryByText("spec")).toBeNull();
   });
 
   it("carries the task id as the drag payload handle", () => {
@@ -185,5 +247,54 @@ describe("TaskCard — what it is NOT", () => {
     expect(el.getAttribute("role")).toBeNull();
     expect(el.hasAttribute("tabindex")).toBe(false);
     expect(el.tagName).toBe("DIV");
+  });
+});
+
+describe("TaskCard — the surface ladder (ADR 0097: raise)", () => {
+  it("a card raises", () => {
+    // The raise half of the pair — the recess half lives in
+    // `TasksBoard.test.tsx` ("a column recesses"). A card sits ON a column, so it
+    // goes UP a rung (`bg-card`) while the column goes down (`bg-panel`): the two
+    // used to share one translucent token, which made a card the same colour as
+    // the column it sat in, with the separation carried entirely by the border.
+    // Pinning ONE of the two would let a sweep that returns both to that shared
+    // token pass half the pair, so both files carry one half.
+    //
+    // Token strings and not computed colours: jsdom resolves no cascade, so
+    // `getComputedStyle` answers `""` here and would certify a broken card.
+    render(<TaskCard task={task()} />);
+    const tokens = classTokens(screen.getByTestId("task-card"));
+    expect(tokens).toContain("bg-card");
+    expect(tokens).not.toContain("bg-surface");
+    // The seam is what carries the card in zai-light, where the recessed and the
+    // raised tokens are both `#ffffff` — and the seam is the SEAM token now, not
+    // the generic border (see the matching case in `TasksBoard.test.tsx`). The
+    // four quiet palettes keep `--color-card-border` aliasing `--color-border`
+    // (10% alpha) exactly so that sentence stays true; only Dracula retunes it.
+    expect(tokens).toContain("border-card-border");
+    expect(tokens).not.toContain("border-border");
+    // And the class survives `cn()`'s merge — the lifted-ink comment below the
+    // string in source is a comment, not a second background, so exactly ONE
+    // background token is on the node.
+    expect(tokens.filter((token) => /^bg-/.test(token))).toEqual(["bg-card"]);
+    expect(classOf(screen.getByTestId("task-card"))).toBeTruthy();
+  });
+
+  it("the seam is the card-border token, not the generic border", () => {
+    // Dracula is the only palette whose `--color-border` is OPAQUE (`#6272a4`,
+    // 3.68 against the column fill it rests on) while its elevation ladder steps
+    // 1.22 / 1.47 — so a card outline drawn in that token out-shone the two fills
+    // it was meant to sit between. The palette already declares a seam token for
+    // this job (`--color-card-border`, retuned in `.theme-dracula` alone), so the
+    // card consumes THAT and the generic border is GONE rather than merely joined:
+    // two border-colour utilities on one node is a tie CSS resolves by stylesheet
+    // order, so a half-migrated card would still paint the loud ink on Dracula.
+    //
+    // Both halves are asserted because the migration is a SWAP: a pin that only
+    // checked for the new token would pass on a card carrying both.
+    render(<TaskCard task={task()} />);
+    const tokens = classTokens(screen.getByTestId("task-card"));
+    expect(tokens).toContain("border-card-border");
+    expect(tokens).not.toContain("border-border");
   });
 });

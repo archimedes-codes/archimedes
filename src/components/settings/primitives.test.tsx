@@ -126,7 +126,37 @@ describe("settings primitives (the ZCode port)", () => {
     const card = container.querySelector('[data-slot="card"]') as HTMLElement;
     expect(card).toBeTruthy();
     expect(card.className).toContain("rounded-xl");
-    expect(card.className).toContain("bg-card");
+    // THE RECESSED TOKEN, not the raised one. `dracula.css` states the rule this
+    // pins: *"the slab is a high plane, so the only way to separate from it is
+    // downward"* — a section card lives INSIDE a `bg-chat` island, so it recesses
+    // the way `MessageBubble` / `ToolCallCard` / `CodemodeCard` recess inside the
+    // transcript. `ui/card.tsx` merges through `cn()`, so the caller's
+    // background token REPLACES Card's own rather than losing a cascade fight.
+    expect(card.className).toContain("bg-panel");
+    expect(card.className).not.toContain("bg-card");
+  });
+
+  it("SettingsGroupCard inherits the seam", () => {
+    // The shell's resting seam comes from `ui/card.tsx`'s `border-card-border`,
+    // and the caller used to override it with `border border-border`. That is the
+    // SAME tailwind-merge group, so the override did not sit alongside the base's
+    // token — it deleted it, and the rendered class carried `border-border` and
+    // NOT `border-card-border`. Both assertions therefore flip together, and that
+    // is the signal the migration landed: the override is deleted (not replaced
+    // with a second border utility) and the base's seam survives the merge.
+    //
+    // Dracula is why this matters: it is the only palette whose `--color-border`
+    // is opaque, so a settings card inside a `bg-chat` island drew the loudest
+    // line in the app while the ladder steps 1.22 / 1.47.
+    const { container } = render(
+      <SettingsGroupCard>
+        <span>seam-child</span>
+      </SettingsGroupCard>,
+    );
+    const card = container.querySelector('[data-slot="card"]') as HTMLElement;
+    expect(card).toBeTruthy();
+    expect(card.className).toContain("border-card-border");
+    expect(card.className).not.toContain("border-border");
   });
 });
 

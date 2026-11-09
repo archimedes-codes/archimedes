@@ -29,6 +29,7 @@ import {
   type WireApi,
   type KnownProvider,
 } from "@/lib/tauri";
+import { MenuPanel } from "@/components/MenuPanel";
 import { SettingsSidebarButton } from "./primitives";
 import { useSettingsDocument } from "@/hooks/useSettingsDocument";
 import { useSessions } from "@/store/sessions";
@@ -115,10 +116,14 @@ function remapModelRefs(
 
 /**
  * The settings page (the approved ZCode-parity design, spec §1/§4): a full
- * content-area view — a 268px section sidebar (General / Appearance / Providers /
- * MCP / Updates) + the active section's content. Immediate save:
- * a control change → `saveSettings` with the COMPLETE document (text
- * fields commit on blur/Enter; no save button, no dirty state).
+ * content-area view — a 268px **Menu panel** (the eight sections: General /
+ * Appearance / Providers / MCP / Permissions / Detached sessions / Web search /
+ * Updates) + the active section's content, as TWO islands side by side on the
+ * chrome plane (ADR 0097). It is NOT a sidebar and the nav is not a
+ * dividered-off column: the 8px frame gap between the two islands is what
+ * separates them. Immediate save: a control change → `saveSettings` with the
+ * COMPLETE document (text fields commit on blur/Enter; no save button, no dirty
+ * state).
  *
  * THE PAGE OWNS NO EXIT. It is a view `App` mounts beside the permanent Session
  * list, and the Session list's command strip is the view switcher (N1): the
@@ -574,11 +579,14 @@ export default function SettingsPage({
   const updatesSection = <UpdateSection />;
 
   return (
-    <div className="grid h-full grid-cols-[268px_minmax(0,1fr)]">
-      <aside className="min-w-0 border-r border-border">
+    <div className="flex h-full min-w-0">
+      <MenuPanel width={268}>
         <div className="flex h-full flex-col">
-          {/* `pt-3` is the top padding the deleted Back wrapper carried — the nav
-              is now the sidebar's first child and would otherwise touch the top. */}
+          {/* `pt-3` is the top padding the deleted Back wrapper carried, and it
+              is STILL load-bearing inside the island: `m-1` is a MARGIN, so it
+              moves the painted surface away from its neighbours but buys nothing
+              between that surface and its own first child. Without it the first
+              section button runs into the island's rounded corner. */}
           <nav
             aria-label="Settings sections"
             className="flex-1 overflow-y-auto px-2 pb-3 pt-3"
@@ -635,24 +643,39 @@ export default function SettingsPage({
             </div>
           </nav>
         </div>
-      </aside>
-      <section className="min-h-0 overflow-y-auto">
-        <div className="mx-auto w-full max-w-4xl px-4 pb-8 pt-4">
-          {section === "general"
-            ? generalSection
-            : section === "appearance"
-              ? appearanceSection
-              : section === "providers"
-                ? providersSection
-                : section === "mcp"
-                  ? mcpSection
-                  : section === "permissions"
-                    ? permissionsSection
-                    : section === "sessions"
-                      ? sessionsSection
-                      : section === "web-search"
-                        ? webSearchSection
-                        : updatesSection}
+      </MenuPanel>
+      {/* THE CONTENT ISLAND — the peer of the Menu panel on its right, so the
+          8px frame gap between the two replaces the right-edge divider that used
+          to divide them (ADR 0097). The `<section>` is the FRAME, not the
+          scroller: `overflow-hidden` is what rounds the corners, so the scrolling
+          moved one level down and everything below the fold stays reachable.
+          `min-w-0` is load-bearing (a `flex-1` row child would otherwise refuse
+          to shrink below its widest content); no `min-h-0` on either level,
+          because `SidePane.tsx:210`/`:237` is the same shape — row child,
+          `flex-col`, `overflow-hidden`, inner `flex-1 overflow-y-auto` — and
+          carries neither. */}
+      <section
+        className="relative m-1 flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-chat"
+        data-testid="settings-content"
+      >
+        <div className="flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-4xl px-4 pb-8 pt-4">
+            {section === "general"
+              ? generalSection
+              : section === "appearance"
+                ? appearanceSection
+                : section === "providers"
+                  ? providersSection
+                  : section === "mcp"
+                    ? mcpSection
+                    : section === "permissions"
+                      ? permissionsSection
+                      : section === "sessions"
+                        ? sessionsSection
+                        : section === "web-search"
+                          ? webSearchSection
+                          : updatesSection}
+          </div>
         </div>
       </section>
     </div>

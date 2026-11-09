@@ -133,7 +133,20 @@ export default function TasksBoard({
 
   return (
     <section
-      className="flex min-w-0 flex-1 flex-col bg-frame"
+      // ADR 0097: the frame plane is CHROME and every view surface is an ISLAND
+      // above it. This root used to wear the chrome colour itself — the same one
+      // the Session list is painted — so the board sat at contrast 1.00 against
+      // the pane beside it and read as the background showing through rather than
+      // as a surface. It now floats on the island recipe the Side pane and both
+      // Settings halves wear: `m-1` (the 4px frame gap), `rounded-xl`, and the
+      // transcript's own plane. `overflow-hidden` clips the island's corners, and
+      // per the flexbox spec it also drops a flex item's automatic minimum size to
+      // zero — which is why NO `min-height` utility is needed here on top of the
+      // `min-w-0` that IS load-bearing: the parent (`content-row`) is a flex ROW,
+      // so width is the main axis and without it a long row of `w-72` columns
+      // would push this section wide instead of handing the overflow to the
+      // scroller below.
+      className="relative m-1 flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-chat"
       data-testid="tasks-board"
       aria-label="Task board"
     >
@@ -220,7 +233,22 @@ export default function TasksBoard({
         // error, and it must not claim the board is empty when the FETCH failed.
         <EmptyListLine>The board has not loaded yet.</EmptyListLine>
       ) : (
-        <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-3 pb-3">
+        // The columns' scroller. Three things here are load-bearing and each one is
+        // a separate decision:
+        //   - `px-3 pb-3` is the LEFT EDGE. The header band and the boost-note band
+        //     above both inset 12px, so an unpadded scroller started its first
+        //     column at 0 and gave the board two left edges. (An earlier pass
+        //     dropped this on the theory that the island's `m-1` was the gutter —
+        //     `m-1` is the OUTER frame gap, the chrome plane outside the island, and
+        //     not inner padding.)
+        //   - `items-start` is THE switch that makes columns CONTENT-HEIGHT. This is
+        //     a flex ROW, so its default `align-items: stretch` is what stretches
+        //     every column to the full board height today; removing `flex-1` from the
+        //     inner list would do nothing while `stretch` is in force.
+        //   - `overflow-y-auto` moves the vertical scroll HERE. With content-height
+        //     columns no column scrolls itself, so a tall column has to scroll the
+        //     board; both axes on one element is ordinary.
+        <div className="flex min-h-0 flex-1 items-start gap-2 overflow-x-auto overflow-y-auto px-3 pb-3">
           {stages.length === 0 ? (
             <EmptyListLine>This Space has no stages yet.</EmptyListLine>
           ) : (
@@ -310,24 +338,31 @@ function TaskColumn({
       // `cn()` and NOT a ternary over two class lists: `classNameConvention.test.ts`
       // gates every ternary-shaped `className` through a pinned allowlist, and here
       // `cn()` is also simply the right tool — `bg-selected` must win the background
-      // group against the resting `bg-surface`, which a merge does and a concatenation
+      // group against the resting `bg-panel`, which a merge does and a concatenation
       // leaves to CSS order.
       className={cn(
-        "flex w-60 shrink-0 flex-col gap-1.5 rounded-lg border border-border bg-surface p-1.5",
+        "flex w-72 shrink-0 flex-col gap-2 rounded-xl border border-card-border bg-panel p-2",
         // The drop-target band. `border-brand` is the SAME ink the two existing drag
         // call sites use for "you will land here" (`SessionListRow`'s `border-brand`
         // edge, `SpaceTabs`' `border-brand`), so one gesture keeps one visual language.
         over && "border-brand bg-selected",
       )}
     >
-      <div className="flex min-w-0 items-center gap-1.5 px-1">
+      <div className="flex min-w-0 items-center gap-2 px-1">
         {/* `board.stage.label` — the NESTED read. A column built from the flat shape
             (`column.label`) renders an EMPTY header here with no type error, which is
             the failure mode `TasksBoard.test.tsx` pins by name. */}
         <span className="min-w-0 flex-1 truncate text-ui-base text-foreground-subtle">
           {column.stage.label}
         </span>
-        <span className="shrink-0 text-ui-sm text-foreground-subtlest">
+        {/* The count is a COUNT and not a caption, so it gets a fill — and the
+            fill must differ from BOTH surfaces it can sit against (the column's
+            `bg-panel` and the card's `bg-card`) in EVERY palette, which is the
+            check `slabFloatSeparation.test.ts` now runs per palette. `bg-chat`
+            passed that in Dracula (1.22 / 1.21) and is 1.00 — invisible — against
+            `bg-card` in zai-dark by construction, so the pill takes the page step:
+            `bg-background` measures 1.10/1.34, 1.11/1.28, 1.06/1.06. */}
+        <span className="shrink-0 rounded-full bg-background px-2 py-0.5 font-mono text-ui-xs text-foreground-subtle">
           {column.tasks.length}
         </span>
         {/* The column's `on_enter` is what makes a kanban column more than a label, so
@@ -348,7 +383,15 @@ function TaskColumn({
         // columns and usually zero cards, so "empty column" is the common case.
         <EmptyListLine>No tasks.</EmptyListLine>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+        // `flex flex-col gap-2` and NOTHING else. `flex-1` + `overflow-y-auto` are
+        // deliberately GONE: they are what forced a column to fill its height and
+        // scroll INTERNALLY, which is the behaviour this change removes — the column
+        // now hugs its content and the BOARD scrolls (the scroller's
+        // `overflow-y-auto`). `min-h-0` goes with them: it existed only to let that
+        // inner scroller shrink. Pinned as classes in
+        // `TasksBoard.test.tsx` ("the columns hug their content") because jsdom
+        // performs no layout and a height cannot be asserted here.
+        <div className="flex flex-col gap-2">
           {column.tasks.map((task) => {
             const edge = reorder.overId === task.id ? reorder.overEdge : null;
             return (
