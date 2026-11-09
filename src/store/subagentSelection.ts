@@ -9,7 +9,7 @@ interface SubagentSelectionState {
   /** Open (or close, with `null`) the transcript sheet for a subagent. THREE
    * writers, and that is the full list: the two rows that OPEN a sheet — a
    * child's row under the "Delegating" card (`SubagentDelegatingCard`) and a
-   * child's todo block in the side pane (`TodoBoardPanel`) — plus
+   * child's todo block in the side pane (`ChecklistPanel`) — plus
    * `SubagentDetailHost` itself, which writes `null` to close the sheet it owns
    * (Esc). Closing is this and nothing more — the `SubagentEntry` stays in
    * `useSubagents`, so the row under the "Delegating" card survives it. */

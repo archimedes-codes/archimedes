@@ -21,16 +21,28 @@ import { CHROME_BUTTON, CHROME_BUTTON_CLOSE } from "./chromeButton";
  * THE CHROME-BAR BUTTON GRAMMAR, AS A CONSTANT (Finding 6a).
  *
  * This is a CLASS CONSTANT, not a component, and that is the whole design
- * decision (see `./chromeButton.ts`): per CONTEXT.md **Chrome controls** and
- * ADR 0038 the two chrome clusters differ ON PURPOSE, so a shared
- * `<ChromeButton>` would average away a distinction the glossary blesses. The
- * duplication Finding 6a is about is the STRING, and the string is what is
- * shared here.
+ * decision (see `./chromeButton.ts`). It was justified at extraction time by
+ * CONTEXT.md's **Chrome controls** entry (RETIRED by ADR 0095) plus ADR 0038: the
+ * then-TWO chrome clusters differed ON PURPOSE, so a shared `<ChromeButton>`
+ * would have averaged away a distinction the glossary blessed. One of those two
+ * clusters has since been deleted, so that argument is now the record of why a
+ * component was never built rather than a live constraint — what still binds is
+ * the CONSUMER CONTRACT: the tab strip and the Session list's command rows are
+ * different grammars and must not be folded onto this constant. The duplication
+ * Finding 6a is about is the STRING, and the string is what is shared here.
  *
  * Three kinds of assertion, and each carries a different risk:
  *
  *  1. the exact rendered class string of each constant (a characterisation pin
- *     — the extraction must not repaint a single pixel of the six buttons);
+ *     — the extraction must not repaint a single pixel of the buttons it was
+ *     pulled from, SIX at extraction time: the gear plus the two pane toggles
+ *     on one side, Minimize / Maximize / Close on the other. ADR 0094 retired
+ *     the two pane toggles and ADR 0095 retired the gear, so `WindowControls`'
+ *     three buttons are the ONLY consumers today; the captured literals below
+ *     stay as the six-button snapshot, which is what a characterisation pin is
+ *     for — it records the string the deleted buttons were wearing too, and that
+ *     is exactly the evidence that does not survive anywhere else once the
+ *     component files are gone);
  *  2. the SHAPE of the pair (same geometry, only the hover pair differs), which
  *     is the invariant that makes two constants right and a boolean prop wrong;
  *  3. a SOURCE gate that the chrome-bar geometry is spelled in exactly one
@@ -44,10 +56,11 @@ import { CHROME_BUTTON, CHROME_BUTTON_CLOSE } from "./chromeButton";
  * behaviour-pinning shape A0 retired.
  */
 
-/** The exact class string `ChromeControls.tsx`'s local `BTN` carried before
- *  this extraction (its `relative` is the caller's, see the `CHROME_BUTTON`
- *  doc-comment) and `WindowControls.tsx`'s Minimize/Maximize buttons carried
- *  verbatim — minus `relative`, which neither had. */
+/** The pre-extraction record: the exact class string the local `BTN` of the
+ *  now-deleted `ChromeControls.tsx` carried (its `relative` was the caller's,
+ *  see the `CHROME_BUTTON` doc-comment), and the one
+ *  `WindowControls.tsx`'s Minimize/Maximize buttons carried verbatim — minus
+ *  `relative`, which neither had. */
 const MINIMIZE_MAXIMIZE_BEFORE =
   "flex h-7 w-7 items-center justify-center rounded-md text-foreground-subtle transition-colors hover:bg-hover hover:text-foreground";
 /** `WindowControls.tsx`'s Close button, verbatim. */
@@ -119,10 +132,11 @@ describe("CHROME_BUTTON — the chrome bar's shared button grammar", () => {
   });
 
   it("carries NO `relative` — the positioning anchor stays with the caller that owns an absolutely-positioned child", () => {
-    // `ChromeControls`' pending dot is `absolute`, so that component adds
-    // `relative` itself; `WindowControls`' three buttons never had it and must
-    // not gain `position: relative` from a shared constant. This is the one
-    // difference between the pre-extraction `BTN` and this constant.
+    // The retired `ChromeControls`' pending dot was `absolute`, so that deleted
+    // component added `relative` itself; `WindowControls`' three buttons never had
+    // it and must not gain `position: relative` from a shared constant. This was
+    // the one difference between the pre-extraction `BTN` and this constant, and
+    // the half of it that still bites is the `WindowControls` side.
     expect(CHROME_BUTTON.split(/\s+/)).not.toContain("relative");
     expect(CHROME_BUTTON_CLOSE.split(/\s+/)).not.toContain("relative");
   });
@@ -162,12 +176,16 @@ describe("the chrome-bar class string is spelled exactly once (Finding 6a's acce
   });
 
   it("SpaceTabs.tsx does NOT import the chrome-button constant (the second cluster stays separate on purpose)", () => {
-    // CONTEXT.md **Chrome controls** + ADR 0038: the tab strip's ✕ and `+` are a
-    // DIFFERENT cluster — `size-5`/`size-8`, `bg-surface-hover` not `bg-hover`,
-    // `rounded` not `rounded-md`, and NO `transition-colors` (SpaceTabs' own
+    // ADR 0038 + CONTEXT.md's (now-RETIRED) **Chrome controls** entry: the tab
+    // strip's ✕ and `+` are a DIFFERENT cluster — `size-5`/`size-8`,
+    // `bg-surface-hover` not `bg-hover`, `rounded` not `rounded-md`, and NO
+    // `transition-colors` (SpaceTabs' own
     // comment records the hover fill is always-on). A later "dedupe the chrome
     // buttons" sweep that pulls them onto this constant is exactly what this
-    // guard reddens. It is a guard against a future wrong move, so it is green
+    // guard reddens. The glossary entry that first named the two clusters is
+    // retired (ADR 0095 deleted one of them), but THIS rule outlives it — it was
+    // always about the tab strip, not about the gear. It is a guard against a
+    // future wrong move, so it is green
     // today by design — the mutation that proves it has force is adding the
     // import.
     const source = stripJsComments(read("src/components/SpaceTabs.tsx"));

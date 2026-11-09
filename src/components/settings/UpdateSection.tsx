@@ -59,8 +59,9 @@ type Phase =
  *
  * The shape is deliberately the bare React external-store triad: a mutable
  * `phase`, a `Set` of listeners, and `subscribe`/`get` for
- * `useSyncExternalStore` (already the idiom of `lib/sidePaneState.ts` +
- * `SidePane.tsx` in this repo — same shared-flag pattern, same reason). The two
+ * `useSyncExternalStore` (the idiom `lib/newSpaceDialogState.ts` shares — same
+ * shared-flag pattern, same reason: a process-level holder for state that has to
+ * outlive the component that owns it). The two
  * `…InFlight` booleans are the old `checkingRef`/`installingRef` guards moved
  * beside the state they protect: a guard that dies with the component guards
  * nothing, and these are the front door to the Rust `InstallClaim`, which

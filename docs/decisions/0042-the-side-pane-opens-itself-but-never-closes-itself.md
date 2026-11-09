@@ -1,7 +1,7 @@
 ---
 status: accepted
 date: 2026-10-13
-superseded-by:
+superseded-by: 0094-the-sidebars-are-permanent-no-collapse-affordance.md
 ---
 
 # The Side pane opens itself, and never closes itself
@@ -69,3 +69,48 @@ catch does not re-check `activeSessionId` the way the success path does, so a wr
 would stamp a Session the user already left. Whoever takes it owes a `src/store/sessions.ts`
 case (a rejected `loadHistory` still leaves `messages[sessionId]` defined) and a
 `src/components/SidePane.test.tsx` case (a board arriving after a FAILED load opens the frame).
+
+## Amendment (2026-11-09) — SUPERSEDED by ADR 0094: the pane can no longer collapse at all, so there is no edge to judge
+
+**This supersedes the whole decision.** ADR 0094 made both flanking panes permanent: the
+collapsed flag, the module that owned it and its persistence, and every control that wrote it
+are deleted. There is no boolean left for an edge to write, so this decision is not overruled
+on its merits — its reasoning (never yank the surface that just showed the work out from under
+the user) is the reason that change went the way it did — it is superseded because its subject
+is gone. The text above stays as the record of what was decided and why.
+
+**What died structurally**, in `src/components/SidePane.tsx` and its module:
+
+- the **auto-open effect** — the `useEffect` that read the ACTIVE Session's open-board count
+  and wrote the collapsed flag on the 0 → >0 edge;
+- **the three refs** this decision and its 2026-10-13 amendment required — `prevVisibleRef`
+  (the edge baseline), `prevSessionIdRef` (the per-Session re-baseline) and `prevHydratedRef`
+  (the hold-until-the-transcript-lands arm);
+- the flag's writer and its `localStorage` key, and with them the **concept of a manual
+  collapse** — the thing this entire design kept working around. "The user's own toggle is the
+  ONLY thing that collapses the pane" is now vacuously true: there is no toggle, and no pane
+  state to collapse.
+
+The pane's *data* gates survive untouched. The **Checklist** section still renders only while a
+board has an open item and still vanishes when the work finishes, with the session title
+remaining — the frame just no longer has a second, user-owned axis on which to disappear. The
+open-item rule this amendment named is still what the section gates itself on inside
+`ChecklistPanel`; what is gone is any reader of that rule that opened or closed a frame.
+
+**The accepted residual of the 2026-10-13 amendment is CANCELLED, not inherited.** That
+amendment accepted that a FAILED `loadHistory` leaves `messages[sessionId]` absent for good, so
+the session reads as un-hydrated forever and every auto-open edge for it stays suppressed until
+the user opens the pane by hand — and it left its taker two cases to write: a
+`src/store/sessions.ts` case (a rejected `loadHistory` still leaves `messages[sessionId]`
+defined) and a `src/components/SidePane.test.tsx` case (a board arriving after a FAILED load
+opens the frame). **Neither is owed any more, and the debt is discharged rather than
+transferred.** The residual's only symptom was a frame that would not open; there is no frame
+to open, and the second named case has no subject at all. The empty-vs-unreadable transcript
+distinction that amendment weighed is still a genuine question for any consumer that wants to
+offer a *retry*, and ADR 0094 takes no position on it — cancelling this residual is not a
+ruling on that.
+
+A reader who wants the pane to hide again is not looking for a bug to fix here. They owe a
+collapsed flag, a persistence key, a control, and a ruling on auto-collapse — i.e. they owe
+superseding ADR 0094, whose own text explains why auto-collapse is the failure this file was
+written to end.

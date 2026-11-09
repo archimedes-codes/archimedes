@@ -235,13 +235,24 @@ const TAURI_PUBLIC_API = [
   "CompletionDirDto",
   "CompletionEntryDto",
   "ContentBlock",
+  // (Task board, ADR 0090) The board command wrappers enter BOTH lists (they are
+  // runtime values) and the FIVE wire shapes enter THIS list only (type-only,
+  // the `AccessRule`/`AccessDirection` precedent). They land in the same commit as
+  // the `src/lib/tauri.ts` re-export lines, per this file's own rule that a name
+  // may only enter on purpose, in a commit that says so — `reorderTasks` entered
+  // both in the commit that added its wrapper, and `startTaskSession` (A4, spec
+  // §3) entered both in the commit that added its wrapper and its re-export.
+  "createTask",
   "deleteSession",
   "deleteSpace",
+  "editTask",
   "externalOpen",
   "FilePolicy",
   "FontSettings",
+  "getBoard",
   "getProviderBudget",
   "getSettings",
+  "getTask",
   "getWindowState",
   "HistoryPage",
   "InteractiveEventPayload",
@@ -271,13 +282,16 @@ const TAURI_PUBLIC_API = [
   "listSkills",
   "listSpaceListing",
   "listSpaces",
+  "linkSession",
   "listTools",
   "loadHistory",
   "McpServerEntry",
   "McpServerInfo",
   "MessageRow",
   "ModelDto",
+  "MoveTaskOutcome",
   "OverrideSource",
+  "moveTask",
   "PermissionOption",
   "PermissionOutcome",
   "PermissionRequest",
@@ -307,6 +321,7 @@ const TAURI_PUBLIC_API = [
   "readFileBytes",
   "reorderSessions",
   "reorderSpaces",
+  "reorderTasks",
   "respondInteractiveRequest",
   "respondPermission",
   "resumeSession",
@@ -332,12 +347,17 @@ const TAURI_PUBLIC_API = [
   "spaceForPath",
   "SpaceRow",
   "StalledPayload",
+  "StageRow",
+  "StageWithTasks",
   "startSession",
+  "startTaskSession",
   "StopReason",
   "SubagentClosedPayload",
   "SubagentFailureReason",
   "SubagentMetrics",
   "SubagentSessionStartedPayload",
+  "TaskRow",
+  "TaskSessionRow",
   "TeamDto",
   "testMcpServer",
   "testSearchProvider",
@@ -348,9 +368,12 @@ const TAURI_PUBLIC_API = [
 ];
 
 /** The RUNTIME values of the surface above (the rest are type-only and vanish
- *  at runtime — `Object.keys` of the real module equals this list). It measures
- *  58 as of issue #126/#127/#132; the "pinned 49" this comment used to claim was
- *  prose no assertion reads. */
+ *  at runtime — `Object.keys` of the real module equals this list). NO COUNT IS
+ *  STATED HERE, on purpose, per this file's own header: the two numbers this
+ *  comment carried ("pinned 49", then "58 as of issue #126/#127/#132") were both
+ *  prose no assertion read, and the second was already wrong at the commit that
+ *  wrote it — the array measures 66 today (A4's `startTaskSession` is the 66th).
+ *  The array IS the expectation. */
 const TAURI_RUNTIME_API = [
   "attentionArm",
   "attentionDisarm",
@@ -358,11 +381,21 @@ const TAURI_RUNTIME_API = [
   "cancelSession",
   "closeSession",
   "compactSession",
+  // (Task board, ADR 0090) The board wrappers. The FIVE companion type names
+  // (`StageRow`/`StageWithTasks`/`TaskRow`/`TaskSessionRow`/`MoveTaskOutcome`) are
+  // in `TAURI_PUBLIC_API` ONLY — they vanish at runtime, so they never enter this
+  // list (the `AccessRule`/`AccessDirection` precedent). No count stated here on
+  // purpose: this file's own header says the ARRAY is the expectation.
+  "createTask",
   "deleteSession",
   "deleteSpace",
+  "editTask",
   "externalOpen",
+  "getBoard",
   "getSettings",
+  "getTask",
   "getWindowState",
+  "linkSession",
   "listAgentDefinitionReports",
   "listAgentDefinitionsForSpace",
   "listCompletionEntries",
@@ -400,10 +433,12 @@ const TAURI_RUNTIME_API = [
   "providerLoginPasteToken",
   "providerLoginSsoChooseTeam",
   "providerLoginSsoPoll",
+  "moveTask",
   "readClipboardImage",
   "readFileBytes",
   "reorderSessions",
   "reorderSpaces",
+  "reorderTasks",
   "respondInteractiveRequest",
   "respondPermission",
   "resumeSession",
@@ -416,6 +451,9 @@ const TAURI_RUNTIME_API = [
   "shellSandboxAvailable",
   "spaceForPath",
   "startSession",
+  // (A4, spec §3) The Task board's Session starter — a RUNTIME wrapper (it
+  // returns the already-pinned `SessionInfo`, so no TYPE name enters with it).
+  "startTaskSession",
   "testMcpServer",
   "testSearchProvider",
 ];
@@ -506,10 +544,42 @@ describe("the scanner actually reads the tree", () => {
     // spelling of the barrel that does not name `lib/tauri`, and a barrel mocker
     // is exactly what the seam needs. It is NOT a new mock — the same factory,
     // the same `importActual` spread, one directory deeper.
-    expect(mockers).toHaveLength(48);
-    // 47 of the 48 SPREAD `vi.importActual`, which is the shape that makes the
-    // seam forgiving: an unlisted export still resolves. The new mocker spreads
-    // too (it lists the 17 arms its own tests drive and leaves every other barrel
+    //
+    // And 48 -> 50 when the task board's frontend surface (A3) landed
+    // `src/store/tasks.test.ts` (the per-Space board store, driving
+    // `getBoard`/`moveTask`/`reorderTasks`/`createTask`/`linkSession` — the
+    // camelCase WRAPPER names, because the store imports the wrappers and mocking
+    // the snake_case Rust command names would leave the real wrapper live and
+    // rejecting in jsdom) and `src/components/TasksBoard.test.tsx` (the board
+    // surface, which reaches the same wrappers THROUGH that store on mount). TWO new
+    // mockers, not one: the store and the component each need the seam, and neither
+    // can borrow the other's mock across a module boundary. The board's other two
+    // test files are NOT mockers and do not move this count — `TaskCard.test.tsx`
+    // renders a card from a `TaskRow` prop and `useDragCard.test.tsx` drives a hook
+    // from a `stages` prop, so neither touches IPC at all, which is the shape the
+    // seam prefers.
+    // And 50 -> 52 when the New Task modal (A5) landed two test files, both of
+    // which drive the barrel through the documented seam:
+    // `components/NewTaskDialog.test.tsx` (the create-Task-then-Session send
+    // path: `createTask` / `startTaskSession` / `sendPrompt` /
+    // `setSessionConfigOption`, plus the composer's four catalog fetches) and
+    // `components/SessionConfigBlock.test.tsx` (the new `sessionId` prop's write
+    // path — `setSessionConfigOption`, which MUST be a mock or the isolation test
+    // would be pinning a jsdom `invoke` rejection instead of WHICH SESSION ID was
+    // written). Neither is a re-spelling of an existing mock: `SessionConfigBlock`
+    // had NO test file before A5 (its behaviour was pinned from the outside,
+    // through `SidePane.test.tsx`), and a prop no call site passes cannot be
+    // pinned from a call-site test.
+    //
+    // THIS IS THE CENSUS MOVING FOR THE ONE REASON THE PIN ALLOWS — a test file
+    // added, in a commit that says so. The barrel's OWN surface was NOT touched:
+    // the two API pins below (`TAURI_PUBLIC_API`, `TAURI_RUNTIME_API`) are
+    // untouched and green, because A5 adds no IPC wrapper — `startTaskSession`
+    // and the four board commands shipped in A1/A4.
+    expect(mockers).toHaveLength(52);
+    // 51 of the 52 SPREAD `vi.importActual`, which is the shape that makes the
+    // seam forgiving: an unlisted export still resolves. Both new mockers spread
+    // too (each lists the arms its own tests drive and leaves every other barrel
     // export — `invoke` included — to the real module), so the remaining one
     // is still `hooks/useWindowMaximized.test.ts`, which replaces the module
     // wholesale — so a name it forgets is `undefined`, the case the pinned-surface
@@ -518,7 +588,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(readFileSync(f, "utf8")),
       ).length,
-    ).toBe(47);
+).toBe(51);
   });
 });
 

@@ -15,7 +15,7 @@
 //!
 //! (T5/S5b) The VALUE types are no longer here at all — `Settings`,
 //! `FontSettings`, `ProviderConfig`, `AgentOverrideFields`, `OidcConfig` and
-//! `WebSettings` all live in `fulcrum_core::config_types` (re-exported below),
+//! `WebSettings` all live in `fulcrum_harness::config_types` (re-exported below),
 //! because `harness` names them and `harness` is in the crate. What this module
 //! OWNS — and what no crate file may ever name — is the DISK: `load_settings`,
 //! `write_settings` and `settings_path`. The engine has the shape of the
@@ -31,7 +31,7 @@ use crate::agent::policy::AccessRule;
 /// block). Every field is optional; an unset key means "this Search provider
 /// is not available" (or, for `defaultProvider`/`proxy`, "auto"/"none").
 ///
-/// (Fulcrum T5/S2) This DTO lives in `fulcrum-core` now — the §2c config SPLIT:
+/// (Fulcrum T5/S2) This DTO lives in `fulcrum-harness` now — the §2c config SPLIT:
 /// the value types move, `load_settings` stays, because `load_settings` IS the
 /// T3 disk boundary and moving it would put the desktop's settings loader inside
 /// the engine. The crate needs the TYPE because `web::config::WebConfig::
@@ -39,7 +39,7 @@ use crate::agent::policy::AccessRule;
 /// Supervisor's `test_search_provider` both use — takes it. Pure serde data,
 /// zero desktop logic, so the re-export below keeps `crate::config::WebSettings`
 /// resolving for all 20 pre-existing call sites with no edits.
-pub use fulcrum_core::web::config::WebSettings;
+pub use fulcrum_harness::web::config::WebSettings;
 
 /// (Fulcrum T5/S4 + S5b) The §2c config SPLIT is now COMPLETE. S2 moved
 /// `WebSettings`; S4 moved the other three value DTOs the packaged `StartEnv`
@@ -49,7 +49,7 @@ pub use fulcrum_core::web::config::WebSettings;
 /// deeper); S5b moved the last two, `Settings` and `FontSettings`, because
 /// `harness/launch.rs` names `Settings` in PRODUCTION (`override_layer` /
 /// `packaged_settings`) and `harness` moved into the crate. They live in
-/// `fulcrum_core::config_types` for the same reason `WebSettings` does, and the
+/// `fulcrum_harness::config_types` for the same reason `WebSettings` does, and the
 /// rule is unchanged and load-bearing: **the value types move, `load_settings`
 /// stays**, because `load_settings` IS the T3 disk boundary and moving it would
 /// put the desktop's `settings.json` loader inside the engine. The crate owns
@@ -64,7 +64,7 @@ pub use fulcrum_core::web::config::WebSettings;
 /// errors at exactly the packaging sites — `session/mod.rs:1527`,
 /// `worker/core.rs:288,355,356`, `worker/manager/mod.rs:445` — which is the
 /// compiler proving the split had to finish here and not halfway.)
-pub use fulcrum_core::config_types::{
+pub use fulcrum_harness::config_types::{
     AgentOverrideFields, FontSettings, OidcConfig, ProviderConfig, Settings,
 };
 

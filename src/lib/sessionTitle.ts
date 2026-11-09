@@ -6,10 +6,12 @@ import type { Message } from "./sessionTypes";
  * message truncated to ~80 chars, else the **Space**'s folder name.
  *
  * THE ONE title rule, shared by every surface that labels a Session (the
- * sidebar's rows, the close-confirm's list of open Sessions, …) — a label that
- * disagrees with the row it names is worse than no label, which is the same
- * reasoning that put the side pane's rail marks and its panel on one
- * derivation. (`SidePane`'s header and `SpacesList`'s row used to carry their
+ * **Session list**'s rows, the close-confirm's list of open Sessions, …) — a
+ * label that disagrees with the row it names is worse than no label, which is
+ * the same reasoning that once put the side pane's rail marks and its panel on
+ * one derivation (both of those surfaces' shared owner is gone with the rails —
+ * ADR 0094 — but the rule this function owns still has the consumers named
+ * above). (`SidePane`'s header and `SpacesList`'s row used to carry their
  *  own inline copies of the TITLE LOOKUP; that walk now has one owner,
  *  `sessionFieldOf` in `lib/sessionLookup.ts`, which they call from inside their
  *  selectors. The two are still separate on purpose: this function owns the

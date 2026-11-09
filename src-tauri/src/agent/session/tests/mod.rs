@@ -3902,7 +3902,7 @@ async fn a_stored_session_still_rejects_an_unknown_config_option() {
 }
 
 /// The DRIFT PIN for the `option_id` wire vocabulary (consumer side).
-/// The two ids are PRODUCED in `fulcrum-core` (`permission.rs`) and forwarded
+/// The two ids are PRODUCED in `fulcrum-harness` (`permission.rs`) and forwarded
 /// verbatim by the frontend (`PermissionPrompt.tsx` sends `option.optionId`
 /// back untouched; TS widens to `string`), so a desktop-side pin can only
 /// assert this CONSUMER side — the two compares and the two fixtures share
@@ -3922,7 +3922,7 @@ fn permission_option_id_spellings_are_frozen() {
     assert_eq!(
         spelled,
         vec!["trust-space", "allow-directory"],
-        "the option_id spellings are frozen (consumer side — producers live in fulcrum-core)"
+        "the option_id spellings are frozen (consumer side — producers live in fulcrum-harness)"
     );
     for (expected, constant) in frozen {
         assert_eq!(

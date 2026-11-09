@@ -22,21 +22,15 @@ import { useModelCatalog } from "./store/modelCatalog";
 import { usePermissions } from "./store/permissions";
 import { useInteractive } from "./store/interactive";
 import { useSubagents } from "./store/subagents";
-import {
-  getLeftPaneCollapsed,
-  LEFT_PANE_RAIL,
-  LEFT_PANE_WIDTH,
-  subscribeLeftPane,
-} from "./lib/leftPaneState";
-import SpacesList from "./components/SpacesList";
+import SpacesList, { LEFT_PANE_WIDTH } from "./components/SpacesList";
 import SpaceTabs from "./components/SpaceTabs";
 import ChatStream from "./components/ChatStream";
 import SidePane from "./components/SidePane";
 import WindowControls from "./components/WindowControls";
-import ChromeControls from "./components/ChromeControls";
 import SubagentDetailHost from "./components/SubagentDetailHost";
 import { SubagentModals } from "./components/SubagentModals";
 import SettingsPage from "./components/settings/SettingsPage";
+import TasksBoard from "./components/TasksBoard";
 import { SpaceCwdProvider } from "./components/SpaceCwd";
 import { cn } from "./components/lib/utils";
 import { useAttentionAlert } from "./hooks/useAttentionAlert";
@@ -61,9 +55,12 @@ function App() {
   useAttentionAlert();
 
   // The ⌘N / ⌘O chords (app commands, so app-scoped). SAME reason as the hook
-  // above: the pane that used to own this listener (`SpacesList`) is unmounted
-  // while the Settings page is open, so a chord declared there does not exist
-  // there. See `useAppShortcuts` for what it claims and what it no longer yields
+  // above: the pane that used to own this listener (`SpacesList`) sat inside the
+  // view ternary, so it was unmounted while the Settings page was open and a
+  // chord declared there did not exist there. (Spec D2 has since hoisted that
+  // pane out of the ternary, but the chord stays app-scoped — it is an app
+  // command, and it must survive whatever the sidebar does.)
+  // See `useAppShortcuts` for what it claims and what it no longer yields
   // to.
   useAppShortcuts();
 
@@ -316,15 +313,26 @@ function App() {
   // Session `setSpaces` picks has to be told what recency is). Its result is
   // written BEFORE `setSpaces` for exactly that reason; see the effect below.
   //
-  // The content-area view: the workspace (the default) OR the settings
-  // page (opened from the `SpacesList`'s gear icon). While settings is
-  // open the workspace UNMOUNTS (the ZCode `opacity-0` + `inert` pattern
-  // is for keeping the workspace MOUNTED — the stores are the source of
-  // truth and re-hydrate on remount, so the simpler unmount is used): a
-  // session running in the background keeps streaming into the stores
-  // (the listener `useEffect`s above are view-independent), and the
-  // `SpacesList` / `ChatStream` / `SidePane` re-read them on remount.
-  const [view, setView] = useState<"workspace" | "settings">("workspace");
+  // The content-area view: the workspace (the default), the settings
+  // page (opened from the `SpacesList`'s `Settings` door), or the Task BOARD (opened
+  // from the `SpacesList`'s `Tasks` command). Both non-workspace views
+  // UNMOUNT the workspace — which is now exactly `ChatStream` / `SidePane` /
+  // `SubagentDetailHost`; the `SpacesList` is hoisted ABOVE the ternary and
+  // mounts on all three views (spec D2), so it is no longer one of the
+  // unmounted surfaces. (The ZCode `opacity-0` + `inert` pattern is for
+  // keeping the workspace MOUNTED — the stores are the source of truth and
+  // re-hydrate on remount, so the simpler unmount is used): a session
+  // running in the background keeps streaming into the stores (the listener
+  // `useEffect`s above are view-independent), and `ChatStream` / `SidePane`
+  // re-read them on remount while the Session list never stopped reading them.
+  //
+  // THREE ARMS, AND THE THIRD NEEDS AN EXPLICIT ONE. The workspace is the
+  // implicit `else` of the ternary below, so a value the ternary does not name
+  // renders the WORKSPACE. Widen the union without adding the arm and `board`
+  // would paint the chat column and the Side pane — a green build, a passing
+  // smoke test, and no board. The `"board"` arm is therefore spelled out, not
+  // fallen into.
+  const [view, setView] = useState<"workspace" | "settings" | "board">("workspace");
   // The Subagent sheet needs to know about this transition, and it is told — it
   // is not rewritten. `SubagentDetailHost` lives in the ternary's else-branch, so
   // opening Settings UNMOUNTS the sheet while `useSubagentSelection` keeps its
@@ -342,20 +350,9 @@ function App() {
   // selection is also the cheaper answer: the sheet re-mounts with the same
   // transcript it had, and the `hidden`-class outer `div` plus the store-backed
   // rows mean nothing else needs re-syncing.
-  // The panes' collapsed flags (the shared `leftPaneState` /
-  // `leftPaneState` module — the SAME flag the pane reads, so the pane's own
-  // toggle and this segment agree without event guessing. The left logo
-  // segment is the sidebar's width, so the tabs start exactly where the centre
-  // column begins: it follows the sidebar's collapse state (260px expanded,
-  // `LEFT_PANE_RAIL` collapsed) and MUST use the rail, not 0, or the tabs
-  // would drift 40px left of the content column's edge while collapsed.
-  const sidebarCollapsed = useSyncExternalStore(
-    subscribeLeftPane,
-    getLeftPaneCollapsed,
-  );
-  // The Open Space dialog's flag — the SHARED module's, read with the same
-  // two-arg `useSyncExternalStore` the pane flags above use. `App` is now the
-  // dialog's ONLY render site, so this read is what makes the dialog survive the
+  // The Open Space dialog's flag — the SHARED module's, read with a two-arg
+  // `useSyncExternalStore`. `App` is now the dialog's ONLY render site, so this
+  // read is what makes the dialog survive the
   // Settings view: the raise sites are the root chord, the tab strip's `+` and
   // the sidebar's buttons, and a flag with an owner inside the workspace could
   // not be answered while the workspace is unmounted.
@@ -392,8 +389,8 @@ function App() {
   // picker catalogs) reads the same hook, so the Space the composer completes
   // against and the Space a relative External-open resolves against cannot
   // disagree.
-  // This is `App`'s FIRST subscription to the SESSIONS store (the collapsed
-  // flag above is the separate `leftPaneState` module, via
+  // This is `App`'s FIRST subscription to the SESSIONS store (the dialog flag
+  // above is the separate `newSpaceDialogState` module, via
   // `useSyncExternalStore`), so `App` now re-renders when the session list or
   // the active session changes. Accepted deliberately — `applySessionUpdates`
   // rewrites `messages`, not the lists, so streaming does not re-render the app
@@ -423,16 +420,21 @@ function App() {
           buttons / tabs (interactive elements without the attribute)
           still block it and stay clickable. The left segment's width
           is the sidebar's width (the tabs start where the center column
-          begins; it follows the sidebar's collapse state: 260px expanded,
-          0px collapsed — the icon clips away with it). The APP's own controls —
-          the Settings gear and the two pane collapse toggles — sit at the RIGHT
-          end, immediately outboard of the window controls, in BOTH collapse
-          states (`ChromeControls`); the panes themselves carry no control at
-          all, and the collapsed rails reserve no gap for one. In the settings
-          view (the workspace unmounts) the segment is `flex-1` (full width —
-          the old chrome-bar layout; no tabs, and no app controls either, since
-          the panes they drive are unmounted and `SettingsPage` has its own
-          Back). */}
+          begins; the sidebar is permanent at `LEFT_PANE_WIDTH`, so this segment
+          is that same constant and cannot drift).
+
+          THE BAR HOLDS THE TABS AND THE WINDOW CONTROLS AND NOTHING ELSE. The
+          app's own control — the Settings door — is NOT here: it moved into the
+          Session list's command strip (whose old chrome-bar home is deleted), so the
+          top-right corner belongs to the window manager alone and the strip is
+          the app's one navigation surface. The pane collapse toggles that used to
+          live here are retired with the panes' collapsed flags. In the settings
+          view (the workspace unmounts) the segment is `flex-1` (full width — the
+          old chrome-bar layout) and the tabs are dropped (D6: Settings is not a
+          tab peer). There is no app control on this bar in EITHER arm. The Settings
+          view's exit is the pressed **Settings** button in the Session list (and any
+          Session row leaves the view too); the page carries no exit control of its
+          own — its `Back` was retired as redundant, not replaced by this. */}
       <div
         data-tauri-drag-region="deep"
         className="flex h-10 shrink-0 items-center bg-frame pr-2"
@@ -450,7 +452,7 @@ function App() {
         ) : (
           <>
             <div
-              style={{ width: sidebarCollapsed ? LEFT_PANE_RAIL : LEFT_PANE_WIDTH }}
+              style={{ width: LEFT_PANE_WIDTH }}
               className="flex h-full shrink-0 items-center pl-3"
             >
               <img
@@ -460,10 +462,11 @@ function App() {
                 draggable={false}
               />
             </div>
-            {/* Pane controls are NOT here: both toggles and the gear live in
-                `ChromeControls` at the bar's right end (see above). */}
+            {/* No app control is here at all: the bar's only children are the logo
+                segment, the tabs and `WindowControls`. The Settings door lives in the
+                Session list's command strip, and the pane collapse toggles are
+                retired entirely. */}
             <SpaceTabs />
-            <ChromeControls onOpenSettings={() => setView("settings")} />
           </>
         )}
         <WindowControls />
@@ -473,8 +476,12 @@ function App() {
           (`useAppShortcuts`) and for the same reason `SubagentModals` and the root
           `NewSpaceDialog` are: the surface that used to be the ONLY reader of
           `newSessionError` — the sidebar's `New Session` `+` button `title` —
-          unmounts on the Settings page, so a chord that works there could fail
-          there in total silence. A strip in the column (not inside the content
+          unmounted on the Settings page back when the pane lived inside the
+          ternary, so a chord that works there could fail there in total silence.
+          (Spec D2 has since hoisted the Session list out of that ternary, so the
+          tooltip is reachable from Settings again — the banner stays, because a
+          `title` needs a hover aimed at one small button and a chord has no
+          button at all.) A strip in the column (not inside the content
           row) so it spans the window instead of squeezing a pane, and it needs no
           `SpaceCwdProvider`: it reads one store field and opens nothing. */}
       <NewSessionErrorBanner />
@@ -493,14 +500,60 @@ function App() {
             `external_open` refuses a relative path — the safe direction, but a
             dead surface. */}
         <SpaceCwdProvider cwd={spaceCwd}>
+          {/* The Session list — PERMANENT (spec D2), hence mounted ABOVE the
+              ternary rather than in its else-branch. It needs no provider of its
+              own (`SpacesList` reads no `useSpaceCwd`; that hook's readers are
+              `MessageBubble`, `OpenAnchor`, `ToolCallCard` and `SpaceCwd`), so
+              its position inside `SpaceCwdProvider` is for shape only.
+
+              TWO ACCEPTED FACTS, both on the record so neither reads as a bug:
+
+              1. Its `SkillsDialog` / `AgentsDialog` / `DeleteSessionDialog` are
+                 `fixed` Radix portals mounted INSIDE the pane, so they are now
+                 reachable while Settings is open. That is the POINT of the
+                 hoist, not a leak — the pane's commands do not stop existing
+                 because a page is in front of the center column.
+
+              2. THE ARITHMETIC: on the app's default window
+                 (`tauri.conf.json` → `width: 800`) the Settings view now spends
+                 260 (`LEFT_PANE_WIDTH`) + 268 (`SettingsPage`'s own section
+                 `aside`) = 528px on navigation, leaving 272px for section
+                 content. There is NO `min_inner_size` in `tauri.conf.json` and
+                 no `set_min_inner_size` anywhere in `src-tauri/src/` (both
+                 verified at planning time), so nothing stops a user taking that
+                 further. A minimum window size is deliberately NOT part of this
+                 change — it is a separate decision with frameless-window
+                 implications on Windows/Linux.
+
+              THE STRIP IS THE VIEW SWITCHER: the pane is told which view is up, so
+              its **Settings** and **Tasks** doors render pressed and toggle off, and
+              it is handed the exit a **Session** row click takes. All three callbacks
+              are the same `setView` the rest of this file already calls. */}
+          <SpacesList
+            onOpenBoard={() => setView("board")}
+            onOpenSettings={() => setView("settings")}
+            onReturnToWorkspace={() => setView("workspace")}
+            currentView={view}
+          />
           {view === "settings" ? (
-            // Full width — the `SpacesList` is NOT rendered in the settings
-            // view (the `SettingsPage`'s own 268px section sidebar is the
-            // left edge).
-            <SettingsPage onBack={() => setView("workspace")} />
+            // Full width BESIDE the permanent Session list above — the
+            // `SettingsPage`'s own 268px section sidebar is the second nav
+            // column (spec D3: two adjacent navs on this page is accepted).
+            <SettingsPage onReturnToWorkspace={() => setView("workspace")} />
+          ) : view === "board" ? (
+            // The Task board, in place of the chat column AND the Side pane (spec
+            // §3: the board replaces the right pane). It unmounts NEITHER pane:
+            // the Session list sits above this ternary now, so its own `Tasks`
+            // door stays on screen and IS the board's exit (toggled off, or left
+            // by any Session row) — the board carries no exit control of its own.
+            // `activeSpacePath` is the
+            // SAME derivation the `SpaceCwdProvider` above and `SidePane` use, so
+            // the board and the transcript cannot disagree about which folder is
+            // showing; `null` (no active Session) is a value `TasksBoard` renders
+            // rather than one it sends to `get_board`.
+            <TasksBoard activeSpacePath={spaceCwd} />
           ) : (
             <>
-              <SpacesList />
               {/* The center column: the chat (the Spaces are the chrome
                   bar's TABS — the old top row is gone). */}
               <div className="flex min-w-0 flex-1 flex-col">
@@ -528,16 +581,32 @@ function App() {
               unmounts with this ternary while the overlay does not, so the
               overlay is told which view is up instead of inferring it from the
               sheet's selection store (which survives the transition, so the
-              user's open transcript survives it too). */}
+              user's open transcript survives it too).
+
+              THE VALUE STAYS `view === "workspace"` — the plan for this view said
+              `view !== "settings"`, and that is WRONG. `SubagentDetailHost` above is
+              the sheet's ONLY render site and it lives in the else-branch, so the
+              `"board"` arm unmounts the sheet exactly as Settings does. The prop's
+              meaning is "the SHEET is mounted", which for `"board"` is FALSE: passing
+              `view !== "settings"` would report a sheet that is not painted, and the
+              overlay would slide 480px left and cap its width for a phantom sheet —
+              reintroducing on a new view the exact defect the prop was introduced to
+              stop. Measured, not reasoned: with `view !== "settings"` the rendered
+              panel carries `right-[480px]` over the board, and
+              `App.test.tsx`'s "the gate panel does NOT dodge a sheet the board view
+              unmounted" case goes red on it. */}
           <SubagentModals sheetMounted={view === "workspace"} />
           {/* The Open Space dialog — the ONE render site in the app (the
               sidebar's copy is gone, and the tab strip never had one). A SIBLING
               of the whole settings ternary for exactly the reason
               `SubagentModals` above states: the else-branch renders NOTHING
               while Settings is open, so a dialog mounted in there would be
-              raiseable-but-invisible on the page where the sidebar is unmounted
-              — the flag flips and nothing paints. A `fixed` Radix modal, so its
-              position in this flex row does not affect layout. */}
+              raiseable-but-invisible on that page — the flag flips and nothing
+              paints. (That is why the root mount survives spec D2 hoisting the
+              sidebar out of the ternary: the rule was never about the sidebar's
+              width, it is about the dialog not belonging to any view.) A `fixed`
+              Radix modal, so its position in this flex row does not affect
+              layout. */}
           {newSpaceDialogOpen && (
             <NewSpaceDialog onClose={() => setNewSpaceDialogOpen(false)} />
           )}

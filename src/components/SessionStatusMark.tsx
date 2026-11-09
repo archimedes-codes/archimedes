@@ -7,40 +7,40 @@ import type { SessionStatus } from "../hooks/useSessionStatus";
  * The ONE session-state glyph: spinner = working, `?` = blocked on the user,
  * filled ring = live and idle, dim ring = stored.
  *
- * WHY IT IS ONE COMPONENT. Three surfaces show a session's state — the open
- * sidebar row's leading slot, the collapsed rail's column of marks, the tab in
- * the chrome bar — and each used to own its own rendering. Two consequences the
- * user noticed as bugs:
+ * WHY IT IS ONE COMPONENT. Two surfaces show a session's state — the sidebar
+ * row's leading slot (`SpacesList`) and the tab in the chrome bar
+ * (`SpaceTabs`) — and each used to own its own rendering. Two consequences the
+ * user noticed as bugs, both against the row:
  *
- * - the open row said "waiting" with a TEXT PILL in its TRAILING slot while the
- *   rail said it with a DOT in the LEADING one: one fact, two shapes, two
+ * - the row said "waiting" with a TEXT PILL in its TRAILING slot while the
+ *   mark column said it with a DOT in the LEADING one: one fact, two shapes, two
  *   places to look, and the pill's cost was the row's relative time (while a
  *   session waited you could not see how long ago it had been active);
- * - the rail's IDLE dot had no counterpart in the open row, whose leading slot
- *   was empty unless the session was in a turn — so COLLAPSING the sidebar added
- *   a state the expanded sidebar could not show at all.
+ * - the IDLE dot had no counterpart in the row, whose leading slot was empty
+ *   unless the session was in a turn — so one surface carried a state the other
+ *   could not show at all.
  *
  * One glyph set, drawn by one function, at a size the caller picks: the four
- * states are then the same four facts in all three places, and a fifth state
- * means editing one `switch`.
+ * states are then the same four facts in both places, and a fifth state means
+ * editing one `switch`.
  *
  * THE `?` AND ITS INK. `waiting` — a pending permission, `ask`, sudo password,
  * or a child Session holding one of those — is a question in the literal sense:
  * the Session has stopped and is asking you something. So the glyph is the app's
  * question icon rather than a dot, and it keeps the attention INK
- * (`text-warning`, the token the collapsed pane's toggle dot, the todo board's
- * in-progress `◉` and `SubagentStatusIcon`'s running mark also wear) that made
- * the old dot outrank the spinner. That ink is load-bearing: it is what still
- * reads "blocked on you" once the fill is gone, and `waiting` outranks `running`
- * because a Session parked on a human is not working.
+ * (`text-warning`, the token the todo board's in-progress `◉` and
+ * `SubagentStatusIcon`'s running mark also wear) that made the old dot outrank
+ * the spinner. That ink is load-bearing: it is what still reads "blocked on you"
+ * once the fill is gone, and `waiting` outranks `running` because a Session
+ * parked on a human is not working.
  *
- * IDLE IS A GLYPH NOW, IN BOTH SIDEBAR STATES. `live` and `stored` differ by TWO
- * steps, not one — a thicker ring plus the brighter ink against a hairline ring
- * plus the quietest ink — because at rail size (10px) a single 1px difference is
- * not a visible difference.
+ * IDLE IS A GLYPH, AT BOTH SIZES. `live` and `stored` differ by TWO steps, not
+ * one — a thicker ring plus the brighter ink against a hairline ring plus the
+ * quietest ink — because at the tab's 14px a single 1px difference is not a
+ * visible difference.
  *
  * THE ACTIVE SESSION takes the brighter ink rather than a background fill: the
- * open row marks the active row with a `bg-selected` FILL behind the whole row,
+ * row marks the active row with a `bg-selected` FILL behind the whole row,
  * and a glyph this small has no room for a fill of its own — so it is weight, not
  * a surface, and both values are existing tokens rather than a mark-only colour.
  *
@@ -55,14 +55,15 @@ const QUESTION_RENDERED_STROKE_PX = 1.25;
 
 /**
  * The `?` glyph's `stroke-width` for a given box, so the mark reads as a
- * question mark in the RAIL as well as in the open row.
+ * question mark in the TAB as well as in the row.
  *
  * Lucide draws on a 24-unit viewBox with `stroke-width: 2`, and sizing the icon
- * by width/height scales the stroke with it — so the rail's 10px mark would
- * render 2 × 10/24 ≈ 0.83px, a hairline, where the 10px FILLED DOT it replaced
- * was never one. The rail is the worst place to lose it: the list behind it is
- * hidden, so the column of marks is the only readout there is. Hence a constant
- * rendered weight, which makes the attribute HEAVIER for a smaller box.
+ * by width/height scales the stroke with it — so a 14px mark renders
+ * 2 × 14/24 ≈ 1.17px and a 10px one ≈ 0.83px, where the FILLED DOT this glyph
+ * replaced was never a hairline. The scaling is the whole problem: the smaller
+ * the surface, the fainter the one glyph that says "blocked on you", and a small
+ * mark carries no other trace of the state. Hence a constant rendered weight,
+ * which makes the attribute HEAVIER for a smaller box.
  *
  * At the row's 16px this yields 1.875 — within a whisker of lucide's default 2,
  * so the row's glyph does not suddenly read bolder than the icons beside it.
@@ -83,9 +84,12 @@ export function SessionStatusMark({
   status: SessionStatus;
   /** The session this mark's row/tab is about → the brighter ink (see the doc). */
   active?: boolean;
-  /** The glyph's box in px: 16 in the open row (its slot's old `size-4`), 14 in
-   * the tab, 10 in the collapsed rail. Applies to the spinner and the `?` —
-   * both are OUTLINES, whose weight is what makes them readable. */
+  /** The glyph's box in px: 16 in the row (`SpacesList`), 14 in the tab
+   * (`SpaceTabs`). Applies to the spinner and the `?` — both are OUTLINES, whose
+   * weight is what makes them readable. The component takes any number: the
+   * stroke compensation below is what lets a smaller box stay legible, so a
+   * caller that picks 10 gets a usable mark too (the deleted sidebar rail used
+   * it; the tests still pin it). */
   size?: number;
   /** The RING's box when it should differ from `size`; defaults to `size`.
    *
@@ -98,8 +102,8 @@ export function SessionStatusMark({
    * 16px, so the title's indent and the alignment with the archived rows'
    * `size-4` placeholder are untouched. */
   dotSize?: number;
-  /** The hook a placing surface's tests query, when it needs one (the rail and
-   * the tab name their own marks; the row queries the STATE instead). */
+  /** The hook a placing surface's tests query, when it needs one (the tab names
+   * its own mark; the row queries the STATE instead). */
   testId?: string;
   /** Extra classes from the placing surface — geometry only (e.g. `shrink-0`).
    * NOT ink: the mark owns the ink, and two same-specificity utility classes in
@@ -124,8 +128,8 @@ export function SessionStatusMark({
   // or waiting session changes nothing.
   const dotPx = dotSize ?? size;
   // A ring SMALLER than its slot still has to OCCUPY the slot, and that is the
-  // only case that costs a wrapper node. Everywhere the two agree — the rail,
-  // the tab — the glyph IS the box, one node, exactly as before.
+  // only case that costs a wrapper node. Wherever the two agree — the tab, and
+  // any caller that leaves `dotSize` out — the glyph IS the box, one node.
   const slotNeeded = dotPx !== size;
   // What the glyph contributes to the accessibility tree. Announced: the `?`
   // names itself (below) and the spinner keeps the `role="status"` `Spinner`
@@ -146,9 +150,9 @@ export function SessionStatusMark({
         {...(testId ? { "data-testid": testId } : {})}
         // In the ANNOUNCED mode the spinner is left exactly as `Spinner` renders
         // it — `role="status"` + its own "Loading…" label — because that is the
-        // behaviour both the row and the rail had before this component existed,
-        // and the rail silences it anyway (its marks container is one
-        // `role="img"` summary, which makes these decoration). Re-labelling it
+        // behaviour both placing surfaces had before this component existed,
+        // and a decoration-mode caller silences it anyway (a container that is
+        // one `role="img"` summary makes these marks decoration). Re-labelling it
         // "Working" from here would rename a glyph every `Spinner` in the app
         // uses; that is `Spinner`'s call, not this one's.
         {...(announce ? {} : a11y)}
@@ -171,9 +175,9 @@ export function SessionStatusMark({
         {...(testId ? { "data-testid": testId } : {})}
         {...a11y}
         style={box}
-        // See `questionStrokeWidth`: at rail size the icon's own `stroke-width`
-        // of 2 would render under a pixel, and the rail is the one surface with
-        // no list behind it to fall back on.
+        // See `questionStrokeWidth`: at the small end of the size range the
+        // icon's own `stroke-width` of 2 renders under a pixel, and a small mark
+        // is the one place the state has no text beside it to fall back on.
         strokeWidth={questionStrokeWidth(size)}
         className={cn("shrink-0 text-warning", className)}
         data-dot="waiting"
@@ -186,8 +190,8 @@ export function SessionStatusMark({
   // The ring, built ONCE. `data-dot` and `aria-hidden` live on the glyph
   // itself — a ring is the least of the three states, the row's title already
   // names the session, and hiding it keeps two rings per row out of the screen
-  // reader's reading order (the rail's marks container is one `role="img"`
-  // summary and hides these for the same reason).
+  // reader's reading order (a caller in decoration mode hides these for the
+  // same reason).
   const ring = (
     <span
       {...(slotNeeded ? {} : testProps)}
@@ -199,8 +203,8 @@ export function SessionStatusMark({
         // `cn` now enforces that instead of leaving it to CSS source order: an
         // ink utility in `className` would replace `dot`'s rather than ride
         // beside it. Measured against the real call sites this changes nothing —
-        // neither the rail (`SessionRail.tsx`) nor the tab (`SpaceTabs.tsx`) nor
-        // the row (`SpacesList.tsx`) passes `className` at all. The one place
+        // neither the row (`SpacesList.tsx`) nor the tab (`SpaceTabs.tsx`)
+        // passes `className` at all. The one place
         // that does is `SessionStatusMark.test.tsx:221`, which passes an ink
         // class off-contract; its assertion (`toContain`) holds either way.
         "shrink-0 rounded-full",
@@ -212,8 +216,8 @@ export function SessionStatusMark({
 
   if (!slotNeeded) return ring;
 
-  // The rail and the tab get the glyph alone (one node, glyph == box, exactly
-  // as before). Only the row takes this branch: the SLOT keeps `size` while the
+  // A caller that leaves `dotSize` out gets the glyph alone (one node, glyph ==
+  // box). Only the row takes this branch: the SLOT keeps `size` while the
   // ring inside keeps `dotSize`, because the row's leading slot is shared
   // geometry — the archived rows reserve a `size-4` placeholder there purely so
   // their titles start at the same x, so shrinking the box would slide every

@@ -8,7 +8,7 @@ import type { ComponentProps, KeyboardEvent, MouseEvent } from "react";
  * picker rows. Each spells `role="button"` + `tabIndex={0}` + an Enter handler
  * that calls the same function its `onClick` calls. This owns those three.
  *
- * **What is NOT folded in, and why.** `TodoBoardPanel.tsx`'s board tile (the
+ * **What is NOT folded in, and why.** `ChecklistPanel.tsx`'s board tile (the
  * `role="button"` div at `:279`) is a sixth
  * hand-rolled affordance but a DIFFERENT one: it activates on `Enter || " "`
  * with `preventDefault`. Space-on-a-div is the correct keyboard contract for a

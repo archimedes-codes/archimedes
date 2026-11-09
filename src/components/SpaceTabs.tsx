@@ -233,8 +233,8 @@ function tabStatusOf(
  *
  * THE LEADING MARK is `SessionStatusMark` — the spinner for a Space whose
  * Worker is in a turn, the `?` for one blocked on the user (see
- * `tabStatusOf`). It is the SAME component the sidebar row and the collapsed
- * rail draw, which is the point: a `?` must not mean one thing in the tab and
+ * `tabStatusOf`). It is the SAME component the sidebar row draws, which is the
+ * point: a `?` must not mean one thing in the tab and
  * something else two hundred pixels below it. Before it, the tab had a spinner
  * and NO waiting cue at all, so a Space parked on a permission looked identical
  * to one nobody had used in an hour.
@@ -535,8 +535,8 @@ export default function SpaceTabs() {
               )}
             >
               {tabStatus !== null && (
-                // The SAME glyph the sidebar row and the collapsed rail draw,
-                // so a `?` means one thing in all three places: the spinner for
+                // The SAME glyph the sidebar row draws,
+                // so a `?` means one thing in both places: the spinner for
                 // a Space that is working, the QUESTION for a Space blocked on
                 // you. Rendered ONLY when there is something to report — the
                 // spinner's rule before it — so an idle tab looks exactly as it
@@ -582,9 +582,11 @@ export default function SpaceTabs() {
               onClick={() => requestClose(s.path, name)}
               // NOT `CHROME_BUTTON` (the chrome bar's shared button grammar,
               // `./chromeButton.ts`) and NOT a shared component — deliberately.
-              // This ✕ and the `+` below are the SECOND chrome cluster, and per
-              // CONTEXT.md **Chrome controls** + ADR 0038 the two clusters differ
-              // ON PURPOSE: this is a 20px (`size-5`) square with `rounded` and an
+              // This ✕ and the `+` below are a DIFFERENT cluster from the window
+              // controls, and the distinction holds ON PURPOSE (ADR 0038; CONTEXT.md
+              // cited the pair under its **Chrome controls** entry, which ADR 0095
+              // retired along with one of the two clusters — the rule survives it,
+              // because it was always about this strip): this is a 20px (`size-5`) square with `rounded` and an
               // ALWAYS-ON `bg-surface-hover` fill, not the chrome bar's 28px
               // (`h-7 w-7`) `rounded-md` button that fills `bg-hover` and
               // colour-TRANSITIONS in (`transition-colors`). It also sits inside

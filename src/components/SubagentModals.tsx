@@ -137,16 +137,15 @@ import { cn } from "./lib/utils";
  * geometry comment has the reasoning). Two consequences worth stating because
  * they are what makes the geometry cheap to live with. The region is
  * `pointer-events-none` with `pointer-events-auto` on each card, so it is
- * CLICK-TRANSPARENT outside its cards and an overlap steals nothing — the same
- * PRINCIPLE the rails work to (a readout must not steal the footer toggle's
- * click, which is what the per-block `pointer-events-none` on `TodoRail`'s strip
- * and `SessionRail`'s marks are for) but NOT the same placement: `SessionRail`'
- * own doc states the opposite rule — `pointer-events-none` goes on a block,
- * never on the frame — because the rail's frame holds blocks with OPPOSITE
- * pointer rules and a transparent frame would switch its clickable strips off.
- * This panel has no clickable child of its own: the frame IS the scroll
- * container, so putting it on the frame is the whole idiom here, and the
- * consequences the JSX comment below names are the price of that. And below the
+ * CLICK-TRANSPARENT outside its cards and an overlap steals nothing — the
+ * principle being that a readout must never steal a click it does not own. The
+ * PLACEMENT is the opposite of the rule the deleted rails followed
+ * (`pointer-events-none` on a block, never on the frame, because a rail's frame
+ * held blocks with OPPOSITE pointer rules and a transparent frame would switch
+ * its clickable strips off). This panel has no clickable child of its own: the
+ * frame IS the scroll container, so putting it on the frame is the whole idiom
+ * here, and the consequences the JSX comment below names are the price of that.
+ * And below the
  * breakpoint the panel prefers the corner, where a gate is buried but RENDERED
  * and answerable
  * the moment the sheet closes, over a dodge that would squeeze it toward zero
@@ -286,16 +285,21 @@ export function SubagentModals({ sheetMounted = true }: { sheetMounted?: boolean
           renders inline in its own transcript). `fixed` so the panel pins to
           the viewport's bottom-right corner WITHOUT taking a slot in `App`'s
           flex row (it is a sibling of the workspace columns, not one of them);
-          it is not inside the clipped `SidePane` frame at all, so a collapsed
-          pane is simply not its concern.
+          it is not inside the Side pane's frame at all — the pane sits in
+          `App`'s flex row and this box is `fixed` — so the pane is simply not
+          its concern.
           `pointer-events-none` on the region, `pointer-events-auto` on each
           card: the panel spans up to 480px of the window and a `fixed` box
           would otherwise eat every click inside its rect, including controls it
-          does not contain — the chrome bar's pane toggles at the window's
-          top-right (the panel is `bottom-right`-anchored and this is a `fixed`
-          box, so a tall one reaches the bar), and (when dodging) the LEFT
-          pane's content, since `LEFT_PANE_WIDTH` is 260 and a panel offset 480px
-          from the right edge of an 800px window covers it. The region is therefore CLICK-TRANSPARENT outside its cards, which
+          does not contain — the window controls at the window's top-right (the
+          panel is `bottom-right`-anchored and this is a `fixed` box, so a tall
+          one reaches the bar; those controls are now the bar's ONLY buttons,
+          since the app-control cluster that used to sit beside them is gone —
+          ADR 0095 moved the Settings door into the Session list), and (when
+          dodging) the
+          LEFT pane's content, since `LEFT_PANE_WIDTH` is 260 and a panel offset
+          480px from the right edge of an 800px window covers it. The region is
+          therefore CLICK-TRANSPARENT outside its cards, which
           is also why the geometry costs stopped being a reason to refuse the
           dodge: an overlap that steals no clicks is a painting question only.
           THE PRICE, named honestly, is everything the frame itself would have
@@ -311,10 +315,11 @@ export function SubagentModals({ sheetMounted = true }: { sheetMounted?: boolean
               a gap or in the `p-3` padding lands on nothing and never reaches a
               card. It still starts inside a card, and copy/click-by-keyboard are
               untouched.
-          `SessionRail`'s doc states the opposite rule for its frame (see the
-          GEOMETRY note on the component): same principle — transparent where the
-          box holds nothing — applied to the frame here because the frame IS the
-          scroll container and has no clickable child to switch off. That is the
+          The placement is the opposite of the rule the deleted rails followed
+          (see the GEOMETRY note on the component): same principle — transparent
+          where the box holds nothing — applied to the frame here because the
+          frame IS the scroll container and has no clickable child to switch
+          off. That is the
           accepted trade, and it is the reason the panel caps its height instead
           of relying on a draggable scrollbar.
           `z-40`: `DialogContent` and `SubagentDetailHost`'s sheet are both

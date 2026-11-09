@@ -164,7 +164,7 @@ fn spec(name: &str) -> ToolSpec {
 ///
 /// The two CATALOGS are produced by two SEPARATE seams — the prompt's
 /// `format_skills_for_prompt` (`harness/prompt.rs`) and the tools'
-/// `model_skills_for` → `exec_list_skills` (`fulcrum-core`'s
+/// `model_skills_for` → `exec_list_skills` (`fulcrum-harness`'s
 /// `tools/exec/skills.rs`) — which today share only the `model_visible`
 /// PREDICATE. Every other ADR 0036 test checks ONE seam, so either seam growing
 /// its own second filter (a scope test, a count cap, a re-filter of an

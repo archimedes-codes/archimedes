@@ -257,7 +257,7 @@ describe("PermissionsSection (the moved posture rows — ADR 0030)", () => {
   // restriction).
 
   it("the_three_file_access_selects_default_to_don_t_ask_me", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     for (const name of ["Reads", "Writes", "Shell"]) {
@@ -284,7 +284,7 @@ describe("PermissionsSection (the moved posture rows — ADR 0030)", () => {
   });
 
   it("the_file_access_rows_state_the_honest_default (the copy carries the all-allow posture)", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     // Writes + Shell: the default is a FREE PASS — the copy must name
@@ -314,7 +314,7 @@ describe("PermissionsSection (the moved posture rows — ADR 0030)", () => {
     // scoped to "while … and no deny rule covers it", and the copy states the
     // ask a matching rule creates — the matchers below are UNCHANGED, which is
     // the proof the re-word preserved the meaning.)
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     const text = rowOf("Writes").textContent ?? "";
@@ -369,7 +369,7 @@ describe("PermissionsSection (the moved posture rows — ADR 0030)", () => {
       version: "0.1.0",
       platform: "windows",
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     // Reads still offers all three tiers…
@@ -394,7 +394,7 @@ describe("PermissionsSection (the moved posture rows — ADR 0030)", () => {
     // (The per-test override is load-bearing: the scaffold default is
     // `shellSandboxAvailable → true`.)
     vi.mocked(shellSandboxAvailable).mockResolvedValueOnce(false);
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     // The row is captured BEFORE the select opens (an open Radix select
@@ -417,7 +417,7 @@ describe("PermissionsSection (the moved posture rows — ADR 0030)", () => {
   it("the_shell_sandboxed_option_is_selectable_when_the_kernel_can_confine", async () => {
     // CONTRAST (so the grey-out above cannot pass vacuously): with the
     // probe reporting Landlock ( the suite default), the tier is enabled.
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     const shellRow = rowOf("Shell");
@@ -450,7 +450,7 @@ describe("PermissionsSection (the moved posture rows — ADR 0030)", () => {
       ...baseSettings,
       filePolicy: { reads: "allow", writes: "allow", shell: "sandboxed" },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     const trigger = await screen.findByRole("combobox", { name: "Shell" });
@@ -470,7 +470,7 @@ describe("PermissionsSection (the moved posture rows — ADR 0030)", () => {
     const preFeature = { ...baseSettings } as Partial<AppSettings>;
     delete preFeature.filePolicy;
     vi.mocked(getSettings).mockResolvedValueOnce(preFeature as AppSettings);
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     for (const name of ["Reads", "Writes", "Shell"]) {
@@ -485,7 +485,7 @@ describe("PermissionsSection (the moved posture rows — ADR 0030)", () => {
     // The spec's approved replacement copy (VERBATIM): trusting a Space now
     // ALSO silences the self-modification guard, so the old "for
     // bash/edit/write … existing Spaces are unaffected" promise is a lie.
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     const toggle = await screen.findByRole("switch", {
@@ -505,7 +505,7 @@ describe("PermissionsSection (the moved posture rows — ADR 0030)", () => {
   });
 
   it("the scope copy states bash is not covered (the spec's honesty)", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     // The bolded sentence is one element (`<b>`), so the exact-text query
@@ -538,7 +538,7 @@ describe("PermissionsSection (the rules list — add / edit / remove)", () => {
         rules: [{ path: "~/.pi/agent", direction: "read", decision: "deny" }],
       },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     fireEvent.click(await screen.findByRole("combobox", { name: "Reads" }));
@@ -552,7 +552,7 @@ describe("PermissionsSection (the rules list — add / edit / remove)", () => {
   });
 
   it("an empty rules list renders the default-rules offer with the honest copy", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     // The offer's anchor sentence + the honesty the spec's own table carries:
@@ -574,7 +574,7 @@ describe("PermissionsSection (the rules list — add / edit / remove)", () => {
   });
 
   it("the default-rules offer pre-fills the deny draft and writes nothing until the dialog saves", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     fireEvent.click(screen.getByRole("button", { name: "Add default rule" }));
@@ -591,7 +591,7 @@ describe("PermissionsSection (the rules list — add / edit / remove)", () => {
   });
 
   it("add_rule_saves_the_triple_and_closes_the_dialog", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
@@ -631,7 +631,7 @@ describe("PermissionsSection (the rules list — add / edit / remove)", () => {
         ],
       },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     const row = (await screen.findByText("~/.cache")).closest(
@@ -657,7 +657,7 @@ describe("PermissionsSection (the rules list — add / edit / remove)", () => {
         rules: [{ path: "~/.pi/agent", direction: "read", decision: "deny" }],
       },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     fireEvent.click(
@@ -691,7 +691,7 @@ describe("PermissionsSection (the rules list — add / edit / remove)", () => {
         rules: [{ path: "~/.pi/agent", direction: "read", decision: "deny" }],
       },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     fireEvent.click(
@@ -720,7 +720,7 @@ describe("PermissionsSection (the rules list — add / edit / remove)", () => {
         rules: [{ path: "~/.pi/agent", direction: "read", decision: "deny" }],
       },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     // Seeded with one rule: no offer.

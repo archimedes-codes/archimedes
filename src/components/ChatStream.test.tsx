@@ -27,7 +27,6 @@ import {
   MIN_INDICATOR_WIDTH_CLASS,
   MIN_INDICATOR_WIDTH_PX,
 } from "./chat/WorkingIndicator";
-import { setSidePaneCollapsed } from "../lib/sidePaneState";
 // `import * as chatAttachments` removed by tsc (TS6133): its only consumer was
 // the `readAttachmentAsBase64` spy inside the Flush group, which moved to
 // `src/hooks/usePromptQueueFlusher.test.tsx` with `flushHead` (issue #135 §2).
@@ -197,7 +196,6 @@ beforeEach(() => {
   // mid-read tests below use `vi.useFakeTimers()` to settle the macrotask-
   // based `FileReader` deterministically) — a no-op for tests that don't.
   vi.useRealTimers();
-  setSidePaneCollapsed(false);
   localStorage.clear();
   // The prompt queue is a module singleton too — drop every entry so a queue
   // left by the previous test cannot satisfy a "nothing was queued" assertion.

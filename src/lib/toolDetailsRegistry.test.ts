@@ -84,8 +84,8 @@ import { normalizeToolOutput } from "./toolOutput";
  * sketch writes the todo group as `{operation,todos{,error}}` and the web group as
  * `{responseId,url,title,wordCount,status,extractor,truncated,renderer?,rendererNote?}`
  * — the braces are the plan's shorthand for OPTIONAL, not wire keys. The fixtures
- * spell the real serialised shapes (`TodoItem` omits an absent `description`;
- * a web-search item omits `publishedDate`; an `ask` result omits `description` and
+ * spell the real serialised shapes (the engine's `TodoItem` omits an absent
+ * `description`; a web-search item omits `publishedDate`; an `ask` result omits `description` and
  * `custom`; `renderer`/`rendererNote` appear only when the renderer ran).
  *
  * ---------------------------------------------------------------------------
@@ -579,7 +579,7 @@ const UNREAD_BY_NAME_REASONS: Readonly<Record<UnreadProducerKey, string>> = {
   lines: "read (fs_tools.rs:49,67) — the line range the header shows comes from RAW INPUT offset/limit (readLineRange), not from details.lines",
   matches: "find/grep (search.rs:130,182,403) and get_search_content (web/tools.rs:408,421) — the matches are the content text; the count is dumped",
   occurrences: "edit (fs_tools.rs:183) — dumped; the editChangeStat chip is computed from RAW INPUT edits",
-  operation: "manage_todo_list (interactive/mod.rs:227,243,310,349) — the header's `operation` comes from RAW INPUT; the TodoBoard reads the separate todos_update push",
+  operation: "manage_todo_list (interactive/mod.rs:227,243,310,349) — the header's `operation` comes from RAW INPUT; the Checklist reads the separate todos_update push",
   path: "read/write/edit/ls/read_skill (fs_tools.rs, skills.rs:196) — the header's `path` comes from RAW INPUT (summarizeToolCall/fileSummaries); details.path is dumped",
   provider: "web_search (web/tools.rs:183) — provenance, dumped",
   reason: "sudo_exec (interactive/mod.rs sudo arms) — the modal already showed the reason at prompt time; the result's copy is dumped. NOTE the name collision: summarizeToolCall's `reason` reads the COMPACTION card's rawInput, a different frame",
@@ -593,7 +593,7 @@ const UNREAD_BY_NAME_REASONS: Readonly<Record<UnreadProducerKey, string>> = {
   stderr: "sudo_exec (interactive/mod.rs sudo arms) — the failure text comes from details.error (failureText) or the content text, never from details.stderr",
   stdout: "sudo_exec (interactive/mod.rs sudo arms) — success puts the scrubbed stdout in content[0].text; the details copy is dumped",
   title: "fetch_content (web/tools.rs:304-311) — dumped (and NOT the tool-call `title`, which is the tool name: a different frame and a different meaning)",
-  todos: "manage_todo_list (interactive/mod.rs:227,243,310,349) — the board renders the todos_update push (TodoBoardPanel reads useInteractive.todos), not this copy",
+  todos: "manage_todo_list (interactive/mod.rs:227,243,310,349) — the board renders the todos_update push (ChecklistPanel reads useInteractive.todos), not this copy",
   truncated: "bash/find/grep/fetch_content (bash.rs:427, search.rs, web/tools.rs) — the truncation note is appended to the CONTENT text; the flag is dumped",
   url: "fetch_content (web/tools.rs:304-311) — the header's url comes from RAW INPUT; details.url is dumped",
   wordCount: "fetch_content (web/tools.rs:304-311) — dumped",
@@ -832,7 +832,7 @@ describe("Part 2 — the reader side, in two annotated columns", () => {
 // and the Part-2c exception table are read from.
 //
 // The `payload` values are the shapes the Rust side actually serialises (read off
-// the tree at this HEAD, not invented): a `TodoItem` is `{content, status}` with
+// the tree at this HEAD, not invented): the engine's `TodoItem` is `{content, status}` with
 // `description` OMITTED when absent (`todo.rs:38-43`, `skip_serializing_if`), a
 // web-search item is `{title, url, snippet}` with `publishedDate` omitted
 // (`web/providers/types.rs:8-14`), an `ask` result is `{id, question, options,

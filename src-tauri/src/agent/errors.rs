@@ -1,10 +1,11 @@
-//! All IPC error families live here: the ten `{kind, message, …}`-envelope enums
-//! (`SessionError`, `HistoryError`, `AttentionError`, `ClipboardError`,
+//! All IPC error families live here: the eleven `{kind, message, …}`-envelope
+//! enums (`SessionError`, `HistoryError`, `AttentionError`, `ClipboardError`,
 //! `OpenError`, `FilesError`, `SettingsError`, `SpacesError`, `McpError`,
-//! `AgentsError`) plus the `UpdateError` tuple struct — eleven families, each with
+//! `AgentsError`, `TasksError`) plus the `UpdateError` tuple struct — twelve
+//! families, each with
 //! its OWN hand-written `impl From<…> for tauri::ipc::InvokeError`, because none
-//! of them derives `Serialize`. Four (`SettingsError`, `SpacesError`, `McpError`,
-//! `AgentsError`) hand the finished map to `InvokeErrorExt::from_value`; the other
+//! of them derives `Serialize`. Five (`SettingsError`, `SpacesError`, `McpError`,
+//! `AgentsError`, `TasksError`) hand the finished map to `InvokeErrorExt::from_value`; the other
 //! seven build `InvokeError(Value::Object(..))` inline. `DbError`/`FsError` stay
 //! with their own layers (`storage` / the crate's `fs_backend.rs`) because they are
 //! NOT IPC types — the wire contract fixes the envelope, and the error type is
@@ -663,6 +664,94 @@ impl From<rusqlite::Error> for SpacesError {
 
 impl From<SpacesError> for tauri::ipc::InvokeError {
     fn from(err: SpacesError) -> Self {
+        let payload = serde_json::json!({
+            "kind": err.kind(),
+            "message": err.to_string(),
+        });
+        Self::from_value(payload)
+    }
+}
+
+/// Errors surfaced by the Task-board commands (spec §2, ADR 0090).
+///
+/// Modelled on [`SpacesError`] above: same four-shape family, same hand-written
+/// `InvokeError` impl, no serde derive (ADR 0063 — the only route to the wire is
+/// the `From` below, so a payload the envelope cannot express is a compile error
+/// in THIS file rather than a wrong sentence on the user's screen).
+///
+/// `EmptyTitle` is the one variant with no payload, and it is the reason this
+/// family exists at all: `create_task` refuses a title that `clean_title`
+/// cleans to nothing rather than falling back to the raw string. A raw fallback
+/// would write a whitespace-only or quote-only title that the SESSION path
+/// refuses, and a card is exactly the thing you cannot quietly mis-name — its
+/// label is what people say out loud.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TasksError {
+    /// SQLite itself refused the statement.
+    #[error("database error: {0}")]
+    Database(String),
+
+    /// The Task (or the destination stage) is not there. Carries the sentence
+    /// the storage layer composed, which for a bad stage slug NAMES the valid
+    /// slugs — ADR 0090's rule that a caller self-corrects from the error
+    /// instead of making a discovery call.
+    #[error("{0}")]
+    NotFound(String),
+
+    /// The title cleans to nothing (whitespace-only, or a bare quote pair).
+    #[error("task title is empty after trimming")]
+    EmptyTitle,
+
+    /// Anything the command layer cannot classify: a `spawn_blocking` join
+    /// failure, or a stage boost that had no live Session to boost.
+    #[error("{0}")]
+    Other(String),
+}
+
+impl TasksError {
+    /// The serialized `kind` discriminator (the wire contract — ADR 0063).
+    /// Exhaustive: a new variant has to be named here AND in the `From` impl
+    /// below, which is the point.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            TasksError::Database(_) => "database",
+            TasksError::NotFound(_) => "not_found",
+            TasksError::EmptyTitle => "empty_title",
+            TasksError::Other(_) => "other",
+        }
+    }
+}
+
+impl From<rusqlite::Error> for TasksError {
+    fn from(e: rusqlite::Error) -> Self {
+        TasksError::Database(e.to_string())
+    }
+}
+
+/// The board's storage errors map ONTO the wire family, and the two absence
+/// cases keep their identity: a missing card and a bad slug must not arrive as a
+/// generic database failure, because the frontend's message and the model's next
+/// move both depend on which of the two it was.
+impl From<crate::storage::BoardError> for TasksError {
+    fn from(e: crate::storage::BoardError) -> Self {
+        use crate::storage::BoardError;
+        match e {
+            BoardError::Sqlite(e) => TasksError::Database(e.to_string()),
+            BoardError::MissingTask(id) => TasksError::NotFound(format!("no task with id {id}")),
+            BoardError::MissingStage { wanted, available } => {
+                TasksError::NotFound(if available.is_empty() {
+                    format!("no stage {wanted} in this space")
+                } else {
+                    format!("no stage {wanted} in this space (valid stages: {available})")
+                })
+            }
+        }
+    }
+}
+
+/// The IPC envelope: `{"kind", "message"}` — hand-built, no derive (ADR 0063).
+impl From<TasksError> for tauri::ipc::InvokeError {
+    fn from(err: TasksError) -> Self {
         let payload = serde_json::json!({
             "kind": err.kind(),
             "message": err.to_string(),

@@ -852,3 +852,145 @@ fn the_session_cwd_string_and_the_space_path_key_are_the_same_string() {
          to be applied to BOTH in the same change"
     );
 }
+
+// ── A1 — the Task board, through the PUBLIC API only (spec §2, ADR 0090) ───
+//
+// This file cannot reach `db.conn`, and that is the point: everything below is
+// what a caller outside `storage` can actually do, which is exactly the surface
+// `commands/tasks.rs` and the board sit on.
+
+/// The seed → create → read round trip, from a database file that has never
+/// seen a board.
+///
+/// The board is created by READING it (spec §2's lazy seed), so the first
+/// assertion is the one a user makes: open a Space's board, get five columns,
+/// and a new card lands in the first one with the label `#1`.
+#[test]
+fn stages_and_tasks_seed_and_list_stepwise_from_a_fresh_db() {
+    let (_dir, path) = temp_db("task-board-seed");
+    let db = Db::open(&path).expect("db should open");
+    let space = "/board-integration/seed";
+
+    let board = db.get_board(space).expect("get_board seeds the defaults");
+    let slugs: Vec<&str> = board.iter().map(|c| c.stage.slug.as_str()).collect();
+    assert_eq!(
+        slugs,
+        vec!["backlog", "research", "approved", "doing", "done"],
+        "reading a Space's board is what creates its five columns"
+    );
+
+    let task = db
+        .create_task(space, "first card", Some("the body"), None)
+        .expect("create_task");
+    assert_eq!(
+        task.number, 1,
+        "the first card of a Space is `#1` (ADR 0090)"
+    );
+    assert_eq!(
+        task.stage_slug, "backlog",
+        "and it lands in the first column"
+    );
+    assert!(task.id.starts_with("tsk_"), "the key shape is {}", task.id);
+
+    let after = db.get_board(space).expect("get_board again");
+    assert_eq!(after.len(), 5, "the second read does not re-seed");
+    assert_eq!(
+        after[0]
+            .tasks
+            .iter()
+            .map(|t| t.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first card"],
+        "the card is in the backlog column on the way back out"
+    );
+    assert_eq!(
+        db.list_tasks(space).expect("list_tasks").len(),
+        1,
+        "the flat read agrees"
+    );
+
+    // The move verb, and the `get_task` read by GLOBAL id.
+    let moved = db
+        .move_task(space, &task.id, "doing")
+        .expect("move_task to a seeded stage");
+    assert_eq!(moved.on_enter, "none", "a default stage boosts nothing");
+    assert_eq!(
+        db.get_task(&task.id)
+            .expect("get_task")
+            .expect("the card exists")
+            .stage_slug,
+        "doing",
+        "the write reached the row a global-id read sees"
+    );
+}
+
+/// (ADR 0090's `done-when`) closing a Space tab and re-opening it keeps the
+/// stage rows, the cards, AND the Session links.
+///
+/// The unit-level twin of this test asserts the same thing with raw SQL
+/// available; this one is the version that matters for shipping, because it
+/// proves no PUBLIC method re-creates or re-keys anything on the far side of a
+/// `delete_space`. `delete_space` is what the frontend's "forget this space"
+/// calls, so this is the exact user action the ADR was written about.
+#[test]
+fn task_board_survives_delete_space_through_the_public_api() {
+    let (_dir, path) = temp_db("task-board-orphan");
+    let db = Db::open(&path).expect("db should open");
+    let space = "/board-integration/orphan";
+
+    db.upsert_space(space, false).expect("upsert_space");
+    db.get_board(space).expect("seed the columns");
+    let task = db
+        .create_task(space, "outlive the tab", None, None)
+        .expect("create_task");
+    // The Session the link points at must EXIST: `task_sessions.session_id`
+    // carries `REFERENCES sessions(id) ON DELETE CASCADE` and `Db::open` turns
+    // the `foreign_keys` pragma on, so a dangling link is rejected at the
+    // statement. Production satisfies this the same way — the Session is
+    // recorded before it is linked to a card.
+    let mut linked = sample_session();
+    linked.session_id = "sess-orphan".to_string();
+    db.record_session(&linked).expect("record_session");
+    db.link_session(&task.id, "sess-orphan", None)
+        .expect("link_session");
+
+    // The tab close.
+    db.delete_space(space).expect("delete_space");
+    assert!(
+        db.find_space(space).expect("find_space").is_none(),
+        "the Space row is gone — that is what a tab close does"
+    );
+
+    // ...and the board is untouched: no cascade, no re-key, no re-seed.
+    let board = db
+        .get_board(space)
+        .expect("the board survives its Space's tab close");
+    assert_eq!(board.len(), 5, "the five columns are still there");
+    let cards: Vec<&str> = board
+        .iter()
+        .flat_map(|column| column.tasks.iter())
+        .map(|card| card.id.as_str())
+        .collect();
+    assert_eq!(cards, vec![task.id.as_str()], "the card is still there");
+    assert_eq!(
+        db.task_sessions(&task.id)
+            .expect("task_sessions")
+            .iter()
+            .map(|row| row.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["sess-orphan"],
+        "and so is the link to its Session"
+    );
+
+    // Re-opening the folder makes it an ordinary board again — the ADR's
+    // Detached-task → back-to-normal path, with no number collision.
+    db.upsert_space(space, false).expect("re-open the Space");
+    let next = db
+        .create_task(space, "after re-opening", None, None)
+        .expect("create_task after re-opening");
+    assert_eq!(
+        next.number, 2,
+        "the per-Space counter survived the tab close — the re-opened Space \
+         continues at `#2` rather than restarting at `#1` and re-pointing `T1`"
+    );
+}

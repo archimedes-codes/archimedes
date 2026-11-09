@@ -115,7 +115,7 @@ afterEach(() => {
 
 describe("SessionsSection (Settings → Detached sessions)", () => {
   it("lists every detached row with its full path, and none of an open Space's", () => {
-    render(<SessionsSection onBack={vi.fn()} />);
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
     // Both Detached rows — the stored one AND the archived one (an unarchived
     // session of a closed Space is just as invisible, so both belong here).
     expect(screen.getByText("beta")).toBeTruthy();
@@ -143,7 +143,7 @@ describe("SessionsSection (Settings → Detached sessions)", () => {
       archivedSessions: [row("live-gamma", "/tmp/gamma", true)],
       sessions: [row("live-gamma", "/tmp/gamma")],
     });
-    render(<SessionsSection onBack={vi.fn()} />);
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
     // The live row is absent by title AND by path text.
     expect(screen.queryByText("gamma")).toBeNull();
     expect(screen.queryByText("/tmp/gamma")).toBeNull();
@@ -164,7 +164,7 @@ describe("SessionsSection (Settings → Detached sessions)", () => {
   });
 
   it("offers Reopen Space and Delete per row", () => {
-    render(<SessionsSection onBack={vi.fn()} />);
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
     expect(
       screen.getByRole("button", { name: "Reopen space for beta" }),
     ).toBeTruthy();
@@ -176,7 +176,7 @@ describe("SessionsSection (Settings → Detached sessions)", () => {
   });
 
   it("badges only the archived row", () => {
-    render(<SessionsSection onBack={vi.fn()} />);
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
     expect(
       within(rowRootFor("/tmp/gamma")).getByText("archived"),
     ).toBeTruthy();
@@ -195,7 +195,7 @@ describe("SessionsSection (Settings → Detached sessions)", () => {
     };
     vi.setSystemTime(NOW);
     seed({ messages });
-    render(<SessionsSection onBack={vi.fn()} />);
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
     expect(within(rowRootFor("/tmp/beta")).getByText("5m")).toBeTruthy();
     // No loaded transcript AND no `sessionRecency` stamp → no time text (the row
     // keeps an empty slot so the buttons stay aligned — `SessionInfo` carries no
@@ -210,7 +210,7 @@ describe("SessionsSection (Settings → Detached sessions)", () => {
 
   it("shows the empty state and disables Clear all when nothing is detached", () => {
     seed({ historySessions: [row("h-alpha", "/tmp/alpha")], archivedSessions: [] });
-    render(<SessionsSection onBack={vi.fn()} />);
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
     expect(
       screen.getByText(
         "No detached sessions. Every stored session belongs to an open Space.",
@@ -225,7 +225,7 @@ describe("SessionsSection (Settings → Detached sessions)", () => {
   });
 
   it("enables Clear all when rows are listed", () => {
-    render(<SessionsSection onBack={vi.fn()} />);
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
     expect(
       (screen.getByRole("button", { name: "Clear all" }) as HTMLButtonElement)
         .disabled,
@@ -245,7 +245,7 @@ describe("SessionsSection (Settings → Detached sessions)", () => {
       ],
       archivedSessions: [],
     });
-    render(<SessionsSection onBack={vi.fn()} />);
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
     const dialog = screen.getByRole("dialog");
     expect(
@@ -262,7 +262,7 @@ describe("SessionsSection (Settings → Detached sessions)", () => {
   });
 
   it("Clear all confirms with both counts, then deletes every listed row and closes", async () => {
-    render(<SessionsSection onBack={vi.fn()} />);
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
     const dialog = screen.getByRole("dialog");
     // ADR 0016's amendment: the confirm names the blast radius — sessions AND
@@ -284,7 +284,7 @@ describe("SessionsSection (Settings → Detached sessions)", () => {
       .spyOn(console, "error")
       .mockImplementation(() => {});
     try {
-      render(<SessionsSection onBack={vi.fn()} />);
+      render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
       fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
       const dialog = screen.getByRole("dialog");
       fireEvent.click(
@@ -304,7 +304,7 @@ describe("SessionsSection (Settings → Detached sessions)", () => {
   });
 
   it("a row's Delete opens the confirm and only the dialog's Delete deletes", async () => {
-    render(<SessionsSection onBack={vi.fn()} />);
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Delete gamma" }));
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText("Delete session?")).toBeTruthy();
@@ -321,14 +321,14 @@ describe("SessionsSection (Settings → Detached sessions)", () => {
   });
 
   it("a row's Reopen Space re-adds the folder, opens the session and leaves Settings", () => {
-    const onBack = vi.fn();
+    const onReturnToWorkspace = vi.fn();
     seed();
     const { addSpace, openSession } = reopenFns();
-    render(<SessionsSection onBack={onBack} />);
+    render(<SessionsSection onReturnToWorkspace={onReturnToWorkspace} />);
     fireEvent.click(screen.getByRole("button", { name: "Reopen space for beta" }));
     expect(addSpace).toHaveBeenCalledWith("/tmp/beta");
     expect(openSession).toHaveBeenCalledWith("h-beta");
-    expect(onBack).toHaveBeenCalledTimes(1);
+    expect(onReturnToWorkspace).toHaveBeenCalledTimes(1);
   });
 
   it("renders the boot recency label for a detached row the map covers and the transcript does not", () => {
@@ -348,7 +348,7 @@ describe("SessionsSection (Settings → Detached sessions)", () => {
       sessionRecency: { "a-gamma": NOW - 5 * 60_000 },
       messages: {},
     });
-    render(<SessionsSection onBack={vi.fn()} />);
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
     // `a-gamma` (/tmp/gamma) has NO loaded transcript — `messages` is empty — so
     // the map stamp is its only evidence, and it buckets to exactly `5m`.
     expect(within(rowRootFor("/tmp/gamma")).getByText("5m")).toBeTruthy();

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactElement } from "react";
 import {
-  ArrowLeftIcon,
   DownloadIcon,
   FolderXIcon,
   GlobeIcon,
@@ -30,7 +29,6 @@ import {
   type WireApi,
   type KnownProvider,
 } from "@/lib/tauri";
-import { Button } from "@/components/ui/button";
 import { SettingsSidebarButton } from "./primitives";
 import { useSettingsDocument } from "@/hooks/useSettingsDocument";
 import { useSessions } from "@/store/sessions";
@@ -117,12 +115,23 @@ function remapModelRefs(
 
 /**
  * The settings page (the approved ZCode-parity design, spec §1/§4): a full
- * content-area view — a 268px section sidebar (back button + General /
- * Appearance / Providers / MCP / Updates) + the active section's content. Immediate save:
+ * content-area view — a 268px section sidebar (General / Appearance / Providers /
+ * MCP / Updates) + the active section's content. Immediate save:
  * a control change → `saveSettings` with the COMPLETE document (text
  * fields commit on blur/Enter; no save button, no dirty state).
+ *
+ * THE PAGE OWNS NO EXIT. It is a view `App` mounts beside the permanent Session
+ * list, and the Session list's command strip is the view switcher (N1): the
+ * pressed **Settings** door toggles this view off and any **Session** row leaves it.
+ * `onReturnToWorkspace` is therefore NOT a Back handler — it exists for exactly one
+ * consumer, `SessionsSection`'s Reopen Space, which must land the user on the tab it
+ * just re-opened rather than on a Settings page whose transcript is elsewhere.
  */
-export default function SettingsPage({ onBack }: { onBack: () => void }): ReactElement {
+export default function SettingsPage({
+  onReturnToWorkspace,
+}: {
+  onReturnToWorkspace: () => void;
+}): ReactElement {
   // THE settings document, from its one owner (`useSettingsDocument`): the store,
   // loaded on mount, saved + re-applied by `patch`. The page used to keep a second
   // copy of it in `useState` and mirror it into the store by hand at two sites, so
@@ -550,11 +559,14 @@ export default function SettingsPage({ onBack }: { onBack: () => void }): ReactE
     <WebSearchSection settings={settings} onSave={update} />
   );
 
-  // The Detached sessions section takes only `onBack`: it reads the sessions
-  // store directly (no new command, no new fetch — `App` loads the stored rows
-  // at boot and `deleteSession` removes ids from all three lists). Reopen Space
-  // leaves Settings, so it needs the page's own exit.
-  const sessionsSection = <SessionsSection onBack={onBack} />;
+  // The Detached sessions section takes only `onReturnToWorkspace`: it reads the
+  // sessions store directly (no new command, no new fetch — `App` loads the stored
+  // rows at boot and `deleteSession` removes ids from all three lists). Reopen
+  // Space leaves this page, and the page cannot leave itself — its PARENT owns the
+  // view — so the exit is handed down rather than held here.
+  const sessionsSection = (
+    <SessionsSection onReturnToWorkspace={onReturnToWorkspace} />
+  );
 
   // The Updates section takes no props: its version row reads `getAppInfo`
   // itself and its state machine is entirely local (no settings document is
@@ -565,20 +577,12 @@ export default function SettingsPage({ onBack }: { onBack: () => void }): ReactE
     <div className="grid h-full grid-cols-[268px_minmax(0,1fr)]">
       <aside className="min-w-0 border-r border-border">
         <div className="flex h-full flex-col">
-          <div className="px-2 pb-3 pt-3">
-            <Button
-              type="button"
-              variant="ghost"
-              size="lg"
-              aria-label="Back"
-              className="w-[calc(100%-0.5rem)] justify-start gap-2 rounded-xl px-1.5 text-foreground-subtle hover:bg-surface-hover hover:text-foreground"
-              onClick={onBack}
-            >
-              <ArrowLeftIcon className="size-4" />
-              <span>Back</span>
-            </Button>
-          </div>
-          <nav aria-label="Settings sections" className="flex-1 overflow-y-auto px-2 pb-3">
+          {/* `pt-3` is the top padding the deleted Back wrapper carried — the nav
+              is now the sidebar's first child and would otherwise touch the top. */}
+          <nav
+            aria-label="Settings sections"
+            className="flex-1 overflow-y-auto px-2 pb-3 pt-3"
+          >
             <div className="space-y-1">
               <SettingsSidebarButton
                 icon={Settings2Icon}

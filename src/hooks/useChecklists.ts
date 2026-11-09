@@ -1,15 +1,15 @@
 import { useMemo } from "react";
-import { useInteractive, type TodoItem } from "../store/interactive";
+import { useInteractive, type ChecklistItem } from "../store/interactive";
 import { useSubagents, type SubagentEntry } from "../store/subagents";
 
 /**
- * One running child's todo board, resolved for one parent Session — the unit the
+ * One running child's checklist, resolved for one parent Session — the unit the
  * Side pane renders as a labelled block (Task 3). Carries BOTH counts so the
  * block never re-counts (`completed` for the `n/m` denominator, `open` for the
  * numerator), and BOTH names so a click-through can route on the id while the
  * heading shows the disambiguated label.
  */
-export interface TodoBoard {
+export interface Checklist {
   /** The SUBAGENT session id — the key `useSubagentSelection.select` routes on. */
   childSessionId: string;
   /** `SubagentEntry.agentName`, verbatim. */
@@ -21,7 +21,7 @@ export interface TodoBoard {
    * filtered): REDUCED vs FULL is a render choice the pane makes
    * (`CONTEXT.md`), and the store always holds the full list.
    */
-  items: TodoItem[];
+  items: ChecklistItem[];
   completed: number;
   /** The OPEN (non-`completed`) count — the visibility rule, and the block's `n/m` numerator. */
   open: number;
@@ -30,14 +30,14 @@ export interface TodoBoard {
 }
 
 /** The answer when there is no Session to scope to — ONE frozen array, so
- * "no boards" is referentially stable across renders and a consumer that tried
+ * "no checklists" is referentially stable across renders and a consumer that tried
  * to mutate the shared instance throws instead of corrupting every other
  * render (the `NO_GATES` pattern in `useChildGates`). */
-const NO_BOARDS: TodoBoard[] = [];
+const NO_BOARDS: Checklist[] = [];
 Object.freeze(NO_BOARDS);
 
 /**
- * The ONE derivation of "which todo boards do the RUNNING children of THIS
+ * The ONE derivation of "which checklists do the RUNNING children of THIS
  * Session have, in arrival order, labelled so two same-named children are
  * distinguishable" — the Side pane's child blocks read it and nothing else, so
  * two surfaces cannot disagree (the standing rule `useSessionStatus` /
@@ -89,15 +89,15 @@ Object.freeze(NO_BOARDS);
  *    Boards come from session state (`useInteractive.todos[entry.sessionId]`),
  *    never from transcript scans.
  */
-export function todoBoardsOf(
+export function checklistsOf(
   entries: Record<string, SubagentEntry>,
-  todos: Record<string, TodoItem[]>,
+  todos: Record<string, ChecklistItem[]>,
   parentSessionId: string | null,
-): TodoBoard[] {
+): Checklist[] {
   // Rule 1 — see the doc block: `null` is "no Session", never "every child".
   if (parentSessionId === null) return NO_BOARDS;
 
-  const boards: TodoBoard[] = [];
+  const boards: Checklist[] = [];
   for (const entry of Object.values(entries)) {
     // Rules 2 and 3, cheapest and most selective first.
     if (entry.parentSessionId !== parentSessionId) continue;
@@ -146,21 +146,21 @@ export function todoBoardsOf(
 }
 
 /**
- * The boards the RUNNING children of ONE Session have, in arrival order and
- * labelled (see `todoBoardsOf`, whose rules this is a thin read of the two
+ * The checklists the RUNNING children of ONE Session have, in arrival order and
+ * labelled (see `checklistsOf`, whose rules this is a thin read of the two
  * stores over). `parentSessionId === null` → `NO_BOARDS`.
  */
-export function useTodoBoards(parentSessionId: string | null): TodoBoard[] {
+export function useChecklists(parentSessionId: string | null): Checklist[] {
   // Selectors return the STORE's own slices — never a `?? {}` fallback inside a
   // selector, which would mint a new object per call and re-render forever (the
-  // hazard `useMainTodoItems`, `useSessionStatuses` and `useChildGates` each
-  // document). Defaults live OUTSIDE the selector, in `todoBoardsOf`'s rule 4.
+  // hazard `useMainChecklistItems`, `useSessionStatuses` and `useChildGates` each
+  // document). Defaults live OUTSIDE the selector, in `checklistsOf`'s rule 4.
   const entries = useSubagents((s) => s.entries);
   const todos = useInteractive((s) => s.todos);
   // MEMOISED on exactly the three values this hook subscribes to, so the
   // derivation re-runs only when its inputs could have changed and the pane gets
   // a stable array across renders that touched neither store (the Side pane
-  // re-renders on every streamed token, and `todoBoardsOf` allocates).
+  // re-renders on every streamed token, and `checklistsOf` allocates).
   //
   // `useMemo` is a hint React may in principle discard, so no consumer may read
   // the array's identity as CORRECTNESS — only as "this render did not
@@ -168,6 +168,6 @@ export function useTodoBoards(parentSessionId: string | null): TodoBoard[] {
   // module constant rather than a memo result.
   return useMemo(() => {
     if (parentSessionId === null) return NO_BOARDS;
-    return todoBoardsOf(entries, todos, parentSessionId);
+    return checklistsOf(entries, todos, parentSessionId);
   }, [entries, todos, parentSessionId]);
 }

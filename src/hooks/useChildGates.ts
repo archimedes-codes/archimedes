@@ -82,7 +82,8 @@ Object.freeze(NO_GATES);
 /**
  * The ONE derivation of "which gates are the children of THIS Session holding on
  * the user, and who is holding them" — the parent transcript's inline card, the
- * always-mounted overlay, and the rail's dot all read it, so they cannot
+ * always-mounted overlay, and the row's status mark (through `useSessionStatus`)
+ * all read it, so they cannot
  * disagree (the standing rule `useSessionStatus` / `useBoardOpenCount`
  * exist to enforce).
  *

@@ -255,7 +255,7 @@ describe("SpaceTabs (the Spaces as browser-style tabs at the top of the chat)", 
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("the tab bar holds NO `...` menu, NO pane toggle and NO warning dot (the new-session command lives in the sidebar's `Sessions` header as a single `New Session` `+`; the pane toggles live in the chrome bar's `ChromeControls`, never in the strip)", () => {
+  it("the tab bar holds NO `...` menu, NO pane toggle and NO warning dot (the new-session command lives in the sidebar's `Sessions` header as a single `New Session` `+`; the pane toggles were retired with the panes' collapse flags, and the app control that used to share the chrome bar moved to the Session list, so neither has ever lived in the strip)", () => {
     useSessions.setState({
       spaces: [space("/w/alpha")],
       activeSpacePath: "/w/alpha",
@@ -264,10 +264,12 @@ describe("SpaceTabs (the Spaces as browser-style tabs at the top of the chat)", 
     expect(
       screen.queryByRole("button", { name: "Session actions" }),
     ).toBeNull();
-    // The pane toggles live in the chrome bar's `ChromeControls` (`App.test.tsx`
-    // pins that), never in the tab strip: the tabs are Spaces, and a strip that
-    // also held window furniture would read as a second titlebar. EVERY label
-    // the left toggle has ever carried plus the current one, because the old
+    // The pane toggles are gone outright — they died with the panes' collapse
+    // flags (ADR 0094), and the app control that used to share the chrome bar with
+    // them moved into the Session list (ADR 0095). Neither ever lived in the tab
+    // strip: the tabs are Spaces, and a strip that also held window furniture would
+    // read as a second titlebar. EVERY label the left toggle has ever carried plus
+    // the current one, because the old
     // assertion here queried a label that had since been renamed and so could
     // never fail.
     for (const label of [
@@ -764,8 +766,9 @@ describe("the tab label and the `+` route through <Button> (C7)", () => {
    *  recomputed: `classNameConvention.test.ts` records why a pin must not go
    *  through `cn()` — a merge could hide a change from the assertion meant to
    *  catch it. (These two strings are the identity under `cn()`; they are here
-   *  as the pre-extraction record, exactly as `ChromeControls.test.tsx` keeps
-   *  its `CONTROL_BUTTON` literal.) */
+   *  as the pre-extraction record, the same kind of pin that
+   *  `ChromeControls.test.tsx` (since deleted) kept for its `CONTROL_BUTTON`
+   *  literal.) */
   const LABEL_WAS_ACTIVE =
     "flex min-w-0 self-stretch items-center gap-1.5 pl-3 text-ui-base font-medium text-foreground";
   const LABEL_WAS_INACTIVE =

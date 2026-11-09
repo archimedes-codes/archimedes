@@ -31,6 +31,7 @@ import {
   loadHistory,
   reorderSessions,
   reorderSpaces,
+  reorderTasks,
   sessionRecency,
   type AgentDefinitionReportDto,
   type WindowFrameState,
@@ -630,3 +631,79 @@ describe("reorderSpaces (the tab-strip drag write path, ADR 0075)", () => {
     });
   });
 });
+
+describe("reorderTasks (the within-column drag write path, spec §3)", () => {
+  beforeEach(() => {
+    mockedInvoke.mockReset();
+  });
+
+  it("invokes `reorder_tasks` with `spacePath`, `stageSlug` and `taskIds`", async () => {
+    mockedInvoke.mockResolvedValue(undefined);
+    await reorderTasks("/space/x", "doing", ["tsk_c", "tsk_a", "tsk_b"]);
+    // All THREE keys are load-bearing and none of them is the shape
+    // `reorderSpaces`/`reorderSessions` use: this slice is scoped to one column
+    // of one Space, so Rust's `space_path` + `stage_slug` travel with it and the
+    // command refuses an id that is not in that pair. Tauri maps each camelCase
+    // key to its snake_case Rust parameter, so a typo in any one of them is a
+    // runtime-only failure in the desktop app that no Rust test and no component
+    // test can see.
+    expect(mockedInvoke).toHaveBeenCalledWith("reorder_tasks", {
+      spacePath: "/space/x",
+      stageSlug: "doing",
+      taskIds: ["tsk_c", "tsk_a", "tsk_b"],
+    });
+  });
+
+  it("passes the id list through UNTOUCHED — the given order IS the stored order", async () => {
+    mockedInvoke.mockResolvedValue(undefined);
+    const ids = ["tsk_z", "tsk_m", "tsk_a"];
+    await reorderTasks("/space/x", "backlog", ids);
+    // `Db::reorder_tasks` writes the SLICE INDEX as each card's `sort_order`, so a
+    // wrapper that sorted, deduped, reversed or otherwise tidied the list would
+    // silently corrupt the drag and stay green on every other surface. The exact
+    // array is asserted, in the exact order.
+    const [, args] = mockedInvoke.mock.calls[0]!;
+    expect(args).toEqual({
+      spacePath: "/space/x",
+      stageSlug: "backlog",
+      taskIds: ["tsk_z", "tsk_m", "tsk_a"],
+    });
+    expect((args as { taskIds: string[] }).taskIds).toEqual(ids);
+    expect(mockedInvoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves void (no row back) — a reorder is a write, not a read", async () => {
+    mockedInvoke.mockResolvedValue(undefined);
+    // The wrapper's contract is `Promise<void>`: unlike `editTask`/`moveTask` it
+    // returns NO row, so a caller cannot read the new positions off the result
+    // and must not expect `sortOrder` to arrive. Pinned so a future "return the
+    // re-read board for convenience" change is a deliberate one.
+    const result = await reorderTasks("/space/x", "done", []);
+    expect(result).toBeUndefined();
+    // An EMPTY slice is passed through, not skipped client-side: Rust's
+    // `stage_slug` check still runs, so a bad slug on an empty column is refused
+    // rather than silently accepted here.
+    expect(mockedInvoke).toHaveBeenCalledWith("reorder_tasks", {
+      spacePath: "/space/x",
+      stageSlug: "done",
+      taskIds: [],
+    });
+  });
+
+  it("propagates the `not_found` rejection naming the foreign card", async () => {
+    // The Rust side refuses an id that is not in this (Space, stage) pair with
+    // the ADR 0063 envelope. The wrapper must NOT swallow it into a resolved
+    // promise: a reorder that silently failed leaves the board showing an order
+    // the store invented, which is the silent-green shape this repo keeps
+    // refusing. A caller that reverts its optimistic reorder does so from this
+    // rejection.
+    mockedInvoke.mockRejectedValue({
+      kind: "not_found",
+      message: "no task with id tsk_foreign",
+    });
+    await expect(
+      reorderTasks("/space/x", "backlog", ["tsk_local", "tsk_foreign"]),
+    ).rejects.toMatchObject({ kind: "not_found" });
+  });
+});
+

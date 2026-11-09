@@ -47,7 +47,7 @@
 //! # Why a SECOND scanner exists, and why it must not be "consolidated"
 //!
 //! `is_comment` / `production_boundary` / `production_region` below are a small
-//! re-derivation of the crate's `fulcrum_core::lint_scan`. That is deliberate, and
+//! re-derivation of the crate's `fulcrum_harness::lint_scan`. That is deliberate, and
 //! it is NOT the drift `lint_scan` was written to prevent.
 //!
 //! `lint_scan` is `#[cfg(test)]` (`fulcrum`'s `lib.rs:157`), and **`#[cfg(test)]`
@@ -233,7 +233,7 @@ fn violation_message(offenders: &[String]) -> String {
          repo ships to, and one no Linux run will ever show. Build the child through \
          `crate::agent::childproc::command_std(path)` (or `command`/`command_tokio` for \
          the async paths), which owns the flag; `childproc` is re-exported from \
-         `fulcrum_core` by `agent/mod.rs`."
+         `fulcrum_harness` by `agent/mod.rs`."
     )
 }
 

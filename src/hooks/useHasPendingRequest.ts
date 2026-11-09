@@ -16,11 +16,15 @@ import { usePendingSubagentRequests } from "./usePendingSubagentRequests";
  * parent's transcript and the parent row's `waiting` status (see
  * `usePendingSubagentRequests`, which owns the reasoning).
  *
- * THIS is the dot's ONE derivation: `ChatStream` and the chrome bar's two pane
- * toggles (`ChromeControls`) all call it, and those two draw the `bg-warning`
- * dot while their pane is collapsed, so the cues cannot disagree. (`ChatStream`
- * used to hand-roll these same four terms — which is precisely the drift this
- * hook exists to prevent, and the reason it now reads this hook instead.)
+ * THIS is the ONE derivation of "you owe an answer": `ChatStream` and the New
+ * Task modal both call it (each suppresses its own "send a prompt to start"
+ * hint with the result), and the chrome bar's two pane toggles used to draw a
+ * `bg-warning` dot from it while their pane was collapsed — that dot is retired
+ * with the collapse (its meaning was "something needs you BEHIND the hidden
+ * pane", and nothing is behind anything now). What survives is the sharing: one
+ * derivation, so the cues cannot disagree. (`ChatStream` used to hand-roll these
+ * same four terms — which is precisely the drift this hook exists to prevent,
+ * and the reason it now reads this hook instead.)
  *
  * Like every cue hook here, it is called UNCONDITIONALLY: it reads stores via
  * `useSyncExternalStore`, so a caller that sits behind an early return would

@@ -29,44 +29,82 @@ tauri-build = { version = "2", features = [] }
 # `archimedes_lib`; that edge is the package cycle T5's ruling severs), and
 # `agent/mod.rs` re-exports from it so consumers outside `agent/` need zero edits.
 #
-# T8b/S8b.4-part-3: the crate now lives in its OWN repo
-# (`archimedes-codes/fulcrum`), so this is a git dependency, not a path member.
+# T8b/S8b.4-part-3 moved the crate into its OWN repo (`archimedes-codes/fulcrum`).
+# The crate has since been RENAMED `fulcrum-core` → `fulcrum-harness` (fulcrum#17,
+# commit `12488ee`) and PUBLISHED to crates.io as `fulcrum-harness` 0.1.0 on
+# 2026-11-08, from fulcrum commit `b52ce68`. So this is a REGISTRY VERSION PIN.
+# The engine still lives in `archimedes-codes/fulcrum` and is published FROM that
+# repo — it is not vendored here — and the published tree IS that repo's tree: the
+# `.crate`'s `src/` is byte-identical to `b52ce68`'s `src/` (`diff -rq` clean over
+# the 164 files of `src/`).
 #
-# PIN FORM — TAG + VERSION, and the immutability comes from the LOCK, not the
-# MANIFEST. This line used to carry a full 40-char `rev`, on the reasoning that a
-# floating dep lets the desktop's build change without a desktop commit. Since the
-# crate's v0.1.0 release the pin is `tag` + `version` instead, which is what that
-# release's own tag message asks for ("the intent behind this tag is to move that
-# pin to tag + version, which is what makes the tag load-bearing rather than
-# decorative"). `version = "0.1.0"` is not decoration: cargo honours the
-# tag+version form only when the tagged manifest carries that version, so it is a
-# second check on WHICH tree the tag resolved to, and a tag moved to a manifest
-# with a different version fails to resolve instead of building silently.
+# PIN FORM — THE REGISTRY, WHERE THIS BLOCK USED TO ARGUE FOR TAG + VERSION. That
+# form was chosen deliberately, and it is now IMPOSSIBLE rather than merely
+# forgone. Measured on this very manifest, `{ git = "https://github.com/
+# archimedes-codes/fulcrum", tag = "v0.1.0", version = "0.1.0" }` fails resolution
+# (exit 101) with
+#     error: no matching package named `fulcrum-harness` found
+#     location searched: Git repository …?tag=v0.1.0
+# because `v0.1.0` is an annotated tag that peels to `ae1fe97`, and
+# `ae1fe97:Cargo.toml` still declares `name = "fulcrum-core"`. `v0.1.0` is simply
+# UN-PINNABLE under the new name. Do NOT "explain" this by claiming the tag holds
+# different ENGINE code — it does not. `ae1fe97`'s `src/` differs from the shipped
+# `.crate` in 20 files / 47 lines and EVERY one of them is the name swap, so the
+# engine a consumer links is identical modulo the name; the residuals are
+# upstream's own `#[cfg(test)]` label literals and its historical comment
+# citations of the deleted `crates/` workspace directory, neither of which
+# reaches a desktop build. The pin
+# moved because the tag cannot RESOLVE, not because the code differs — and a
+# comment that overstates that would be the second wrong argument shipped in this
+# block's name.
 #
-# THE HONEST COST: a tag is a mutable ref. A force-push of `v0.1.0` would let a
-# fresh clone build different engine code with no desktop commit, which is exactly
-# what the `rev` form prevented. What protects `main` now is `Cargo.lock`: cargo
-# records the resolved COMMIT (`?tag=v0.1.0#<40-char sha>`), so every build from a
-# checkout of this commit gets the same tree, and only an explicit
-# `cargo update` — a desktop commit — moves it. So the discipline moved from the
-# manifest to the lockfile, and these two consequences follow:
+# AND A GREEN `--tag` IS NOT PROOF. Fulcrum's `162bf48` records that its own
+# `check-versions.sh --tag v0.1.0` prints "versions match" and exits 0 over that
+# un-installable tag: a tag whose manifest carries the right VERSION but the wrong
+# NAME passes a version check and still cannot be resolved.
+#
+# WHY NOT `rev`. `{ git = …, rev = "b52ce68" }` DOES resolve today (measured, exit
+# 0). It is still the wrong form: it pins a commit by number, which is exactly
+# what this line gave up in favour of an intent-bearing source, it buys nothing
+# the registry does not already give, and it keeps the desktop reading a repo
+# whose crate has since published itself — so the desktop drifts from every other
+# consumer of the same published artifact for no gain.
+#
+# THE RETURN PATH to tag + version is a NEW fulcrum tag on a POST-RENAME commit —
+# at or past `12488ee` (the rename) and past `b52ce68` (the publishable tree) —
+# and NEVER a re-pointing of `v0.1.0`, which is cited as history in BOTH repos and
+# which the ancestry gate forbids moving.
+#
+# THE IMMUTABILITY STILL COMES FROM THE LOCK, NOT THE MANIFEST — only more
+# strongly. `Cargo.lock` now records `fulcrum-harness 0.1.0` with
+# `source = "registry+…"` plus a `checksum`: a git tag can be force-pushed, a
+# published release and its checksum cannot. Two consequences, unchanged by the
+# switch of source:
 #   * a CI or release run that must reproduce this exact engine tree needs
 #     `--locked` (`--locked` refuses any lock change, `--offline` also refuses a
 #     fetch); the bare `cargo test` / `cargo clippy` steps in `ci.yml` are NOT
 #     `--locked`, so they resolve FROM the lock but are free to re-resolve if the
 #     lock stops matching this line —
-#   * when the tag is moved or re-pointed upstream, `cargo update -p fulcrum-core`
-#     changes the lock's sha WITHOUT changing this line, so an engine bump is no
-#     longer guaranteed to be visible in a manifest diff. Read the `Cargo.lock`
-#     diff on every PR that touches it — that file is the review surface now.
+#   * `fulcrum-harness = "0.1.0"` means `^0.1.0`, so a re-resolve could in
+#     principle land on a future `0.1.x`. What prevents that is the lock plus the
+#     checksum, and moving it is a `cargo update -p fulcrum-harness` — a desktop
+#     commit, visible in the diff. This line does NOT pin a single tree by
+#     itself; do not read it as though it did.
+#
+# Read the `Cargo.lock` diff on every PR that touches it — that file is the review
+# surface now, and the rename is the proof: four lines changed (the package name,
+# its `source`, a new `checksum`, and the `archimedes` dep-list entry) with no
+# graph churn, because the engine's 22 dependencies are identical between the two
+# forms. A lockfile that churns beyond that means something else resolved
+# differently — investigate before committing.
 #
 # Working on the crate alongside the desktop? Do NOT edit this line to a path
 # (that would commit a dep that cannot resolve for anyone else). Copy
-# `.cargo/config.toml.example` to `.cargo/config.toml` — the `[patch]` there
-# redirects this git source to a sibling checkout and is gitignored, so it can
-# never leak into a commit. `.cargo/config.toml.example` is inert (cargo reads
-# only `config.toml`), which is what makes it safe to ship.
-fulcrum-core = { git = "https://github.com/archimedes-codes/fulcrum", tag = "v0.1.0", version = "0.1.0" }
+# `.cargo/config.toml.example` to `.cargo/config.toml` — the `[patch.crates-io]`
+# there redirects the CRATES.IO source to a sibling checkout and is gitignored, so
+# it can never leak into a commit. `.cargo/config.toml.example` is inert (cargo
+# reads only `config.toml`), which is what makes it safe to ship.
+fulcrum-harness = "0.1.0"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

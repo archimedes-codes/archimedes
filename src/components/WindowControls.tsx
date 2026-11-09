@@ -62,9 +62,13 @@ export default function WindowControls() {
     // this container as NOT attention, because "run finishes → click Minimize →
     // walk away" is that feature's main use case and a self-cancelling alert
     // would be worse than none. The scope is these three buttons ONLY — a click
-    // on the rest of the drag bar, a Space tab, or one of the app controls in
-    // `ChromeControls` (which sits immediately to the left of this container,
-    // OUTSIDE it on purpose) IS attention. Any control added here inherits the
+    // on the rest of the drag bar, or on a Space tab, IS attention. Nothing sits
+    // to the LEFT of this container any more: the app's own control used to be
+    // there, in the chrome bar's now-deleted `ChromeControls` cluster, and ADR
+    // 0095 moved that door into the Session list, so this corner belongs to the
+    // window manager alone. The exemption's scope did not move with it — the
+    // Settings door stayed OUTSIDE `[data-window-control]` on purpose (ADR 0038),
+    // and `App.test.tsx` pins that. Any control added HERE inherits the
     // exemption, so add one deliberately.
     <div className="flex items-center gap-0.5" data-window-control>
       <Button

@@ -27,7 +27,7 @@ import {
 
 /**
  * The **Agents** modal (ADR 0066 / ADR 0068) — the ONE Agent surface, opened
- * from the Space rail beside **Skills**.
+ * from the **Session list**'s labelled **Agents** control (beside **Skills**).
  *
  * One row per **Agent definition** the ACTIVE **Space** can see (project-level
  * rows AND the global ones — `list_agent_definition_reports(cwd)` discovers with that `cwd`),

@@ -411,13 +411,15 @@ async function go(
 }
 
 describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
-  it("renders_the_three_sections_and_the_back_button", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
-    // The section nav + the back button.
+  it("renders_the_three_sections_and_no_back_button", async () => {
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
+    // The section nav, and NO exit control: this page's `Back` is retired — the
+    // Session list's pressed Settings door and any Session row are the two ways
+    // out (N1). Asserted by absence so a re-added button fails here.
     expect(screen.getByRole("button", { name: "General" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Appearance" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Providers" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
     // The default section is General.
     await loaded();
     expect(screen.getByText("Default model")).toBeTruthy();
@@ -433,7 +435,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
   }, 15000);
 
   it("immediate_save_a_control_change_saves_the_complete_document", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
     const trigger = await screen.findByRole("combobox", { name: "Theme" });
@@ -452,7 +454,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
   });
 
   it("the UI font picker offers Noto Sans, Fira Sans, and Martel Sans (immediate save of the quoted family)", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     const trigger = await screen.findByRole("combobox", { name: "UI font" });
@@ -472,7 +474,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
   });
 
   it("the font pickers' default option is the app default (Noto Sans for UI, Fira Code for Code)", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     // The `""` (null) option is the APP DEFAULT — Noto Sans for the UI
@@ -498,7 +500,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
   });
 
   it("selecting a default option shows its label in the trigger (not empty — Radix renders nothing for an empty-string value)", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     const uiTrigger = await screen.findByRole("combobox", { name: "UI font" });
@@ -529,7 +531,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
   });
 
   it("a_provider_field_commits_on_blur_and_refreshes_discovery", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     const nameInput = await screen.findByDisplayValue("Tama");
@@ -576,7 +578,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
         contextUsage: { used: 53_760, window: 1_000_000 },
       },
     ]);
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     fireEvent.click(await screen.findByRole("button", { name: "Refresh models" }));
@@ -601,7 +603,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
   });
 
   it("add_provider_appends_a_row_and_the_name_commit_derives_the_id", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     // The existing provider row is loaded (one "Provider name" input).
@@ -645,7 +647,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
       defaultThinkingLevels: { "tama/Qwen3.8": "xhigh" },
       agentOverrides: { scout: { model: "tama/m1" } },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     const nameInput = await screen.findByDisplayValue("Tama");
@@ -685,7 +687,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
         plan: { model: "other/m9", tools: ["read"] },
       },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     const nameInput = await screen.findByDisplayValue("Tama");
@@ -728,7 +730,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
         plan: { model: "other/m9", tools: ["read"] },
       },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     const nameInput = await screen.findByDisplayValue("Tama");
@@ -752,7 +754,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
   });
 
   it("a_blank_name_keeps_the_provider_id", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     const nameInput = await screen.findByDisplayValue("Tama");
@@ -765,7 +767,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
   });
 
   it("the_provider_row_shows_all_its_fields", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     // The labeled fields (the fix for the clipped single-line layout —
@@ -804,7 +806,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
       loadStarted: true,
       loadedOk: true,
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     await screen.findByDisplayValue("Tama");
@@ -829,7 +831,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
   });
 
   it("the_default_model_picker_dialog_lists_the_catalog_and_system_default", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     // The model pickers are DIALOGS (the catalog is too long for a Radix
     // dropdown) — the trigger is a button, not a combobox.
@@ -873,7 +875,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
   });
 
   it("the_default_thinking_level_select_offers_the_union_of_the_models_levels_and_commits_the_choice", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const trigger = await screen.findByRole("combobox", {
       name: "Default thinking level",
@@ -909,7 +911,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
       ...baseSettings,
       defaultThinkingLevel: "high",
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const trigger = await screen.findByRole("combobox", {
       name: "Default thinking level",
@@ -939,7 +941,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
       ...baseSettings,
       defaultThinkingLevel: "ultra",
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const trigger = await screen.findByRole("combobox", {
       name: "Default thinking level",
@@ -966,7 +968,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
       ...baseSettings,
       defaultThinkingLevel: "",
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const trigger = await screen.findByRole("combobox", {
       name: "Default thinking level",
@@ -990,7 +992,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
   });
 
   it("the_enabled_tools_checkboxes_commit_the_checked_names", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     // One row per native harness tool (the `listTools` fixture).
     const bash = await screen.findByRole("checkbox", { name: /bash/ });
@@ -1011,7 +1013,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
       ...baseSettings,
       enabledTools: ["bash", "read"],
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     fireEvent.click(await screen.findByRole("checkbox", { name: /bash/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /read/ }));
@@ -1030,7 +1032,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
         rules: [{ path: "~/.pi/agent", direction: "read", decision: "deny" }],
       },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     fireEvent.click(await screen.findByRole("combobox", { name: "Reads" }));
@@ -1080,7 +1082,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
         rules: [{ path: "~/.pi/agent", direction: "read", decision: "deny" }],
       },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Permissions");
     // Change the Reads posture AND save a rule in the same flow. The
@@ -1105,7 +1107,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
   });
 
   it("the_default_agent_select_is_gone", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     // The removed UI: there is one harness — no agent to choose, so the
     // "Default agent" control is absent (and the agent-catalog data source
@@ -1121,7 +1123,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
       ...baseSettings,
       defaultThinkingLevels: { "tama/Qwen3.8": "xhigh" },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     // ANY update (theme → Light) = one save of the complete document.
     fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
@@ -1140,7 +1142,7 @@ describe("SettingsPage (the ZCode port — sections + immediate save)", () => {
 // default because `#` collides with pasted developer text (`#include`, `#123`).
 describe("SettingsPage (the # MCP-mention toggle)", () => {
   it("the toggle renders from the setting (off by default, on when stored)", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const toggle = await screen.findByRole("switch", {
       name: "Mention MCP servers with #",
@@ -1155,7 +1157,7 @@ describe("SettingsPage (the # MCP-mention toggle)", () => {
       ...baseSettings,
       mcpMentionsEnabled: true,
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     expect(
       screen
@@ -1165,7 +1167,7 @@ describe("SettingsPage (the # MCP-mention toggle)", () => {
   });
 
   it("flipping the toggle saves the complete document with the flag", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     fireEvent.click(
       await screen.findByRole("switch", {
@@ -1190,7 +1192,7 @@ describe("SettingsPage (the # MCP-mention toggle)", () => {
   });
 
   it("the toggle's description states the collision honestly", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const toggle = await screen.findByRole("switch", {
       name: "Mention MCP servers with #",
@@ -1215,7 +1217,7 @@ describe("SettingsPage (the # MCP-mention toggle)", () => {
 
 describe("SettingsPage (the session-naming rows)", () => {
   it("the naming switch renders from the setting (on by default, off when stored)", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const toggle = await screen.findByRole("switch", {
       name: "Name sessions automatically",
@@ -1230,7 +1232,7 @@ describe("SettingsPage (the session-naming rows)", () => {
       ...baseSettings,
       sessionNamingEnabled: false,
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     expect(
       screen
@@ -1240,7 +1242,7 @@ describe("SettingsPage (the session-naming rows)", () => {
   });
 
   it("flipping the naming switch saves the complete document with the flag", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     fireEvent.click(
       await screen.findByRole("switch", {
@@ -1266,7 +1268,7 @@ describe("SettingsPage (the session-naming rows)", () => {
   });
 
   it("the naming switch's description says a session keeps the name it already has", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const toggle = await screen.findByRole("switch", {
       name: "Name sessions automatically",
@@ -1282,7 +1284,7 @@ describe("SettingsPage (the session-naming rows)", () => {
   });
 
   it("the naming model picker writes the composed key and null for its unset row", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     // The model pickers are DIALOGS (the shared `ModelPicker`): the trigger
     // is a button labelled by its `label` prop (the component sets
@@ -1325,7 +1327,7 @@ describe("SettingsPage (the session-naming rows)", () => {
   it("the naming model trigger shows the stored model, and the unset row's name when unset", async () => {
     // A fresh document (`null`): the trigger reads the UNSET row's name —
     // never an empty box, which would leave the user without a readout.
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     expect(
       screen
@@ -1340,7 +1342,7 @@ describe("SettingsPage (the session-naming rows)", () => {
       ...baseSettings,
       sessionNamingModel: "tama/Qwen3.8",
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const trigger = screen.getByRole("button", {
       name: "Session naming model",
@@ -1350,7 +1352,7 @@ describe("SettingsPage (the session-naming rows)", () => {
   });
 
   it("the naming rows sit with the model rows, above the enabled-tools list", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     // The layout is the plan's: the naming model belongs beside the model
     // rows, and the enabled-tools list stays last in the section.
@@ -1381,7 +1383,7 @@ describe("SettingsPage (the session-naming rows)", () => {
 
 describe("SettingsPage (the attention-alert rows)", () => {
   it("the alert switch renders from the setting (on by default, off when stored)", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const toggle = await screen.findByRole("switch", {
       name: "Alert when the app is waiting on you",
@@ -1396,7 +1398,7 @@ describe("SettingsPage (the attention-alert rows)", () => {
       ...baseSettings,
       attentionAlertsEnabled: false,
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     expect(
       screen
@@ -1406,7 +1408,7 @@ describe("SettingsPage (the attention-alert rows)", () => {
   });
 
   it("flipping the alert switch saves the complete document with the flag", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     fireEvent.click(
       await screen.findByRole("switch", {
@@ -1433,7 +1435,7 @@ describe("SettingsPage (the attention-alert rows)", () => {
   });
 
   it("the delay select shows the stored delay and offers the four options", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const trigger = await screen.findByRole("combobox", {
       name: "Delay before alerting",
@@ -1452,7 +1454,7 @@ describe("SettingsPage (the attention-alert rows)", () => {
   });
 
   it("choosing a delay saves the complete document with the seconds", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     fireEvent.click(
       await screen.findByRole("combobox", { name: "Delay before alerting" }),
@@ -1484,7 +1486,7 @@ describe("SettingsPage (the attention-alert rows)", () => {
       ...baseSettings,
       attentionAlertDelaySecs: 90,
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const trigger = await screen.findByRole("combobox", {
       name: "Delay before alerting",
@@ -1497,7 +1499,7 @@ describe("SettingsPage (the attention-alert rows)", () => {
   });
 
   it("the alert rows sit with the session-naming rows, above the enabled-tools list", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const rows = document.querySelectorAll(".border-t");
     const index = (label: string): number =>
@@ -1519,7 +1521,7 @@ describe("SettingsPage (the attention-alert rows)", () => {
 
 describe("SettingsPage (the Updates section — ADR 0053)", () => {
   it("the Updates nav button is in the sidebar, after MCP", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     const buttons = [...document.querySelectorAll("nav button")].map(
       (b) => b.getAttribute("aria-label") ?? "",
@@ -1538,7 +1540,7 @@ describe("SettingsPage (the Updates section — ADR 0053)", () => {
   });
 
   it("selecting Updates renders the section, and General still renders after going back", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     fireEvent.click(screen.getByRole("button", { name: "Updates" }));
     // The render arm is live (the section's own behaviour is tested in
@@ -1558,7 +1560,7 @@ describe("SettingsPage (the Updates section — ADR 0053)", () => {
   });
 
   it("selecting Permissions renders the section, and General still renders after going back", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     fireEvent.click(screen.getByRole("button", { name: "Permissions" }));
     // The render arm is live; the trust row is the first SettingsRow of the
@@ -1589,7 +1591,7 @@ describe("SettingsPage (the Updates section — ADR 0053)", () => {
   });
 
   it("the_web_search_section_renders_when_clicked", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     expect(screen.getByRole("button", { name: "Web search" })).toBeTruthy();
     await go("Web search");
@@ -1619,7 +1621,7 @@ describe("SettingsPage (the Detached sessions section — ADR 0016 amended)", ()
       archivedSessions: [],
       messages: {},
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     fireEvent.click(screen.getByRole("button", { name: "Detached sessions" }));
     // The empty state (zero detached rows). `Clear all` is deliberately NOT
@@ -1644,7 +1646,7 @@ describe("SettingsPage (the Detached sessions section — ADR 0016 amended)", ()
 
 describe("SettingsPage (the MCP section — ADR 0019)", () => {
   it("the_mcp_section_lists_the_servers_with_their_actions", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("MCP");
     // The server row: the name + a type badge (HTTP) + a one-line summary
@@ -1665,7 +1667,7 @@ describe("SettingsPage (the MCP section — ADR 0019)", () => {
   });
 
   it("add_mcp_http_server_saves_the_entry_in_pi_shape", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("MCP");
     fireEvent.click(screen.getByRole("button", { name: "Add server" }));
@@ -1699,7 +1701,7 @@ describe("SettingsPage (the MCP section — ADR 0019)", () => {
   });
 
   it("add_mcp_stdio_server_saves_the_entry", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("MCP");
     fireEvent.click(screen.getByRole("button", { name: "Add server" }));
@@ -1735,7 +1737,7 @@ describe("SettingsPage (the MCP section — ADR 0019)", () => {
   });
 
   it("edit_mcp_server_pre_fills_the_form_and_updates_the_entry", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("MCP");
     await screen.findByText("tama");
@@ -1754,7 +1756,7 @@ describe("SettingsPage (the MCP section — ADR 0019)", () => {
   });
 
   it("remove_mcp_server_confirms_then_saves", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("MCP");
     await screen.findByText("tama");
@@ -1774,7 +1776,7 @@ describe("SettingsPage (the MCP section — ADR 0019)", () => {
 
   it("test_mcp_server_runs_the_one_shot_test_and_reports_the_count", async () => {
     vi.mocked(testMcpServer).mockResolvedValueOnce(3);
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("MCP");
     await screen.findByText("tama");
@@ -1791,7 +1793,7 @@ describe("SettingsPage (the MCP section — ADR 0019)", () => {
 
   it("test_mcp_server_surfaces_the_error", async () => {
     vi.mocked(testMcpServer).mockRejectedValueOnce("connect timed out");
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("MCP");
     await screen.findByText("tama");
@@ -1812,7 +1814,7 @@ describe("SettingsPage (the MCP section — ADR 0019)", () => {
     });
     vi.mocked(authMcpServer).mockResolvedValueOnce("oauth_srv: authenticated");
     vi.mocked(testMcpServer).mockResolvedValueOnce(5);
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("MCP");
     await screen.findByText("oauth_srv");
@@ -1834,7 +1836,7 @@ describe("SettingsPage (the MCP section — ADR 0019)", () => {
 
 describe("SettingsPage (the known-providers picker + the provider api field — ADR 0024)", () => {
   it("picker_renders_the_20_known_providers", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     // Radix `Select` options render only when the popover is OPEN.
@@ -1854,7 +1856,7 @@ describe("SettingsPage (the known-providers picker + the provider api field — 
   });
 
   it("picker_adds_a_prefilled_row", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     const trigger = screen.getByRole("combobox", { name: "Known provider" });
@@ -1889,7 +1891,7 @@ describe("SettingsPage (the known-providers picker + the provider api field — 
   });
 
   it("add_provider_button_still_adds_an_empty_row", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     // The existing `Add provider` button (no picker selection): an empty
@@ -1927,7 +1929,7 @@ describe("SettingsPage (the known-providers picker + the provider api field — 
         },
       ],
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     // Switch the wire to `anthropic-messages` (the three-wire select).
@@ -1976,7 +1978,7 @@ describe("SettingsPage (the known-providers picker + the provider api field — 
         },
       ],
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     const trigger = await screen.findByRole("combobox", { name: "API" });
@@ -2000,7 +2002,7 @@ describe("SettingsPage (the known-providers picker + the provider api field — 
         },
       ],
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     const link = await screen.findByRole("link", { name: "Get key" });
@@ -2023,7 +2025,7 @@ describe("SettingsPage (the known-providers picker + the provider api field — 
     // Drop the first render (two renders would leave two "Providers"
     // sidebar buttons — the `go` helper's `getByRole` would be ambiguous).
     cleanup();
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     // The row is rendered (the name field) — and there is no "Get key" link.
@@ -2036,7 +2038,7 @@ describe("SettingsPage (the known-providers picker + the provider api field — 
     // `keyUrl: "https://keys.test/get"` (both copies of the `getSettings`
     // fixture — the inlined one the page loads and the `baseSettings` the
     // save-assertions spread).
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     const link = await screen.findByRole("link", { name: "Get key" });
@@ -2058,7 +2060,7 @@ describe("Appearance: palette", () => {
   // families), so a Zai selection leaves `settings.json` minimal — the shape a
   // pre-feature file already has.
   it("offers Zai and Dracula, with Zai preselected for a `null` palette", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     const trigger = await screen.findByRole("combobox", { name: "Palette" });
@@ -2072,7 +2074,7 @@ describe("Appearance: palette", () => {
   });
 
   it("saves Dracula as the palette, and Zai as the null default", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     fireEvent.click(await screen.findByRole("combobox", { name: "Palette" }));
@@ -2102,7 +2104,7 @@ describe("Appearance: palette", () => {
       ...baseSettings,
       palette: "dracula",
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     fireEvent.click(await screen.findByRole("combobox", { name: "Palette" }));
@@ -2132,7 +2134,7 @@ describe("Appearance: palette", () => {
         ...baseSettings,
         palette,
       });
-      const { unmount } = render(<SettingsPage onBack={vi.fn()} />);
+      const { unmount } = render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
       await loaded();
       await go("Appearance");
       const trigger = await screen.findByRole("combobox", { name: "Palette" });
@@ -2148,7 +2150,7 @@ describe("Appearance: palette", () => {
 
 describe("Appearance: thinking spinner", () => {
   it("offers every braille variant as a live preview (the default typing is preselected)", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     // Every variant in the gallery is offered, named by its humanized name
@@ -2171,7 +2173,7 @@ describe("Appearance: thinking spinner", () => {
   });
 
   it("saves the picked spinner style (immediate save, complete document)", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     fireEvent.click(
@@ -2213,7 +2215,7 @@ describe("Appearance: empty-session animation", () => {
   }
 
   it("renders the row with Animated selected while the setting is null", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     expect(
@@ -2241,7 +2243,7 @@ describe("Appearance: empty-session animation", () => {
         ...baseSettings,
         emptyStateAnimation: stored,
       });
-      const { unmount } = render(<SettingsPage onBack={vi.fn()} />);
+      const { unmount } = render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
       await loaded();
       await go("Appearance");
       const radios = filmRadios();
@@ -2265,7 +2267,7 @@ describe("Appearance: empty-session animation", () => {
       ...baseSettings,
       emptyStateAnimation: "spatial",
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     expect(filmRadios().Animated.getAttribute("aria-checked")).toBe("true");
@@ -2273,7 +2275,7 @@ describe("Appearance: empty-session animation", () => {
   });
 
   it("saves `static` when Static is chosen (immediate save, complete document)", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     fireEvent.click(filmRadios().Static);
@@ -2295,7 +2297,7 @@ describe("Appearance: empty-session animation", () => {
     // Animated writes the STRING, not `null`: unlike `palette`, whose `null`
     // keeps `settings.json` minimal, this default is genuinely animated and a
     // user re-choosing it is an explicit choice worth persisting.
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     fireEvent.click(filmRadios().Off);
@@ -2340,7 +2342,7 @@ describe("a stored value the option list does not offer", () => {
       ...baseSettings,
       palette: "solarized" as AppSettings["palette"],
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     const trigger = await screen.findByRole("combobox", { name: "Palette" });
@@ -2364,7 +2366,7 @@ describe("a stored value the option list does not offer", () => {
       ...baseSettings,
       palette: "" as AppSettings["palette"],
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     await screen.findByRole("combobox", { name: "Palette" });
@@ -2383,7 +2385,7 @@ describe("a stored value the option list does not offer", () => {
       ...baseSettings,
       theme: "sepia" as AppSettings["theme"],
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     const trigger = await screen.findByRole("combobox", { name: "Theme" });
@@ -2412,7 +2414,7 @@ describe("a stored value the option list does not offer", () => {
       ...baseSettings,
       font: { sizePx: 14, uiFamily: "Georgia", codeFamily: "Iosevka" },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     const uiTrigger = await screen.findByRole("combobox", { name: "UI font" });
@@ -2440,7 +2442,7 @@ describe("a stored value the option list does not offer", () => {
       ...baseSettings,
       font: { sizePx: 14, uiFamily: null, codeFamily: "Iosevka" },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     const codeTrigger = await screen.findByRole("combobox", {
@@ -2458,7 +2460,7 @@ describe("a stored value the option list does not offer", () => {
       ...baseSettings,
       font: { sizePx: 14, uiFamily: "", codeFamily: null },
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     const trigger = await screen.findByRole("combobox", { name: "UI font" });
@@ -2485,7 +2487,7 @@ describe("a stored value the option list does not offer", () => {
         },
       ],
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     const trigger = await screen.findByRole("combobox", { name: "API" });
@@ -2507,7 +2509,7 @@ describe("a stored value the option list does not offer", () => {
 
 describe("SettingsPage (the provider auth fields + the spend/budget line — #126 #127 #132)", () => {
   it("the auth-mode select commits the chosen mode through the whole-document save", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     const trigger = await screen.findByRole("combobox", { name: "Auth mode" });
@@ -2545,7 +2547,7 @@ describe("SettingsPage (the provider auth fields + the spend/budget line — #12
         },
       ],
     });
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     const trigger = await screen.findByRole("combobox", { name: "Auth mode" });
@@ -2556,7 +2558,7 @@ describe("SettingsPage (the provider auth fields + the spend/budget line — #12
   });
 
   it("the page reads the budget ledger ONCE at mount (a page fetch, not a boot fetch)", async () => {
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     // NO argument: a plain read of the warm ledger (the background poller keeps
     // it fresh). Passing a provider id here would RUN a budget tick, not select a
@@ -2598,7 +2600,7 @@ describe("SettingsPage (the provider auth fields + the spend/budget line — #12
         ],
       },
     ]);
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     expect(await screen.findByText("Spend / max budget")).toBeTruthy();
@@ -2612,7 +2614,7 @@ describe("SettingsPage (the provider auth fields + the spend/budget line — #12
   it("an empty ledger renders no figure at all (never $0.00 — moneyOf's rule)", async () => {
     // The factory's default is `[]` — the absent-ledger degrade the Rust side
     // answers deliberately (`Ok(vec![])` when no poller is managed).
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     expect(await screen.findByDisplayValue("Tama")).toBeTruthy();
@@ -2627,7 +2629,7 @@ describe("SettingsPage (the provider auth fields + the spend/budget line — #12
     vi.mocked(getProviderBudget).mockRejectedValueOnce(
       new Error("budget read failed: unreachable"),
     );
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     expect(await screen.findByDisplayValue("Tama")).toBeTruthy();
@@ -2641,7 +2643,7 @@ describe("SettingsPage (the provider auth fields + the spend/budget line — #12
     // parameter carries a PROVIDER ID (the Rust side does
     // `if let Some(provider_id) = force_refresh.as_deref()`). Passing `"true"`
     // would be a truthy provider id that matches no row — a silent no-op tick.
-    render(<SettingsPage onBack={vi.fn()} />);
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Providers");
     await screen.findByDisplayValue("Tama");

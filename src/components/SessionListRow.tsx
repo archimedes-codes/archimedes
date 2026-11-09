@@ -12,8 +12,8 @@ import type { DragReorderHandlers, DropEdge } from "../hooks/useDragReorder";
  * `time`, which turned out not to be a difference at all — see below):
  *
  *  - **`leading`** — the 16px slot. A live/stored row wears the attention mark
- *    (`SessionStatusMark`, the spinner / `?` / ring the collapsed rail and the
- *    tab draw from the same rule); an archived row wears NOTHING, because an
+ *    (`SessionStatusMark`, the spinner / `?` / ring the tab draws from the same
+ *    rule); an archived row wears NOTHING, because an
  *    archived Session is never live. Both are 16px, which is what keeps the two
  *    sections' titles vertically aligned.
  *  - **`actions`** — the hover-revealed buttons. Live: Stop then Archive.
@@ -41,10 +41,8 @@ import type { DragReorderHandlers, DropEdge } from "../hooks/useDragReorder";
  * keeps them in the DOM even though CSS hides them until hover).
  *
  * **NO DOM LEVEL.** Every child is a DIRECT child of the `role="button"`
- * element. `SpacesList.test.tsx`'s "keeps the rail's marks POSITIONALLY equal to
- * the rows, because both come from the store's ONE sequence" compares row
- * positions with `compareDocumentPosition` against the collapsed rail's marks,
- * and the `.closest('[role="button"]')` sites plus `rowOf()` resolve through
+ * element. `SpacesList.test.tsx`'s drag block compares row positions with
+ * `compareDocumentPosition`, and the `.closest('[role="button"]')` sites plus `rowOf()` resolve through
  * ancestry. Same lesson C6 recorded for the picker shell: a React boundary is
  * free, an element is not. THIS is the rule the drop indicator obeys: it is a
  * CLASS on the row (`dropEdge` below), never a placeholder node — the same
@@ -141,8 +139,8 @@ export function SessionListRow({
       )}
     >
       {/* The state glyph, in the slot the spinner already owned: a session that
-          is idle now wears a RING rather than nothing, which is the cue the
-          collapsed rail has always had and the expanded list has never shown.
+          is idle now wears a RING rather than nothing — the cue this list used
+          to omit, which left an idle Session drawn as an absence.
           16px = the slot's old `size-4`, so the title's indent is unchanged and
           these rows still line up with the Archived section, whose leading slot
           is the same 16px. NO ink class here: the mark owns the ink

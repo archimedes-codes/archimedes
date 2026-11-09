@@ -5,7 +5,7 @@
 // T5/S2 moved `boundary`, `childproc`, `definition_permission`, `policy` and
 // `tools` into `crates/fulcrum-core`; T5/S3 moved `interactive`, `codemode` and
 // `mcp`. Their `pub mod` declarations are GONE and the modules now arrive
-// through the module-level `pub use fulcrum_core::{…}` below. `web` is the one
+// through the module-level `pub use fulcrum_harness::{…}` below. `web` is the one
 // EXCEPTION and keeps its declaration: `web/render.rs` stayed desktop (the Tauri
 // webview), so `agent/web.rs` is a real desktop module that declares `render` and
 // re-exports the moved ones its paths still address. (`provider_auth` is the SAME
@@ -53,7 +53,7 @@ pub mod worker;
 // * CRATE-internal paths (NOT desktop consumers — these files moved to the crate,
 //   so they name their own package): `harness/loop/codemode.rs` is crate-owned
 //   since T8 and spells `crate::codemode::engine::CODEMODE_MEMORY_LIMIT`
-//   (`fulcrum-core/src/codemode/engine.rs`), and `harness/loop/tools.rs` spells
+//   (`fulcrum/src/codemode/engine.rs`), and `harness/loop/tools.rs` spells
 //   `crate::interactive::{sudo_run_flow, todo_apply}`.
 //
 // Every one of these is module-qualified, so a named-only block would leave each
@@ -88,28 +88,38 @@ pub mod worker;
 // LaunchConfig, SubagentOutcome, SubagentCancel, SubagentSessionManager}` and
 // `SubagentCancel`'s dispatch variant was renamed with its held type
 // (`Worker` → `Dispatcher`, the E2 re-plumb).
-pub use fulcrum_core::{
+pub use fulcrum_harness::{
     agents, boundary, childproc, debuglog, definition_permission, events, hostenv, ids,
     interactive, mcp, normalize, permission, persist, policy, skills, subagent, todo, tools, types,
 };
 
 pub use crate::types::SessionInfo;
 pub use definition_permission::{Action, FrontmatterNote, PermissionBlock, Rules, ToolKey};
-pub use errors::{AgentsError, FilesError, McpError, SessionError, SettingsError, SpacesError};
-pub use fulcrum_core::events::{EventSink, RpcEvent};
-pub use fulcrum_core::fs_backend::{FsBackend, FsError};
-pub use fulcrum_core::normalize::normalize_capabilities;
-pub use fulcrum_core::persist::TranscriptPersister;
-pub use fulcrum_core::subagent::{
+pub use errors::{
+    AgentsError, FilesError, McpError, SessionError, SettingsError, SpacesError, TasksError,
+};
+pub use fulcrum_harness::events::{EventSink, RpcEvent};
+pub use fulcrum_harness::fs_backend::{FsBackend, FsError};
+pub use fulcrum_harness::normalize::normalize_capabilities;
+pub use fulcrum_harness::persist::TranscriptPersister;
+pub use fulcrum_harness::subagent::{
     AgentNameResolution, LaunchConfig, SubagentCancel, SubagentFailureReason, SubagentMetrics,
     SubagentOutcome, SubagentSessionManager,
 };
-pub use fulcrum_core::todo::TodoStore;
+pub use fulcrum_harness::todo::TodoStore;
 pub use interactive::PendingInteractive;
 pub use permission::{permission_key, PendingPermissions, PermissionOutcome};
 pub use session::{
     user_message_payload, ClosedReason, EffectiveCatalog, ImagePayload, ProviderFactory,
     SessionManager, SessionManagerBuilder, StalledInfo, StopReason, MAX_IMAGE_BYTES,
 };
+// The second hop of the ONE symbol `commands/tasks.rs` needs (first hop:
+// `pub(crate) use naming::clean_title;` in `session/mod.rs`). Both hops are
+// `pub(crate) use` of ONE name, matching the one-symbol-per-line idiom above —
+// `mod session` itself stays private, so the whole title machinery does not
+// become reachable from `commands/`. `commands/attention.rs` carries a private
+// copy of `cap_chars` for exactly the reason this chain did not exist yet; a
+// third caller of THAT should hoist one shared helper.
+pub(crate) use session::clean_title;
 
 pub use tools::{ContentBlock, ImageRef, ToolCtx, ToolResult};

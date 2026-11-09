@@ -1,20 +1,22 @@
 import { Check } from "lucide-react";
 import { Progress } from "./ui/progress";
 import { MutedCaption } from "./MutedCaption";
-import { useInteractive, type TodoItem } from "../store/interactive";
+import { useInteractive, type ChecklistItem } from "../store/interactive";
 import { useSubagentSelection } from "../store/subagentSelection";
-import { useTodoBoards, type TodoBoard } from "../hooks/useTodoBoards";
+import { useChecklists, type Checklist } from "../hooks/useChecklists";
 
-const EMPTY_TODOS: TodoItem[] = [];
+const EMPTY_TODOS: ChecklistItem[] = [];
 
 /**
- * The main column's todo derivation (extracted so the `SidePane`'s collapsed-rail
- * overview and the panel's checklist consume the SAME derivation and can never
- * disagree):
+ * The main column's checklist derivation, shared by the panel's own list and by
+ * `useBoardOpenCount` above it, so the rows and the visibility gate read the
+ * SAME items and can never disagree. (Its third consumer was the collapsed-rail
+ * overview that ADR 0094 deleted, which needed the FULL list — completed items
+ * included — where the gate needs only the open ones.)
  *
  * Reads session state only (`useInteractive.todos[sessionId]`).
  */
-export function useMainTodoItems(sessionId: string | null): TodoItem[] {
+export function useMainChecklistItems(sessionId: string | null): ChecklistItem[] {
   return (
     useInteractive((state) =>
       sessionId ? state.todos[sessionId] : undefined,
@@ -57,17 +59,17 @@ function endsSelection(): boolean {
  * not a prefix rule.
  *
  * The fallback is "not `completed`", NOT "`pending`", because the status it
- * reads is not trustworthy: `useMainTodoItems` casts ANY model-authored string
+ * reads is not trustworthy: `useMainChecklistItems` casts ANY model-authored string
  * into the union, while the visibility rule (`useBoardOpenCount`, and rule 4 of
- * `todoBoardsOf`) is `status !== "completed"`. Keying the fallback on `pending`
+ * `checklistsOf`) is `status !== "completed"`. Keying the fallback on `pending`
  * made the two rules disagree — a list whose live item read `"in-progress"`
- * counted toward the count that AUTO-OPENS the frame while this returned
- * `undefined`, so the pane opened and drew zero rows at either level. Matching
- * the negation makes them one rule: an item counts toward the count exactly when
- * it can be the row.
+ * counted toward the visibility gate while this returned `undefined`, so the
+ * section rendered its header and drew zero rows at either level. Matching the
+ * negation makes them one rule: an item counts toward the count exactly when it
+ * can be the row.
  */
-function currentTodo(items: TodoItem[]): TodoItem | undefined {
-  let firstOpen: TodoItem | undefined;
+function currentTodo(items: ChecklistItem[]): ChecklistItem | undefined {
+  let firstOpen: ChecklistItem | undefined;
   for (const item of items) {
     if (item.status === "in_progress") return item;
     if (firstOpen === undefined && item.status !== "completed") {
@@ -79,22 +81,25 @@ function currentTodo(items: TodoItem[]): TodoItem | undefined {
 
 /**
  * OPEN items across the whole board — the parent's list PLUS every running
- * child's. The ONE open-count the frame's auto-open and the panel's own gate
- * read.
+ * child's. The ONE open-count this section's own visibility gate reads.
  *
  * Extracted (rather than hand-written at each call site) for the standing rule
  * behind `useSessionStatus`: a summary that disagrees with the thing it
- * summarises is worse than no summary. The `SidePane`'s visibility and the
- * section it hosts are therefore the SAME fact — a pane that opened on a child
- * board whose section then rendered `null` (or the reverse) is unrepresentable.
+ * summarises is worse than no summary. It used to have a SECOND consumer — the
+ * `SidePane` frame's auto-open, which read this same count so the frame could
+ * never open on a section that rendered `null` (or hide one that had something
+ * to show). The frame is permanent now and reads no count at all, so this hook
+ * has one consumer left; it stays extracted because the panel's header count and
+ * its visibility must stay the SAME fact, and because a second gate that ever
+ * appears must not hand-write the rule again.
  *
- * A fully-completed list counts as ZERO at either level: no board, and it keeps
- * nothing open. The child half comes from `useTodoBoards`, which already drops a
+ * A fully-completed list counts as ZERO at either level: no board, and it is not
+ * an open item. The child half comes from `useChecklists`, which already drops a
  * child with no open item, so `b.open` is ≥ 1 for every board it returns.
  */
 export function useBoardOpenCount(sessionId: string | null): number {
-  const mainItems = useMainTodoItems(sessionId);
-  const boards = useTodoBoards(sessionId);
+  const mainItems = useMainChecklistItems(sessionId);
+  const boards = useChecklists(sessionId);
   const mainOpen = mainItems.filter((t) => t.status !== "completed").length;
   return mainOpen + boards.reduce((n, b) => n + b.open, 0);
 }
@@ -110,10 +115,10 @@ export function useBoardOpenCount(sessionId: string | null): number {
  * `pending`, the words the glyphs stand for. `sr-only` is absolutely positioned,
  * so the row's flex layout is untouched and every visible glyph is unchanged.
  * The word is derived from the SAME branch that picks the glyph, so a status
- * outside the union (`useMainTodoItems` casts any model-authored string) reads
+ * outside the union (`useMainChecklistItems` casts any model-authored string) reads
  * exactly as it looks — the `○` and the word `pending` cannot disagree.
  */
-function TodoIndicator({ status }: { status: TodoItem["status"] }) {
+function TodoIndicator({ status }: { status: ChecklistItem["status"] }) {
   if (status === "completed") {
     return (
       <>
@@ -162,7 +167,7 @@ function TodoItems({
   items,
   label = "Todos",
 }: {
-  items: TodoItem[];
+  items: ChecklistItem[];
   label?: string;
 }) {
   return (
@@ -242,7 +247,7 @@ function TodoItems({
  * because the counts are the progress cue for the board as a whole (each ROW
  * carries its own state word — see `TodoIndicator`).
  */
-function ChildBoard({ board, full }: { board: TodoBoard; full: boolean }) {
+function ChildBoard({ board, full }: { board: Checklist; full: boolean }) {
   const current = currentTodo(board.items);
   // REDUCED means exactly one row; the `undefined` guard is the same
   // load-bearing one the parent's rows carry (a board the derivation kept always
@@ -319,10 +324,9 @@ function ChildBoard({ board, full }: { board: TodoBoard; full: boolean }) {
  * - **Visible while any board has an open item** (the user's rule, now
  *   board-wide): `mainOpen === 0 && boards.length === 0` renders `null` — no
  *   todos at all, or every list fully completed (the old "No todos yet"
- *   placeholder is gone). That is the SAME zero-set the frame's auto-open reads
- *   from `useBoardOpenCount`, so the pane and the section it hosts can
- *   never disagree, and a delegation whose parent never wrote a list still
- *   opens the frame.
+ *   placeholder is gone). The zero-set is `useBoardOpenCount`'s own, so the
+ *   header's count and the section's visibility are one fact — and a delegation
+ *   whose parent never wrote a list still gets its board shown.
  * - **The parent yields to its children** (`CONTEXT.md`: **Reduced board** / Full
  *   board): with no child board the parent shows its FULL list; once any child
  *   board shows it shows its one **Current todo** (`currentTodo`) — which can be
@@ -336,7 +340,7 @@ function ChildBoard({ board, full }: { board: TodoBoard; full: boolean }) {
  *   label `text-foreground-subtle`; in-progress = `◉` `text-warning`; pending =
  *   `○` `text-foreground-subtlest`) — decoration only, so each row also carries
  *   its state as an `sr-only` word (`TodoIndicator`).
- * - **Child boards** come from `useTodoBoards` — keyed to the CHILD's id
+ * - **Child boards** come from `useChecklists` — keyed to the CHILD's id
  *   (ADR 0041) and joined to this session by `parentSessionId`, so the panel
  *   needs no `source` label (and renders none). A block's HEADER is its
  *   CONTROL — what assistive tech and the keyboard use — and it opens that
@@ -344,27 +348,29 @@ function ChildBoard({ board, full }: { board: TodoBoard; full: boolean }) {
  *   a screen reader still hears the checklist, while the block's own `div` stays
  *   the MOUSE target for the pointer (see `ChildBoard`). A child's list is FULL
  *   when it is the only board, one row once a second appears.
- * - The `SidePane` frame owns when it APPEARS, and only that: it EXPANDS on the
- *   0 → >0 edge of this same count and NEVER collapses itself (ADR 0042) — the
- *   pane's own toggle is the only thing that closes the frame. So a board
- *   FINISHING leaves the frame open with this section gone, not the frame shut.
+ * - The `SidePane` frame is PERMANENT: it never appears or disappears, so this
+ *   section is the only thing that comes and goes. A board FINISHING therefore
+ *   leaves the frame standing with this section gone (the session title and the
+ *   config lines stay) — which is exactly what the old auto-open/collapse
+ *   arrangement was changed to do, and it is now structural rather than a rule
+ *   the pane had to honour.
  */
-export default function TodoBoardPanel({
+export default function ChecklistPanel({
   sessionId,
 }: {
   sessionId: string | null;
 }) {
-  const mainItems = useMainTodoItems(sessionId);
+  const mainItems = useMainChecklistItems(sessionId);
   // The running children of THIS session that have a board (arrival order,
-  // labelled — `useTodoBoards`).
-  const boards = useTodoBoards(sessionId);
-  // The visibility filter (the SAME open-item rule the frame's auto-open uses):
+  // labelled — `useChecklists`).
+  const boards = useChecklists(sessionId);
+  // The visibility filter (the SAME open-item rule `useBoardOpenCount` applies):
   // the section renders only while SOME list has an OPEN item — a fully-completed
   // list is hidden, at either level.
   const mainOpen = mainItems.filter((t) => t.status !== "completed").length;
 
   // No board anywhere (no todos at all, or every list completed) → hidden. Every
-  // board `useTodoBoards` returns has ≥ 1 open item, so this is `boardOpen === 0`
+  // board `useChecklists` returns has ≥ 1 open item, so this is `boardOpen === 0`
   // restated over the two values the render already needs — not a second rule.
   if (mainOpen === 0 && boards.length === 0) {
     return null;

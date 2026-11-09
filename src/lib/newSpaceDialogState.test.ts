@@ -30,10 +30,10 @@ describe("newSpaceDialogState", () => {
   });
 
   it("persists nothing: no storage key exists, so a reload cannot restore the dialog", () => {
-    // `leftPaneState` is the single owner of its localStorage key; this
-    // module has NO key at all. Assert the absence rather than trusting the
-    // source: after opening, the whole storage area is still empty, and
-    // clearing it leaves the live flag alone.
+    // This module has NO storage key at all — the contrast with the retired pane
+    // flags, which each owned one key and seeded themselves from it. Assert the
+    // absence rather than trusting the source: after opening, the whole storage
+    // area is still empty, and clearing it leaves the live flag alone.
     openNewSpaceDialog();
     expect(localStorage.length).toBe(0);
     localStorage.clear();

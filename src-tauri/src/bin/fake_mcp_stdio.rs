@@ -5,7 +5,7 @@
 //!
 //! The BODY moved VERBATIM into the crate lib at
 //! `crates/fulcrum-core/src/fixtures/mcp_stdio.rs`
-//! (`fulcrum_core::fixtures::mcp_stdio::mcp_stdio_main`) so ONE body backs both
+//! (`fulcrum_harness::fixtures::mcp_stdio::mcp_stdio_main`) so ONE body backs both
 //! this bin and the crate's `fake_mcp_stdio_core` bin. The crate needs its own
 //! because after T8b it is a different repository and 12 of its tests spawn
 //! this double through `target_debug_dir()` — see `crate::fixtures` there for
@@ -35,5 +35,5 @@
 //! to the historical double.
 
 fn main() {
-    fulcrum_core::fixtures::mcp_stdio::mcp_stdio_main();
+    fulcrum_harness::fixtures::mcp_stdio::mcp_stdio_main();
 }

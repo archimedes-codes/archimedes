@@ -181,7 +181,7 @@ dependencies = [
  "ddgs",
  "dirs 6.0.0",
  "dom_query",
- "fulcrum-core",
+ "fulcrum-harness",
  "futures-util",
  "gtk",
  "ignore",
@@ -1661,9 +1661,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "fulcrum-core"
+name = "fulcrum-harness"
 version = "0.1.0"
-source = "git+https://github.com/archimedes-codes/fulcrum?tag=v0.1.0#ae1fe970015b92af681e6cda7acef664d0f88c30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f10e9808862a506eae7d8d29c1067afae552824ef101a9ede449af5c9b1c0da7"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

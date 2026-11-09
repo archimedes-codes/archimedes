@@ -36,7 +36,7 @@
 //! that supplied the crate's two injected desktop-only arguments. S8.4 deleted
 //! it: `src-tauri/src/lib.rs::run_worker` is now the single desktop → crate
 //! hand-off and passes
-//! `fulcrum_core::worker::run_worker(crate::open::desktop_open_requester(), …)`
+//! `fulcrum_harness::worker::run_worker(crate::open::desktop_open_requester(), …)`
 //! itself.
 //!
 //! That is why `open.rs::the_production_loop_caller_passes_the_desktop_opener`
@@ -49,14 +49,14 @@
 // The S8.1/S8.2/S8.3 re-export shell. Module aliases first (the spellings that carry
 // the traffic), then the named surface — the exact list this file exported
 // before the moves, so nothing downstream had to be touched.
-pub use fulcrum_core::worker::{client, core, dispatch, manager, protocol, sink, store};
-pub use fulcrum_core::worker::{
+pub use fulcrum_harness::worker::{client, core, dispatch, manager, protocol, sink, store};
+pub use fulcrum_harness::worker::{
     decode_inbound, decode_outbound, encode_inbound, Inbound, IpcStore, Outbound, WorkerCore,
     WorkerError, WorkerErrorKind, WorkerFactory, WorkerHandle, WorkerHooks, WorkerInboundEvent,
     WorkerManager, DEFAULT_SUBAGENT_DEAD_BOUND,
 };
 // The five S4 wire DATA types this file used to re-export through `protocol`
-// (which re-exports them from `fulcrum_core::worker_types`); the names must stay
+// (which re-exports them from `fulcrum_harness::worker_types`); the names must stay
 // reachable at `crate::agent::worker::{…}` for `persist.rs` / `subagent.rs` /
 // the integration tests.
 pub use protocol::{StartEnv, StartMode, StoreFrame, SubagentDispatchWire};

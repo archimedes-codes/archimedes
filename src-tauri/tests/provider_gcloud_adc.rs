@@ -3,7 +3,7 @@
 //! Three things this file exists to make CI-red:
 //!
 //! 1. **Zero `gcloud` CLI subprocess** — MOVED to the engine crate in T8b/S8b.4
-//!    (`fulcrum_core::source_lints::gcloud_rs_never_spawns_a_subprocess`). It was
+//!    (`fulcrum_harness::source_lints::gcloud_rs_never_spawns_a_subprocess`). It was
 //!    a childproc-style source census reading
 //!    `../crates/fulcrum-core/src/provider_auth/gcloud.rs` by PATH, and after T8b
 //!    the desktop consumes that crate as a GIT dependency, whose cargo checkout
@@ -182,7 +182,7 @@ const TEST_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 // ── 1./2. the two source censuses: MOVED to the engine crate in T8b/S8b.4 ──
 //
 // `gcloud_rs_never_spawns_a_subprocess` and `gcloud_rs_never_calls_store` now live
-// in `fulcrum_core::source_lints`, beside the `gcloud.rs` they lint. They read
+// in `fulcrum_harness::source_lints`, beside the `gcloud.rs` they lint. They read
 // `../crates/fulcrum-core/src/provider_auth/gcloud.rs` by PATH from here, and that
 // is the read a GIT dependency makes impossible: a cargo git checkout lands under
 // `~/.cargo/git/checkouts/<name>-<hash>/<rev>/`, so no path from the desktop can

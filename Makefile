@@ -222,7 +222,7 @@ test-frontend: ## Frontend unit tests (vitest)
 # No `--manifest-path` anywhere below: the repo root IS the cargo root now (the
 # `[workspace]` lives in the root `Cargo.toml`), so `Cargo.lock` and `target/` stay
 # in one place. Since T8b/S8b.4-part-3 there is exactly ONE member — `src-tauri`;
-# `fulcrum-core` is a rev-pinned git dependency, so it is BUILT as a dependency but
+# `fulcrum-harness` is a crates.io dependency, so it is BUILT as a dependency but
 # is not a member and cannot be selected with `-p`.
 
 .PHONY: test-rust

@@ -116,6 +116,78 @@ export interface SpaceCheck {
 }
 
 
+/**
+ * One board column (camelCase over IPC). A slug is unique WITHIN a Space, so two
+ * Spaces can both have a `doing` column carrying a different `onEnter`.
+ */
+export interface StageRow {
+  spacePath: string;
+  slug: string;
+  label: string;
+  sortOrder: number;
+  /**
+   * What entering this column does to the card's Session (spec §5): `none` does
+   * nothing, `compact` asks for a handoff summary first, `fresh` means the stage
+   * expects a new Session (v1 returns the value; nothing acts on `fresh` yet).
+   * A STRING union, not a Rust enum — the value is per-Space data in a column,
+   * so a Space can be retuned without a schema change.
+   */
+  onEnter: "none" | "compact" | "fresh";
+}
+
+
+/**
+ * One board card (camelCase over IPC).
+ *
+ * `id` (`tsk_<uuid>`) is the KEY and resolves globally; `number` is the label a
+ * person says out loud ("move T3 to doing") and is per-Space — so a bare integer
+ * is meaningless without the Space (ADR 0090). They are never interchangeable.
+ */
+export interface TaskRow {
+  id: string;
+  spacePath: string;
+  /** The per-Space, 1-based label. Never reused after a delete. */
+  number: number;
+  title: string;
+  body: string | null;
+  /** The spec document this card cites — a nullable path, NOT the card itself (ADR 0090). */
+  specPath: string | null;
+  stageSlug: string;
+  /** Within-column position. A human concern: no tool verb writes it (spec §3). */
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+
+/** A card's Session link: which Session the card owns, and the stage it was in
+ *  when linked (so a later drag knows which stage to compact from). */
+export interface TaskSessionRow {
+  taskId: string;
+  sessionId: string;
+  stageSlug: string | null;
+}
+
+
+/** The board read payload: one column plus its cards. ONE payload rather than
+ *  two lists the frontend joins — an empty column arrives as an empty `tasks`. */
+export interface StageWithTasks {
+  stage: StageRow;
+  tasks: TaskRow[];
+}
+
+
+/** What `moveTask` reports.
+ *
+ * `boostNote` is a WARNING about the stage's `onEnter` boost, never a failed
+ * move: the card moved. It is present when a `compact` stage had no live Session
+ * to compact — the silent-green case spec §5's caveat 2 exists to surface. */
+export interface MoveTaskOutcome {
+  onEnter: "none" | "compact" | "fresh";
+  boostNote: string | null;
+}
+
+
 /** One session's recency, decoupled from its list position (ADR 0075). camelCase over IPC. */
 export interface SessionRecency {
   sessionId: string;

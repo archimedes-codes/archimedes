@@ -223,7 +223,7 @@ pub fn open(href: &str, cwd: Option<&Path>) -> Result<(), String> {
     }
 }
 
-/// The desktop's implementation of the crate's `fulcrum_core::mcp::OpenRequester`
+/// The desktop's implementation of the crate's `fulcrum_harness::mcp::OpenRequester`
 /// (T5/S3, edge E6).
 ///
 /// # Why this type is here and the trait is in the crate
@@ -268,7 +268,7 @@ mod tests {
 
     // `every_desktop_mcp_manager_carries_the_open_requester` MOVED into the engine
     // crate in T8b/S8b.4, as
-    // `fulcrum_core::source_lints::every_crate_mcp_manager_carries_the_open_requester`.
+    // `fulcrum_harness::source_lints::every_crate_mcp_manager_carries_the_open_requester`.
     //
     // It read `../crates/fulcrum-core/src/harness/loop.rs` by PATH and asserted
     // nothing about the DESKTOP — only that this crate's two `McpManager::new(`
@@ -288,7 +288,7 @@ mod tests {
     // `the_production_loop_caller_passes_the_desktop_opener` below was SPLIT, not
     // moved: it read TWO trees — the crate's `worker/core.rs` (structure) and the
     // desktop's `lib.rs` (the needle). Its crate half is now
-    // `fulcrum_core::source_lints::the_crate_threads_the_opener_into_its_production_loop`;
+    // `fulcrum_harness::source_lints::the_crate_threads_the_opener_into_its_production_loop`;
     // what stays here is the DESKTOP needle, which the crate must never be able to
     // read (desktop → crate is the legal direction; the reverse is the crossing the
     // whole boundary exists to prevent).
@@ -303,7 +303,7 @@ mod tests {
     /// `AgentLoop::new(`, `default_build_loop` takes the opener, that call passes it,
     /// production constructs no opener) and the desktop's `lib.rs` (the NEEDLE).
     /// The structure half is now
-    /// `fulcrum_core::source_lints::the_crate_threads_the_opener_into_its_production_loop`,
+    /// `fulcrum_harness::source_lints::the_crate_threads_the_opener_into_its_production_loop`,
     /// because a desktop-side `../crates/fulcrum-core/...` read cannot survive the
     /// engine becoming a GIT dependency (a cargo git checkout has no stable path).
     /// The needle stays HERE, and it could not have gone the other way: asserting
@@ -339,7 +339,7 @@ mod tests {
     /// # Why the scan is SCOPED to `run_worker`'s own body
     ///
     /// Since S8.4 the site is `src-tauri/src/lib.rs::run_worker`, which must pass
-    /// `crate::open::desktop_open_requester()` to `fulcrum_core::worker::run_worker(…)`
+    /// `crate::open::desktop_open_requester()` to `fulcrum_harness::worker::run_worker(…)`
     /// — exactly once. S8.2's needle lived on the `agent/worker/mod.rs` wrapper;
     /// S8.4 DELETED that wrapper, so the needle moved with the call site — pointing
     /// at a file that no longer holds it would be the unfalsifiable-needle failure
@@ -353,7 +353,7 @@ mod tests {
     /// # Non-vacuity (measured on this half)
     ///
     /// Replace `crate::open::desktop_open_requester(),` in `lib.rs::run_worker` with
-    /// a placeholder opener (`std::sync::Arc::new(fulcrum_core::mcp::NoOpenRequester),`)
+    /// a placeholder opener (`std::sync::Arc::new(fulcrum_harness::mcp::NoOpenRequester),`)
     /// → this fails naming the call site, while the workspace still compiles green —
     /// which is precisely why the lint is worth having. Re-proved for S8b/S8b.4 (see
     /// the run's report); the crate-side half's parameter assert is proved there too.
@@ -405,13 +405,13 @@ mod tests {
 
         let call_lines: Vec<usize> = body
             .iter()
-            .filter(|(_, l)| l.contains("fulcrum_core::worker::run_worker("))
+            .filter(|(_, l)| l.contains("fulcrum_harness::worker::run_worker("))
             .map(|(n, _)| *n)
             .collect();
         assert_eq!(
             call_lines.len(),
             1,
-            "expected exactly 1 call to `fulcrum_core::worker::run_worker(` inside \
+            "expected exactly 1 call to `fulcrum_harness::worker::run_worker(` inside \
              `lib.rs::run_worker` ({fn_line}..{fn_end}) (the S8.4 shim — the ONE \
              desktop site that supplies the opener), found {call_lines:?}: a second \
              one would be an unwired worker entry this lint does not read, and zero \
@@ -477,7 +477,7 @@ mod tests {
 
     // `the_harness_takes_the_opener_instead_of_constructing_it` MOVED into the
     // engine crate in T8b/S8b.4, as
-    // `fulcrum_core::source_lints::the_harness_takes_the_opener_instead_of_constructing_it`.
+    // `fulcrum_harness::source_lints::the_harness_takes_the_opener_instead_of_constructing_it`.
     //
     // It read `../crates/fulcrum-core/src/harness/loop.rs` and asserted an ABSENCE
     // (`crate::open::` appears nowhere in that module) plus a PRESENCE (the

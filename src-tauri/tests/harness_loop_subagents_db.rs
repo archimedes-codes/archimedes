@@ -210,7 +210,7 @@ impl std::ops::Deref for FixtureDirs {
 ///
 ///   * the store is a real `SessionStore` over a temp `Db` rather than the
 ///     crate's `MemoryStore` double, because `test_support::MemoryStore` is
-///     `#[cfg(test)]` inside `fulcrum-core` and does not exist for a desktop
+///     `#[cfg(test)]` inside `fulcrum-harness` and does not exist for a desktop
 ///     target (Step A.4). These five tests never read the store — the loop's
 ///     transcript is a side effect here — so the swap changes no assertion, and
 ///     the FK the `Db` needs is satisfied by `record_session`. The `Db`'s dir

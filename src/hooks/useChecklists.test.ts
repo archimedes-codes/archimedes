@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { renderHook } from "@testing-library/react";
-import { todoBoardsOf, useTodoBoards, type TodoBoard } from "./useTodoBoards";
-import { useInteractive, type TodoItem } from "../store/interactive";
+import { checklistsOf, useChecklists, type Checklist } from "./useChecklists";
+import { useInteractive, type ChecklistItem } from "../store/interactive";
 import { useSubagents, type SubagentEntry } from "../store/subagents";
 
 /**
- * `todoBoardsOf` is the ONE derivation of "which todo boards do the RUNNING
+ * `checklistsOf` is the ONE derivation of "which checklists do the RUNNING
  * children of THIS Session have, in arrival order, labelled so two same-named
  * children are distinguishable" — the Side pane's child blocks (Task 3) read it
  * and nothing else, so they cannot disagree (the repo's standing rule; see
@@ -32,12 +32,12 @@ const entry = (
 });
 
 /** A child's board fixture, built from the item statuses in list order. */
-const board = (...statuses: TodoItem["status"][]): TodoItem[] =>
+const board = (...statuses: ChecklistItem["status"][]): ChecklistItem[] =>
   statuses.map((status, i) => ({ content: `item ${i + 1}`, status }));
 
 /** The todos map the pure core reads — fresh per call so a test cannot leak a
  * mutation into the next one. */
-const noBoards = (): Record<string, TodoItem[]> => ({});
+const noBoards = (): Record<string, ChecklistItem[]> => ({});
 
 beforeEach(() => {
   // Reset the REAL stores this file seeds, so no case leaks into the next. The
@@ -51,15 +51,15 @@ beforeEach(() => {
   }
 });
 
-describe("todoBoardsOf (the pure core — the Side pane's single source)", () => {
+describe("checklistsOf (the pure core — the Side pane's single source)", () => {
   it("returns [] when there are no subagent entries", () => {
-    expect(todoBoardsOf({}, noBoards(), "main1")).toEqual([]);
+    expect(checklistsOf({}, noBoards(), "main1")).toEqual([]);
   });
 
   it("surfaces a running child's open board with every field of the board", () => {
     const todos = noBoards();
     todos.sub1 = board("completed", "in_progress", "pending");
-    const boards = todoBoardsOf(
+    const boards = checklistsOf(
       { sub1: entry("sub1", "main1", "reviewer", 1000) },
       todos,
       "main1",
@@ -77,14 +77,14 @@ describe("todoBoardsOf (the pure core — the Side pane's single source)", () =>
       completed: 1,
       open: 2,
       startedAt: 1000,
-    } satisfies TodoBoard);
+    } satisfies Checklist);
   });
 
   it("drops a child of ANOTHER Session (an unrelated board is not this pane's business)", () => {
     const todos = noBoards();
     todos.sub1 = board("pending");
     todos.sub2 = board("pending");
-    const boards = todoBoardsOf(
+    const boards = checklistsOf(
       {
         sub1: entry("sub1", "main1", "reviewer", 1000),
         // Another Session's child — its board belongs in THAT pane.
@@ -105,7 +105,7 @@ describe("todoBoardsOf (the pure core — the Side pane's single source)", () =>
     todos.subDone = board("pending", "pending");
     todos.subFailed = board("in_progress");
     todos.subRunning = board("pending");
-    const boards = todoBoardsOf(
+    const boards = checklistsOf(
       {
         subDone: entry("subDone", "main1", "reviewer", 1000, "completed"),
         subFailed: entry("subFailed", "main1", "scout", 2000, "failed"),
@@ -124,7 +124,7 @@ describe("todoBoardsOf (the pure core — the Side pane's single source)", () =>
     const todos = noBoards();
     todos.sub1 = board("completed", "completed");
     expect(
-      todoBoardsOf({ sub1: entry("sub1", "main1", "reviewer", 1000) }, todos, "main1"),
+      checklistsOf({ sub1: entry("sub1", "main1", "reviewer", 1000) }, todos, "main1"),
     ).toEqual([]);
   });
 
@@ -133,20 +133,20 @@ describe("todoBoardsOf (the pure core — the Side pane's single source)", () =>
     // draw an empty block, and the fallback lives INSIDE the derivation (never
     // as a `?? {}` on the store slice, which would mint a fresh object per read).
     expect(
-      todoBoardsOf({ sub1: entry("sub1", "main1", "reviewer", 1000) }, noBoards(), "main1"),
+      checklistsOf({ sub1: entry("sub1", "main1", "reviewer", 1000) }, noBoards(), "main1"),
     ).toEqual([]);
     // An explicitly-empty board behaves identically.
     const todos = noBoards();
     todos.sub1 = [];
     expect(
-      todoBoardsOf({ sub1: entry("sub1", "main1", "reviewer", 1000) }, todos, "main1"),
+      checklistsOf({ sub1: entry("sub1", "main1", "reviewer", 1000) }, todos, "main1"),
     ).toEqual([]);
   });
 
   it("counts `completed` and `open` from the child's own list", () => {
     const todos = noBoards();
     todos.sub1 = board("completed", "completed", "in_progress", "pending");
-    const boards = todoBoardsOf(
+    const boards = checklistsOf(
       { sub1: entry("sub1", "main1", "reviewer", 1000) },
       todos,
       "main1",
@@ -165,7 +165,7 @@ describe("todoBoardsOf (the pure core — the Side pane's single source)", () =>
     // `subLate` is inserted into the map FIRST but arrived SECOND — the sort key
     // is `startedAt`, so 1000 comes before 2000 regardless of `Object.values`
     // order. (A tie is what insertion order breaks, which is also arrival.)
-    const boards = todoBoardsOf(
+    const boards = checklistsOf(
       {
         subLate: entry("subLate", "main1", "scout", 2000),
         subEarly: entry("subEarly", "main1", "reviewer", 1000),
@@ -182,7 +182,7 @@ describe("todoBoardsOf (the pure core — the Side pane's single source)", () =>
     todos.a = board("pending");
     todos.b = board("pending");
     todos.c = board("pending");
-    const boards = todoBoardsOf(
+    const boards = checklistsOf(
       {
         a: entry("a", "main1", "researcher", 1000),
         b: entry("b", "main1", "researcher", 2000),
@@ -210,7 +210,7 @@ describe("todoBoardsOf (the pure core — the Side pane's single source)", () =>
     todos.a = board("pending");
     todos.b = board("pending");
     todos.c = board("pending");
-    const boards = todoBoardsOf(
+    const boards = checklistsOf(
       {
         // Insertion order is deliberately NOT arrival order: the disambiguation
         // is computed over the RENDERED set in ARRIVAL order.
@@ -235,7 +235,7 @@ describe("todoBoardsOf (the pure core — the Side pane's single source)", () =>
     const todos = noBoards();
     todos.mine = board("pending");
     todos.theirs = board("pending");
-    const boards = todoBoardsOf(
+    const boards = checklistsOf(
       {
         mine: entry("mine", "main1", "researcher", 1000),
         theirs: entry("theirs", "main2", "researcher", 2000),
@@ -255,16 +255,16 @@ describe("todoBoardsOf (the pure core — the Side pane's single source)", () =>
       // A second parent's child: an "all children" reading would list it too.
       sub2: entry("sub2", "main2", "scout", 2000),
     };
-    expect(todoBoardsOf(entries, todos, null)).toEqual([]);
+    expect(checklistsOf(entries, todos, null)).toEqual([]);
     // ONE frozen array for "nothing" — the same reference every time, so the
     // answer is referentially stable across renders.
-    expect(todoBoardsOf(entries, todos, null)).toBe(
-      todoBoardsOf(entries, todos, null),
+    expect(checklistsOf(entries, todos, null)).toBe(
+      checklistsOf(entries, todos, null),
     );
     // And frozen: a consumer that mutated the shared instance throws instead of
     // corrupting every other render.
     expect(() => {
-      (todoBoardsOf(entries, todos, null) as TodoBoard[]).push({
+      (checklistsOf(entries, todos, null) as Checklist[]).push({
         childSessionId: "x",
         agentName: "x",
         label: "x",
@@ -280,8 +280,8 @@ describe("todoBoardsOf (the pure core — the Side pane's single source)", () =>
     const entries = { sub1: entry("sub1", "main1", "reviewer", 1000) };
     const todos = noBoards();
     todos.sub1 = board("in_progress", "pending");
-    const first = todoBoardsOf(entries, todos, "main1");
-    const second = todoBoardsOf(entries, todos, "main1");
+    const first = checklistsOf(entries, todos, "main1");
+    const second = checklistsOf(entries, todos, "main1");
     expect(second).toEqual(first);
     // A fresh array per call — the hook's `useMemo` is what gives it identity;
     // the core itself holds no cache and reads no store.
@@ -289,13 +289,13 @@ describe("todoBoardsOf (the pure core — the Side pane's single source)", () =>
     // The derivation never copies or rewrites the store's items.
     expect(second[0].items[0]).toBe(todos.sub1[0]);
     // And an unrelated parent's id yields nothing without touching the inputs.
-    expect(todoBoardsOf(entries, todos, "main9")).toEqual([]);
+    expect(checklistsOf(entries, todos, "main9")).toEqual([]);
     expect(Object.keys(entries)).toEqual(["sub1"]);
     expect(todos.sub1).toHaveLength(2);
   });
 });
 
-describe("useTodoBoards (the hook — the thin store-reading wrapper)", () => {
+describe("useChecklists (the hook — the thin store-reading wrapper)", () => {
   it("reads the two stores and returns only THIS parent's running children, in arrival order", () => {
     // The hook subscribes to the STORES, so this case writes through them
     // (`beforeEach` resets both, so nothing leaks between cases in this file).
@@ -326,7 +326,7 @@ describe("useTodoBoards (the hook — the thin store-reading wrapper)", () => {
       todos: board("pending"),
     });
 
-    const { result } = renderHook(() => useTodoBoards("main1"));
+    const { result } = renderHook(() => useChecklists("main1"));
     expect(result.current.map((b) => b.childSessionId)).toEqual([
       "subEarly",
       "subLate",

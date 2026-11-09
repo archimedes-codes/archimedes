@@ -15,14 +15,6 @@ import { useSubagentSelection } from "../store/subagentSelection";
 import { useQueuedPrompts } from "../store/queuedPrompts";
 import { usePermissions } from "../store/permissions";
 import {
-  getLeftPaneCollapsed,
-  setLeftPaneCollapsed,
-} from "../lib/leftPaneState";
-import {
-  getSidePaneCollapsed,
-  setSidePaneCollapsed,
-} from "../lib/sidePaneState";
-import {
   getNewSpaceDialogOpen,
   setNewSpaceDialogOpen,
 } from "../lib/newSpaceDialogState";
@@ -542,37 +534,15 @@ describe("resetStores — the store half of the isolation", () => {
 });
 
 describe("resetModuleFlags — the module-scope half, named for what it touches", () => {
-  it("restores the three module flags to the values they had at import", () => {
-    // The pane flags seed themselves from localStorage at import, so the value
-    // to restore to is whatever they held when the seam loaded — NOT `false`
-    // (a file that ran with a persisted `true` would fail a `toBe(false)`).
-    const leftAtImport = getLeftPaneCollapsed();
-    const sideAtImport = getSidePaneCollapsed();
-    setLeftPaneCollapsed(!leftAtImport);
-    setSidePaneCollapsed(!sideAtImport);
+  it("restores the one module flag to the value it had at import", () => {
+    // The dialog flag persists NOTHING, so `false` is unambiguously its initial
+    // value — there is nothing to capture at import time, unlike the two pane
+    // collapse flags this seam used to own (both panes are permanent now, so
+    // those modules are deleted and their persistence with them).
     setNewSpaceDialogOpen(true);
-    expect(getLeftPaneCollapsed()).toBe(!leftAtImport);
-    expect(getSidePaneCollapsed()).toBe(!sideAtImport);
     expect(getNewSpaceDialogOpen()).toBe(true);
     resetModuleFlags();
-    expect(getLeftPaneCollapsed()).toBe(leftAtImport);
-    expect(getSidePaneCollapsed()).toBe(sideAtImport);
     expect(getNewSpaceDialogOpen()).toBe(false);
-  });
-
-  it("leaves the pane persistence agreeing with the restored flag", () => {
-    setLeftPaneCollapsed(true);
-    setSidePaneCollapsed(true);
-    resetModuleFlags();
-    // The modules own their own persistence; a reset that flipped the flag
-    // without the write would leave localStorage and memory disagreeing for
-    // every later file in the worker.
-    expect(localStorage.getItem("left-pane-collapse")).toBe(
-      String(getLeftPaneCollapsed()),
-    );
-    expect(localStorage.getItem("side-pane-collapse")).toBe(
-      String(getSidePaneCollapsed()),
-    );
   });
 });
 

@@ -11,7 +11,7 @@
 //!     `rusqlite::Error` and therefore cannot move (the plan's Step B-bis),
 //!     so nothing that touches a `Db` can cross the boundary;
 //!   * reaching `crate::storage` from the crate would be the
-//!     `fulcrum-core → archimedes_lib` edge that IS the package cycle T5
+//!     `fulcrum-harness → archimedes_lib` edge that IS the package cycle T5
 //!     exists to sever.
 //!
 //! So the desktop implements the crate's trait, exactly as `web/render.rs`
@@ -27,7 +27,7 @@
 //! # The pin
 //!
 //! `archimedes_lib::agent::harness::trust::SqliteTrustSource` satisfying
-//! `fulcrum_core::trust::TrustSource` is asserted by
+//! `fulcrum_harness::trust::TrustSource` is asserted by
 //! `tests/fulcrum_seams.rs::sqlite_trust_source_satisfies_the_crate_trait`,
 //! and the behaviour test that used to sit in this file
 //! (`sqlite_trust_source_reads_the_space_flag`) relocated verbatim beside
@@ -42,7 +42,7 @@ use crate::storage::Db;
 // resolving: `harness/mod.rs:62` names all three, `worker/core.rs:30`
 // imports `StaticTrustSource` + `TrustSource` from this path, and
 // `harness/loop.rs:45` imports `TrustSource` from it.
-pub use fulcrum_core::trust::{StaticTrustSource, TrustSource};
+pub use fulcrum_harness::trust::{StaticTrustSource, TrustSource};
 
 /// The SQLite trust source (the current `db.space_trusted` lookup, moved
 /// verbatim — a canonicalize failure or a missing row is `false` —

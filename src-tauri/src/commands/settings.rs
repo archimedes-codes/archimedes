@@ -601,7 +601,7 @@ pub struct ProviderBudgetDtoResponse {
 ///
 /// **Why this is a function and not the `impl From<&BudgetFacts> for
 /// Vec<ProviderBudgetDto>` it used to be (T7/S7.2).** `BudgetFacts` now lives in
-/// `fulcrum-core`, so that impl would name a foreign trait (`From`) with a
+/// `fulcrum-harness`, so that impl would name a foreign trait (`From`) with a
 /// foreign type on the left (`&BudgetFacts`) and only `Vec` — also foreign —
 /// before any local type: `E0117`, the orphan rule. Moving a type across a
 /// package boundary therefore forbids the desktop from implementing a `From`

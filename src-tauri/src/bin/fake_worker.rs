@@ -9,7 +9,7 @@
 //!
 //! The BODY moved VERBATIM into the crate lib at
 //! `crates/fulcrum-core/src/fixtures/worker.rs`
-//! (`fulcrum_core::fixtures::worker::worker_main`), because the crate must be
+//! (`fulcrum_harness::fixtures::worker::worker_main`), because the crate must be
 //! self-sufficient for its own fixtures — after T8b the crate is a different
 //! repository and a fixture owned HERE would not exist there. 66 of the crate's
 //! tests spawn these two fixtures, and at `eb8ac18b` all 66 failed `ENOENT` in a
@@ -46,5 +46,5 @@
 //! no ordering in it — see the status file's S8b.1 entry.
 
 fn main() {
-    fulcrum_core::fixtures::worker::worker_main();
+    fulcrum_harness::fixtures::worker::worker_main();
 }

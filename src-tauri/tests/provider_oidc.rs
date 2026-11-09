@@ -370,7 +370,7 @@ async fn gateway_headers_never_reach_the_idp() {
 
 // `oidc_module_has_no_header_injection_point` MOVED into the engine crate in
 // T8b/S8b.4 — it is now
-// `fulcrum_core::source_lints::oidc_module_has_no_header_injection_point`, beside
+// `fulcrum_harness::source_lints::oidc_module_has_no_header_injection_point`, beside
 // the `provider_auth/oidc.rs` it lints. It read
 // `../crates/fulcrum-core/src/provider_auth/oidc.rs` by path, and a git dependency
 // has no stable path to read (a cargo git checkout lands under
@@ -954,7 +954,7 @@ async fn the_oidc_store_variant_round_trips_the_documented_wire_shape() {
 // guarantee (the suite goes green while policing half a tree), and leaving it whole
 // breaks the desktop's CI the moment the engine becomes a git dependency whose
 // cargo checkout has no stable path. The two halves are
-// `fulcrum_core::source_lints::the_constant_time_compare_is_imported_not_copy_pasted`
+// `fulcrum_harness::source_lints::the_constant_time_compare_is_imported_not_copy_pasted`
 // (crate tree, plus the import line and the ONE definition in `mcp/callback.rs`)
 // and `no_desktop_agent_file_defines_a_second_constant_time_compare` below (desktop
 // tree). Each carries its OWN floor.
@@ -972,7 +972,7 @@ async fn the_oidc_store_variant_round_trips_the_documented_wire_shape() {
 /// after T8b the desktop reads the engine as a GIT dependency, whose cargo checkout
 /// has no stable path, so the crate half of the walk cannot be spelled here at all.
 /// The two halves are now:
-///   * `fulcrum_core::source_lints::the_constant_time_compare_is_imported_not_copy_pasted`
+///   * `fulcrum_harness::source_lints::the_constant_time_compare_is_imported_not_copy_pasted`
 ///     — over the crate's `src/provider_auth`, and it also pins the import line and
 ///     the ONE definition in `mcp/callback.rs` (both live in that tree);
 ///   * this test — over the DESKTOP's tree.
@@ -1051,9 +1051,9 @@ fn no_desktop_agent_file_defines_a_second_constant_time_compare() {
         "a second constant_time_eq definition appeared in the DESKTOP tree: {offenders:?} \
          — ruling R4 says ONE definition (the engine's `mcp/callback.rs`), imported. The \
          crate-side half of this invariant is pinned by \
-         `fulcrum_core::source_lints::the_constant_time_compare_is_imported_not_copy_pasted`. \
+         `fulcrum_harness::source_lints::the_constant_time_compare_is_imported_not_copy_pasted`. \
          If a desktop module genuinely needs the primitive, IMPORT it across the package \
-         boundary (`fulcrum_core::mcp::callback::constant_time_eq`) rather than copy it."
+         boundary (`fulcrum_harness::mcp::callback::constant_time_eq`) rather than copy it."
     );
 }
 

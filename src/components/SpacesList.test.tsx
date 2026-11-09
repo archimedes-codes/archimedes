@@ -18,11 +18,6 @@ import { useSettings } from "../store/settings";
 import { usePermissions } from "../store/permissions";
 import { useInteractive } from "../store/interactive";
 import {
-  getLeftPaneCollapsed,
-  LEFT_PANE_RAIL,
-  setLeftPaneCollapsed,
-} from "../lib/leftPaneState";
-import {
   getNewSpaceDialogOpen,
   setNewSpaceDialogOpen,
 } from "../lib/newSpaceDialogState";
@@ -239,19 +234,6 @@ vi.mock("./AgentsDialog", async () => {
 });
 
 /**
- * Whether a node is PAINTED — i.e. neither it nor any ancestor carries
- * `visibility: hidden` (Tailwind's `invisible`). jsdom resolves no CSS, so
- * "does this text bleed into the 40px sliver?" is read off the class list the
- * component renders, which is exactly what the collapse controls.
- */
-function painted(node: HTMLElement): boolean {
-  for (let el: HTMLElement | null = node; el; el = el.parentElement) {
-    if (el.classList.contains("invisible")) return false;
-  }
-  return true;
-}
-
-/**
  * Fixture: two spaces. `alpha` holds a live session `s1` (in-turn, with a
  * loaded transcript) + a stored session `h1` (loaded transcript, ~1h old);
  * `beta` holds a stored session `h2` that was NOT opened this boot (no
@@ -365,11 +347,10 @@ beforeEach(clearSkillCatalogCache);
 // …and the same for the Agent catalog's module-level cache (the Agents modal
 // fetches through `useAgentCatalog`, keyed by the `seed()` fixture's Space).
 beforeEach(clearAgentCatalogCache);
-// The two module-scoped pane/dialog flags this file can raise, back to their
-// value at import — the shared helper (Task B4a) instead of two hand-written
-// `beforeEach` blocks. `resetModuleFlags()` restores the left pane, the side
-// pane and the Open-Space flag; the side pane is a no-op here (this component
-// never reads it) and the other two are exactly what these blocks reset. The
+// The one module-scoped flag this file can raise, back to its value at import —
+// the shared helper (Task B4a) instead of two hand-written `beforeEach` blocks.
+// `resetModuleFlags()` restores the Open-Space flag; it used to restore the two
+// pane collapse flags too, and both of those are retired with the panes. The
 // dialog flag is the one that bites: a leaked `true` auto-mounts a real Radix
 // modal in every later `render(<SpacesList/>)`, which sets
 // `document.body.style.pointerEvents = "none"` and `aria-hidden`s its siblings —
@@ -417,11 +398,14 @@ describe("SpacesList", () => {
     expect(screen.queryByText("⌘N")).toBeNull();
     expect(screen.queryByText("⌘O")).toBeNull();
     expect(screen.getByText("Sessions")).toBeTruthy();
-    // `Skills` and `Agents` are the TWO labelled rows that survive (each pinned in
+    // `Skills`, `Agents` and `Tasks` are the THREE labelled rows (each pinned in
     // detail by its own describe block below; named here so this case reads as the
-    // whole post-change shape: two labelled rows + one header `+`).
+    // whole post-change shape: three labelled rows + one header `+`). `Tasks` is the
+    // Task board's door — a COMMAND row, not a fourth section header, which is why it
+    // rides the same recipe instead of owning a `Sessions`-style header.
     expect(screen.getByRole("button", { name: "Skills" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Agents" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Tasks" })).toBeTruthy();
     // …and the `Sessions` header row holds exactly ONE control — the `+`. This is
     // the "one +" half of the change; a second icon in that row (a re-added menu
     // trigger, say) is what this count catches.
@@ -478,9 +462,8 @@ describe("SpacesList", () => {
       .closest('[role="button"]');
     expect(row).not.toBeNull();
     expect(row!.querySelector('[role="status"]')).toBeNull();
-    // A STORED session wears the dim ring — the idle cue the collapsed rail has
-    // always had and the expanded list used to omit entirely (an empty slot
-    // unless the session was in a turn).
+    // A STORED session wears the dim ring — the idle cue this list used to omit
+    // entirely (an empty slot unless the session was in a turn).
     expect(row!.querySelector('[data-dot="stored"]')).toBeTruthy();
     // Last message ~1h ago → `1h`.
     expect(row!.textContent).toContain("1h");
@@ -522,7 +505,7 @@ describe("SpacesList", () => {
     const row = screen
       .getByText("Fix the login bug")
       .closest('[role="button"]');
-    // The `?` replaces the green "Waiting" PILL: the pill and the rail's dot
+    // The `?` replaces the green "Waiting" PILL: the pill and the leading mark
     // were one fact in two shapes, and the pill's cost was the time — while a
     // session waited you could not see how long ago it had been active.
     expect(screen.queryByText("Waiting")).toBeNull();
@@ -564,11 +547,11 @@ describe("SpacesList", () => {
     expect(row!.className).toContain("bg-selected");
   });
 
-  it("shows the IDLE mark in the EXPANDED list too (the cue the collapsed rail has always had)", () => {
+  it("shows the IDLE mark in the EXPANDED list too", () => {
     // The bug this pins: the open row's leading slot was empty unless the
-    // session was in a turn, while the collapsed rail drew a dot for every
-    // session — so EXPANDING the sidebar deleted the idle mark the user could
-    // see when it was collapsed.
+    // session was in a turn, while the collapsed rail (before it was retired)
+    // drew a dot for every session — so the idle Session was drawn as an
+    // absence in the only list the user could actually read.
     useSessions.setState({
       sessions: [
         makeSessionRow({ sessionId: "s1", cwd: "/tmp/alpha" }),
@@ -1324,8 +1307,8 @@ describe("SpacesList (archive, ADR 0016)", () => {
     // The seed's active space is `/tmp/alpha`.
     render(<SpacesList />);
     // The `+` sits in the `Sessions` header row (right of the label) — scoping the
-    // query to the header is what distinguishes it from the rail's `+` in a
-    // collapsed render, and it also pins the PLACEMENT, not just the name.
+    // query to the header pins the PLACEMENT, not just the accessible name, so a
+    // `+` that moved elsewhere in the pane would fail here.
     const header = screen.getByText("Sessions").parentElement!;
     const plus = header.querySelector('[aria-label="New Session"]');
     expect(plus).toBeTruthy();
@@ -1361,313 +1344,189 @@ describe("SpacesList (archive, ADR 0016)", () => {
     ).toBe("New Session  ⌘N");
   });
 
-  // -- The pane holds NO controls at all: the collapse toggle and the Settings
-  // -- gear both live in the chrome bar's `ChromeControls`, beside the window
-  // -- controls (`App.tsx`, pinned by `App.test.tsx`'s `the chrome bar carries
-  // -- the app controls`). What follows asserts the ABSENCE from this pane in
-  // -- both states — the shape the move leaves behind. --
+  // -- THE COMMAND STRIP IS THE VIEW SWITCHER. The pane holds the app's ONLY
+  // -- control: the Settings door, which moved here from the chrome bar's
+  // -- `ChromeControls` (retired — the bar now carries the tabs and the window
+  // -- controls and nothing else). What follows asserts the shape that move leaves
+  // -- behind: the four commands in their order, the two VIEW doors carrying the
+  // -- pressed state and both halves of the gesture, the two MODAL commands carrying
+  // -- neither, a row click exiting the view, and the collapse toggles still ABSENT
+  // -- from this pane (they died with the panes' collapsed flags and were never
+  // -- relocated here). The `aria-pressed` / dimming half of the model is pinned from
+  // -- the `App` tree in `App.test.tsx`, where the view state is real; these cases
+  // -- drive it through props. The pane-shape case used to run for BOTH pane states
+  // -- (a `for` over expanded/collapsed); the collapsed state is retired with the
+  // -- pane's collapse flag, so it is pinned once, for the one state the pane has. --
 
-  for (const state of ["expanded", "collapsed"] as const) {
-    it(`holds NO collapse toggle and NO gear while ${state} (both moved to the chrome bar)`, () => {
-      act(() => {
-        setLeftPaneCollapsed(state === "collapsed");
-      });
-      const { container } = render(<SpacesList />);
-      // Every label the toggle has ever carried, plus the gear's, so a rename
-      // cannot quietly re-add one of these two controls here and leave this
-      // test vacuous. The pane's OWN commands (the `New Session` `+`, `Skills`,
-      // `Agents`) are NOT in this list — they legitimately survive the
-      // collapse as rail icons, which is what the rail's own tests assert.
-      for (const label of [
-        "Collapse session list",
-        "Expand session list",
-        "Collapse sidebar",
-        "Expand sidebar",
-        "Settings",
-      ]) {
-        expect(screen.queryByRole("button", { name: label }), label).toBeNull();
-      }
-      // The STABLE hook, not the label: the label flips with the state, so a
-      // name-only query could pass on one side of the collapse by accident.
-      expect(container.querySelector('[data-testid="left-pane-toggle"]')).toBeNull();
-      // The footer ROW is gone, not merely emptied. The pane's last child is
-      // now the clipped content region (expanded) or the collapsed rail — both
-      // of which DO hold buttons, so the check is which surface ends the pane,
-      // not whether it holds any. A footer control strip would come last.
-      const last = (container.firstChild as HTMLElement).lastElementChild!;
-      const isContentRegion = last.contains(screen.getByText("Sessions"));
-      const isRail = last.getAttribute("data-testid") === "session-rail";
-      expect(
-        isContentRegion || isRail,
-        `the pane ends with a ${last.tagName}, not the content region or the rail`,
-      ).toBe(true);
-    });
-  }
-
-  it("takes its collapse from the shared flag with no control of its own", () => {
-    // The pane is now a pure READER of `leftPaneState` — the writer sits in the
-    // chrome bar — so collapsing from outside still resizes it. This is the
-    // contract between `ChromeControls` (writer) and this pane (reader).
-    const { container } = render(<SpacesList />);
-    const frame = container.firstChild as HTMLElement;
-    expect(frame.style.width).toBe("260px");
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
-    expect(getLeftPaneCollapsed()).toBe(true);
-    expect(frame.style.width).toBe(`${LEFT_PANE_RAIL}px`);
-    act(() => {
-      setLeftPaneCollapsed(false);
-    });
-    expect(frame.style.width).toBe("260px");
-  });
-
-  it("collapses to the sliver (the content stays mounted, clipped, not unmounted)", () => {
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
-    const { container } = render(<SpacesList />);
-    const frame = container.firstChild as HTMLElement;
-    expect(frame.style.width).toBe(`${LEFT_PANE_RAIL}px`);
-    // The content (the `Sessions` label) is clipped (width 0 +
-    // `overflow: hidden`) — NOT unmounted (the list's local state
-    // survives a collapse; the `fixed` dialogs escape the clipping).
-    expect(screen.getByText("Sessions")).toBeTruthy();
-    // Expanding via the shared flag restores the full frame.
-    act(() => {
-      setLeftPaneCollapsed(false);
-    });
-    expect(frame.style.width).toBe("260px");
-  });
-
-  it("carries NO bg-warning FILL in either state, even with a pending request (the dot rides the chrome-bar toggle now)", () => {
-    // The pane's own toggle used to wear a `bg-warning` dot while collapsed.
-    // That button now lives in `ChromeControls`, so the pane keeps only the
-    // ROW's cue — the `?` in `text-warning`, in both sidebar states. Asserted
-    // in both states, because the collapsed rail is exactly where a leftover
-    // dot would have been.
-    useSessions.setState({
-      sessions: [
-        makeSessionRow({ sessionId: "s1", cwd: "/tmp/alpha" }),
-      ],
-      activeSessionId: "s1",
-    });
-    usePermissions.setState({
-      prompts: {
-        s1: [{ requestId: "r1", toolTitle: "bash", options: [] }],
-      },
-    });
-    for (const collapsedNow of [false, true]) {
-      act(() => {
-        setLeftPaneCollapsed(collapsedNow);
-      });
-      const { container: c } = render(<SpacesList />);
-      expect(c.querySelector(".bg-warning"), `collapsed=${collapsedNow}`).toBeNull();
-      // …and the row DOES carry its own cue, so the assertion above cannot be
-      // satisfied by a pane that shows nothing at all.
-      expect(c.querySelector('[data-dot="waiting"]'), `collapsed=${collapsedNow}`).toBeTruthy();
-    }
-  });
-
-  it("collapses to the sliver: the session marks show, and NO text bleeds in", () => {
-    // The two defects the rail replaces, both from one cause: the collapse is
-    // width + `overflow: hidden` with the content kept MOUNTED, so the list
-    // painted INTO the 40px sliver — the action buttons wrapped to one word per
-    // line ("O / Sp / Se / Sk"), the `Sessions` header became "Sess", and the
-    // scroller grew a scrollbar in a 40px column.
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
-    const { container } = render(<SpacesList />);
-    const frame = container.firstChild as HTMLElement;
-    expect(frame.style.width).toBe(`${LEFT_PANE_RAIL}px`);
-    // The rail: the ACTIVE space's sessions, one mark each (the fixture's
-    // `alpha` = live `s1` in-turn + stored `h1`).
-    const rail = screen.getByTestId("session-rail");
-    expect(screen.getAllByTestId("session-row")).toHaveLength(2);
-    // Running first (the list's own order: live, then stored) — the SPINNER,
-    // the glyph the open row uses for the same fact. Queried by test id rather
-    // than `[role="status"]`: the rail's marks are decoration under one
-    // summarising `role="img"`, so the spinner's own role is silenced here.
-    const marks = screen.getAllByTestId("session-mark");
-    expect(marks[0]!.tagName).toBe("svg");
-    expect(marks[0]!.getAttribute("class")).toContain("animate-spin");
-    expect(rail.textContent).toBe("");
-    expect(screen.getByRole("img", { name: "Sessions 2, 1 running" })).toBeTruthy();
-    // Nothing that carries text is painted in the sliver: `visibility: hidden`
-    // takes the content AND ITS SCROLLBAR out of the paint while leaving it
-    // mounted (`hidden` would unlayout it, and clipping alone is what produced
-    // the wrapped text and the stray scrollbar).
-    // (`Open Space` used to be in this list and left with its labelled row. The
-    // `if (node)` guard below meant the stale entry could never fail — it is prose
-    // hygiene, not a fix.)
-    for (const label of ["New Session", "Skills", "Agents", "Sessions", "Archived"]) {
-      const node = screen.queryByText(label);
-      if (node) {
-        expect(painted(node), `${label} bleeds into the sliver`).toBe(false);
-      }
-    }
-    // …and the rail is NOT hidden — the assertion that makes the loop above
-    // mean something rather than passing on a blanket `invisible` root.
-    expect(painted(rail)).toBe(true);
-    // Content stays MOUNTED (not unmounted): the row's title node is still in
-    // the tree, just not painted.
-    expect(screen.getByText("Fix the login bug")).toBeTruthy();
-    // Expanding restores the list and drops the rail.
-    act(() => {
-      setLeftPaneCollapsed(false);
-    });
-    expect(painted(screen.getByText("Sessions"))).toBe(true);
-    expect(screen.queryByTestId("session-rail")).toBeNull();
-  });
-
-  it("keeps the rail's marks POSITIONALLY equal to the rows, because both come from the store's ONE sequence", () => {
-    // The rail's whole meaning is "the Nth mark is the Nth row". That equality
-    // is now STRUCTURAL — the rows and the rail read the same array
-    // (`activeView.sessionIds`) — and this test is the pin that keeps it that way
-    // if someone re-derives one of the two and lets them drift.
-    //
-    // The fixture is what makes it non-vacuous, so the numbers are stated:
-    // `sessionOrder: { s2: 0, s1: 1, h1: 2 }` says the live row `s2` is the FIRST
-    // row while `s1` is the row with the most recent message. The store's
-    // sequence therefore answers rows two/one/three → marks
-    // running/waiting/stored; the deleted display sort answers one/two/three
-    // (`s1`'s message is newer, so it led the live group) → marks
-    // waiting/running/stored. Seed the "obvious" ascending
-    // `{ s1: 0, s2: 1, h1: 2 }` instead and BOTH rules answer identically, so the
-    // test would pass while certifying nothing.
-    const now = Date.now();
-    useSessions.setState({
-      sessions: [
-        makeSessionRow({ sessionId: "s1", cwd: "/tmp/alpha" }),
-        makeSessionRow({ sessionId: "s2", cwd: "/tmp/alpha" }),
-      ],
-      activeSpacePath: "/tmp/alpha",
-      activeSessionId: "s2",
-      // `s1` is the most recently ACTIVE live session and the one WAITING; `s2`
-      // is the one in a turn. The marks therefore differ BY POSITION between the
-      // two orders — a rail that sorted itself differently shows `waiting` first.
-      inTurn: { s2: true },
-      messages: {
-        s1: [makeMessage("user", { text: "Row one", at: now - 5_000 })],
-        s2: [makeMessage("user", { text: "Row two", at: now - 90_000 })],
-        h1: [makeMessage("user", { text: "Row three", at: now - 3_600_000 })],
-      },
-      sessionOrder: { s2: 0, s1: 1, h1: 2 },
-    });
-    usePermissions.setState({
-      prompts: { s1: [{ requestId: "r1", toolTitle: "bash", options: [] }] },
-    });
-    const { unmount } = render(<SpacesList />);
-    const one = screen.getByText("Row one");
-    const two = screen.getByText("Row two");
-    const three = screen.getByText("Row three");
-    // The MAP's order (two, one, three) — NOT the activity order (one would lead).
-    expect(
-      two.compareDocumentPosition(one) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(
-      one.compareDocumentPosition(three) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    unmount();
-
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
+  it("the command strip reads Skills, Agents, Settings, Tasks", () => {
+    // The strip is the app's ONE navigation surface, so its order is a fact worth
+    // pinning: the two modal commands first (they raise a dialog), then the two
+    // VIEW doors (Settings, Tasks) — the door that opens a view is the door that
+    // closes it, so both carry `aria-pressed` (pinned in `App.test.tsx`).
+    // `Settings` sits between `Agents` and `Tasks`, not last: the two view doors
+    // stay adjacent.
     render(<SpacesList />);
-    const marks = [
-      ...screen.getByTestId("session-rail-marks").querySelectorAll(
-        "[data-testid='session-mark']",
+    const strip = screen
+      .getByRole("button", { name: "Skills" })
+      .parentElement!;
+    expect(
+      [...strip.querySelectorAll("button")].map(
+        (b) => b.textContent?.trim() ?? "",
       ),
-    ];
-    // Same COUNT as the rows, and per position the SAME GLYPH the row above it
-    // wears: spinner, `?`, stored. A rail that ordered itself a second way would
-    // lead with the `?`.
-    expect(marks.map((m) => m.getAttribute("data-dot") ?? "running")).toEqual([
-      "running",
-      "waiting",
-      "stored",
-    ]);
+    ).toEqual(["Skills", "Agents", "Settings", "Tasks"]);
   });
 
-  it("shows the marks ONLY while collapsed (the open list is the readout)", () => {
-    render(<SpacesList />);
-    expect(screen.queryByTestId("session-rail")).toBeNull();
+  it("a pressed view door wears the active row's bg-selected, and neither modal button ever does", () => {
+    // "Pressed" is ONE idiom in the pane: the same `bg-selected` fill the active
+    // Session row wears. On the workspace neither door wears it.
+    const { rerender } = render(<SpacesList currentView="workspace" />);
+    const fillOf = (name: string) =>
+      screen.getByRole("button", { name }).className;
+    expect(fillOf("Settings")).not.toContain("bg-selected");
+    expect(fillOf("Tasks")).not.toContain("bg-selected");
+    expect(fillOf("Skills")).not.toContain("bg-selected");
+    expect(fillOf("Agents")).not.toContain("bg-selected");
+
+    rerender(<SpacesList currentView="settings" />);
+    expect(fillOf("Settings")).toContain("bg-selected");
+    expect(fillOf("Tasks")).not.toContain("bg-selected");
+
+    rerender(<SpacesList currentView="board" />);
+    expect(fillOf("Tasks")).toContain("bg-selected");
+    expect(fillOf("Settings")).not.toContain("bg-selected");
   });
 
-  it("marks a session WAITING in the rail with the app's attention cue", () => {
-    // The cue that matters most behind a collapsed pane: a session blocked on
-    // the user. The `?` in the attention ink (see `SessionStatusMark`), and it
-    // outranks the spinner (a blocked session is not working — see
-    // `useSessionStatus`).
-    usePermissions.setState({
-      prompts: { s1: [{ requestId: "r1", toolTitle: "bash", options: [] }] },
-    });
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
-    render(<SpacesList />);
-    const dot = screen.getByTestId("session-rail").querySelector('[data-dot="waiting"]');
-    expect(dot).toBeTruthy();
-    expect(dot!.getAttribute("class")).toContain("text-warning");
-    expect(screen.getByRole("img", { name: "Sessions 2, 1 waiting" })).toBeTruthy();
+  it("clicking the pressed Settings door leaves the view instead of re-opening it", () => {
+    // The toggle-off half. `onOpenSettings` must NOT fire when the view is
+    // already showing — clicking where you already are is a way OUT, and it goes
+    // through `onReturnToWorkspace`.
+    const onOpenSettings = vi.fn();
+    const onReturnToWorkspace = vi.fn();
+    render(
+      <SpacesList
+        currentView="settings"
+        onOpenSettings={onOpenSettings}
+        onReturnToWorkspace={onReturnToWorkspace}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(onReturnToWorkspace).toHaveBeenCalledTimes(1);
+    expect(onOpenSettings).not.toHaveBeenCalled();
   });
 
-  // -- The rail's action strip: the pane's commands survive the collapse --
+  it("clicking the Settings door while the board is up goes to Settings, not back to the workspace", () => {
+    // The two doors are peers: from a pressed `Tasks`, the `Settings` door OPENS
+    // Settings. Only a door that is itself pressed toggles off, so a
+    // `currentView === "settings" ? …` guard on the Settings button is what keeps
+    // board → Settings a one-click move rather than a trip through the workspace.
+    const onOpenSettings = vi.fn();
+    const onReturnToWorkspace = vi.fn();
+    render(
+      <SpacesList
+        currentView="board"
+        onOpenSettings={onOpenSettings}
+        onReturnToWorkspace={onReturnToWorkspace}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+    expect(onReturnToWorkspace).not.toHaveBeenCalled();
+  });
 
-  it("offers the pane's three commands as icons while collapsed (not Settings)", () => {
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
+  it("clicking the pressed Tasks door leaves the board, and the open half still opens it", () => {
+    const onOpenBoard = vi.fn();
+    const onReturnToWorkspace = vi.fn();
+    const { rerender } = render(
+      <SpacesList
+        currentView="board"
+        onOpenBoard={onOpenBoard}
+        onReturnToWorkspace={onReturnToWorkspace}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
+    expect(onReturnToWorkspace).toHaveBeenCalledTimes(1);
+    expect(onOpenBoard).not.toHaveBeenCalled();
+
+    rerender(
+      <SpacesList
+        currentView="workspace"
+        onOpenBoard={onOpenBoard}
+        onReturnToWorkspace={onReturnToWorkspace}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
+    expect(onOpenBoard).toHaveBeenCalledTimes(1);
+    expect(onReturnToWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it("a row click returns to the workspace (the live/stored rows)", () => {
+    // N3, reversing spec D8: a row click means "show me this Session", and that
+    // includes its view.
+    const onReturnToWorkspace = vi.fn();
+    render(<SpacesList onReturnToWorkspace={onReturnToWorkspace} />);
+    expect(useSessions.getState().activeSessionId).toBe("s1");
+    fireEvent.click(screen.getByText("Refactor the parser"));
+    expect(useSessions.getState().activeSessionId).toBe("h1");
+    expect(onReturnToWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it("an ARCHIVED row click returns to the workspace too (the second `onOpen` site)", () => {
+    // The paired half of the case above, and the one lost by wiring only the main
+    // list: `ArchivedSection` is a separate call site with its own `onOpen` prop.
+    const onReturnToWorkspace = vi.fn();
+    seedArchived("a1", { messages: { text: "Old archived work", at: Date.now() } });
+    render(<SpacesList onReturnToWorkspace={onReturnToWorkspace} />);
+    fireEvent.click(screen.getByText("Archived"));
+    fireEvent.click(screen.getByText("Old archived work"));
+    expect(onReturnToWorkspace).toHaveBeenCalledTimes(1);
+    // The row still opens (the exit is additive, not a replacement).
+    expect(useSessions.getState().activeSessionId).toBe("a1");
+  });
+
+  it("holds the Settings door and NO collapse toggle (the gear moved in, the toggles are retired)", () => {
     const { container } = render(<SpacesList />);
-    // The list's own buttons survive the collapse as icons. `Settings` is
-    // deliberately NOT among them: the gear lives in the chrome bar in both
-    // states, so the rail used to carry a second copy and that tail strip is
-    // gone (see `SessionRail`'s doc).
-    //
-    // THREE, not four: `Open Space` left the pane with its labelled row, so the
-    // rail lost its twin. `Agents` is on the rail because the labelled button
-    // sits inside the region the collapse hides — dropping a command here would
-    // give it a vanishing door, which is the exact defect the `railActions`
-    // comment exists to prevent. Narrowing the count and this name together is
-    // intentional, not a broken pin.
-    for (const label of ["New Session", "Skills", "Agents"]) {
-      expect(
-        within(screen.getByTestId("session-rail-actions")).getByRole("button", {
-          name: label,
-        }),
-        label,
-      ).toBeTruthy();
-    }
+    // The door is here now, and EXACTLY once — one door, no second copy (the
+    // chrome-bar gear it replaced is gone, which is also what keeps `App.test.tsx`'s
+    // twelve bare `getByRole` click sites resolving 1:1).
     expect(
-      within(screen.getByTestId("session-rail-actions")).getAllByRole("button"),
-    ).toHaveLength(3);
-    // And nothing here reaches for Settings, in either strip or anywhere else.
-    expect(container.querySelector('[data-testid="session-rail-tail-actions"]')).toBeNull();
-    expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
+      screen.getAllByRole("button", { name: "Settings" }),
+    ).toHaveLength(1);
+    // Every label the toggle has ever carried, so a rename cannot quietly re-add
+    // one of these controls here and leave this test vacuous. The pane's OWN
+    // commands (the `New Session` `+`, `Skills`, `Agents`, `Settings`, `Tasks`)
+    // are NOT in this list — they are the pane's business, and other cases in
+    // this file assert they are present.
+    for (const label of [
+      "Collapse session list",
+      "Expand session list",
+      "Collapse sidebar",
+      "Expand sidebar",
+    ]) {
+      expect(screen.queryByRole("button", { name: label }), label).toBeNull();
+    }
+    // The STABLE hook, not the label: the old toggle's label flipped with the
+    // state, so a name-only query could pass on one side of it by accident.
+    expect(container.querySelector('[data-testid="left-pane-toggle"]')).toBeNull();
+    // The footer ROW is gone, not merely emptied. The pane's last child is the
+    // content region, which DOES hold buttons, so the check is which surface
+    // ends the pane, not whether it holds any. A footer control strip would
+    // come last.
+    const last = (container.firstChild as HTMLElement).lastElementChild!;
+    const isContentRegion = last.contains(screen.getByText("Sessions"));
+    expect(
+      isContentRegion,
+      `the pane ends with a ${last.tagName}, not the content region`,
+    ).toBe(true);
   });
 
-  it("wires each rail icon to the SAME handler the labelled control uses", () => {
-    // Split from the presence test on purpose: `Skills` and `Agents` open
-    // MODALS, and a modal `aria-hidden`s the rest of the app — so a second
-    // query against the rail after one opens fails for the correct reason
-    // (testing-library honours it) and would read as a broken rail.
-    // (`Settings` used to be asserted here too, through an `onOpenSettings`
-    // prop — the gear is the chrome bar's now, and the pane has no such prop.)
-    // `getByTitle` matches EXACTLY, not as a substring, so the header `+`'s
-    // `title="New Session  ⌘N"` does NOT collide here: this still resolves to the
-    // rail's icon alone, which is the point of the assertion.
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
+  it("renders the Tasks button without an onOpenBoard prop (bare call sites survive)", () => {
+    // The prop is OPTIONAL so ~98 existing bare `<SpacesList />` renders keep
+    // compiling; this pins that a bare render also keeps CLICKING — a door with no
+    // room behind it must be inert, not a `TypeError` on `undefined()`.
     render(<SpacesList />);
-    fireEvent.click(screen.getByTitle("New Session"));
-    expect(mockedStartSession).toHaveBeenCalledWith("/tmp/alpha");
-    // The Skills modal renders, and it renders even though the pane's content
-    // region is `invisible` — the dialogs sit OUTSIDE that region on purpose
-    // (`visibility: hidden` inherits into `fixed` descendants).
-    fireEvent.click(screen.getByTitle("Skills"));
-    expect(screen.getByPlaceholderText("Search skills…")).toBeTruthy();
+    expect(() =>
+      fireEvent.click(screen.getByRole("button", { name: "Tasks" })),
+    ).not.toThrow();
   });
 
   it("the Sessions header + gets the no-Space dialog fallback", () => {
@@ -1688,52 +1547,6 @@ describe("SpacesList (archive, ADR 0016)", () => {
     expect(mockedStartSession).not.toHaveBeenCalled();
   });
 
-  it("holds NO Settings door at all — the pane owns none in either state", () => {
-    // The reverse of the old guarantee. This pane used to be Settings' only
-    // door, which is why collapsing it needed a replacement gear in the rail;
-    // the chrome bar now holds the single gear for both states, so this
-    // component must render none — and must not accept an `onOpenSettings`
-    // prop to be wired to. The single-door assertion lives in `App.test.tsx`.
-    render(<SpacesList />);
-    expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
-    expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
-  });
-
-  it("renders NO action strip while open (the labelled buttons are the controls)", () => {
-    render(<SpacesList />);
-    expect(screen.queryByTestId("session-rail-actions")).toBeNull();
-  });
-
-  it("keeps the commands available with NO sessions (an empty rail is not an inert rail)", () => {
-    // The rail used to render only when the list had rows; the commands are
-    // exactly what a user with an empty/fresh space needs (and `New Session`
-    // routes to the Open Space dialog when no space is selected).
-    useSessions.setState({ activeSpacePath: "/tmp/nonexistent" });
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
-    render(<SpacesList />);
-    expect(screen.queryByTestId("session-rail-marks")).toBeNull();
-    expect(
-      within(screen.getByTestId("session-rail-actions")).getByRole("button", {
-        name: "New Session",
-      }),
-    ).toBeTruthy();
-  });
-
-  it("the left rail is WIDE ENOUGH for its own controls (the sliver is a guarantee, not a vibe)", () => {
-    // A collapsed pane keeps a sliver of width so the rail's marks and its
-    // three command icons stay visible. jsdom never clips, so NO DOM assertion
-    // here can notice a rail that shrank below the icons — the commands would
-    // silently vanish while every test stayed green. Hence arithmetic:
-    //   24px icon button (`size-6`) + 8px clear of each edge.
-    // (It used to be justified as the room for the pane's OWN collapse toggle;
-    // that button is in the chrome bar now, and the rail's icons still need it.)
-    expect(LEFT_PANE_RAIL).toBeGreaterThanOrEqual(24 + 8 + 8);
-  });
 });
 
 describe("SpacesList (the generated session title)", () => {
@@ -2263,62 +2076,6 @@ describe("SpacesList (dragging the session rows, ADR 0075)", () => {
         "false",
       );
     }
-  });
-
-  it("the collapsed rail's marks stay POSITIONALLY equal to the rows after a drag", () => {
-    // The rail's contract is "the Nth mark is the Nth row", and it now has to
-    // survive a user-initiated reorder. The fixture gives the three rows three
-    // DIFFERENT glyphs, so a mark sequence is a readable order. TWO COMPETING
-    // ANSWERS after dragging `Row three` above `Row two`: the rail reads the
-    // same array the rows do → [stored, running, waiting]; a rail that kept the
-    // old live-then-stored construction (or a pre-drag snapshot) answers
-    // [running, waiting, stored].
-    useSessions.setState({
-      sessions: [
-        makeSessionRow({ sessionId: "s1", cwd: "/tmp/alpha", title: "Row one" }),
-        makeSessionRow({ sessionId: "s2", cwd: "/tmp/alpha", title: "Row two" }),
-      ],
-      historySessions: [
-        makeSessionRow({ sessionId: "h1", cwd: "/tmp/alpha", title: "Row three" }),
-      ],
-      messages: {},
-      inTurn: { s2: true },
-      activeSessionId: "s2",
-      activeSpacePath: "/tmp/alpha",
-      sessionOrder: { s2: 0, s1: 1, h1: 2 },
-    });
-    usePermissions.setState({
-      prompts: { s1: [{ requestId: "r1", toolTitle: "bash", options: [] }] },
-    });
-    render(<SpacesList />);
-    // Rows two, one, three → drag the STORED row (three) above the running one.
-    const from = rowEl("Row three");
-    const to = rowEl("Row two");
-    layOut(from, 0);
-    layOut(to, 100);
-    fireEvent.dragStart(from, { dataTransfer: { setData: vi.fn() } });
-    dragOver(to, 110, 150);
-    fireEvent(to, buildDrop());
-    const rows = screen.getByText("Row three");
-    expect(
-      rows.compareDocumentPosition(screen.getByText("Row two")) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
-    // The rows stay MOUNTED while collapsed (clipped, not unmounted), so both
-    // orders are readable from this one render — no re-render to re-derive them.
-    const marks = [
-      ...screen.getByTestId("session-rail-marks").querySelectorAll(
-        "[data-testid='session-mark']",
-      ),
-    ];
-    expect(marks.map((m) => m.getAttribute("data-dot") ?? "running")).toEqual([
-      "stored",
-      "running",
-      "waiting",
-    ]);
   });
 
   it("a dragged row's relative time keeps updating while its new slot holds", () => {

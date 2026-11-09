@@ -190,10 +190,12 @@ export default function ChatStream() {
 
   // Whether the user owes an answer — the ACTIVE session's own prompts/pauses,
   // or ANY child's gate anywhere in the app — and here it drives the "Send a
-  // prompt to start" hint's suppression (see `hasPendingRequest` below). It is
-  // the SAME hook the chrome bar's pane toggles read for their `bg-warning`
-  // dots (`ChromeControls`), so the cue in the transcript and the dots cannot
-  // drift (one derivation, many consumers).
+  // prompt to start" hint's suppression (see `hasPendingRequest` below). It used
+  // to be the SAME hook the chrome bar's pane toggles read for their
+  // `bg-warning` dots; those dots died with the collapsible panes (ADR 0094) and
+  // their host with ADR 0095, so this hook's remaining consumers are here and in
+  // `NewTaskDialog`. The cue in the transcript therefore cannot drift from the
+  // data it reads (one derivation, no second renderer to disagree with it).
   // The subagent half is app-wide ON PURPOSE: every NON-active parent's gates
   // are on screen in the `SubagentModals` overlay, so the cue means "you owe
   // something, somewhere" and never lies. Which Session owes it is the inline
@@ -576,13 +578,17 @@ export default function ChatStream() {
   // §3), comment and all — including the rule that a `tool-call`'s own `diff`
   // ref is deliberately NOT summed with the standalone `diff` messages.
 
-    // `hasPendingRequest` (computed ABOVE, next to the other unconditional cue
-  // hooks) is what suppresses the hint below. It is the SAME hook the chrome
-  // bar's pane toggles read for their `bg-warning` dots (`ChromeControls`) —
-  // the cue for the COLLAPSED-PANE case, where a pane's content is clipped
-  // away by the `SIDE_PANE_RAIL` sliver + `overflow: hidden` and only the
-  // toggle's dot is left to say "something needs you" — so the hint and the
-  // dots can only ever agree; a hand-rolled copy of the hook's terms in THIS
+  // `hasPendingRequest` (computed ABOVE, next to the other unconditional cue
+  // hooks) is what suppresses the hint below. It is the SAME hook the New Task
+  // modal reads, and the one the chrome bar's pane toggles used to read for
+  // their `bg-warning` dots — those dots meant "something needs you BEHIND the
+  // hidden pane", and they are retired with the collapse (ADR 0094). Their last
+  // possible host, the chrome bar's app-control cluster, is gone too: ADR 0095
+  // moved the Settings door into the Session list and deleted the cluster with
+  // it, so the bar now holds the tabs and the window controls and nothing else.
+  // What survives is the reason the hook is
+  // shared rather than copied: one derivation of "you owe an answer, somewhere",
+  // so the cues can only ever agree; a hand-rolled copy of its terms in THIS
   // file (what this comment's previous version described) was how they could
   // not.
   // The "Send a prompt to start" hint is hidden when a pending request

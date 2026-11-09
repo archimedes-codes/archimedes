@@ -3,71 +3,114 @@
 # so a local override can never be committed. To use this: `cp
 # .cargo/config.toml.example .cargo/config.toml`, then adjust the path.
 #
-# WHAT IT IS FOR. `src-tauri/Cargo.toml` depends on `fulcrum-core` as a GIT
-# dependency pinned to the `v0.1.0` tag (with `version = "0.1.0"`), and the crate's
-# sources are NOT in this checkout any more (they live in
-# https://github.com/archimedes-codes/fulcrum).
-# So editing the engine means editing a file you cannot see from here. If you are
-# working on the desktop AND the engine at the same time, this redirects the git
-# source at a sibling checkout, so `cargo build` compiles YOUR engine code and a
-# change you make there shows up in the desktop's build immediately.
+# WHAT IT IS FOR. `src-tauri/Cargo.toml` depends on `fulcrum-harness` as a
+# crates.io VERSION PIN (`fulcrum-harness = "0.1.0"`), and the crate's sources are
+# NOT in this checkout (they live in https://github.com/archimedes-codes/fulcrum
+# and are published FROM there). So editing the engine means editing a file you
+# cannot see from here. If you are working on the desktop AND the engine at the
+# same time, this redirects the CRATES.IO source at a sibling checkout, so
+# `cargo build` compiles YOUR engine code and a change you make there shows up in
+# the desktop's build immediately.
 #
-# WHY `[patch]` AND NOT `[paths]`. Cargo's older `[paths]` override is deprecated
-# and, decisively here, it only rewrites PATH dependencies by package name — it
-# cannot express a GIT source, so it silently does nothing to a pinned git dep.
-# `[patch]` is the mechanism that can: it replaces a package coming from a named
-# SOURCE (here, that git URL) with a different one, and the table name is the
-# source URL being overridden, which must match the dependency's URL exactly
-# (same scheme, same host, same repo path — `https://`, not `git@`, and no
-# trailing `.git` difference) or cargo reports the patch as unused.
+# ⚠️ THE TABLE NAME CHANGED WHEN THE DEPENDENCY DID, AND THE OLD NAME IS NOW THE
+# SILENT FAILURE. The table names the SOURCE being overridden, and the source is
+# no longer a git URL — it is the registry's canonical source id, `crates-io`.
+# So the table is `[patch.crates-io]`. There is NO URL to match any more, and any
+# instruction to spell `[patch."https://github.com/archimedes-codes/fulcrum"]`
+# character-for-character is dead: obey it today and cargo does NOT fail. It
+# prints `warning: patch … was not used in the crate graph`, exits 0, and builds
+# the PUBLISHED crate while you edit your own tree — the exact shape this file
+# exists to prevent. Measured on this tree: that stale git-URL table exited 0 and
+# cargo added
+#     [[patch.unused]]
+#     name = "fulcrum-harness"
+#     version = "0.1.0"
+# to `Cargo.lock`. THAT STANZA IS THE TELL — `grep patch.unused Cargo.lock` after
+# any patch experiment. Cargo even appends `help: perhaps you meant one of the
+# following: crates-io`, which is the cheapest fix in the file to miss.
 #
-# ⚠️ SINCE THE PIN GREW A `version`, THE SIBLING CHECKOUT MUST MATCH IT. This is a
-# NEW failure mode and it is the SILENT one: `version = "0.1.0"` in the dependency
-# is a REQUIREMENT, so `[patch]` only applies if the patched manifest satisfies it.
-# Point it at a checkout whose `Cargo.toml` still says `0.11.0` (any commit before
-# the v0.1.0 bump) and cargo prints
-#     warning: patch `fulcrum-core v0.11.0 (/path/to/fulcrum)` was not used in the crate graph
-# and then BUILDS THE GIT DEP ANYWAY — exit 0, no error, and your engine edits are
-# simply not in the binary. Measured both ways on this tree: a sibling at the
-# pre-bump rev printed that warning and `cargo tree` kept showing the git source;
-# the same sibling checked out at the tagged commit (`0.1.0`) patched cleanly. So
-# the warning is not informational, it is the whole failure — read it. The fix is
-# to check the sibling out at or past the bump commit, or to have the sibling carry
-# a matching `version` while you work there.
+# THE POLARITY FLIPPED, SO HERE ARE ALL THREE STALE SHAPES, MEASURED. Two of them
+# are loud and one is not; the one that is not is the one to fear.
+#
+#   | your config                                        | exit | cargo says      |
+#   |----------------------------------------------------|------|-----------------|
+#   | `[patch."https://…/fulcrum"] fulcrum-harness = {…}` |  0   | `warning: patch … was not used in the crate graph` + a `[[patch.unused]]` stanza in `Cargo.lock` |
+#   | `[patch.crates-io] fulcrum-core = {…}` (old key)     | 101  | `error: patch location … does not contain packages matching \`fulcrum-core\`` |
+#   | `[patch.crates-io] fulcrum-harness = {…}` (correct)  |  0   | nothing — it applies |
+#
+# So a stale KEY under the right table fails loudly, and a stale TABLE with the
+# right key passes silently. If you kept a `.cargo/config.toml` from before the
+# rename, assume the silent row until you have checked.
+#
+# WHY `[patch]` AND NOT `[paths]`. Cargo's older `[paths]` override is deprecated.
+# The reason this file used to give for preferring `[patch]` — that `[paths]` only
+# rewrites PATH dependencies and "silently does nothing to a pinned git dep" — was
+# true of a GIT source and is FALSE of the registry source this is now: measured,
+# `[paths]` DOES override a registry dep (`cargo metadata` reports
+# `source: None` with a `[paths]` entry pointing at the sibling, exactly as
+# `[patch]` does). So `[patch]` is not chosen because `[paths]` cannot do the job.
+# It is chosen because it is what cargo documents for overriding a registry
+# source, because it is SCOPED to the one named source rather than being a bare
+# list of directories that applies wherever a name matches, and because this repo
+# already ships it. Do not re-argue this from `[paths]`'s limits.
+#
+# ⚠️ THE SIBLING CHECKOUT MUST CARRY A VERSION THAT SATISFIES THE REQUIREMENT.
+# This half survives the switch of source and it is still the SILENT one:
+# `fulcrum-harness = "0.1.0"` means `^0.1.0`, so `[patch]` only applies if the
+# patched manifest satisfies it. Point it at a checkout on any version outside the
+# requirement — a pre-bump `0.0.x`, or a `0.2.0` you have not adopted — and cargo
+# prints
+#     warning: patch `fulcrum-harness v0.9.0 (/path/to/fulcrum)` was not used in the crate graph
+# and then BUILDS THE PUBLISHED CRATE ANYWAY — exit 0, no error, and your engine
+# edits are simply not in the binary. Measured on this tree with a stand-in
+# sibling at `0.9.0`: exit 0, exactly that warning, and a `[[patch.unused]]`
+# stanza for `fulcrum-harness v0.9.0` in `Cargo.lock`. The warning is not
+# informational, it is the whole failure — read it. Fix: check the sibling out at
+# a commit whose `Cargo.toml` carries a satisfying `version`, or carry one while
+# you work there.
 #
 # ⚠️ THIS FILE IS FOR LOCAL WORK ONLY — NEVER COMMIT THE LIVE VERSION.
 # A committed patch would (a) break every other machine, which has no `../fulcrum`
-# directory, with `failed to load source for dependency on fulcrum-core`, and
-# (b) defeat the pin: the build would use whatever that tree happens to hold
-# instead of the tagged commit. That is the exact failure this pin exists to
-# prevent, so `.gitignore` ignores `.cargo/config.toml` and the pin stays the
-# only thing that reaches CI.
+# directory, with `error: patch location \`<path>\` does not contain packages
+# matching \`fulcrum-harness\`` (exit 101 — measured both for a path that does not
+# exist and for one that exists but is not a crate; the OLD sentence this file
+# used to quote, `failed to load source for dependency`, is what a bad GIT source
+# printed and it no longer prints), and (b) defeat the pin: the build would use
+# whatever that tree happens to hold instead of the published, checksummed
+# release. That is the exact failure this pin exists to prevent, so `.gitignore`
+# ignores `.cargo/config.toml` and the pin stays the only thing that reaches CI.
 #
-# HOW TO TELL IT IS ACTUALLY WORKING. `cargo tree -i fulcrum-core` prints the
+# HOW TO TELL IT IS ACTUALLY WORKING. `cargo tree -i fulcrum-harness` prints the
 # patched source as a PATH, e.g.
-#     fulcrum-core v0.1.0 (/path/to/fulcrum)
-# rather than the `git+https://…?tag=…` form. If it still prints the git URL, the
-# patch is NOT in effect — the two causes are the `[patch]` table name missing the
-# dependency URL character-for-character, and the version mismatch above. Cargo
-# prints `Patch … was not used in the crate graph` for either; do not ignore it.
+#     fulcrum-harness v0.1.0 (/path/to/fulcrum)
+# and when the patch is NOT in effect it prints the bare
+#     fulcrum-harness v0.1.0
+# with NO source suffix at all — that is how a registry dep prints unpatched, so
+# do not go looking for a URL there (the old instruction to expect the
+# `git+https://…?tag=…` form died with the git source). Machine-checkable
+# version: `cargo metadata`'s `source` field for the package is `null` when
+# patched and `"registry+https://github.com/rust-lang/crates.io-index"` when not.
+# Both measured on this tree.
 #
-# A SECOND CLEANUP, SPECIFIC TO THE VERSION MISMATCH. When the patch DOES apply,
-# `Cargo.lock` rewrites `fulcrum-core`'s `source` to the path (and drops the
-# `source = "git+…"` line). That is why this file must stay gitignored AND why you
-# must `git checkout Cargo.lock` after deleting `.cargo/config.toml` — the lock
-# change survives the deletion and, unlike the config, the lock IS tracked. Verify
-# with `cargo tree -i fulcrum-core`: it must print the `git+https://…?tag=…` form
-# again before you commit anything.
+# A SECOND CLEANUP, AND IT NOW APPLIES IN BOTH DIRECTIONS. When the patch DOES
+# apply, cargo rewrites `Cargo.lock`: it drops the package's `source` and
+# `checksum` lines (measured — exactly those two lines and nothing else). When the
+# patch merely FAILS to apply, cargo still rewrites `Cargo.lock`, adding the
+# `[[patch.unused]]` stanza above. So `git checkout Cargo.lock` after deleting
+# `.cargo/config.toml` is required in BOTH directions now, not only the
+# successful one. Verify with `cargo tree -i fulcrum-harness`: it must print the
+# bare `fulcrum-harness v0.1.0` again, and `grep patch.unused Cargo.lock` must be
+# empty, before you commit anything. Remember the lock IS tracked and the config
+# is not.
 #
 # HOW TO UNDO IT: delete `.cargo/config.toml`, then `git checkout Cargo.lock`.
 #
-# ⚠️ THE TABLE NAME IS `[patch."…"]`, WITH THE DOT AND THE QUOTES. `[patch "…"]`
+# ⚠️ THE TABLE NAME IS `[patch.crates-io]`, WITH THE DOT. `[patch "crates-io"]`
 # (a space, no dot) is NOT valid TOML and cargo dies with
-# `could not parse TOML configuration … unclosed table, expected ']'` — which is a
-# hard failure of EVERY cargo command in the repo, not a silent no-op. The dotted
-# form is what cargo documents: the quoted string is a KEY of the `[patch]` table
-# naming the source being overridden. (Measured: the space form was tried first and
-# broke `cargo tree` outright.)
+# `could not parse TOML configuration … unclosed table, expected ']'` — measured,
+# exit 101, and it is a hard failure of EVERY cargo command in the repo, not a
+# silent no-op. The dotted form is what cargo documents: the string after the dot
+# is a KEY of the `[patch]` table naming the source being overridden.
 
-[patch."https://github.com/archimedes-codes/fulcrum"]
-fulcrum-core = { path = "../fulcrum" }
+[patch.crates-io]
+fulcrum-harness = { path = "../fulcrum" }

@@ -1262,7 +1262,7 @@ enum CrateRoot {
 }
 
 // `callback_state_check_is_constant_time_lint` MOVED into the engine crate in
-// T8b/S8b.4 — it is now `fulcrum_core::source_lints::callback_state_check_is_constant_time_lint`,
+// T8b/S8b.4 — it is now `fulcrum_harness::source_lints::callback_state_check_is_constant_time_lint`,
 // beside the `mcp/callback.rs` it lints. It read
 // `../crates/fulcrum-core/src/mcp/callback.rs` by path, and a git dependency has
 // no stable path to read (a cargo git checkout lands under

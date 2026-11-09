@@ -18,7 +18,8 @@ import { useSubagents, type SubagentEntry } from "../store/subagents";
 /**
  * `childGatesOf` is the ONE derivation of "which gates are the children of THIS
  * Session holding on the user, and who is holding them" — the inline card in
- * the parent's transcript, the always-mounted overlay, and the rail's dot all
+ * the parent's transcript, the always-mounted overlay, and the row's status mark
+ * (via `useSessionStatus`) all
  * read it, so they cannot disagree (the repo's standing rule; see
  * `useSessionStatus.ts`). The tests therefore drive the PURE core directly: a
  * hook cannot be called once per parent at a changing list length, and the

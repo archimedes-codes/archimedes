@@ -10,7 +10,7 @@
 //!   * `rusqlite` is not in the crate's dependency graph — `DbError` wraps
 //!     `rusqlite::Error` and therefore cannot move (Step B-bis), so nothing that
 //!     touches a `Db` can cross the boundary;
-//!   * reaching `crate::storage` from the crate would be the `fulcrum-core →
+//!   * reaching `crate::storage` from the crate would be the `fulcrum-harness →
 //!     archimedes_lib` edge that IS the package cycle T5 exists to sever.
 //!
 //! So the desktop implements the crate's trait, exactly as `web/render.rs`
@@ -52,7 +52,7 @@
 
 use std::sync::Arc;
 
-use fulcrum_core::StoreError;
+use fulcrum_harness::StoreError;
 
 use crate::agent::harness::provider::ChatMessage;
 use crate::storage::{Db, DbError};
@@ -66,7 +66,7 @@ use crate::storage::{Db, DbError};
 // (`loop/emit.rs`, `compact.rs`) moved with the crate, so nothing on the desktop
 // names it — the A.3 rule is that the STAYING desktop's names decide what gets
 // raised, and it names none.
-pub use fulcrum_core::harness::store::{DisplayRow, NoopStore, Store};
+pub use fulcrum_harness::harness::store::{DisplayRow, NoopStore, Store};
 
 /// The native session store (the provider transcript on the shared `Db`).
 ///
@@ -345,7 +345,7 @@ mod tests {
     /// rumour: it pins the mapping, including the lossy `Sqlite → Io` arm.
     #[test]
     fn a_sqlite_error_maps_to_store_error_io_and_keeps_its_sentence() {
-        use fulcrum_core::StoreError;
+        use fulcrum_harness::StoreError;
 
         // The real way to get a SQLite error out of `SessionStore`: a
         // transcript row whose `content_json` is not a `ChatMessage` is the

@@ -33,23 +33,23 @@
 //!   FulcrumPersistence>` coercion in this file, and at
 //!   [`the_persistence_surface_round_trips_through_a_real_db`].
 //! - Delete `impl Dispatcher for WorkerManager` — CRATE-SIDE since T8/S8.3
-//!   (`fulcrum-core/src/worker/manager/mod.rs`, `impl crate::seams::Dispatcher for
+//!   (`fulcrum/src/worker/manager/mod.rs`, `impl crate::seams::Dispatcher for
 //!   WorkerManager`). That impl and the type are both owned by the crate, so the
 //!   `E0277` proof runs in `archimedes-codes/fulcrum`'s CI, NOT here: this
 //!   checkout has no `worker/manager/mod.rs`. What stays provable HERE is the
 //!   re-export seam: drop the `manager` token from
-//!   `pub use fulcrum_core::worker::{…}` in `agent/worker/mod.rs` →
+//!   `pub use fulcrum_harness::worker::{…}` in `agent/worker/mod.rs` →
 //!   [`worker_manager_satisfies_dispatcher`] and the `Arc<dyn Dispatcher>`
 //!   coercion fail to resolve the name (`unresolved import`).
 //! - Delete the `pub use crate::worker_types::{…}` block in
-//!   `fulcrum-core/src/worker/protocol.rs` — CRATE-SIDE since T8/S8.1, so its
+//!   `fulcrum/src/worker/protocol.rs` — CRATE-SIDE since T8/S8.1, so its
 //!   consumers fail in the crate's CI; there is no `agent/worker/protocol.rs` in
 //!   this checkout to delete. What stays provable HERE is the desktop half: drop
-//!   the `protocol` token from `pub use fulcrum_core::worker::{…}` in
+//!   the `protocol` token from `pub use fulcrum_harness::worker::{…}` in
 //!   `agent/worker/mod.rs` → [`moved_wire_types_keep_every_existing_desktop_path_resolving`]
 //!   fails, because the desktop spells these types at
 //!   `crate::agent::worker::protocol::…` through that module alias.
-//! - Delete the `pub use fulcrum_core::store_rows::{…}` in `storage/db.rs`, or the
+//! - Delete the `pub use fulcrum_harness::store_rows::{…}` in `storage/db.rs`, or the
 //!   one in `src/types.rs` → the row/DTO pins fail at the `Db::session` /
 //!   `Db::messages_for` / `record_session` sites, and the desktop's `commands/` +
 //!   `tests/storage.rs` readers fail with them.
@@ -65,7 +65,7 @@
 
 use std::sync::Arc;
 
-use fulcrum_core::seams::{Dispatcher, FulcrumPersistence, StoreError};
+use fulcrum_harness::seams::{Dispatcher, FulcrumPersistence, StoreError};
 
 use archimedes_lib::agent::harness::catalog::{Model, ModelCatalog};
 use archimedes_lib::agent::harness::store::DisplayRow;
@@ -236,7 +236,7 @@ fn dberror_converts_to_storeerror_collapsing_sqlite_into_io() {
 ///
 /// The desktop's two private `now_ms` bodies are deleted — `storage/db.rs`'s
 /// private fn and `agent/normalize.rs`'s `pub(crate)` fn — and both files now name
-/// `fulcrum_core::clock::now_ms`. Through the seam, the value must be the same
+/// `fulcrum_harness::clock::now_ms`. Through the seam, the value must be the same
 /// clock, not merely the same shape: a per-implementation clock would agree today
 /// and drift the moment a second store appeared.
 #[test]
@@ -244,7 +244,7 @@ fn the_traits_clock_is_the_same_clock_the_rows_are_stamped_with() {
     let (dir, db) = temp_db("fulcrum-seams-pin-clock-");
     let obj: Arc<dyn FulcrumPersistence> = db;
     let via_trait = obj.now_ms();
-    let shared = fulcrum_core::clock::now_ms();
+    let shared = fulcrum_harness::clock::now_ms();
     assert!(
         (shared - via_trait).abs() <= 5,
         "seam said {via_trait}, the shared clock says {shared}: two clocks would drift, not merely differ"
@@ -398,7 +398,7 @@ fn moved_wire_types_keep_every_existing_desktop_path_resolving() {
         parent_enabled_tools: vec!["read".to_string()],
         agent_name: "scout".to_string(),
         name_resolution: AgentNameResolution::Matched,
-        launch: fulcrum_core::launch_config::LaunchConfig::default(),
+        launch: fulcrum_harness::launch_config::LaunchConfig::default(),
         task: "do the thing".to_string(),
         model_key: "tama/m-1".to_string(),
     };
@@ -439,22 +439,22 @@ fn moved_wire_types_keep_every_existing_desktop_path_resolving() {
 /// `commands/` + `tests/storage.rs` row readers were never touched.
 #[test]
 fn moved_dtos_keep_every_existing_desktop_path_resolving() {
-    fn info_from_types(v: SessionInfo) -> fulcrum_core::store_rows::SessionInfo {
+    fn info_from_types(v: SessionInfo) -> fulcrum_harness::store_rows::SessionInfo {
         v
     }
     fn info_from_agent(v: archimedes_lib::agent::SessionInfo) -> SessionInfo {
         v
     }
-    fn usage(v: ContextUsage) -> fulcrum_core::store_rows::ContextUsage {
+    fn usage(v: ContextUsage) -> fulcrum_harness::store_rows::ContextUsage {
         v
     }
-    fn row(v: SessionRow) -> fulcrum_core::store_rows::SessionRow {
+    fn row(v: SessionRow) -> fulcrum_harness::store_rows::SessionRow {
         v
     }
-    fn msg(v: MessageRow) -> fulcrum_core::store_rows::MessageRow {
+    fn msg(v: MessageRow) -> fulcrum_harness::store_rows::MessageRow {
         v
     }
-    fn display(v: DisplayRow) -> fulcrum_core::store_rows::DisplayRow {
+    fn display(v: DisplayRow) -> fulcrum_harness::store_rows::DisplayRow {
         v
     }
     let _ = (info_from_types, info_from_agent, usage, row, msg, display);
@@ -492,13 +492,13 @@ fn moved_dtos_keep_every_existing_desktop_path_resolving() {
 /// payload and E3's wire field both name it).
 #[test]
 fn the_subagent_vocabulary_is_one_type_across_the_boundary() {
-    fn outcome(v: SubagentOutcome) -> fulcrum_core::subagent_types::SubagentOutcome {
+    fn outcome(v: SubagentOutcome) -> fulcrum_harness::subagent_types::SubagentOutcome {
         v
     }
-    fn metrics(v: SubagentMetrics) -> fulcrum_core::subagent_types::SubagentMetrics {
+    fn metrics(v: SubagentMetrics) -> fulcrum_harness::subagent_types::SubagentMetrics {
         v
     }
-    fn reason(v: SubagentFailureReason) -> fulcrum_core::subagent_types::SubagentFailureReason {
+    fn reason(v: SubagentFailureReason) -> fulcrum_harness::subagent_types::SubagentFailureReason {
         v
     }
     let _ = (outcome, metrics, reason);
@@ -556,7 +556,7 @@ fn the_subagent_vocabulary_is_one_type_across_the_boundary() {
 /// Two independent mechanisms, because they catch different breakages:
 ///
 ///   * **The identity fns** prove the TYPE. Each takes the `archimedes_lib::`
-///     spelling and returns the `fulcrum_core::` spelling of the same value. If
+///     spelling and returns the `fulcrum_harness::` spelling of the same value. If
 ///     the two spellings ever denote two DIFFERENT structs (a desktop twin, or a
 ///     re-export quietly replaced by a local mirror), the `return` is `E0308` —
 ///     the pin does not compile, so it cannot pass on a broken tree. A source-text
@@ -573,35 +573,35 @@ fn the_subagent_vocabulary_is_one_type_across_the_boundary() {
 fn the_config_dtos_are_one_type_across_the_boundary() {
     fn providers_move_across(
         p: archimedes_lib::config::ProviderConfig,
-    ) -> Vec<fulcrum_core::config_types::ProviderConfig> {
+    ) -> Vec<fulcrum_harness::config_types::ProviderConfig> {
         vec![p]
     }
     fn overrides_move_across(
         o: archimedes_lib::config::AgentOverrideFields,
-    ) -> fulcrum_core::config_types::AgentOverrideFields {
+    ) -> fulcrum_harness::config_types::AgentOverrideFields {
         o
     }
     fn settings_move_across(
         s: archimedes_lib::config::Settings,
-    ) -> fulcrum_core::config_types::Settings {
+    ) -> fulcrum_harness::config_types::Settings {
         s
     }
     fn fonts_move_across(
         f: archimedes_lib::config::FontSettings,
-    ) -> fulcrum_core::config_types::FontSettings {
+    ) -> fulcrum_harness::config_types::FontSettings {
         f
     }
     fn oidc_move_across(
         c: archimedes_lib::config::OidcConfig,
-    ) -> fulcrum_core::config_types::OidcConfig {
+    ) -> fulcrum_harness::config_types::OidcConfig {
         c
     }
     // `WebSettings` is NOT in the `config_types` block — S2 moved it to
-    // `fulcrum_core::web::config` and `config.rs` re-exports it from there, so the
+    // `fulcrum_harness::web::config` and `config.rs` re-exports it from there, so the
     // desktop spelling is the `agent::web::config` module-alias path.
     fn web_settings_move_across(
         w: archimedes_lib::agent::web::config::WebSettings,
-    ) -> fulcrum_core::web::config::WebSettings {
+    ) -> fulcrum_harness::web::config::WebSettings {
         w
     }
     // Each identity fn above is CALLED in the assertions below (not merely
@@ -659,7 +659,7 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
     );
     // And the reverse direction: a pre-feature sparse file parses to the same
     // defaults through the CRATE spelling.
-    let sparse: fulcrum_core::config_types::Settings =
+    let sparse: fulcrum_harness::config_types::Settings =
         serde_json::from_str("{}").expect("a pre-feature settings file parses to the defaults");
     assert_eq!(sparse.theme, "dark");
     assert!(sparse.session_naming_enabled);
@@ -672,7 +672,7 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
     // missing-field default leaves them `None` (the frontend's own CSS stack
     // applies then). So parsing `{}` is NOT `FontSettings::default()`, and this is
     // where that asymmetry is recorded.
-    let bare_font: fulcrum_core::config_types::FontSettings =
+    let bare_font: fulcrum_harness::config_types::FontSettings =
         serde_json::from_str("{}").expect("an absent font block is legal");
     assert_eq!(
         bare_font.size_px, 14,
@@ -712,7 +712,7 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
         oidc_json.contains("\"clientId\":\"archimedes\""),
         "`client_id` crosses as `clientId` — got {oidc_json}"
     );
-    let parsed_oidc: fulcrum_core::config_types::OidcConfig = serde_json::from_str(
+    let parsed_oidc: fulcrum_harness::config_types::OidcConfig = serde_json::from_str(
         r#"{"issuer":"https://idp.example","clientId":"archimedes"}"#,
     )
     .expect("scope/redirect_ports are `#[serde(default)]` — a bare issuer+client block is valid");
@@ -722,13 +722,15 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
         "an empty port list means one ephemeral port"
     );
     assert!(
-        serde_json::from_str::<fulcrum_core::config_types::OidcConfig>(r#"{"issuer":"https://x"}"#)
-            .is_err(),
+        serde_json::from_str::<fulcrum_harness::config_types::OidcConfig>(
+            r#"{"issuer":"https://x"}"#
+        )
+        .is_err(),
         "`client_id` is REQUIRED: an `oidc` block that omits it fails the whole document"
     );
 
     // ── `WebSettings` — 6 `String` fields, all-default-empty ──────────────────
-    let bare_web: fulcrum_core::web::config::WebSettings =
+    let bare_web: fulcrum_harness::web::config::WebSettings =
         serde_json::from_str("{}").expect("an absent web block is legal");
     assert_eq!(
         bare_web,
@@ -761,7 +763,7 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
 /// imports) is inside a private `mod`, so an integration test cannot name it —
 /// the proof for that half is that `session/mod.rs` compiles UNEDITED, which the
 /// lib build establishes (`subagent_flow.rs` is crate-owned since T8/S8.3 —
-/// `fulcrum-core/src/worker/manager/subagent_flow.rs` — so its half of that proof
+/// `fulcrum/src/worker/manager/subagent_flow.rs` — so its half of that proof
 /// runs in the crate's CI). What is checkable from here is the behaviour that
 /// moved: the first-`/` rule, the unknown-key `None`, and the fact that a
 /// `:<level>` suffix is the CALLER's problem (which `harness/launch.rs:173` —
@@ -778,7 +780,7 @@ fn resolve_composed_model_keeps_its_lookup_rules_after_the_move() {
         ..Default::default()
     };
 
-    let found = fulcrum_core::catalog::resolve_composed_model(&catalog, "tama/Qwen/Qwen3.8-27B")
+    let found = fulcrum_harness::catalog::resolve_composed_model(&catalog, "tama/Qwen/Qwen3.8-27B")
         .expect("the composed key resolves");
     assert_eq!(
         found.id, "Qwen/Qwen3.8-27B",
@@ -787,18 +789,22 @@ fn resolve_composed_model_keeps_its_lookup_rules_after_the_move() {
 
     // No `/` is not a composed key; a well-formed key naming nothing is `None`;
     // the provider is part of the identity, not a hint.
-    assert!(fulcrum_core::catalog::resolve_composed_model(&catalog, "Qwen/Qwen3.8-27B").is_none());
-    assert!(fulcrum_core::catalog::resolve_composed_model(&catalog, "tama/other").is_none());
     assert!(
-        fulcrum_core::catalog::resolve_composed_model(&catalog, "other/Qwen/Qwen3.8-27B").is_none()
+        fulcrum_harness::catalog::resolve_composed_model(&catalog, "Qwen/Qwen3.8-27B").is_none()
+    );
+    assert!(fulcrum_harness::catalog::resolve_composed_model(&catalog, "tama/other").is_none());
+    assert!(
+        fulcrum_harness::catalog::resolve_composed_model(&catalog, "other/Qwen/Qwen3.8-27B")
+            .is_none()
     );
     // The `:<level>` suffix is NOT stripped here — `launch.rs` does that via
     // `ModelRef::parse` BEFORE calling, and a half-match would turn a soft skip
     // into a wrong model.
-    assert!(
-        fulcrum_core::catalog::resolve_composed_model(&catalog, "tama/Qwen/Qwen3.8-27B:high")
-            .is_none()
-    );
+    assert!(fulcrum_harness::catalog::resolve_composed_model(
+        &catalog,
+        "tama/Qwen/Qwen3.8-27B:high"
+    )
+    .is_none());
 }
 
 // ── Pin 5 (T5/S5a) — `SqliteTrustSource` satisfies the CRATE's `TrustSource` ──
@@ -807,10 +813,10 @@ fn resolve_composed_model_keeps_its_lookup_rules_after_the_move() {
 /// the S4 RULING's rule: *"an impl nobody instantiates proves nothing"*).
 ///
 /// `harness/trust.rs` SPLIT in S5a: the `TrustSource` trait and the pure
-/// `StaticTrustSource` moved to `fulcrum_core::trust`, and `SqliteTrustSource`
+/// `StaticTrustSource` moved to `fulcrum_harness::trust`, and `SqliteTrustSource`
 /// stayed desktop because it holds a `storage::Db` the crate must never name
 /// (`rusqlite` is not in the crate's graph — Step B-bis — and reaching
-/// `crate::storage` would be the `fulcrum-core → archimedes_lib` edge that IS
+/// `crate::storage` would be the `fulcrum-harness → archimedes_lib` edge that IS
 /// the package cycle T5 severs). So the desktop now holds an IMPLEMENTATION of
 /// a CRATE trait, exactly as `web/render.rs` holds the crate's
 /// `RenderRequester` impl and `open.rs` holds the crate's `OpenRequester` impl.
@@ -829,7 +835,7 @@ fn resolve_composed_model_keeps_its_lookup_rules_after_the_move() {
 /// the bound, at the `dyn` coercion, and at
 /// [`sqlite_trust_source_reads_the_space_flag`]'s `Some(&SqliteTrustSource::new(db))`
 /// argument, where the same deletion breaks the relocated behaviour test too.
-/// Deleting the `pub use fulcrum_core::trust::{StaticTrustSource, TrustSource};`
+/// Deleting the `pub use fulcrum_harness::trust::{StaticTrustSource, TrustSource};`
 /// re-export instead reddens `harness/mod.rs`'s re-export line and
 /// `worker/core.rs`'s import — the re-export seam is the other half of the proof.
 #[test]
@@ -844,13 +850,13 @@ fn sqlite_trust_source_satisfies_the_crate_trait() {
     // re-declared desktop trait would fail here, not at the call.
     fn desktop_spelling_is_the_crate_trait(
         v: &dyn archimedes_lib::agent::harness::trust::TrustSource,
-    ) -> &dyn fulcrum_core::trust::TrustSource {
+    ) -> &dyn fulcrum_harness::trust::TrustSource {
         v
     }
 
     // `SqliteTrustSource` behind the shape the loop actually holds.
     let (dir, db) = temp_db("fulcrum-seams-trust-");
-    let obj: Arc<dyn fulcrum_core::trust::TrustSource> = Arc::new(SqliteTrustSource::new(db));
+    let obj: Arc<dyn fulcrum_harness::trust::TrustSource> = Arc::new(SqliteTrustSource::new(db));
     // Fail-closed through the seam: a path with no `spaces` row — and a path
     // that cannot canonicalize — is untrusted when the call goes through the
     // trait object, not merely when it goes through the concrete type.
@@ -897,9 +903,9 @@ fn sqlite_trust_source_reads_the_space_flag() {
 #[test]
 fn static_trust_source_is_the_crate_type_at_the_desktop_spelling() {
     let desktop = archimedes_lib::agent::harness::trust::StaticTrustSource::new(false);
-    let crate_side: fulcrum_core::trust::StaticTrustSource = desktop;
+    let crate_side: fulcrum_harness::trust::StaticTrustSource = desktop;
     crate_side.set(true);
-    let via_desktop: Arc<dyn fulcrum_core::trust::TrustSource> = Arc::new(crate_side);
+    let via_desktop: Arc<dyn fulcrum_harness::trust::TrustSource> = Arc::new(crate_side);
     assert!(
         via_desktop.is_trusted(std::path::Path::new("/x")),
         "the flip is visible through the crate trait"
@@ -1017,13 +1023,13 @@ fn test_model_shape() -> Model {
 ///     `Arc<dyn Store>` coercion, and at the identity fn below (measured; see the
 ///     S5b report for counts);
 ///   * delete `impl Store for IpcStore` — CRATE-SIDE since T8/S8.3
-///     (`fulcrum-core/src/worker/store.rs`, `impl Store for IpcStore` at :51).
+///     (`fulcrum/src/worker/store.rs`, `impl Store for IpcStore` at :51).
 ///     There is no `agent/worker/store.rs` in this checkout, so that deletion is
 ///     proven in `archimedes-codes/fulcrum`'s CI. What stays provable HERE is the
-///     seam: drop the `IpcStore` token from `pub use fulcrum_core::worker::{…}` in
+///     seam: drop the `IpcStore` token from `pub use fulcrum_harness::worker::{…}` in
 ///     `agent/worker/mod.rs` → the same three failures for `IpcStore`, because the
 ///     name reaches this file only through that re-export;
-///   * delete the `pub use fulcrum_core::harness::store::{DisplayRow, NoopStore,
+///   * delete the `pub use fulcrum_harness::harness::store::{DisplayRow, NoopStore,
 ///     Store};` line in `agent/harness/mod.rs` → this file AND the desktop's
 ///     `harness/**` consumers fail: the re-export seam is the other half of proof.
 ///
@@ -1044,7 +1050,7 @@ fn test_model_shape() -> Model {
 fn session_store_and_ipc_store_satisfy_the_crate_store() {
     use archimedes_lib::agent::harness::SessionStore;
     use archimedes_lib::agent::worker::IpcStore;
-    use fulcrum_core::harness::store::Store;
+    use fulcrum_harness::harness::store::Store;
 
     fn assert_store<T: Store>() {}
     assert_store::<SessionStore>();
@@ -1057,7 +1063,7 @@ fn session_store_and_ipc_store_satisfy_the_crate_store() {
     // not at some later call site.
     fn desktop_spelling_is_the_crate_trait(
         v: &dyn archimedes_lib::agent::harness::Store,
-    ) -> &dyn fulcrum_core::harness::store::Store {
+    ) -> &dyn fulcrum_harness::harness::store::Store {
         v
     }
 
@@ -1076,7 +1082,7 @@ fn session_store_and_ipc_store_satisfy_the_crate_store() {
         is_subagent: false,
     })
     .expect("record_session");
-    let session: Arc<dyn fulcrum_core::harness::store::Store> =
+    let session: Arc<dyn fulcrum_harness::harness::store::Store> =
         Arc::new(SessionStore::new(db.clone()));
     // A REAL round trip through the trait object: the write and the read both go
     // through `&dyn Store`, so this is an instantiated impl, not a bound check.
@@ -1109,7 +1115,7 @@ fn session_store_and_ipc_store_satisfy_the_crate_store() {
     // ── `IpcStore`, behind the same shape ────────────────────────────────────
     let (tx, mut rx) =
         tokio::sync::mpsc::unbounded_channel::<archimedes_lib::agent::worker::protocol::Outbound>();
-    let ipc: Arc<dyn fulcrum_core::harness::store::Store> = Arc::new(IpcStore::new(tx));
+    let ipc: Arc<dyn fulcrum_harness::harness::store::Store> = Arc::new(IpcStore::new(tx));
     desktop_spelling_is_the_crate_trait(ipc.as_ref())
         .insert_message("s1", 3, "assistant", r#"{"role":"assistant"}"#)
         .expect("the frame send never fails (unbounded)");

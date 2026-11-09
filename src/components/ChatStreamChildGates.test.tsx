@@ -36,7 +36,6 @@ import ChatStream from "./ChatStream";
 import { cancelSession, respondInteractiveRequest, respondPermission } from "../lib/tauri";
 import { clearSkillCatalogCache } from "../hooks/useSkillCatalog";
 import { clearMentionCatalogsCache } from "../hooks/useMentionCatalogs";
-import { setSidePaneCollapsed } from "../lib/sidePaneState";
 import { useQueuedPrompts } from "../store/queuedPrompts";
 import { useSessions } from "../store/sessions";
 import { useInteractive } from "../store/interactive";
@@ -174,7 +173,6 @@ beforeEach(() => {
   // mid-read tests below use `vi.useFakeTimers()` to settle the macrotask-
   // based `FileReader` deterministically) — a no-op for tests that don't.
   vi.useRealTimers();
-  setSidePaneCollapsed(false);
   localStorage.clear();
   // The prompt queue is a module singleton too — drop every entry so a queue
   // left by the previous test cannot satisfy a "nothing was queued" assertion.

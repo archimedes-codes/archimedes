@@ -22,13 +22,15 @@ export interface SessionStatusInput {
 
 /**
  * The ONE status rule for a session, as a pure function so it can serve both
- * the single-row hook and the batch hook the collapsed rail uses (a hook cannot
- * be called once per row inside a list of changing length — the pure step is
- * what makes the two consumers share the rule rather than restate it).
+ * the single-row hook and the batch hook the Space tab strip reads (a hook
+ * cannot be called once per row inside a list of changing length — the pure
+ * step is what makes the two consumers share the rule rather than restate it).
  *
  * `waiting` WINS over `running`: a session holding a pending prompt is not
- * working, it is BLOCKED ON THE USER, and that is the fact both the row's
- * "Waiting" pill and the rail's mark exist to report. `running` requires a LIVE
+ * working, it is BLOCKED ON THE USER, and that is the fact the row's `?`
+ * status mark exists to report (`SessionStatusMark`, ADR 0038's amendment —
+ * the trailing "Waiting" pill and the collapsed rail's dot it restated are
+ * both gone). `running` requires a LIVE
  * session — an `inTurn` flag left behind by a session that has since closed
  * must not paint activity that is not happening (the open row's
  * `isLive && inTurn`, stated once, here).
@@ -59,11 +61,14 @@ export function sessionStatusOf({
 
 /**
  * The status of ONE session — consumed by the open `SessionRow` (its leading
- * spinner + its "Waiting" pill). It is a hook rather than logic inside
- * `SessionRow` because the collapsed rail is the SAME fact in less space, and a
- * summary that disagrees with the thing it summarises is worse than no summary
- * — the reasoning that put the todo count in `useBoardOpenCount` instead of
- * in the panel that renders it.
+ * spinner + its `?` status mark). It is a hook rather than logic inside
+ * `SessionRow` because the Space tab strip shows the SAME fact at a smaller
+ * size, and a summary that disagrees with the thing it summarises is worse
+ * than no summary — the reasoning that put the todo count in
+ * `useBoardOpenCount` instead of in the panel that renders it. (What used to
+ * be stated here as "the collapsed rail" was the second consumer this rule was
+ * extracted for; ADR 0094 deleted that component, and the tab strip is the
+ * batch consumer that remains — so the extraction still has its reason.)
  *
  * THE ASYMMETRY THAT IS NOT A BUG: `childGateCount` makes a PARENT `waiting`
  * while its child holds a gate, and the CHILD stays `running` — in
@@ -99,7 +104,7 @@ export function useSessionStatus(sessionId: string): SessionStatus {
   // (on the three store refs + the parent id).
   // Narrowing the SUBSCRIPTION is a different, larger change: it means either
   // memoizing the rows or reading the batch shape below — `useSessionStatuses`
-  // subscribes `entries` ONCE for the whole rail list, which is the shape the
+  // subscribes `entries` ONCE for the whole list, which is the shape the
   // open list would want too — and restructuring `SpacesList`'s row rendering is
   // deliberately out of scope here.
   const childGateCount = useChildGates(sessionId).length;
@@ -107,9 +112,10 @@ export function useSessionStatus(sessionId: string): SessionStatus {
 }
 
 /**
- * The status of MANY sessions at once, for the collapsed rail. Subscribes to
+ * The status of MANY sessions at once, for the Space tab strip (`SpaceTabs`,
+ * its only production caller). Subscribes to
  * the maps ONCE (a hook per row would violate the rules of hooks at a
- * changing list length) and applies `sessionStatusOf` per id, so the rail's
+ * changing list length) and applies `sessionStatusOf` per id, so the tabs'
  * marks are derived by the same rule as the rows they summarise.
  *
  * Selectors return stable references — the maps themselves, never a fresh `{}`

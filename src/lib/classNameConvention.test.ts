@@ -289,7 +289,7 @@ const STATIC_TERNARY_SECTIONS = [
   "src/components/AskQuestionCard.tsx className= d.other ? \"text-interaction-ask-foreground\" : \"text-foregrou",
   "src/components/AskQuestionCard.tsx className= selected ? \"text-interaction-ask-foreground\" : \"text-foregro",
   "src/components/ChangesGroupCard.tsx className= isVisible ? \"inline-flex min-w-0 shrink-0\" : \"pointer-events",
-  "src/components/TodoBoardPanel.tsx className= item.status === \"completed\" ? \"min-w-0 flex-1 text-ui-base l",
+  "src/components/ChecklistPanel.tsx className= item.status === \"completed\" ? \"min-w-0 flex-1 text-ui-base l",
   "src/components/chat/MessageList.tsx className= isEmpty ? \"px-4 pb-4\" : \"px-4 pb-4 pt-3 flex flex-col gap-3\"",
   "src/components/settings/UpdateSection.tsx className= percent === null ? \"h-full w-full animate-pulse bg-primary o",
 ];

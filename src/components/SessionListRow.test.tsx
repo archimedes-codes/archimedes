@@ -130,7 +130,8 @@ describe("SessionListRow — the text contract (SpacesList.test.tsx:583)", () =>
   it("adds NO DOM level between the row and its children", () => {
     // The row's children are DIRECT children of the `role="button"` element. A
     // wrapper would not break `:583` but would break every positional read
-    // (`compareDocumentPosition` at `:2372`, the rail-vs-row mark equality), and
+    // (`compareDocumentPosition` over the hover actions, and the mark-vs-row
+    // equality the deleted rail used to be pinned against), and
     // `closest()` walks — the same trap C6 recorded for the picker shell.
     render(
       <SessionListRow

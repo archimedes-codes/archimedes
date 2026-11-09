@@ -184,8 +184,10 @@ describe("WindowControls", () => {
   });
 
   it("no control carries `relative` — the shared constant must not add a positioning context here", () => {
-    // `ChromeControls` adds `relative` itself because it owns an `absolute`
-    // pending dot; these three never had one and must not gain one.
+    // The retired `ChromeControls` added `relative` itself because it owned an
+    // `absolute` pending dot; these three never had one and must not gain one.
+    // That component is deleted, so this assertion now guards the one half of the
+    // old two-cluster difference that is still live.
     render(<WindowControls />);
     for (const title of ["Minimize", "Maximize / Restore", "Close"]) {
       expect(screen.getByTitle(title).className.split(/\s+/)).not.toContain(

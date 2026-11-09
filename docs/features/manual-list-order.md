@@ -43,8 +43,8 @@ recency, and the limits that were accepted rather than overlooked.
   — and never as a position rule.
 - **One sequence, so nothing can disagree.** `SpacesList`'s `views` is
   `spaces.map(spaceViewFor)`, the tab strip renders `spaces` verbatim, and the
-  collapsed rail's `railIds` IS `activeView.sessionIds`. The tab strip, the rows
-  and the rail's marks all read one array.
+  rows' `rowIds` IS `activeView.sessionIds`. The tab strip and the rows
+  all read one array.
 - **Position means position.** It is not a proxy for recency anywhere in the
   frontend; see the ADR below.
 

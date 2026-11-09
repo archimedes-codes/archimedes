@@ -39,7 +39,7 @@ import {
   rowToMessages,
 } from "../lib/transcript/reducer";
 import { useSubagents } from "./subagents";
-import { useInteractive, type TodoItem } from "./interactive";
+import { useInteractive, type ChecklistItem } from "./interactive";
 import { useQueuedPrompts } from "./queuedPrompts";
 
 export const INITIAL_HISTORY_PAGE = 500;
@@ -261,8 +261,8 @@ export interface SpaceView {
    * THE one order this Space's sidebar rows render (ADR 0075): ONE sequence
    * spanning live and stored, no group headers, no re-sorting by anything the
    * user did not do. Built from this Space's live and stored rows plus the boot
-   * order map by ONE function (`mergeSessionOrder`) so the rows and the
-   * collapsed rail cannot disagree, and so a row keeps its slot whether its
+   * order map by ONE function (`mergeSessionOrder`) so the rows and the tab
+   * strip cannot disagree, and so a row keeps its slot whether its
    * Worker is live, stored, or has just been resumed.
    * Position here means position, nothing more — recency is `lib/sessionRecency`.
    */
@@ -709,13 +709,14 @@ export interface SessionsState {
   closeSpace: (path: string, stopSessionIds?: string[]) => Promise<void>;
   /**
    * Start a new Session in the SELECTED Space (`activeSpacePath`) — the one
-   * flow the sidebar's `Sessions` header `+`, the collapsed rail's `+` and the
-   * `⌘N` chord all share.
+   * flow the **Session list**'s `Sessions` header `+` and the
+   * `⌘N` chord both share.
    *
    * It lives in the store rather than in a hook closure because its callers
    * do not share a component: a root-level chord listener has to reach it
-   * with nothing mounted, and the sidebar it used to live behind unmounts in
-   * the Settings view.
+   * with nothing mounted. (The pane it used to sit behind is permanent and
+   * renders in every view now, so that is no longer the only reason — the
+   * chord listener still needs the action with no component mounted at all.)
    *
    * With NO Space to start in — nothing selected, or a selected path that is
    * no longer a Space row (a legacy cwd) — it opens the Open Space dialog
@@ -1846,7 +1847,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
         ) {
           useInteractive
             .getState()
-            .applyTodoUpdate(sessionId, { todos: page.todos as TodoItem[] });
+            .applyTodoUpdate(sessionId, { todos: page.todos as ChecklistItem[] });
         }
         const messages = page.rows.flatMap(rowToMessages);
         const prevHist = get().history[sessionId];
@@ -2093,7 +2094,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
         ) {
           useInteractive
             .getState()
-            .applyTodoUpdate(sessionId, { todos: page.todos as TodoItem[] });
+            .applyTodoUpdate(sessionId, { todos: page.todos as ChecklistItem[] });
         }
         set((st) => {
           const prevHist = st.history[sessionId];

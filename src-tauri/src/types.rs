@@ -3,11 +3,11 @@
 //! at the crate root rather than under either, which is what keeps
 //! `storage` from importing `agent`).
 //!
-//! (T5/S4) `SessionInfo` and `ContextUsage` MOVED to `fulcrum_core::store_rows`
+//! (T5/S4) `SessionInfo` and `ContextUsage` MOVED to `fulcrum_harness::store_rows`
 //! and are re-exported here. They move because the crate's `FulcrumPersistence`
 //! trait takes `&SessionInfo` (its `record_session` method) and `agent/persist.rs`
 //! — which moves to the crate in S5 — both imports and CONSTRUCTS it, so a trait
-//! in `fulcrum-core` could not be declared over a type in `archimedes_lib`. This
+//! in `fulcrum-harness` could not be declared over a type in `archimedes_lib`. This
 //! file keeps the definition's public spelling: `crate::types::SessionInfo`,
 //! `crate::agent::SessionInfo` (via `agent/mod.rs`) and
 //! `archimedes_lib::types::SessionInfo` all still resolve, with zero edits at the
@@ -18,4 +18,4 @@
 //! that lived here were the whole file. A future crate-root type that `storage`
 //! and `agent` BOTH need joins it; one that only one of them needs does not.
 
-pub use fulcrum_core::store_rows::{ContextUsage, SessionInfo};
+pub use fulcrum_harness::store_rows::{ContextUsage, SessionInfo};

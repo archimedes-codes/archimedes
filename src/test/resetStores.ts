@@ -5,14 +5,7 @@ import { useInteractive } from "../store/interactive";
 import { useSubagentSelection } from "../store/subagentSelection";
 import { useQueuedPrompts } from "../store/queuedPrompts";
 import { usePermissions } from "../store/permissions";
-import {
-  getLeftPaneCollapsed,
-  setLeftPaneCollapsed,
-} from "../lib/leftPaneState";
-import {
-  getSidePaneCollapsed,
-  setSidePaneCollapsed,
-} from "../lib/sidePaneState";
+import { useTasks } from "../store/tasks";
 import { setNewSpaceDialogOpen } from "../lib/newSpaceDialogState";
 import type { StoreApi } from "zustand";
 
@@ -51,16 +44,24 @@ import type { StoreApi } from "zustand";
  *     `src/test/fixtures.test.ts` pins the limitation with a live check on
  *     `clientMessageSeq`, so the name cannot quietly promise more than it does.
  *
- *  3. It does not reset the pane/dialog flags — those are the module-scope
- *     state that IS reachable, and they get their own named function,
- *     `resetModuleFlags()` below. They stay separate on purpose: the pane flags
- *     persist to `localStorage` and seed themselves from it at import, so
- *     "clean" for them means "back to the value at import", not `false`.
+ *  3. It does not reset the Open-Space dialog flag — that is the module-scope
+ *     state that IS reachable, and it gets its own named function,
+ *     `resetModuleFlags()` below. They stay separate on purpose: a store has an
+ *     `getInitialState()` to go back to, a module `let` does not, so the two
+ *     resets read different places even when a test calls both.
  */
 
-/** The seven stores, listed once. Verified complete: `grep -rn 'create<' src/store`.
+/** The stores this helper owns, listed once.
  *
- * Typed as `StoreApi<unknown>[]` rather than left to inference: the seven state
+ * Verified against `grep -rn 'create<' src/store`, which reports one MORE store
+ * than this list holds: `useModelCatalog` is deliberately OUT. It is a lazily
+ * loaded catalog CACHE whose `loadModels()` early-returns once `loadedOk` is set,
+ * so resetting it to "fresh" would send every component test that renders a Model
+ * picker back through an un-mocked `listModels` IPC. `SidePane.test.tsx:105-113`
+ * and `SettingsPage.test.tsx:374` both document that exclusion at their own reset
+ * sites — a later executor adding it here must expect those two to change shape.
+ *
+ * Typed as `StoreApi<unknown>[]` rather than left to inference: the state
  * types differ, so an inferred array has a UNION element type, and calling
  * `setState` on a union of differently-typed signatures is a `tsc` error ("Each
  * member of the union type has signatures, but none of those signatures are
@@ -74,6 +75,7 @@ const ALL_STORES: readonly StoreApi<unknown>[] = [
   useSubagentSelection,
   useQueuedPrompts,
   usePermissions,
+  useTasks,
 ];
 
 /**
@@ -92,37 +94,37 @@ export function resetStores(): void {
 }
 
 /**
- * The three module-scope UI flags, captured at THIS module's import time.
+ * Put the one shared module-scope UI flag back the way it was at import.
  *
- * `leftPaneState` and `sidePaneState` seed their flag from `localStorage` when
- * they are first imported, so the value that counts as "clean" is whatever they
- * held then — NOT `false`. Hardcoding `false` would make a test that runs after
- * a persisted-`true` state fail for a reason outside its own control.
- */
-const INITIAL_LEFT_PANE_COLLAPSED = getLeftPaneCollapsed();
-const INITIAL_SIDE_PANE_COLLAPSED = getSidePaneCollapsed();
-
-/**
- * Put the three shared module flags back the way they were at import.
+ * Measured at this HEAD: `grep -rln 'resetModuleFlags' src/` reports 7 files —
+ * 5 test files call it in a `beforeEach` (`NewSpaceDialog`, `SpacesList`,
+ * `SpacesList.agents`, `SpaceTabs`, `SpaceTabs.pill`),
+ * `fixtures.test.ts` pins it, and this file defines it. Four more test files
+ * reset the SAME flag by hand with `setNewSpaceDialogOpen(false)` instead —
+ * `App.test.tsx`, `useAppShortcuts.test.ts`, `newSpaceDialogState.test.ts` and
+ * `sessions.test.ts` — so the seam covers the flag in both shapes, not one
+ * file's habit. (The old claim here was "~48 test files reset by hand today";
+ * that counted the hand-written PANE resets, which go with the panes.) The
+ * retired eighth caller was `ChromeControls.test.tsx`; that component and its
+ * test file were deleted when the Settings door moved into the Session list (ADR
+ * 0095), which is when this count went 8 → 7.
  *
- * These are the flags ~48 test files reset by hand today, and the one that
- * bites hardest is the dialog: `newSpaceDialogState`'s flag is module-scoped, so
- * a leaked `true` auto-mounts a real Radix modal in every later `render()` in
- * the file, which `aria-hidden`s the document and sets
- * `document.body.style.pointerEvents = "none"` — and the next `getByRole` throws
- * for a reason that looks nothing like a leaked dialog.
+ * The dialog is the flag that bites: `newSpaceDialogState`'s flag is
+ * module-scoped, so a leaked `true` auto-mounts a real Radix modal in every
+ * later `render()` in the file, which `aria-hidden`s the document and sets
+ * `document.body.style.pointerEvents = "none"` — and the next `getByRole`
+ * throws for a reason that looks nothing like a leaked dialog.
  *
- * The pane setters write `localStorage` themselves, so restoring the flag keeps
- * storage and memory in agreement (the modules are the single owner of that
- * persistence; a reset that flipped the flag behind their back would not be).
+ * The pane collapse flags used to live beside it. Both panes are permanent now,
+ * so those modules are deleted and this seam holds one flag; unlike them, the
+ * dialog persists NOTHING, so `false` is unambiguously its initial value and
+ * there is nothing to capture at import time.
  *
- * NOT covered: the `listeners` sets these three modules hold. Nothing outside
+ * NOT covered: the `listeners` sets these modules hold. Nothing outside
  * the modules can enumerate them, so a component that subscribes and never
  * unsubscribes leaves a listener here — it is a leak this helper cannot see.
  */
 export function resetModuleFlags(): void {
-  setLeftPaneCollapsed(INITIAL_LEFT_PANE_COLLAPSED);
-  setSidePaneCollapsed(INITIAL_SIDE_PANE_COLLAPSED);
   // The dialog flag persists NOTHING (a dialog restored open on launch blocks
   // the window), so `false` is unambiguously its initial value.
   setNewSpaceDialogOpen(false);

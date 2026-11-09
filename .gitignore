@@ -37,12 +37,14 @@ docs/roadmap/
 
 # local scratch
 .research/
-# The `[patch]` a contributor writes to point `fulcrum-core` at a SIBLING
-# checkout of `archimedes-codes/fulcrum` while working on both at once. It must
-# never be committed: a committed patch sends everyone else's build to a path
-# that does not exist on their machine (cargo fails with `failed to load source
-# for dependency`), and it silently defeats the rev pin — the build would use
-# whatever the sibling tree holds, not `rev = …` in `src-tauri/Cargo.toml`.
+# The `[patch.crates-io]` a contributor writes to point `fulcrum-harness` at a
+# SIBLING checkout of `archimedes-codes/fulcrum` while working on both at once. It
+# must never be committed: a committed patch sends everyone else's build to a path
+# that does not exist on their machine (cargo fails with `error: patch location …
+# does not contain packages matching \`fulcrum-harness\``), and it silently defeats
+# the version pin — the build would use whatever the sibling tree holds, not the
+# published, checksummed `fulcrum-harness 0.1.0` that `src-tauri/Cargo.toml` asks
+# for.
 # `.cargo/config.toml.example` (the template) IS tracked; only the live file is
 # ignored. See that file for the mechanism and why it is `[patch]` not `[paths]`.
 .cargo/config.toml

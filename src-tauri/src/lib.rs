@@ -418,12 +418,12 @@ fn grab_webview_key_focus<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) {
 }
 
 /// The Worker mode (ADR 0025): the thin desktop shim over the crate's Worker
-/// entry (`fulcrum_core::worker::run_worker`, which builds the tokio runtime and
+/// entry (`fulcrum_harness::worker::run_worker`, which builds the tokio runtime and
 /// runs the stdio JSONL `run_worker_inner`). Checked BEFORE Tauri init in `main`
 /// — the Tauri runtime never starts in a Worker.
 ///
 /// Since T8/S8.4 the runtime construction and the whole Worker live in
-/// `crates/fulcrum-core`; this function's ONLY job is to hand the crate the two
+/// `fulcrum/src/worker/`; this function's ONLY job is to hand the crate the two
 /// desktop-only behaviours it may not name (ADR 0091 — the shape crosses, the
 /// substance stays):
 ///
@@ -443,7 +443,7 @@ fn grab_webview_key_focus<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) {
 /// The signature stays parameterless — `archimedes_lib::run_worker()` is
 /// `main.rs`'s contract for the `--worker` flag, and `main.rs` is untouched.
 pub fn run_worker() {
-    fulcrum_core::worker::run_worker(
+    fulcrum_harness::worker::run_worker(
         crate::open::desktop_open_requester(),
         Some(std::sync::Arc::new(|dir: std::path::PathBuf| {
             crate::agent::crashlog::install_panic_hook("worker", dir)
@@ -578,6 +578,30 @@ pub fn run() {
             commands::spaces::space_for_path,
             commands::spaces::set_space_trusted,
             commands::spaces::reorder_spaces,
+            // The per-Space Task board (spec §2, ADR 0090). Eight entries, no
+            // capability change: `default.json` lists plugin permissions only and
+            // never enumerates `#[tauri::command]`s (the `get_provider_budget`
+            // comment above states the rule), so the webview reaches these through
+            // this list alone. `move_task` and `start_task_session` are the two
+            // entries that need a second managed type — `Arc<SessionManager>`,
+            // managed above for the session commands already — because a
+            // `compact` stage's boost is delivered through it and a Task's Session
+            // is started through it.
+            commands::tasks::get_board,
+            commands::tasks::create_task,
+            commands::tasks::get_task,
+            commands::tasks::edit_task,
+            commands::tasks::move_task,
+            commands::tasks::reorder_tasks,
+            commands::tasks::link_session,
+            // A4 (spec §3): the ONE command in this block that also takes the
+            // `Arc<dyn EventSink>` managed state — the same trait-object type
+            // `start_session` takes above (`lib.rs`'s sink comment records why it
+            // must be the trait object, not the concrete `TauriSink`). Like
+            // `move_task` it takes `Db` AND `SessionManager`: the manager starts
+            // the Session through the SAME path plain `start_session` uses, the
+            // `Db` records the `task_sessions` link.
+            commands::tasks::start_task_session,
             commands::skills::list_skills,
             commands::clipboard::read_clipboard_image,
             commands::files::read_file_bytes,

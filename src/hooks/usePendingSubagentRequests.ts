@@ -8,12 +8,12 @@ import { usePermissions } from "../store/permissions";
  * How many gates the user owes a `Subagent session` — app-wide: `useInteractive`
  * `ask`/`confirm`/`password` requests + `usePermissions` prompts held by any
  * session that has a `useSubagents` entry. `useHasPendingRequest` turns this
- * number into the boolean behind the collapsed-pane cues — the chrome bar's two
- * `bg-warning` pane-toggle dots (`ChromeControls`) plus `ChatStream`'s hint
- * suppression — so they cannot disagree (moved here for exactly that reason). The "Waiting"
- * pill on a session row is a DIFFERENT surface: `SessionRow` in `SpacesList`
- * reads `useSessionStatus`, which counts the same gates through the same pure
- * core (`childGatesOf`) but is not a consumer of this hook.
+ * number into the boolean `ChatStream` and the New Task modal both read (each
+ * suppresses its own "send a prompt to start" hint with the result)
+ * so they cannot disagree (moved here for exactly that reason). The `?`
+ * status mark on a session row is a DIFFERENT surface: `SessionRow` in
+ * `SpacesList` reads `useSessionStatus`, which counts the same gates through
+ * the same pure core (`childGatesOf`) but is not a consumer of this hook.
  *
  * It is `childGatesOf(…, null).length` — the all-children set — and NOTHING
  * else. That set is exactly the UNION of the two render sites (the inline card
@@ -29,16 +29,19 @@ import { usePermissions } from "../store/permissions";
  * so a per-active-session count sees nothing" — described why the shortcut was
  * necessary, not why the wide scope is right; the cue's job was always to say
  * that a gate is waiting, never which Session holds it. Attribution is the
- * inline card's and the parent row's status' job, not the dot's.)
+ * inline card's and the parent row's status' job, not this cue's.)
  *
  * A gate whose child has no `SubagentEntry` is NOT counted — see `childGatesOf`
  * for why an unknown parent owns no gate.
  *
  * MEMOISED on the three store references, like `useChildGates` (see the cost
  * sentence there). This one is the hottest of the gate derivations rather than
- * the widest-scoped: `useHasPendingRequest` calls it, and its three callers are
+ * the widest-scoped: `useHasPendingRequest` calls it, and that hook's two
+ * callers are
  * `ChatStream` — which re-renders on every streamed token and every composer
- * keystroke — plus the chrome bar's two pane toggles. Unmemoised, that was
+ * keystroke — and the New Task modal. (Its caller list used to run to three,
+ * the chrome bar's two pane toggles being the other; ADR 0094 retired those
+ * toggles along with the panes' collapsed state.) Unmemoised, that was
  * a `ChildGate` allocation per gate plus a sort per render, for an answer that
  * only moves when one of the three maps is replaced. `useMemo` is a hint React
  * may in principle discard, so nothing reads this number as correctness — it is

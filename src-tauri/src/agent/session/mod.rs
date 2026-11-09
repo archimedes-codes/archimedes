@@ -60,12 +60,18 @@ use crate::types::{ContextUsage, SessionInfo};
 // wiring live in the child module, which sees this module's private items
 // (`driver.db`, `sink`, the `sessions` per-session map) with no widening.
 mod naming;
+// ONE symbol out of the private `naming`, for the Task-board title helper in
+// `commands/tasks.rs`. A `pub(crate) use`, not a `pub(crate) mod naming`: the
+// module stays private and the exported surface is the single function the
+// second hop (`agent/mod.rs`) needs. `cap_chars` stays private here and in
+// `naming.rs` — the Task title cap is not a reason to widen it.
+pub(crate) use naming::clean_title;
 mod router;
 
 /// The `PermissionOutcome::Selected` option ids the desktop CONSUMES.
 ///
-/// The ids are PRODUCED in `fulcrum-core` (`permission.rs` — crate-owned;
-/// `agent/mod.rs` re-exports `permission` from `fulcrum_core`) and the
+/// The ids are PRODUCED in `fulcrum-harness` (`permission.rs` — crate-owned;
+/// `agent/mod.rs` re-exports `permission` from `fulcrum_harness`) and the
 /// frontend forwards them verbatim, so the desktop cannot constrain them
 /// (`option_id: String`). These two are the only ids with desktop side
 /// effects; a desktop typo here fails
@@ -2809,7 +2815,7 @@ impl SessionManager {
 }
 
 // (T5/S4, plan Step E.3 / edge E4) `resolve_composed_model` MOVED to
-// `fulcrum_core::catalog`. It was the one crate→desktop edge that a seam would
+// `fulcrum_harness::catalog`. It was the one crate→desktop edge that a seam would
 // have been silly for: the body is `ModelKey::parse` plus a `find` over a vec,
 // with zero desktop references in it — so the function moves and the edge
 // disappears rather than being mediated. Its one harness call site is
@@ -2828,7 +2834,7 @@ impl SessionManager {
 // (Step A.3): it was `pub(crate)`, and a package boundary erases that, so the
 // crate declares it `pub`. That widens the CRATE's surface by one pure lookup;
 // the desktop's surface is unchanged, since `session` is a private `mod`.
-pub use fulcrum_core::catalog::resolve_composed_model;
+pub use fulcrum_harness::catalog::resolve_composed_model;
 
 /// The remembered thinking level for a model (ADR 0015): the map entry,
 /// `Some` only when the model's `thinking_levels` is non-empty AND

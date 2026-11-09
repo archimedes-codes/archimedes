@@ -311,14 +311,15 @@ Subagents live under the "Delegating" tool card in the main chat view
 (`SubagentDelegatingCard` — one row per subagent: status icon + agent name +
 task + a live one-line activity preview; open by default); clicking a row
 opens a dedicated right-side transcript SHEET (`SubagentDetailHost`). The
-sidebar Subagents panel is removed (`SidePane` is a todo-board surface: its
-auto open is driven by todo boards only — a Subagent session opens it through
-its own **board**, on the same 0 → >0 edge as the parent's list, while its
-merely STARTING with no board yet opens nothing, which a test pins — and the
-pane mounts NO gate host of any kind). That surface opens itself and never
-closes itself (ADR 0042): a board completing leaves the frame open, the Todos
-section gone with it (data-gated) and the session title still there — only the
-user's own toggle collapses the pane. Grouping is session-level: every
+sidebar Subagents panel is removed (`SidePane` is a todo-board surface: it holds
+no auto-open rule at all any more — ADR 0094 deleted it with the pane's
+collapsed state — so a **Subagent session** earns its block through its own
+**board** and nothing else, merely STARTING with no board yet rendering nothing,
+which a test still pins — and the pane mounts NO gate host of any kind). That
+surface is PERMANENT (ADR 0094, superseding ADR 0042): it never opens itself and
+it has nothing to close, so a board completing leaves the frame open, the Todos
+section gone with it (data-gated) and the session title still there — and no
+toggle collapses it, because no toggle exists. Grouping is session-level: every
 `SubagentDelegatingCard` in a session lists all of that session's subagent
 rows (the `subagent-session-started` payload carries no `toolCallId`), while
 the activity preview resolves only from each card's own `rawOutput.details`.
@@ -372,25 +373,31 @@ active Session's board FIRST, then one labelled block per child:
   `session-closed`
   ever names a child id and `src-tauri/src/` emits no `todos_clear` frame, so
   that handler is the ONLY thing that reclaims a child's slice.
-- **Collapsed, the rail draws ONE MARK PER BOARD** (`TodoRail`, the **Todo
-  rail** in `CONTEXT.md`): the parent's mark first (only when it HAS a list),
-  then one per running child THAT HAS A BOARD, in board order — the rail
-  iterates `boards`, not the subagent entries, so a running child whose list
-  has no open item draws no mark (rule 4 of `todoBoardsOf`). A mark's state is
-  its whole board's — `active` if ANY item is `in_progress`, `done` if every
-  item is `completed`, else `waiting`. It replaced one mark per item, which a
-  long list turned into an ungroupable strip of dots.
-- **The frame opens itself on any open board and never collapses itself**
-  (`docs/decisions/0042-the-side-pane-opens-itself-but-never-closes-itself.md`):
-  the trigger is the 0 → >0 edge of `useBoardOpenCount` — the parent's open
-  items PLUS every running child's, the SAME derivation the section's own gate
-  reads, so the frame can never open on a section that renders nothing — and a
-  CHILD-ONLY board opens it with the parent having written no list at all. A
-  board finishing leaves the frame open with the section gone; the pane's own
-  toggle is the only thing that collapses it. A SESSION SWITCH is NOT an edge:
-  the edge ref is re-baselined onto the session the user landed on, because
-  "has an open board" is per-Session while the collapsed flag is app-global
-  (pinned in `src/components/SidePane.test.tsx`).
+- **The Side pane is PERMANENT, so the checklist has exactly one home** (ADR
+  0094, superseding ADR 0042): the frame is always mounted at its own width and
+  nothing hides it, so there is no second readout to keep in step and no
+  collapsed state to keep honest. What is data-gated is the SECTION, never the
+  frame: the checklist renders while SOME list has an open item — the parent's
+  or a running child's — and the section simply disappears when every list
+  completes, with the session title and the **session config block** still
+  there. A board finishing therefore leaves the checklist gone and the frame
+  standing, which is the outcome ADR 0042 bought at the price of a permanently
+  open empty frame; ADR 0094 pays nothing for it, because the frame was never
+  going to close. (The rail that used to draw one mark per board for a collapsed
+  pane is deleted with the pane's collapsed state — see `CONTEXT.md`'s retired
+  **Checklist rail** entry, which records why the word "rail" leaves the
+  vocabulary entirely: it named both the sliver and the readout inside it, and
+  both meanings die here.)
+- **The frame never opens or closes itself, because it has nothing to open or
+  close into** (ADR 0094, superseding ADR 0042): the auto-open effect, its edge
+  ref, and the per-Session and per-hydration re-baseline refs it needed are all
+  deleted, along with the collapsed flag they wrote. ADR 0042's rule — a board
+  finishing leaves the frame open with the section gone — still describes what
+  the user sees, and now nothing has to enforce it: the frame is permanent, the
+  section is data-gated, and a SESSION SWITCH is not an edge for anything
+  because there is no edge to judge. The open-item derivation the section gates
+  itself on is unchanged and still lives inside `ChecklistPanel`, so the frame
+  cannot disagree with the section it hosts.
 
 The click-through is deliberately asymmetric: the sheet is a TRANSCRIPT, and
 `SubagentTranscript` (inside `SubagentDetailHost`) renders the child's

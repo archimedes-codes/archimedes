@@ -12,7 +12,7 @@ function classOf(el: Element): string {
 }
 
 /** All four states, in one render — the file's premise is that ONE component
- * draws all of them, in all three places that show a session's state. */
+ * draws all of them, at every size a placing surface picks. */
 function all() {
   const { container } = render(
     <div>
@@ -29,12 +29,16 @@ function all() {
 }
 
 /**
- * The ONE session-state glyph, drawn in three places: the open sidebar row's
- * leading slot, the collapsed rail's column of marks, and the tab. Before it
- * existed the rail had its own dot column and the row had a spinner-plus-text-
- * pill, so the two views of the same fact could (and did) diverge — and the
- * IDLE state had no glyph at all in the open row, which is why the dot
- * vanished when the sidebar was expanded.
+ * The ONE session-state glyph, drawn by two surfaces: the sidebar row's leading
+ * slot (`SpacesList`, 16px) and the chrome bar's tab (`SpaceTabs`, 14px). Before
+ * it existed each surface owned its own rendering, so two views of the same fact
+ * could (and did) diverge — and the IDLE state had no glyph at all in the row,
+ * which is why the dot was missing there.
+ *
+ * The cases below that pass a `size` NO production caller uses (10, 12) are not
+ * tests of a deleted surface: they pin the component's own contract — that the
+ * stroke compensation and the px sizing hold at any box the caller picks, which
+ * is what makes the 14px tab safe.
  */
 describe("SessionStatusMark (one glyph for one state, wherever it is drawn)", () => {
   it("draws the spinner for a running session", () => {
@@ -47,11 +51,11 @@ describe("SessionStatusMark (one glyph for one state, wherever it is drawn)", ()
   it("draws a QUESTION MARK for a waiting session, in the attention colour", () => {
     const { slot } = all();
     const wait = slot("waiting");
-    // The glyph is an icon, not a dot — it must read as "?" at 10px.
+    // The glyph is an icon, not a dot — it must read as "?" at the small end.
     expect(wait.getAttribute("data-dot")).toBe("waiting");
     expect(wait.tagName).toBe("svg");
-    // The app's attention ink (the same token the rail's dot, the todo board's
-    // `◉` and the subagent icon use), so "blocked on you" still outranks
+    // The app's attention ink (the same token the todo board's `◉` and the
+    // subagent icon use), so "blocked on you" still outranks
     // "working" once the filled dot is gone.
     expect(classOf(wait)).toContain("text-warning");
     // And it is NOT the spinner: waiting outranks running, so the two glyphs
@@ -64,17 +68,19 @@ describe("SessionStatusMark (one glyph for one state, wherever it is drawn)", ()
     expect(screen.getByRole("img", { name: /waiting/i })).toBeTruthy();
   });
 
-  it("keeps the ? legible at RAIL size (the stroke does not shrink with the box)", () => {
+  it("keeps the ? legible at the SMALL end of the size range (the stroke does not shrink with the box)", () => {
     const { container, rerender } = render(<SessionStatusMark status="waiting" size={16} />);
     const rowStroke = container
       .firstElementChild!.getAttribute("stroke-width")!;
     rerender(<SessionStatusMark status="waiting" size={10} />);
-    const railStroke = container
+    const smallStroke = container
       .firstElementChild!.getAttribute("stroke-width")!;
     // A 10px lucide icon would draw 2 × 10/24 ≈ 0.83px — a hairline, where the
-    // 10px filled dot the rail used to draw was never one.
-    expect(Number(railStroke)).toBeGreaterThan(Number(rowStroke));
-    expect((Number(railStroke) * 10) / 24).toBeGreaterThanOrEqual(1.2);
+    // filled dot this glyph replaced was never one. 10 is below both production
+    // sizes (the row's 16, the tab's 14) on purpose: the smaller the box, the
+    // harder the compensation has to work, so it is the case that fails first.
+    expect(Number(smallStroke)).toBeGreaterThan(Number(rowStroke));
+    expect((Number(smallStroke) * 10) / 24).toBeGreaterThanOrEqual(1.2);
   });
 
   it("goes SILENT with announce={false}, for a surface that names the state itself", () => {
@@ -96,9 +102,9 @@ describe("SessionStatusMark (one glyph for one state, wherever it is drawn)", ()
     const stored = slot("stored");
     expect(live.getAttribute("data-dot")).toBe("live");
     expect(stored.getAttribute("data-dot")).toBe("stored");
-    // The idle cue the user could see in the rail and NOT in the open list: a
-    // live session's own ring, so "this session exists and is idle" is visible
-    // in both sidebar states.
+    // The idle cue that once had no glyph in the row at all: a live session's
+    // own ring, so "this session exists and is idle" is visible in BOTH placing
+    // surfaces, at both sizes.
     expect(classOf(live)).toContain("rounded-full");
     expect(classOf(live)).toContain("border-2");
     // Stored is one step dimmer in BOTH axes — a thinner ring and the quieter ink.
@@ -106,7 +112,7 @@ describe("SessionStatusMark (one glyph for one state, wherever it is drawn)", ()
     expect(classOf(stored)).not.toContain("border-2");
   });
 
-  it("takes the brighter ink for the ACTIVE session (the rail has no room for a fill)", () => {
+  it("takes the brighter ink for the ACTIVE session (a mark this small has no room for a fill)", () => {
     const { container } = render(
       <div>
         <span data-slot="on">
@@ -177,37 +183,39 @@ describe("SessionStatusMark (one glyph for one state, wherever it is drawn)", ()
     ).toBe("16px");
   });
 
-  it("adds NO slot when the ring is the size of the box (the rail, the tab)", () => {
-    // The collapsed rail sizes its dot by the strip's width and passes no
-    // `dotSize`; its 10px mark has always been legible and this change is not
-    // about it. The wrapper exists only to reconcile two different sizes — with
-    // one size it would be a pointless node in the rail's 10px strip.
+  it("adds NO slot when the ring is the size of the box (the tab, any single-size caller)", () => {
+    // The tab passes one size and no `dotSize`, so the glyph IS the box. The
+    // wrapper exists only to reconcile two DIFFERENT sizes — with one size it
+    // would be a pointless node, so this pins the extra node staying away.
     const { container } = render(
-      <span data-slot="rail">
+      <span data-slot="single">
         <SessionStatusMark status="live" size={10} />
       </span>,
     );
-    const el = container.querySelector("[data-slot='rail']")!
+    const el = container.querySelector("[data-slot='single']")!
       .firstElementChild as HTMLElement;
     expect(el.style.width).toBe("10px");
     expect(el.getAttribute("data-dot")).toBe("live");
     expect(el.firstElementChild).toBeNull();
   });
 
-  it("sizes the glyph in px, so one component fills a 10px rail slot and a 16px row slot", () => {
+  it("sizes the glyph in px, so one component fills ANY slot the caller names (10px here, 12px there)", () => {
+    // Two boxes, one component, no Tailwind class in sight: the caller's number
+    // lands on the inline style untouched, which is what lets the row ask for 16
+    // and the tab for 14 from the same code.
     const { container } = render(
       <div>
-        <span data-slot="rail">
+        <span data-slot="small">
           <SessionStatusMark status="live" size={10} />
         </span>
-        <span data-slot="row">
+        <span data-slot="mid">
           <SessionStatusMark status="live" size={12} />
         </span>
       </div>,
     );
     for (const [slot, px] of [
-      ["rail", "10px"],
-      ["row", "12px"],
+      ["small", "10px"],
+      ["mid", "12px"],
     ] as const) {
       const el = container.querySelector(`[data-slot='${slot}']`)!
         .firstElementChild as HTMLElement;

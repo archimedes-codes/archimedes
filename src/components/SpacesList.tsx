@@ -1,17 +1,13 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArchiveIcon,
   ArchiveXIcon,
   BotIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  ListTodoIcon,
   PlusIcon,
+  SettingsIcon,
   SparklesIcon,
   SquareIcon,
   Trash2Icon,
@@ -26,12 +22,6 @@ import { basenameOfPath } from "../lib/paths";
 import { sessionFieldOf } from "../lib/sessionLookup";
 import { titleFor } from "../lib/sessionTitle";
 import { relativeTimeFor } from "../lib/sessionTime";
-import {
-  getLeftPaneCollapsed,
-  LEFT_PANE_RAIL,
-  LEFT_PANE_WIDTH,
-  subscribeLeftPane,
-} from "../lib/leftPaneState";
 import { archivedInSpace, useSessions, spaceViewFor } from "../store/sessions";
 import {
   useDragReorder,
@@ -39,7 +29,6 @@ import {
   type DropEdge,
 } from "../hooks/useDragReorder";
 import { useSessionStatus } from "../hooks/useSessionStatus";
-import { useSessionStatuses } from "../hooks/useSessionStatus";
 import { useSkillCatalog } from "../hooks/useSkillCatalog";
 import { useAgentCatalog } from "../hooks/useAgentCatalog";
 // The Agents modal's write chain (D2): the optimistic publish, the serialized
@@ -49,7 +38,6 @@ import { useAgentOverridesWrites } from "../hooks/useAgentOverridesWrites";
 import SkillsDialog from "./SkillsDialog";
 import AgentsDialog from "./AgentsDialog";
 import DeleteSessionDialog from "./DeleteSessionDialog";
-import SessionRail, { type SessionRailAction } from "./SessionRail";
 import { SessionStatusMark } from "./SessionStatusMark";
 import { SessionListRow } from "./SessionListRow";
 import { RowButton } from "./RowButton";
@@ -57,14 +45,29 @@ import { EmptyListLine } from "./EmptyListLine";
 import { cn } from "./lib/utils";
 import { Button } from "./ui/button";
 
+/**
+ * THE SIDEBAR'S WIDTH — the pane owns it, because the pane is what wears it.
+ *
+ * The ONE reader outside this file is `App`: the chrome bar's logo segment (the
+ * drag region) is the sidebar's width, so the tabs start 1px right of the
+ * sidebar's right edge, where the center column begins. That is why this is a
+ * shared exported constant and not a local `w-[260px]`: the segment and the
+ * pane must be the SAME number, and two literals spelling 260 would drift the
+ * moment one of them changed. (`App.test.tsx`'s
+ * `the tabs start 1px right of the sidebar's right edge` pins the geometry that
+ * depends on it — no left padding on the bar itself, so the segment's width IS
+ * the tabs' offset.)
+ */
+export const LEFT_PANE_WIDTH = 260;
+
 function spaceNameFor(cwd: string, spaces: { path: string }[]): string {
   const match = spaces.find((s) => s.path === cwd);
   return match ? basenameOfPath(match.path) : basenameOfPath(cwd);
 }
 
 /**
- * THE SIDEBAR'S TWO LABELLED COMMAND BUTTONS (Skills, Agents) — one ghost
- * `<Button>` recipe, spelled ONCE because both drew the identical box. (The two
+ * THE SIDEBAR'S FOUR LABELLED COMMAND BUTTONS (Skills, Agents, Settings, Tasks) — one ghost
+ * `<Button>` recipe, spelled ONCE because all four draw the identical box. (The two
  * that used to ride this recipe — `Open Space` and `New Session` — are gone: the
  * first left the sidebar for the chrome bar, the second is now the `+` in the
  * `Sessions` header, which is an icon button and does NOT use this recipe.)
@@ -141,15 +144,19 @@ const SIDEBAR_COMMAND_BUTTON =
   "border-0 justify-start transition-none whitespace-normal shrink [user-select:auto]";
 
 /**
- * The box both sidebar command buttons drew, VERBATIM, before C7 routed
+ * The box the sidebar command buttons drew, VERBATIM, before C7 routed
  * them through `<Button>`. It is the SECOND argument to `cn()` at every one of
- * the two sites, so it wins every tailwind-merge group it spells against
+ * the four sites, so it wins every tailwind-merge group it spells against
  * `Button`'s base and the `default` size — that ordering is what makes the swap
  * paint-neutral, and it is why this string is kept whole rather than folded
  * into the constant above. `hover:bg-surface-hover` is one of them: the ghost
  * arm's `hover:bg-hover` is a DIFFERENT colour in three palettes (zai-dark and
  * Dracula read 5% where `--color-surface-hover` reads 10%), so letting the arm
  * win that group would repaint the hover fill.
+ *
+ * `h-8 w-full` is ALSO why the two view doors can wear this and not the chrome
+ * grammar: `chromeButton.test.ts`'s source gate reserves
+ * `h-7 w-7 items-center justify-center` for `chromeButton.ts` alone.
  */
 const PANE_COMMAND_ROW =
   "flex h-8 w-full items-center gap-2 rounded-lg px-2 text-ui-base hover:bg-surface-hover";
@@ -197,7 +204,8 @@ const PANE_COMMAND_ROW =
  *    `forced-colors`;
  *  - `disabled:*` / `aria-invalid:*` / `aria-expanded:*` — none of the four is
  *    ever disabled, and nothing sets `aria-invalid` or `aria-expanded` on it
- *    (the `aria-pressed` pane toggles in `ChromeControls` do; these do not);
+ *    (the two view doors in this pane's command strip do — Settings and Tasks;
+ *     these do not);
  *  - `text-ui-base/relaxed` — 14px/1.625 declared where the button previously
  *    inherited the UA's 16px (this app never sets a root `font-size`; it sizes
  *    text only through `--ui-font-size` and the `text-ui-*` utilities, and
@@ -228,17 +236,53 @@ const ROW_HOVER_ACTION = "border-0 transition-none shrink";
 const SESSION_ROW_ACTION_ROW =
   "hidden size-6 items-center justify-center rounded-md group-hover:flex hover:bg-surface-hover";
 
-/** The rail's ids while NO **Space** is selected. A module-level constant rather
+/** The row ids while NO **Space** is selected. A module-level constant rather
  *  than an inline `?? []`, so the array's IDENTITY is stable across renders in
- *  that case — see `railIds`. */
+ *  that case — see `rowIds`. */
 const NO_SESSION_IDS: string[] = [];
 
 
-export default function SpacesList() {
-  // No `onOpenSettings` prop any more: the Settings gear moved to the chrome
-  // bar's control cluster (`ChromeControls`), so this pane holds no route to
-  // the settings page. The pane used to own that door — and the collapse toggle
-  // beside it — which is why the prop existed.
+export default function SpacesList({
+  onOpenBoard,
+  onOpenSettings,
+  onReturnToWorkspace,
+  currentView = "workspace",
+}: {
+  /** Open the **Task board** (`App`'s `"board"` view). OPTIONAL, and the optionality
+   *  is load-bearing rather than convenient: the overwhelming majority of this pane's
+   *  render sites in its two test files call bare `<SpacesList />` (`grep -rn
+   *  'render(<SpacesList' src | grep -c 'SpacesList />'`, re-countable — it is a
+   *  property of the test list, not a constant), and a required prop would break every
+   *  one of them for a prop only `App` can answer. Absent means the button is a NO-OP
+   *  rather than a crash.
+   *
+   *  The `= {}` default is what keeps those bare call sites legal.
+   *
+   *  THE THREE PROPS BELOW SHARE THAT RULE, for the same reason: this pane's command
+   *  strip is the app's view switcher now, and only `App` knows which view is up. */
+  onOpenBoard?: () => void;
+  /** Open the **Settings** view. The door that used to sit in the chrome bar's
+   *  `ChromeControls` (deleted) — the strip is its only home, so this pane holds the
+   *  app's ONE route to the settings page. */
+  onOpenSettings?: () => void;
+  /** Leave the current view for the workspace. THE TOGGLE-OFF HALF of both view
+   *  doors: clicking the door that is already pressed is how you exit Settings or
+   *  the **Task board**, and a **Session** row click calls it too. Together those
+   *  two routes give every view two exits (N1), so no view is a dead end and the
+   *  pane needs no control of its own to get home. */
+  onReturnToWorkspace?: () => void;
+  /** Which view `App` is showing, so the two view doors can render pressed and
+   *  toggle off. Defaults to `"workspace"` — the state a bare render is in.
+   *
+   *  NOT `activeView`: that name is already this component's local for the ACTIVE
+   *  **Space**'s folder view (see below), which feeds `rowIds`. */
+  currentView?: "workspace" | "settings" | "board";
+} = {}) {
+  // THE STRIP IS THE VIEW SWITCHER. The Settings door moved here from the chrome
+  // bar's control cluster (`ChromeControls`, deleted): the pane is permanent across
+  // all three views since ADR 0094, so the door that opens a view can also be the
+  // door that closes it, and the top-right of the window is left to the window
+  // controls alone.
   const spaces = useSessions((s) => s.spaces);
   const sessions = useSessions((s) => s.sessions);
   const historySessions = useSessions((s) => s.historySessions);
@@ -256,8 +300,8 @@ export default function SpacesList() {
   const deleteSession = useSessions((s) => s.deleteSession);
   // THE new-session command (Task 2's store action). This pane no longer decides
   // what "no Space selected" means — the command does, and it routes that case to
-  // the Open Space dialog itself. That is why every new-session surface below
-  // (the `Sessions` header's `+`, the rail's `+`, and the root ⌘N
+  // the Open Space dialog itself. That is why every new-session surface
+  // (the `Sessions` header's `+` and the root ⌘N
   // chord) is now the same one call and cannot drift apart.
   const startSessionInActiveSpace = useSessions(
     (s) => s.startSessionInActiveSpace,
@@ -316,15 +360,16 @@ export default function SpacesList() {
   // so the pane reads NOTHING about activity for position. A ROW still
   // subscribes to its own transcript for its time label; that is per-row and
   // does not move a slot.
-  // The rail's ids are the ROWS' ids — the same array, not a second
-  // construction of the same order (ADR 0075; the rail's contract is "the Nth
-  // mark is the Nth row", and two derivations of one order is two things that
-  // can drift). No `useMemo`: this is a field read, and the module-level empty
-  // array keeps the input identity stable while no Space is selected.
-  const railIds = activeView?.sessionIds ?? NO_SESSION_IDS;
-  // THE DRAG, over that SAME array. `railIds` IS `activeView.sessionIds` (one
-  // construction of the Manual order — see the note above), so the gesture, the
-  // rows and the collapsed rail all read ONE sequence and cannot disagree about
+  // The ROW ids — a field read off the active view, not a second construction of
+  // the same order (ADR 0075). The single-construction rule is what keeps the
+  // DRAG and the ROWS in positional agreement: "the Nth draggable is the Nth
+  // row", and two derivations of one order is two things that can drift. No
+  // `useMemo`: this is a field read, and the module-level empty array keeps the
+  // input identity stable while no Space is selected.
+  const rowIds = activeView?.sessionIds ?? NO_SESSION_IDS;
+  // THE DRAG, over that SAME array. `rowIds` IS `activeView.sessionIds` (one
+  // construction of the Manual order — see the note above), so the gesture and
+  // the rows read ONE sequence and cannot disagree about
   // which row is which. The pane holds NO order state of its own: the write is
   // the store's optimistic `reorderSessions`, whose own rollback restores the
   // slice it captured before the write (ADR 0075's Write path), and the gesture
@@ -335,12 +380,7 @@ export default function SpacesList() {
     (ids: string[]) => void reorderSessions(ids),
     [reorderSessions],
   );
-  const drag = useDragReorder({ ids: railIds, onReorder: handleReorder });
-  // The rail's statuses, derived by the SAME rule the rows use (one
-  // subscription for the whole list — see `useSessionStatuses`). Read
-  // unconditionally: the rail only paints while collapsed, but the ids are the
-  // active view's either way and a hook cannot be conditional.
-  const statuses = useSessionStatuses(railIds);
+  const drag = useDragReorder({ ids: rowIds, onReorder: handleReorder });
 
   // The active space's path for the skill catalog (a Session's `cwd` IS
   // the Space's folder — CONTEXT.md): the SELECTED space (the tab), or
@@ -406,20 +446,10 @@ export default function SpacesList() {
       )
     : "";
 
-  // The shared collapsed flag (the module seeds it from localStorage at
-  // import). This component only READS it, for the frame's width — the
-  // `LEFT_PANE_RAIL` sliver while collapsed, NOT 0. The WRITE lives in the
-  // chrome bar's `ChromeControls`: the pane's collapse toggle moved to the top
-  // of the window next to the window controls, so this pane no longer owns a
-  // control that changes its own width.
-  const collapsed = useSyncExternalStore(
-    subscribeLeftPane,
-    getLeftPaneCollapsed,
-  );
-
   // The ONE new-session closure, STABLE because `startSessionInActiveSpace` is a
-  // store action (stable across renders). The header `+` and the rail's `+` both
-  // reference THIS closure, so the two renderings of the command cannot drift
+  // store action (stable across renders) — the `Sessions` header's `+` calls it,
+  // and so does the root ⌘N chord's handler, so the two renderings of the
+  // command cannot drift
   // apart. It replaces the old pair, where `useStartNewConversation` returned a
   // FRESH object every render and so re-subscribed the pane's keydown listener on
   // every render; the listener is gone (it lives at `App` root now) and so is the
@@ -430,41 +460,34 @@ export default function SpacesList() {
     [startSessionInActiveSpace],
   );
 
-  // The collapsed rail's command strip. These are the SAME handlers the open
-  // pane's controls call — one closure each, referenced from both, so the two
-  // renderings of a command cannot drift apart. The icons are the open pane's
-  // icons verbatim (the rail is the same control at the same size, not a new
-  // control), and the labels are carried as `aria-label` + `title`
-  // because a 40px column has no room for text.
+  // THE ROW CLICK — open the Session, then leave whatever view is up.
   //
-  // Three commands, all at the HEAD, because they are the pane's own buttons. The
-  // head entry is the twin of the `Sessions` header's `+` (it used to be the twin
-  // of a labelled `New Session` ROW, and before that of an `Open Space` row too —
-  // both rows are gone, so the rail lost those twins).
-  // `Settings` used to ride here as a second strip at the rail's BOTTOM — the
-  // gear lived in the footer while open, so the rail kept it at the same height
-  // on collapse. The gear now lives in the chrome bar for both states, so the
-  // tail strip is gone and with it the rail's `mt-auto` tail block.
-  const railActions: SessionRailAction[] = [
-    {
-      id: "new",
-      label: "New Session",
-      icon: <PlusIcon className="size-4" />,
-      onClick: handleNewSession,
+  // This is the second exit every view has (N1) and it REVERSES ADR 0094's D8,
+  // which kept Settings open across a row click. That was coherent while the pane
+  // merely COEXISTED with Settings; once the strip IS the view switcher, "show me
+  // this Session" necessarily includes leaving the page that is covering the
+  // transcript — a row that opened a Session you could not see was the bug D8
+  // traded away.
+  //
+  // The order mirrors the recipe `SessionsSection`'s Reopen already documents
+  // (`addSpace → openSession → onReturnToWorkspace()`): open, then leave. Both
+  // are synchronous store/`App` state updates, so the order is for consistency
+  // with that documented recipe and NOT for correctness — either order lands on
+  // the same paint.
+  //
+  // One wrapper, both row types: the live/stored rows and the **Archived** section
+  // take it as `onOpen`, so the exit cannot exist on one and be missing from the
+  // other. The hover actions inside a row (`Stop` / `Archive` / …) call their own
+  // commands and never route through here, which is right — archiving a Session is
+  // not a request to change the view.
+  const openSessionAndReturn = useCallback(
+    (sessionId: string) => {
+      openSession(sessionId);
+      onReturnToWorkspace?.();
     },
-    {
-      id: "skills",
-      label: "Skills",
-      icon: <SparklesIcon className="size-4" />,
-      onClick: () => setSkillsOpen(true),
-    },
-    {
-      id: "agents",
-      label: "Agents",
-      icon: <BotIcon className="size-4" />,
-      onClick: () => setAgentsOpen(true),
-    },
-  ];
+    [openSession, onReturnToWorkspace],
+  );
+
 
   // The ⌘N / ⌘O chord lives in `useAppShortcuts`, mounted at `App` root — NOT
   // here. It sat in this component while, and this pane is inside the
@@ -473,34 +496,28 @@ export default function SpacesList() {
   // chord from that view, and `useAppShortcuts.test.ts` owns the guard cases.
 
   return (
-    // Collapse = `LEFT_PANE_RAIL` + `overflow: hidden` (a SLIVER, not 0 — the
-    // content stays mounted, clipped; the `fixed` dialogs escape clipping).
-    // The sliver exists so the collapsed rail has somewhere to draw: the
-    // session marks and the three command icons (`SessionRail`). The pane's
-    // collapse toggle is NOT here any more — it lives in the chrome bar's
-    // `ChromeControls` beside the window controls, in both states — which is
-    // also why the footer row this pane used to end with is gone.
+    // The pane is PERMANENT: `LEFT_PANE_WIDTH`, always. It used to be able to
+    // collapse to a 40px sliver that kept the session marks and the command
+    // icons drawing; that collapsed state is retired (the panes are permanent
+    // surfaces), so the frame is one width and the `overflow: hidden`
+    // is only what keeps a long label from pushing the center column. The pane's
+    // collapse toggle is NOT here — there is no such control anywhere any more —
+    // which is also why the footer row this pane used to end with is gone. The
+    // app's ONE control (the Settings door) IS in here, as the second of the four
+    // commands in the strip at the top.
     <aside
-      style={{ width: collapsed ? LEFT_PANE_RAIL : LEFT_PANE_WIDTH }}
+      style={{ width: LEFT_PANE_WIDTH }}
       className="relative flex shrink-0 flex-col overflow-hidden bg-frame"
     >
       {/* THE CONTENT REGION — the action buttons, the `Sessions` header and the
-          list. `invisible` WHILE COLLAPSED is load-bearing, and it fixes two
-          defects at once. The collapse is width + `overflow: hidden` with the
-          content kept MOUNTED (the `fixed` dialogs escape clipping, and the
-          list's local state — the Archived section's open flag, the scroll
-          position — survives), so clipping alone let the content paint INTO the
-          40px sliver: the buttons wrapped to one word per line
-          ("O / Sp / Se / Sk"), the `Sessions` header became "Sess", and the
-          scroller grew a SCROLLBAR in a 40px column. `visibility: hidden` takes
-          the text AND ITS SCROLLBAR out of the paint while leaving the layout
-          untouched — `hidden` would unlayout it. It is applied to the WRAPPER,
-          not the scroller, because the buttons and the header are siblings of
-          the scroller and bled just the same. The session marks below are what
-          shows instead. */}
-      <div
-        className={cn("flex min-h-0 flex-1 flex-col", collapsed && "invisible")}
-      >
+          list. It used to carry an `invisible` class while the pane was collapsed,
+          and that class was load-bearing THEN: clipping alone let the content paint
+          INTO the 40px sliver (the buttons wrapped to one word per line, the
+          `Sessions` header became "Sess", and the scroller grew a SCROLLBAR in a
+          40px column). Nothing clips now, so nothing hides — the wrapper stays a
+          plain flex column, and it survives as an element because the layout below
+          (a `flex-1` scroller inside a `flex-1` column) needs the nesting. */}
+      <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-col gap-2 p-3">
         <Button
           type="button"
@@ -525,12 +542,84 @@ export default function SpacesList() {
           <BotIcon className="size-4" />
           <span className="flex-1 text-left">Agents</span>
         </Button>
+        {/* The Settings door — the app's ONLY app control, and the reason this strip
+            is the view switcher rather than a row of commands. It used to be a gear
+            at the far RIGHT of the chrome bar (`ChromeControls`, deleted): the pane
+            is permanent across all three views (ADR 0094), so the door lives with
+            the other doors, and the bar's top-right belongs to the window manager
+            alone.
+
+            BETWEEN **Agents** and **Tasks**, so the two VIEW doors stay adjacent and
+            the two MODAL commands stay adjacent. That split is the whole design: a
+            modal is not a location, so Skills and Agents raise a dialog and carry NO
+            `aria-pressed`; Settings and Tasks name a view, so they say which one is
+            showing and toggle off when clicked again. Two exits per view (N1) — its
+            own door, or any **Session** row — so no view is a dead end. That is what
+            makes the Settings page's own `Back` redundant (it is retired);
+            this pane owns no exit control of its own.
+
+            NOT `CHROME_BUTTON`, and that is a gate, not a preference:
+            `chromeButton.test.ts`'s source gate requires `chromeButton.ts` to be the
+            ONLY production file under `src/components/` carrying the chrome-bar
+            geometry. `PANE_COMMAND_ROW` is `h-8 w-full` — the sidebar's box. */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="default"
+          aria-pressed={currentView === "settings"}
+          onClick={() =>
+            currentView === "settings"
+              ? onReturnToWorkspace?.()
+              : onOpenSettings?.()
+          }
+          className={cn(
+            SIDEBAR_COMMAND_BUTTON,
+            PANE_COMMAND_ROW,
+            // "Pressed" is ONE idiom in the pane: the same fill the active Session
+            // row wears. The row's `hover:bg-surface-hover` rides along (a different
+            // tailwind-merge group, so `cn()` keeps both) — a pressed door still
+            // answers the pointer.
+            currentView === "settings" && "bg-selected",
+          )}
+        >
+          <SettingsIcon className="size-4" />
+          <span className="flex-1 text-left">Settings</span>
+        </Button>
+        {/* The Task board's door (spec §3: it joined the labelled commands after
+            **Agents**, and Settings joined between them, so the two view doors stay
+            adjacent). It is a COMMAND button and NOT a section header like
+            `Sessions`, because a board is one surface rather than a list of rows —
+            so it takes the shared recipe verbatim and owns no chevron, no count and
+            no list. `ListTodoIcon` is lucide's kanban glyph for a list of work
+            items; the label is the word a person says.
+
+            The same two halves as **Settings**: pressed while the board is up, and
+            clicking the pressed door leaves it. The guard is on the door's OWN view
+            and not on `currentView === "workspace"`, so board → Settings is one
+            click rather than a trip back through the workspace. */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="default"
+          aria-pressed={currentView === "board"}
+          onClick={() =>
+            currentView === "board" ? onReturnToWorkspace?.() : onOpenBoard?.()
+          }
+          className={cn(
+            SIDEBAR_COMMAND_BUTTON,
+            PANE_COMMAND_ROW,
+            currentView === "board" && "bg-selected",
+          )}
+        >
+          <ListTodoIcon className="size-4" />
+          <span className="flex-1 text-left">Tasks</span>
+        </Button>
       </div>
       {/* The Sessions header: the label + the `New Session` `+` (right-aligned,
           next to the word `Sessions`). This replaces the `...` menu that used to
           sit here — the menu held exactly ONE item (`New Session in this Space`),
           so the affordance was a two-step gesture to reach one command. It is the
-          same store action through the same closure the rail's `+` calls, so the
+          same store action through the same closure the root ⌘N chord calls, so the
           no-Space dialog fallback comes from the store and is not re-decided here. */}
       <div className="flex items-center justify-between px-2.5 py-2">
         <span className="text-ui-base text-foreground-subtlest">Sessions</span>
@@ -545,8 +634,8 @@ export default function SpacesList() {
           <PlusIcon className="size-4" />
         </Button>
       </div>
-      {/* The list scroller (inside the content region above, which is what
-          hides it while collapsed — see the note there). */}
+      {/* The list scroller (inside the content region above — the region is the
+          flex column, this is the part that scrolls). */}
       <div className="flex-1 overflow-y-auto">
         {views.length === 0 && (
           <EmptyListLine>No spaces yet. Open a folder to get started.</EmptyListLine>
@@ -569,7 +658,16 @@ export default function SpacesList() {
             names. The target test is `drag.overId === id`, NOT `overEdge` alone —
             the hook keeps the two as separate answers precisely so a call site
             cannot paint the current edge on every row. Nothing here computes an
-            index, and nothing here sorts. */}
+            index, and nothing here sorts.
+
+            `onOpen` IS THE WRAPPER (open, then leave the view) and `active` is
+            GATED by `currentView` (N1): while a peer view's door is pressed the
+            pane is not "where you are", so no row may wear the selection fill.
+            The store's `activeSessionId` is untouched — dimming the RENDER, not
+            the fact — so toggling the door off brings the mark straight back. One
+            visible consequence, and it is intended: the row's `SessionStatusMark`
+            takes brighter ink on the active row, so its ink dims along with the
+            fill. */}
         {activeView && (
           <div className="flex flex-col gap-0.5">
             {activeView.sessionIds.map((id) => (
@@ -577,8 +675,8 @@ export default function SpacesList() {
                 key={id}
                 sessionId={id}
                 spaceName={activeView.title !== "" ? activeView.title : activeView.path}
-                active={activeSessionId === id}
-                onOpen={openSession}
+                active={currentView === "workspace" && activeSessionId === id}
+                onOpen={openSessionAndReturn}
                 drag={drag.dragProps(id)}
                 dropEdge={drag.overId === id ? drag.overEdge : null}
                 recencyMap={sessionRecency}
@@ -586,38 +684,27 @@ export default function SpacesList() {
             ))}
           </div>
         )}
+        {/* The **Archived** section reaches the same two rules through the OTHER
+            pair of sites, and deliberately not the same TECHNIQUE: its rows gate
+            on the `activeSessionId` this call site hands it (`null` while a peer
+            view is pressed — `null` is already in that prop's type union, so no
+            new prop is needed) rather than on an `active` ternary of their own,
+            and its `onOpen` is the same wrapper. The shared `activeSessionId`
+            variable is never nulled — other code reads it. */}
         <ArchivedSection
-          activeSessionId={activeSessionId}
-          onOpen={openSession}
+          activeSessionId={currentView === "workspace" ? activeSessionId : null}
+          onOpen={openSessionAndReturn}
           onDelete={setDeleteTarget}
         />
       </div>
-      {/* CLOSES the content region here, and that boundary is not cosmetic:
-          `visibility: hidden` INHERITS into `fixed` descendants, so the dialogs
-          below must sit OUTSIDE it or collapsing the pane would open a dialog
-          and see nothing. The footer's toggle is outside for the same class of
-          reason — it is the one control the sliver exists to keep. */}
+      {/* CLOSES the content region here, and that boundary is still structural:
+          the dialogs below sit OUTSIDE it. They used to have to, because this
+          region was `visibility: hidden` while the pane was collapsed and
+          visibility inherits into `fixed` descendants — an inside-mount would
+          have opened the modal invisibly. The collapse is gone, so nothing
+          inherits any more, but the dialogs stay outside: the content region is
+          the SCROLLING list's box, and a modal is not list content. */}
       </div>
-      {/* The collapsed rail's session overview: marks only, because a 40px
-          sliver can hold the SHAPE of a list and nothing else. It mirrors the
-          list it replaces (the ACTIVE space's sessions, in the SAME order —
-          the marks and the rows read ONE array, `activeView.sessionIds`, which
-          is why `railIds` is a field read and not a second derivation: two
-          constructions of that order is two things that can drift, and a rail
-          whose Nth mark is not the Nth row is worse than no rail).
-          Rendered only while collapsed. No mark for the Space itself: the tabs
-          are the space list, and the active one is lit directly above this
-          column (the strip's `pl-1` aligns them). */}
-      {collapsed && (
-        <SessionRail
-          rows={railIds.map((id) => ({
-            key: id,
-            status: statuses[id] ?? ("stored" as const),
-            active: id === activeSessionId,
-          }))}
-          actions={railActions}
-        />
-      )}
       {/* NO Open Space dialog here: the render site is `App` root (the else-branch
           of the view ternary unmounts this pane while Settings is open, so a dialog
           owned here was raiseable-but-invisible on that page). The Skills and
@@ -626,10 +713,12 @@ export default function SpacesList() {
       {skillsOpen && (
         <SkillsDialog skills={skills} onClose={() => setSkillsOpen(false)} />
       )}
-      {/* The Agents modal — OUTSIDE the content region for the same reason the
-          comment above names: that region is `visibility: hidden` while the pane
-          is collapsed, and visibility inherits into `fixed` descendants, so an
-          inside-mount would open the modal invisibly from the rail icon.
+      {/* The Agents modal — OUTSIDE the content region for the same structural
+          reason the comment above names: the content region is the list's
+          scrolling box, and this modal is not list content (it used to matter
+          twice over, because that region was `visibility: hidden` while the pane
+          was collapsed and visibility inherits into `fixed` descendants — that
+          clip is retired with the collapse).
           `settings &&` is why the button stays clickable while the dialog waits:
           with no settings document there is nothing correct to edit (the modal
           reads `agentOverrides` off it), and `null` here means the boot load has
@@ -675,7 +764,7 @@ export default function SpacesList() {
  * One session row: the leading `SessionStatusMark` (spinner = in a turn,
  * `?` = a pending permission / `ask` / sudo password or a child holding one,
  * filled ring = live and idle, dim ring = stored — the SAME glyph set the
- * collapsed rail and the tab draw), the title with a gradient-fade mask
+ * tab draw), the title with a gradient-fade mask
  * (applied to the text ITSELF — background-agnostic, so it works over
  * `bg-frame` / `bg-selected` / `bg-surface-hover` alike; the text is NOT
  * `truncate`-ellipsized, it overflows under the fade), and the right slot: the
@@ -687,11 +776,11 @@ export default function SpacesList() {
  * a running Session could not be stopped or put away without opening it first.
  *
  * THE TRAILING "Waiting" PILL IS GONE, and the `?` in the leading slot is why.
- * The pill and the rail's dot were the same fact drawn twice in two shapes,
+ * The pill and the leading mark were the same fact drawn twice in two shapes,
  * and the pill's price was the time: while a session waited you could not see
  * how long ago it had been active. One attention glyph in the slot the spinner
  * already occupies (where the eye already looks for "what is this session
- * doing") says it in both sidebar states and leaves the time alone.
+ * doing") says it and leaves the time alone.
  */
 function SessionRow({
   sessionId,
@@ -730,7 +819,7 @@ function SessionRow({
     (s) => sessionFieldOf(s, sessionId, "title") ?? null,
   );
   // The row's mark (spinner / `?` / ring) comes from the SAME rule the
-  // collapsed rail and the tab use — see `useSessionStatus`.
+  // tab uses — see `useSessionStatus`.
   const status = useSessionStatus(sessionId);
   // The SAME field `stopSession` reads at click time — so tooltip and action can
   // never disagree about WHICH field they mean. A flip between the last render
@@ -803,8 +892,8 @@ function SessionRow({
   );
 
   // The state glyph, in the slot the spinner already owned: a session that
-  // is idle now wears a RING rather than nothing, which is the cue the
-  // collapsed rail has always had and the expanded list has never shown.
+  // is idle now wears a RING rather than nothing — the cue this list used
+  // to omit, which left the idle state drawn as an absence.
   // `dotSize={8}` halves the RING alone: the three states are three different
   // amounts of ink, and the ring is the only one that reads as a solid chunk of
   // paint, so at a shared 16px the idle state outshouted the working state

@@ -15,7 +15,6 @@ import {
 } from "../lib/tauri";
 import { useSessions } from "../store/sessions";
 import { useSettings } from "../store/settings";
-import { setLeftPaneCollapsed } from "../lib/leftPaneState";
 import { clearSkillCatalogCache } from "../hooks/useSkillCatalog";
 import { clearAgentCatalogCache } from "../hooks/useAgentCatalog";
 import {
@@ -164,12 +163,12 @@ const mockedListAgentDefinitionReports = vi.mocked(listAgentDefinitionReports);
  * (stubbing that wrapper is INERT; `Dialog.Content` portals regardless, which is how
  * this test was first written and found vacuous). So in any real mount the dialog
  * node is a child of `document.body` whether the component was mounted inside the
- * `visibility: hidden` content region or beside it — `contains()` and any
- * `painted()`-style ancestor walk pass EVEN WITH THE BUG PRESENT.
+ * pane's content region or beside it — `contains()` and any ancestor walk on the
+ * dialog node pass EVEN WITH THE BUG PRESENT.
  *
  * The wrapper below renders an ordinary (unportalled) node next to the real dialog.
  * Its position in the DOM is EXACTLY where `SpacesList` mounted the component, so it
- * reports the one fact the collapse depends on. Real `AgentsDialog` is still
+ * reports the one fact the render-site pin depends on. Real `AgentsDialog` is still
  * rendered, so every other test in this file runs against the real modal; the probe
  * is a sibling `div` with no role, so it cannot disturb a `getByRole` query.
  */
@@ -226,19 +225,6 @@ vi.mock("./AgentsDialog", async () => {
     },
   };
 });
-
-/**
- * Whether a node is PAINTED — i.e. neither it nor any ancestor carries
- * `visibility: hidden` (Tailwind's `invisible`). jsdom resolves no CSS, so
- * "does this text bleed into the 40px sliver?" is read off the class list the
- * component renders, which is exactly what the collapse controls.
- */
-function painted(node: HTMLElement): boolean {
-  for (let el: HTMLElement | null = node; el; el = el.parentElement) {
-    if (el.classList.contains("invisible")) return false;
-  }
-  return true;
-}
 
 /**
  * Open the Agents modal AND wait until it holds a ROW.
@@ -408,11 +394,10 @@ beforeEach(clearSkillCatalogCache);
 // …and the same for the Agent catalog's module-level cache (the Agents modal
 // fetches through `useAgentCatalog`, keyed by the `seed()` fixture's Space).
 beforeEach(clearAgentCatalogCache);
-// The two module-scoped pane/dialog flags this file can raise, back to their
-// value at import — the shared helper (Task B4a) instead of two hand-written
-// `beforeEach` blocks. `resetModuleFlags()` restores the left pane, the side
-// pane and the Open-Space flag; the side pane is a no-op here (this component
-// never reads it) and the other two are exactly what these blocks reset. The
+// The one module-scoped flag this file can raise, back to its value at import —
+// the shared helper (Task B4a) instead of two hand-written `beforeEach` blocks.
+// `resetModuleFlags()` restores the Open-Space flag; it used to restore the two
+// pane collapse flags too, and both of those are retired with the panes. The
 // dialog flag is the one that bites: a leaked `true` auto-mounts a real Radix
 // modal in every later `render(<SpacesList/>)`, which sets
 // `document.body.style.pointerEvents = "none"` and `aria-hidden`s its siblings —
@@ -443,8 +428,8 @@ afterEach(() => {
 describe("SpacesList — the Agents modal (ADR 0066 / ADR 0068)", () => {
   // -------------------------------------------------------------------------
   // The Agents modal (ADR 0066 / ADR 0068) — the fourth command in this pane,
-  // mounted beside `Skills` with the same two boundaries: it must survive the
-  // collapse (the rail icon), and it must render OUTSIDE the content region.
+  // mounted beside `Skills` with the same boundary: it renders OUTSIDE the
+  // content region (the list's own box), not inside it.
   // -------------------------------------------------------------------------
 
   it("an_Agents_button_exists_and_opens_the_dialog", async () => {
@@ -462,62 +447,48 @@ describe("SpacesList — the Agents modal (ADR 0066 / ADR 0068)", () => {
     expect(await within(dialog).findByText("scout")).toBeTruthy();
   });
 
-  it("the_collapsed_rails_Agents_icon_opens_the_dialog_too", async () => {
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
-    render(<SpacesList />);
-    fireEvent.click(screen.getByTitle("Agents"));
-    // The dialog renders while the pane is COLLAPSED — the acceptance criterion,
-    // and the reason the render site sits outside the `invisible` content region.
-    const dialog = await screen.findByRole("dialog");
-    expect(await within(dialog).findByText("scout")).toBeTruthy();
-  });
-
   it("the dialog is mounted OUTSIDE the panes content region (structural)", async () => {
-    // The hazard is real and invisible: the content region carries
-    // `visibility: hidden` while the pane is collapsed, and `visibility` INHERITS
-    // into `fixed` descendants — a dialog mounted inside that region opens with
-    // nothing painted. The file's comment at the close of the region says exactly
-    // this about `SkillsDialog`, and the Agents dialog has the same requirement.
+    // The claim: the Agents dialog's render site is a SIBLING of the content
+    // region (the list's own box), not a descendant of it. That boundary used to
+    // be load-bearing twice over — the region carried `visibility: hidden` while
+    // the pane was collapsed, and `visibility` INHERITS into `fixed` descendants,
+    // so a dialog mounted inside opened with nothing painted. The collapse is
+    // retired, so the `visibility` hazard is gone with it and the jsdom leg that
+    // demonstrated it (`contentRegion.classList.contains("invisible")` plus a
+    // `painted()` walk) is deleted rather than faked: jsdom resolves no CSS, so a
+    // stand-in clip (a narrow width) would be unreadable here and would pin
+    // nothing. What remains is the structural claim, and it still bites: move the
+    // `{agentsOpen && settings && …}` render inside the content-region `<div>`
+    // and the containment assertion below goes red.
     //
     // WHY THE ASSERTION IS STRUCTURAL AND NOT A `visibility` TEST OF THE DIALOG.
     // `DialogContent` portals itself to `document.body` (Radix's `Dialog.Content`
     // renders an internal `Portal` — not the `DialogPortal` `ui/dialog`
     // re-exports, so stubbing THAT wrapper is inert; an ancestor walk on the real
     // dialog passed even with the dialog mounted inside the hidden region).
-    // jsdom therefore CANNOT demonstrate the `visibility` argument behaviourally on
-    // the dialog node: it is never a DOM descendant of the region in ANY
-    // configuration.
+    // jsdom therefore CANNOT demonstrate the containment question on the dialog
+    // node: it is never a DOM descendant of the region in ANY configuration.
     //
     // The `agents-mount-probe` (see the mock at the top of this file) is an
     // ordinary un-portalled node rendered at the same site as the dialog, so its
-    // PARENT reports where the component was actually mounted. The second
-    // assertion reads the same `invisible` class the collapse applies through the
-    // `painted()` helper — the structural statement of the `visibility` argument.
-    // Move the `{agentsOpen && settings && …}` render inside the content-region
-    // `<div>` and BOTH assertions go red (measured; see the commit notes).
+    // PARENT reports where the component was actually mounted.
     probeOn = true;
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
     const { container } = render(<SpacesList />);
     const pane = container.firstChild as HTMLElement;
     expect(pane.tagName).toBe("ASIDE");
-    // THE CONTENT REGION — the div that carries `invisible` while collapsed. The
-    // dialogs sit under the `<aside>` BESIDE this div, so the region (not the pane
-    // frame) is the container whose `visibility` is the hazard.
+    // THE CONTENT REGION — the div that wraps the command buttons, the `Sessions`
+    // header and the list scroller. The dialogs sit under the `<aside>` BESIDE
+    // this div, because a modal is not list content (and, before the collapse was
+    // retired, because this div was the container whose `visibility` was hidden).
     const contentRegion = pane.firstElementChild as HTMLElement;
-    expect(contentRegion.classList.contains("invisible")).toBe(true);
-    fireEvent.click(screen.getByTitle("Agents"));
+    expect(contentRegion.contains(screen.getByText("Sessions"))).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     const probe = await screen.findByTestId("agents-mount-probe");
     // The dialog ITSELF is rendered too (the probe is a sibling, not a
     // replacement) — so this cannot pass on a component that never mounted.
     expect(screen.getByRole("dialog")).toBeTruthy();
-    // The mount site is outside the hidden region…
+    // The mount site is outside the content region.
     expect(contentRegion.contains(probe)).toBe(false);
-    // …and consequently PAINTED while collapsed.
-    expect(painted(probe)).toBe(true);
   });
 
   it("the Portal relocates the dialog to document.body (why the test above needs a probe)", async () => {
@@ -527,12 +498,9 @@ describe("SpacesList — the Agents modal (ADR 0066 / ADR 0068)", () => {
     // component uses. If Radix ever stops relocating (or the app starts passing a
     // `container`), the probe above stops being the only discriminator and this
     // test says so out loud.
-    act(() => {
-      setLeftPaneCollapsed(true);
-    });
     const { container } = render(<SpacesList />);
     const pane = container.firstChild as HTMLElement;
-    fireEvent.click(screen.getByTitle("Agents"));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     const dialog = await screen.findByRole("dialog");
     expect(dialog.parentElement).toBe(document.body);
     // Which is exactly the configuration in which `pane.contains(dialog)` is

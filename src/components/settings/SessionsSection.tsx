@@ -107,9 +107,9 @@ function DetachedSessionRow({
  * `deleteSession` removes the id from all three lists.
  */
 export default function SessionsSection({
-  onBack,
+  onReturnToWorkspace,
 }: {
-  onBack: () => void;
+  onReturnToWorkspace: () => void;
 }): ReactElement {
   // Individual selectors (the `SpacesList` pattern) — one subscription per
   // slice, so an unrelated store write does not re-render this list.
@@ -193,11 +193,12 @@ export default function SessionsSection({
               onReopen={() => {
                 // `addSpace` inserts (or re-touches) the Space row and selects
                 // it; `openSession` then finds its owner and loads the
-                // transcript; `onBack` leaves Settings so the user lands on the
-                // tab they just re-opened. THIS ORDER is the whole effect.
+                // transcript; `onReturnToWorkspace` leaves Settings so the user
+                // lands on the tab they just re-opened. THIS ORDER is the whole
+                // effect.
                 addSpace(row.cwd);
                 openSession(row.sessionId);
-                onBack();
+                onReturnToWorkspace();
               }}
               onDelete={() => setDeleteTarget(row)}
             />

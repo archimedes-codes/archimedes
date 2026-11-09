@@ -2,6 +2,7 @@
 status: live
 last-verified: 2026-11-07
 verified-by: the wave-4 gate at the tip of `feature/codebase-improvement-1107` (Rust 565 lib + 15 seams tests, clippy 0 warnings, fmt clean; frontend 172 files / 3479 tests / 1 skipped; `pnpm build` clean). The alias figures are the audit's, restated with attribution — the census instrument was a throwaway under `/tmp` and was never committed, so they are NOT re-derivable from this checkout (see the census section). The Rust, IPC and testid figures name their instruments, and the Rust 565/563 and IPC 52 figures are re-runnable here. Hashes below are PRE-SQUASH and will be orphaned by the squash-merge — locate by the content signatures given, not by hash.
+re-verified: 2026-11-09 — the engine crate was renamed `fulcrum-core` → `fulcrum-harness` and re-pinned to crates.io `0.1.0`, so the `pub use` instrument below now reads `pub use fulcrum_harness` and still prints **11** / **12**, unchanged (the rename added and removed no `pub use`, so the counts re-confirm themselves); the crate-side file addresses now read `fulcrum/src/<path>.rs`; and the `cargo clean -p` method note was re-measured under the registry source. Nothing else in this record was re-run that day.
 ---
 
 # improvement-boundary-residue — close-out record
@@ -98,11 +99,11 @@ landed on this one, which is the reason the instrument is named in full below ra
 **"Five files" is the census's SCOPE, not a count of files that re-export the crate.** The five are
 `agent/mod.rs`, `agent/worker/mod.rs`, `agent/harness/mod.rs`, `agent/web.rs`,
 `agent/provider_auth/mod.rs` — the boundary the audit was asked about. A reader who greps the tree gets a
-bigger number, and should expect to: **11** files under `src-tauri/src` carry a `pub use fulcrum_core`
+bigger number, and should expect to: **11** files under `src-tauri/src` carry a `pub use fulcrum_harness`
 statement, **12** including `src-tauri/tests/fulcrum_seams.rs`. Six of those are outside the census scope
 (`storage/db.rs`, `config.rs`, `types.rs`, `agent/session/mod.rs`, `agent/harness/store.rs`,
 `agent/harness/trust.rs`) and were never measured or pruned by this task. Both counts reproduce with
-`grep -rln 'pub use fulcrum_core' --include=*.rs src-tauri/src | wc -l` (drop the `src` for the 12). **Do not
+`grep -rln 'pub use fulcrum_harness' --include=*.rs src-tauri/src | wc -l` (drop the `src` for the 12). **Do not
 build this count from `git ls-files 'src-tauri/src/**/*.rs'` — that glob does not match top-level files, so
 it silently drops `config.rs` and `types.rs` and reports 9.** The five-file figure is not reproducible by any
 command, because it is a scope decision, not a measurement.
@@ -169,8 +170,8 @@ they are recorded:
   desktop-side fact: `render.rs` did NOT move, and the crate's `worker/core.rs` carries the impl.
 - `agent/mod.rs` cited `crate::agent::fs_backend::canonicalize_lenient` and
   `crate::agent::codemode::engine::CODEMODE_MEMORY_LIMIT` as the reason its aliases exist. Neither
-  spelling exists in this checkout — they are `fulcrum_core/src/fs_backend.rs` and
-  `fulcrum_core/src/codemode/engine.rs`.
+  spelling exists in this checkout — they are `fulcrum/src/fs_backend.rs` and
+  `fulcrum/src/codemode/engine.rs`.
 
 Both are verifiable as corrected: `git diff --stat main...HEAD` over `src-tauri/src/agent/web.rs` and
 `src-tauri/src/agent/mod.rs` shows both files changed on this branch.
@@ -201,7 +202,7 @@ non-vacuity proofs had silently become unperformable.
 
 They are now marked **CRATE-SIDE** with the crate path, said to be proven in
 `archimedes-codes/fulcrum`'s CI, and — the part that matters — each keeps a **desktop-performable
-substitute**: dropping the `manager` or `protocol` token from the `pub use fulcrum_core::worker::{…}` in
+substitute**: dropping the `manager` or `protocol` token from the `pub use fulcrum_harness::worker::{…}` in
 `agent/worker/mod.rs` fails the corresponding pin with `E0432`/`E0433`. Verified by doing it.
 
 **Lesson worth keeping:** a falsification instruction rots faster than the test it describes, because
@@ -225,9 +226,14 @@ nobody runs it. If a pin's failure recipe names a path, that path needs to exist
 
 Also extended: `the_config_dtos_are_one_type_across_the_boundary` now pins `Settings`, `FontSettings`,
 `OidcConfig` and `WebSettings` alongside the two it already covered. Falsified by a twin struct (E0308) and
-by dropping `rename_all` from the crate's `FontSettings` (camelCase assert fails). **Method note:** cargo
-fingerprints git dependencies by rev, so a crate-side mutation needs `cargo clean -p fulcrum-core` before
-it takes effect.
+by dropping `rename_all` from the crate's `FontSettings` (camelCase assert fails). **Method note:** the
+engine is a crates.io dependency now, so cargo fingerprints it by **version + checksum**, not by git rev;
+a crate-side mutation needs the `[patch.crates-io]` sibling override in place (see
+`.cargo/config.toml.example`) and, if the crate is being read from the registry cache rather than patched,
+`cargo clean -p fulcrum-harness` before it takes effect. Measured after the rename: `cargo clean -p
+fulcrum-harness --dry-run` exits 0 (13 files, 153.7 MiB) and `cargo clean -p fulcrum-core --dry-run` exits
+101 with `package ID specification \`fulcrum-core\` did not match any packages` — the two flipped when the
+dependency did, and this sentence is the kind of instruction that rots silently unless someone re-runs it.
 
 ---
 

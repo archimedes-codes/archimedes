@@ -156,3 +156,62 @@ toast through an AUMID, which only an *installed* bundle registers, so a dev-bui
 Windows toast is mislabelled by design and only an installed-bundle run closes that
 platform row (the plugin documents this; it has never been exercised here, or
 anywhere).
+
+## Amendment (2026-11-09) — one of the three surfaces that carried the cue is gone
+
+ADR 0094 made both flanking panes permanent and deleted the collapsed **Session list** rail
+with it. Two consequences for this decision, and neither changes its argument:
+
+- **The rail and its warning-fill dot are gone.** The paragraph above that lists where the
+  in-app cue lives named three surfaces — the open session list, the collapsed rail, AND the
+  tab bar — and the 2026-10-16 amendment restated that count after the `?` mark unified the
+  pill and the dot. It is now TWO surfaces: the session row's leading slot and the **Space**'s
+  tab, both drawn by `SessionStatusMark`. The rail's waiting count in an accessible name went
+  with the rail.
+- **Two file:line citations in that paragraph are now historical.**
+  `src/components/SessionRail.tsx` **no longer exists**, so neither of its two cited ranges
+  (`:102-107` and `:180-191`) resolves to anything; and the `src/components/SpacesList.tsx`
+  range cited for the "Waiting" pill no longer holds that pill, which the 2026-10-16 amendment
+  above had already retired. Both are left in place rather than renumbered — this file is the
+  record of what was true when the decision was taken, and the cue's *content* is cited here by
+  name (`SessionStatusMark`, the row's leading slot, the tab) rather than by a new line number,
+  because line numbers are exactly what this repo's docs keep losing.
+
+**The argument is unchanged, and it gets slightly worse rather than better.** The paragraph
+exists to stop this decision being read as narrower than it is: a gate that opens while the
+window is focused elsewhere is dropped at expiry even though that user has demonstrably not seen
+it, and the in-app affordance is what makes that survivable. One of the three surfaces carrying
+that affordance has been removed, so the surviving two carry more weight than they did — the
+row's `?` and the tab's `?`, both of which stay. Whether two is enough is a question about the
+alert's scope, not about this amendment, and ADR 0040's ladder is untouched by it.
+
+## Amendment (2026-11-09) — the exemption's scope is written down, and one of its neighbours moved
+
+This note is **additive**: nothing below is a correction, because the exemption it records was
+never stated in this ADR's body. The focus rule above says an alert is dropped while the window is
+focused and says nothing about which *clicks* count as attention; that half of the contract lives
+in code and in a test, not here — `src/hooks/useAttentionAlert.ts`'s
+`if (el?.closest("[data-window-control]")) return;`, and `App.test.tsx`'s pin that the app controls
+resolve outside `[data-window-control]`. Writing it down is the point, since the rule has been
+cited from three different places and had no home.
+
+- **The exempted surface is the window controls, and only the window controls.**
+  `[data-window-control]` is `WindowControls`' container — Minimize / Maximize / Close, three
+  buttons — and the exemption is scoped to that container rather than to the chrome bar, so a click
+  on the drag bar, a **Space** tab, or any app control IS attention. The reason for the narrow scope
+  is this ADR's own use case: "run finishes → click Minimize → walk away" must not self-cancel the
+  alert it just earned, while a click that returns the user to work must disarm it. Anything added
+  inside that container inherits the exemption, which is why the container's comment says to add one
+  deliberately.
+- **The Settings door moved and stayed outside the exemption.** It used to sit in the chrome bar's
+  app-control cluster immediately inboard of the window controls — adjacent to the exemption but
+  deliberately not inside it, because opening Settings is a person coming back to work. ADR 0095
+  relocated that door into the **Session list**'s command strip, which is far from the window
+  controls in every sense, so the property now holds **structurally** rather than by placement
+  discipline. The `App.test.tsx` pin was kept anyway (re-titled to name the door rather than the
+  retired cluster) on this ADR's own logic: an unasserted structural property is one refactor away
+  from silently regressing, and the consequence of the regression is invisible — an alert that
+  quietly stops firing for someone who just sat down.
+- **No behaviour changed.** No click that used to count stopped counting, and none that used to be
+  exempt started counting. The one thing that could have drifted is a relocated control landing
+  inside the container by accident, and it did not.

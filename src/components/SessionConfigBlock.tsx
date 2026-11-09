@@ -107,24 +107,25 @@ import {
  * `useModelCatalog` filtered to the configured providers, so a Settings change
  * reaches an already-open session (see `catalogItems` below).
  *
- * Three placement decisions, each load-bearing:
+ * Two placement decisions, each load-bearing:
  *
  * - **A sibling AFTER the pane's scroll area, never inside it.** The content
  *   div is `flex-1 overflow-y-auto` and the todo boards GROW, so a block inside
  *   it scrolls away and drifts with the board's length — the config of the
  *   session you are looking at would be somewhere above the fold. Pinned by the
- *   `mounts the config block AFTER the scroll area` case in `SidePane.test.tsx`.
- * - **`shrink-0` on the wrapper.** The frame is a `flex-col` whose only other
+ *   `mounts the config block AFTER the scroll area` case in `SidePane.test.tsx`. * - **`shrink-0` on the wrapper.** The frame is a `flex-col` whose only other
  *   child is the `flex-1` (basis 0) scroller, so a new sibling with the default
  *   `flex-basis: auto` would be the ONLY item able to absorb a height shortfall:
  *   a long board would squash the block to nothing instead of scrolling. The
  *   composer island documents the identical trap (`ComposerRow.tsx`).
- * - **`invisible` while collapsed, on its OWN class.** The scroller carries
- *   `invisible` while the pane is collapsed to its 40px rail, and that class is
- *   what keeps the board's text and scrollbar out of the sliver paint. This
- *   block is the scroller's SIBLING, so it needs its own — and while collapsed
- *   there is deliberately NO access to model / reasoning / context: the user
- *   expands the pane to change them.
+ *
+ * The session-id selector now can be overridden: the `sessionId` prop names
+ * which **Session** these three lines read AND write, so the New Task modal can
+ * mount this footer for the Session it just started instead of the globally
+ * active one. OMITTED it is the global active Session, which is what `SidePane`
+ * gets by passing nothing; an explicit `null` means "no Session yet" (the stub,
+ * and no write). See the prop's doc for the hazard that made the prop mandatory
+ * rather than nice, and for why those two are NOT the same value.
  *
  * The Context line has NO well of its own, deliberately. It used to sit in a
  * `bg-input` box, and it read as a sunken slot inside a pane that is already a
@@ -137,17 +138,57 @@ import {
  * IMPROVES (5.23 vs 4.33 with the well). The gates are graded against
  * `--color-inspector` at a 1.2 floor that states this explicitly.
  */
-export default function SessionConfigBlock({ collapsed }: { collapsed: boolean }) {
+export default function SessionConfigBlock({
+  sessionId,
+}: {
+  /** Which **Session** these lines read AND write.
+   *
+   *  THREE-valued on purpose, and the middle value is the whole point:
+   *   - **omitted** → the globally active Session. That is what `SidePane`
+   *     gets by passing nothing, which is why the default is a default.
+   *   - a **string** → that Session. The New Task modal passes the Session it
+   *     just started for the Task.
+   *   - **`null`** → there is NO Session to configure yet: the disabled Model
+   *     stub, and `onSet` refuses. The modal passes this before its first send.
+   *
+   *  WHY THIS EXISTS (the hazard, not a convenience). Every derivation and the
+   *  write path used to key off `s.activeSessionId` internally, so mounting this
+   *  component verbatim inside the New Task modal would have rendered — and then
+   *  WRITTEN — the model / thinking level of whatever Session the workspace had
+   *  selected, while the user believed they were configuring the NEW Task's
+   *  Session. Silent, and one click wide.
+   *
+   *  WHY `null` IS NOT THE DEFAULT. `sessionId ?? activeSessionId` — the obvious
+   *  reading of "defaults to the active session" — makes `null` mean "use the
+   *  global one", and inside the modal that is the exact hazard this prop exists
+   *  to remove: the board is only reachable while a Session IS active (the
+   *  board's own Space is `useActiveSpaceCwd()`, i.e. derived from
+   *  `activeSessionId`), so a pre-send footer written with `??` would print and
+   *  WRITE the workspace Session's model while the user picks a model for a Task
+   *  that has no Session yet. Omission and `null` therefore mean different
+   *  things. Pinned in `SessionConfigBlock.test.tsx` in both directions — read
+   *  and WRITE — because a picker that reads the right Session but writes the
+   *  wrong one is the half that loses data. */
+  sessionId?: string | null;
+}) {
+  // The one id every line below keys off. Declared BEFORE the selectors that
+  // read it, and the hook is called UNCONDITIONALLY: `sessionId ??
+  // useSessions(…)` would skip the call whenever `sessionId` is a non-empty
+  // string, which changes the hook count between renders — the white-page
+  // crash every other hook-count note in this repo warns about.
+  const activeSessionId = useSessions((s) => s.activeSessionId);
+  const targetId = sessionId === undefined ? activeSessionId : sessionId;
   // The derivations are the SHARED ones (`lib/sessionConfig`), run INSIDE the
   // selector so this component subscribes to the derived VALUE and not to the
   // three session lists. Stable references either way: `sessionConfigOptionsOf`
   // returns the stored array (or `null`), `contextUsageOf` a stored object (or
-  // `undefined`) — never a fresh literal.
+  // `undefined`) — never a fresh literal. Both are `null`-safe, so a pre-send
+  // modal with no Session and no override gets the no-config render.
   const configOptions = useSessions((s) =>
-    sessionConfigOptionsOf(s, s.activeSessionId),
+    sessionConfigOptionsOf(s, targetId),
   );
   const contextUsage = useSessions((s) =>
-    contextUsageOf(s, s.activeSessionId),
+    contextUsageOf(s, targetId),
   );
   // A stored (non-live) session is NO LONGER a reason to disable anything
   // (#154): the backend (`set_session_config_option`) persists the change and
@@ -155,25 +196,22 @@ export default function SessionConfigBlock({ collapsed }: { collapsed: boolean }
   // selectors stay ENABLED for a stored session and the only thing that ever
   // gates them here is the in-flight request (`pending`, inside
   // `SessionConfigSelect`). The old `isLive` selector is gone with its gate.
-  const activeSessionId = useSessions((s) => s.activeSessionId);
   const applyConfigOptions = useSessions((s) => s.applyConfigOptions);
 
   // ONE stable callback for both config selects (the consumer-side half of the
   // SessionConfigSelect memo fix): a per-option closure minted per render would
   // re-render the ~600 mounted model-catalog SelectItems on every re-render of
   // the parent. `applyConfigOptions` is a zustand action — a stable reference —
-  // so this callback's identity only changes when the active session changes.
+  // so this callback's identity only changes when the session this block targets
+  // changes. `targetId` and not `activeSessionId`: a modal footer writes the
+  // Session it names, never the workspace's selection.
   const onSet = useCallback(
     async (optionId: string, value: string) => {
-      if (!activeSessionId) return;
-      const options = await setSessionConfigOption(
-        activeSessionId,
-        optionId,
-        value,
-      );
-      applyConfigOptions(activeSessionId, options);
+      if (!targetId) return;
+      const options = await setSessionConfigOption(targetId, optionId, value);
+      applyConfigOptions(targetId, options);
     },
-    [activeSessionId, applyConfigOptions],
+    [targetId, applyConfigOptions],
   );
 
   const contextPercent = contextPercentOf(contextUsage);
@@ -250,12 +288,15 @@ export default function SessionConfigBlock({ collapsed }: { collapsed: boolean }
 
   return (
     // `pb-3` matches the scroller's own inset. It used to be `pb-10`, because
-    // the pane's collapse toggle floated at `bottom-2 left-2` and would have
-    // sat on top of the Context line; that toggle now lives in the chrome bar
-    // (`ChromeControls`), so the block keeps ordinary padding.
+    // a pane collapse toggle floated at `bottom-2 left-2` and would have sat on
+    // top of the Context line; that toggle is retired with the panes' collapse
+    // flags (ADR 0094), so the block keeps ordinary padding. (Its old comment
+    // said the chrome bar's app-control cluster was "the gear alone" — that
+    // cluster is gone too: ADR 0095 moved the Settings door into the Session
+    // list.)
     <div
       data-testid="session-config-block"
-      className={cn("shrink-0 px-3 pb-3 pt-2", collapsed && "invisible")}
+      className="shrink-0 px-3 pb-3 pt-2"
     >
       <div className="flex flex-col gap-1.5" data-testid="session-config-controls">
         {/* Model, then Reasoning, then Context: one control per line, each

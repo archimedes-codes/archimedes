@@ -23,16 +23,16 @@ use serde::{Deserialize, Serialize};
 // `MESSAGE_COLUMNS` and the row mappers. Re-imported (desktop→crate, the allowed
 // direction) so `crate::storage::SessionRow` and every other existing spelling
 // resolves unchanged.
-pub use fulcrum_core::store_rows::{MessageRow, SessionRow};
+pub use fulcrum_harness::store_rows::{MessageRow, SessionRow};
 
-use fulcrum_core::seams::{FulcrumPersistence, StoreError};
-// (T5/S4, Step B-bis) The clock moved to `fulcrum_core::clock` — this file's
+use fulcrum_harness::seams::{FulcrumPersistence, StoreError};
+// (T5/S4, Step B-bis) The clock moved to `fulcrum_harness::clock` — this file's
 // private copy and `agent/normalize.rs`'s `pub(crate)` copy were byte-identical
 // duplicates, and the trait's `now_ms` would have been a third. Importing the
 // one definition (rather than a one-line wrapper) leaves NO second body to drift:
 // the timestamps this file writes and the `DisplayRow.created_at` the crate
 // stamps are the same clock by construction.
-use fulcrum_core::clock::now_ms;
+use fulcrum_harness::clock::now_ms;
 
 use crate::types::SessionInfo;
 
@@ -43,7 +43,7 @@ use crate::types::SessionInfo;
 /// keeps needing the variant — `agent/errors.rs:171` matches on it to build the
 /// IPC error envelope. The crate sees only the two variants its own errors can
 /// be; see the `impl From<DbError> for StoreError` below and
-/// `fulcrum_core::StoreError`'s docs for the measurement that makes collapsing
+/// `fulcrum_harness::StoreError`'s docs for the measurement that makes collapsing
 /// the third admissible.
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -87,6 +87,45 @@ impl From<DbError> for StoreError {
             DbError::Json(e) => StoreError::Json(e),
         }
     }
+}
+
+/// Why a Task-board write was refused.
+///
+/// A SEPARATE error type from [`DbError`], and not an accident of taste:
+/// `DbError` documents itself as STAYING THREE-VARIANT because it is the crate
+/// persistence seam's type (`impl From<DbError> for StoreError` above), and the
+/// board needs two absence cases the seam has no business carrying — a card
+/// that is not there, and a stage slug that is not one of this Space's columns.
+/// Widening `DbError` would push both across the seam into `StoreError`, where
+/// the engine would have to be told about kanban rows.
+///
+/// Stays a plain enum with no serde derive: the wire route is
+/// `TasksError` in `agent/errors.rs` (ADR 0063 — the WIRE owns the envelope, and
+/// `agent/errors.rs` is where every IPC family lives). This type is the
+/// storage→command boundary, one step below the wire.
+#[derive(Debug, thiserror::Error)]
+pub enum BoardError {
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+
+    /// No `tasks` row with this id. Absence is a rejection here (a WRITE was
+    /// asked for), where the READ path (`get_task`) answers `Ok(None)` — the
+    /// `find_space`/`set_space_trusted` split in this file, carried over.
+    #[error("no task with id {0}")]
+    MissingTask(String),
+
+    /// No `stages` row for this `(space_path, slug)`. Carries the slugs that DO
+    /// exist: ADR 0090's first Consequence is that a bad slug must come back
+    /// naming the valid ones, so a caller (a model, especially) self-corrects
+    /// without a schema-discovery round trip — `stages` cannot be a JSON-Schema
+    /// enum because `tool_specs()` returns a static `Vec`.
+    #[error("no stage {wanted} in this space (valid stages: {available})")]
+    MissingStage {
+        wanted: String,
+        /// Comma-joined, in `sort_order`. A string rather than a `Vec` so the
+        /// `Display` sentence is the whole answer.
+        available: String,
+    },
 }
 
 /// The ONE `sessions` SELECT list every `SessionRow` read uses, as a const
@@ -227,6 +266,168 @@ fn space_row_from(row: &Row<'_>) -> rusqlite::Result<SpaceRow> {
         last_opened_at: row.get(2)?,
         trusted: row.get::<_, i64>(3)? != 0,
     })
+}
+
+// ── The Task board rows (spec §2, ADR 0090) ────────────────────────────────
+//
+// Same three-piece shape every row type in this file uses: the struct, the ONE
+// SELECT list as a const array, and the ONE positional mapper — plus the
+// compile-time arity tie and the drift-guard test that spells the column list a
+// second time (`task_row_from_maps_the_select_const_columns_in_order`,
+// `stage_row_from_…`). The const is not itself a check of the SELECT text; the
+// test is what makes editing the list and the ladder apart impossible.
+
+/// A row from the `stages` table — one board column.
+///
+/// Keyed `(space_path, slug)`: a slug is unique WITHIN a Space, so two Spaces
+/// can both have a `doing` column with different `on_enter` settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageRow {
+    pub space_path: String,
+    pub slug: String,
+    pub label: String,
+    pub sort_order: i64,
+    /// `'none' | 'compact' | 'fresh'` (spec §5). A free-form string rather than
+    /// an enum on purpose: the value is DATA a user can change per Space, and
+    /// the DDL's default is what a seeded stage carries.
+    pub on_enter: String,
+}
+
+/// The ONE `stages` SELECT list every read uses, as a const array of column
+/// names — same reason and same honest scope as [`SESSION_COLUMNS`].
+const STAGE_COLUMNS: [&str; 5] = ["space_path", "slug", "label", "sort_order", "on_enter"];
+
+const STAGE_ROW_FIELDS: usize = 5;
+// Compile-time arity tie ONLY — see SESSION_ROW_FIELDS for the honest scope;
+// the drift-guard TEST is the guard.
+const _: [(); STAGE_COLUMNS.len()] = [(); STAGE_ROW_FIELDS];
+
+/// Map one row of [`STAGE_COLUMNS`] onto a [`StageRow`], index for index.
+fn stage_row_from(row: &Row<'_>) -> rusqlite::Result<StageRow> {
+    Ok(StageRow {
+        space_path: row.get(0)?,
+        slug: row.get(1)?,
+        label: row.get(2)?,
+        sort_order: row.get(3)?,
+        on_enter: row.get(4)?,
+    })
+}
+
+/// A row from the `tasks` table — one board card.
+///
+/// `id` (`tsk_<uuid>`) is the key and resolves GLOBALLY; `number` is the label
+/// a person says out loud ("move T3 to doing") and is per-Space, which is why
+/// addressing a card by its bare number needs the Space (ADR 0090's last
+/// Consequence). They are never interchangeable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRow {
+    pub id: String,
+    pub space_path: String,
+    pub number: i64,
+    pub title: String,
+    pub body: Option<String>,
+    /// The spec document this card cites. A Task is NOT a `docs/roadmap/*.md`
+    /// (ADR 0090 — that directory is gitignored and its plans are deleted on
+    /// ship), so the link is a nullable path and nothing cascades from it.
+    pub spec_path: Option<String>,
+    pub stage_slug: String,
+    pub sort_order: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// The ONE `tasks` SELECT list every read uses — see [`SESSION_COLUMNS`].
+const TASK_COLUMNS: [&str; 10] = [
+    "id",
+    "space_path",
+    "number",
+    "title",
+    "body",
+    "spec_path",
+    "stage_slug",
+    "sort_order",
+    "created_at",
+    "updated_at",
+];
+
+const TASK_ROW_FIELDS: usize = 10;
+// Compile-time arity tie ONLY — see SESSION_ROW_FIELDS for the honest scope.
+const _: [(); TASK_COLUMNS.len()] = [(); TASK_ROW_FIELDS];
+
+/// Map one row of [`TASK_COLUMNS`] onto a [`TaskRow`], index for index.
+///
+/// The ONE place a `TaskRow` is constructed. `body`/`spec_path` are nullable
+/// columns, so their `get::<_, Option<String>>` is a runtime conversion, not a
+/// compile-time check — the drift-guard test is what catches a reordered list.
+fn task_row_from(row: &Row<'_>) -> rusqlite::Result<TaskRow> {
+    Ok(TaskRow {
+        id: row.get(0)?,
+        space_path: row.get(1)?,
+        number: row.get(2)?,
+        title: row.get(3)?,
+        body: row.get::<_, Option<String>>(4)?,
+        spec_path: row.get::<_, Option<String>>(5)?,
+        stage_slug: row.get(6)?,
+        sort_order: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
+
+/// A row from the `task_sessions` table: which Session a card owns, and which
+/// stage it was in when the link was made (so a later drag into a `compact`
+/// stage knows which stage to compact FROM — spec §5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSessionRow {
+    pub task_id: String,
+    pub session_id: String,
+    pub stage_slug: Option<String>,
+}
+
+/// The ONE `task_sessions` SELECT list (`task_sessions` reads only).
+const TASK_SESSION_COLUMNS: [&str; 3] = ["task_id", "session_id", "stage_slug"];
+
+const TASK_SESSION_ROW_FIELDS: usize = 3;
+// Compile-time arity tie ONLY — see SESSION_ROW_FIELDS for the honest scope.
+const _: [(); TASK_SESSION_COLUMNS.len()] = [(); TASK_SESSION_ROW_FIELDS];
+
+/// Map one row of [`TASK_SESSION_COLUMNS`] onto a [`TaskSessionRow`].
+fn task_session_row_from(row: &Row<'_>) -> rusqlite::Result<TaskSessionRow> {
+    Ok(TaskSessionRow {
+        task_id: row.get(0)?,
+        session_id: row.get(1)?,
+        stage_slug: row.get::<_, Option<String>>(2)?,
+    })
+}
+
+/// The board read payload: one stage plus its cards.
+///
+/// ONE payload, not two lists the frontend joins — the board renders columns,
+/// so a column with no cards has to arrive as an empty `tasks`, not as an
+/// absent key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageWithTasks {
+    pub stage: StageRow,
+    pub tasks: Vec<TaskRow>,
+}
+
+/// What a `move_task` reports: the destination stage's `on_enter`.
+///
+/// Lives HERE rather than in `commands/tasks.rs` (which the plan sketched it in)
+/// because `Db::move_task` is what reads `on_enter` inside its own lock — and
+/// storage cannot name a type that lives in the command layer. The command
+/// returns this same struct, so there is ONE wire shape, not two.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveOutcome {
+    /// The DESTINATION stage's `'none' | 'compact' | 'fresh'`, read AFTER the
+    /// write. The storage layer never acts on it: running a compaction needs
+    /// the `SessionManager`, which lives in the command layer.
+    pub on_enter: String,
 }
 
 /// One session's recency, as a FIELD rather than a position (ADR 0075).
@@ -427,7 +628,9 @@ impl Db {
         })?;
         // One-time migration for pre-existing databases: add `todos_json`
         // to `sessions` (fresh databases already have it from SCHEMA) and
-        // backfill each non-subagent session's newest `manage_todo_list` write
+        // backfill each non-subagent session's newest checklist write
+        // (`manage_todo_list` OR `manage_checklist` — see
+        // `backfill_session_todos` for why the match is dual, ADR 0093)
         // (ADR 0073). The ALTER and the backfill run in ONE transaction, so a
         // crash rolls both back and retries on next open.
         gate(&mut conn, "sessions", "todos_json", |tx| {
@@ -1264,6 +1467,513 @@ impl Db {
         tx.commit()?;
         Ok(())
     }
+
+    // ── The Task board (spec §2, ADR 0090) ──────────────────────────────
+    //
+    // Every method here takes the connection lock ONCE and holds it for its
+    // whole read-write pair — the same discipline `reorder_spaces` just showed.
+    // For `create_task` that is not style, it is the point: the per-Space
+    // `MAX(number) + 1` is TWO statements, and ADR 0090's Consequences name the
+    // interleave they must not straddle.
+
+    /// The board for one Space: every stage, in `sort_order`, each carrying its
+    /// own cards.
+    ///
+    /// LAZY SEEDING happens here (spec §2): a Space with no `stages` rows gets
+    /// the five defaults on the first board read, so a Space that never opens
+    /// the board pays nothing and no migration writes for every existing Space.
+    /// The count-check and the five inserts share ONE lock with the board read
+    /// that follows, so two first-reads of the same Space cannot both seed.
+    pub fn get_board(&self, space_path: &str) -> Result<Vec<StageWithTasks>, BoardError> {
+        let mut guard = self.conn.lock().expect("db mutex poisoned");
+        seed_default_stages(&mut guard, space_path)?;
+        let stages = {
+            let mut stmt = guard.prepare(&format!(
+                "SELECT {} FROM stages WHERE space_path = ?1 ORDER BY sort_order ASC, slug ASC",
+                STAGE_COLUMNS.join(", ")
+            ))?;
+            let rows = stmt
+                .query_map(params![space_path], stage_row_from)?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        let tasks = {
+            let mut stmt = guard.prepare(&format!(
+                "SELECT {} FROM tasks WHERE space_path = ?1 \
+                 ORDER BY sort_order ASC, number ASC",
+                TASK_COLUMNS.join(", ")
+            ))?;
+            let rows = stmt
+                .query_map(params![space_path], task_row_from)?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        // Group per stage in one pass. A card whose `stage_slug` matches no
+        // stage row is DROPPED from this payload rather than given an invented
+        // column: the board renders columns, and a column that does not exist
+        // cannot be rendered. (`move_task` refuses such a slug, so this is
+        // reachable only if a stage row is deleted out from under a card.)
+        Ok(stages
+            .into_iter()
+            .map(|stage| StageWithTasks {
+                tasks: tasks
+                    .iter()
+                    .filter(|task| task.stage_slug == stage.slug)
+                    .cloned()
+                    .collect(),
+                stage,
+            })
+            .collect())
+    }
+
+    /// Every stage of one Space, in `sort_order`, WITHOUT seeding.
+    ///
+    /// The read `get_board` groups over, exposed for callers that must not cause
+    /// a write — the laziness guard
+    /// (`seeding_one_space_leaves_another_space_unseeded`) reads through here,
+    /// because reading through `get_board` would seed and so answer its own
+    /// question.
+    pub fn list_stages(&self, space_path: &str) -> Result<Vec<StageRow>, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = guard.prepare(&format!(
+            "SELECT {} FROM stages WHERE space_path = ?1 ORDER BY sort_order ASC, slug ASC",
+            STAGE_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt
+            .query_map(params![space_path], stage_row_from)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Every card of one Space, in `sort_order`. The flat sibling of `get_board`.
+    pub fn list_tasks(&self, space_path: &str) -> Result<Vec<TaskRow>, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = guard.prepare(&format!(
+            "SELECT {} FROM tasks WHERE space_path = ?1 ORDER BY sort_order ASC, number ASC",
+            TASK_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt
+            .query_map(params![space_path], task_row_from)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// One card by its GLOBAL key (`tsk_<uuid>`); `Ok(None)` when absent — the
+    /// `find_space` shape: a read of a deleted card is an answer, not an error.
+    pub fn get_task(&self, task_id: &str) -> Result<Option<TaskRow>, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = guard.prepare(&format!(
+            "SELECT {} FROM tasks WHERE id = ?1",
+            TASK_COLUMNS.join(", ")
+        ))?;
+        let found = match stmt.query_row(params![task_id], task_row_from) {
+            Ok(row) => Some(row),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
+        Ok(found)
+    }
+
+    /// Create a card, handing out the next per-Space `number`.
+    ///
+    /// THE LOAD-BEARING LOCK. The `MAX(number)` read and the `INSERT` are two
+    /// statements and they run under ONE `conn.lock()` — ADR 0090's rendezvous.
+    /// SQLite serialises the writes themselves, so the hazard the single guard
+    /// closes is not a torn write but the two-statement interleave where two
+    /// creates in the same tick both read the same `MAX` and both insert `#4`.
+    /// `create_task_reads_and_inserts_under_one_lock` releases N threads off a
+    /// `Barrier` and asserts N distinct numbers; with two locks it fails.
+    ///
+    /// - `stage_slug: None` → the Space's FIRST stage (by `sort_order`), which
+    ///   is why this method seeds too (see `seed_default_stages`).
+    /// - `number`: `COALESCE((SELECT MAX(number) …), 0) + 1` — floors at `0`, so
+    ///   the first card is `#1`.
+    /// - `sort_order`: `COALESCE((SELECT MAX(sort_order) …), -1) + 1` — this
+    ///   file's bottom-join idiom, floors at `-1`, so the first card is position
+    ///   `0`. THE TWO FLOORS DIFFER ON PURPOSE; see the numbering note below.
+    pub fn create_task(
+        &self,
+        space_path: &str,
+        title: &str,
+        body: Option<&str>,
+        stage_slug: Option<&str>,
+    ) -> Result<TaskRow, BoardError> {
+        let mut guard = self.conn.lock().expect("db mutex poisoned");
+        // Seed inside the SAME guard as the read and the insert: a card cannot
+        // be created in a Space with no columns, and the seed must not take a
+        // second lock that the number read could interleave with.
+        seed_default_stages(&mut guard, space_path)?;
+
+        // NUMBERING NOTE — read this before "correcting" the `0` below.
+        //
+        // `number` is a USER-VISIBLE LABEL: it is what a person says out loud
+        // ("move T3 to doing"), and a card labelled `#0` reads as a bug. So this
+        // bottom join floors at `0` and the first card of a Space is `#1`.
+        //
+        // That is a DELIBERATE deviation from this file's own `sort_order` idiom
+        // (`COALESCE((SELECT MAX(sort_order) …), -1) + 1` — see `upsert_space`,
+        // `record_session`, and the space backfill in `Db::open`), which floors
+        // at `-1` so the first row lands at position `0`. `sort_order` is a
+        // zero-based POSITION INDEX — the `-1` is precisely what makes "join at
+        // the bottom" mean 0 — and the statement below keeps that idiom
+        // untouched. One is a label, one is an index; they are not the same
+        // quantity and a reviewer must not unify them. ADR 0090 records the
+        // decision and
+        // `create_task_sort_order_is_zero_based_where_number_is_one_based` pins it.
+        let number: i64 = guard.query_row(
+            "SELECT COALESCE((SELECT MAX(number) FROM tasks WHERE space_path = ?1), 0) + 1",
+            params![space_path],
+            |row| row.get(0),
+        )?;
+        let sort_order: i64 = guard.query_row(
+            "SELECT COALESCE((SELECT MAX(sort_order) FROM tasks WHERE space_path = ?1), -1) + 1",
+            params![space_path],
+            |row| row.get(0),
+        )?;
+        let stage = match stage_slug {
+            Some(slug) => {
+                // An explicit slug is VALIDATED, not trusted: a card in a column
+                // that does not exist is invisible on the board, and an
+                // invisible card is the silent-green shape this repo keeps
+                // documenting. The rejection names the valid slugs (ADR 0090).
+                if !stage_slug_exists(&guard, space_path, slug)? {
+                    return Err(missing_stage(&guard, space_path, slug));
+                }
+                slug.to_string()
+            }
+            None => guard
+                .query_row(
+                    "SELECT slug FROM stages WHERE space_path = ?1 \
+                     ORDER BY sort_order ASC, slug ASC LIMIT 1",
+                    params![space_path],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok()
+                // UNREACHABLE in practice — `seed_default_stages` just ensured
+                // five rows exist. Surfaced as an error rather than unwrapped so
+                // the "no card without a column" invariant stays total, without
+                // widening `DbError` (which the crate seam forbids) to carry a
+                // kanban-shaped case. `available_slugs` cannot realistically fail
+                // here either, and its failure would only empty the message, so
+                // `unwrap_or_default` is the honest degradation, not a swallowed
+                // error: the `wanted`/`available` pair is diagnostic text.
+                .ok_or_else(|| BoardError::MissingStage {
+                    wanted: String::new(),
+                    available: available_slugs(&guard, space_path).unwrap_or_default(),
+                })?,
+        };
+        let id = format!("tsk_{}", uuid::Uuid::new_v4());
+        let now = now_ms();
+        guard.execute(
+            "INSERT INTO tasks (id, space_path, number, title, body, spec_path, stage_slug, \
+             sort_order, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?8)",
+            params![id, space_path, number, title, body, stage, sort_order, now],
+        )?;
+        drop(guard);
+        // Re-read rather than rebuild the struct from the arguments: the row
+        // that comes back IS the row that is stored, so a DDL default can never
+        // drift from what the caller sees. `get_task` takes its own lock — this
+        // one is dropped first, so nothing is held across the call.
+        self.get_task(&id)?.ok_or_else(|| {
+            BoardError::MissingTask(format!("the row just inserted ({id}) vanished"))
+        })
+    }
+
+    /// Patch a card's TEXT fields. `None` keeps the stored value (COALESCE).
+    ///
+    /// Deliberately cannot touch `stage_slug` (that is `move_task`, which also
+    /// runs the destination's `on_enter`), `number` (a label that is never
+    /// renumbered), or `sort_order` (that is [`Db::reorder_tasks`] — spec §3's
+    /// second drag verb, and a whole-slice write rather than a per-row patch, so
+    /// a reorder stays atomic). The exclusion is about THIS verb's shape, not
+    /// about position being unpersisted: within a column no HARNESS tool mirrors
+    /// position (ADR 0075 — position is not evidence), but the human's drag is
+    /// written and survives a restart.
+    ///
+    /// A missing row is `MissingTask`, not a silent `Ok`: this is a WRITE the
+    /// caller believes succeeded.
+    pub fn edit_task(
+        &self,
+        task_id: &str,
+        title: Option<&str>,
+        body: Option<&str>,
+        spec_path: Option<&str>,
+    ) -> Result<TaskRow, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        let touched = guard.execute(
+            "UPDATE tasks SET \
+               title = COALESCE(?2, title), \
+               body = COALESCE(?3, body), \
+               spec_path = COALESCE(?4, spec_path), \
+               updated_at = ?5 \
+             WHERE id = ?1",
+            params![task_id, title, body, spec_path, now_ms()],
+        )?;
+        drop(guard);
+        if touched == 0 {
+            return Err(BoardError::MissingTask(task_id.to_string()));
+        }
+        self.get_task(task_id)?
+            .ok_or_else(|| BoardError::MissingTask(task_id.to_string()))
+    }
+
+    /// Move a card to another column and report that column's `on_enter`.
+    ///
+    /// Reads `on_enter` AFTER the write, under the same lock — one read of the
+    /// destination row, taken against the state the write landed in.
+    ///
+    /// The storage layer does NOT run the boost. `on_enter = 'compact'` needs
+    /// `compact_session`, which needs the `SessionManager` — a command-layer
+    /// object. Returning the value IS the seam (spec §5).
+    pub fn move_task(
+        &self,
+        space_path: &str,
+        task_id: &str,
+        to_stage: &str,
+    ) -> Result<MoveOutcome, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        let exists: i64 = guard.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE id = ?1",
+            params![task_id],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            return Err(BoardError::MissingTask(task_id.to_string()));
+        }
+        if !stage_slug_exists(&guard, space_path, to_stage)? {
+            return Err(missing_stage(&guard, space_path, to_stage));
+        }
+        let touched = guard.execute(
+            "UPDATE tasks SET stage_slug = ?3, updated_at = ?4 WHERE id = ?1 AND space_path = ?2",
+            params![task_id, space_path, to_stage, now_ms()],
+        )?;
+        // The card exists but lives in ANOTHER Space: `id` is global and
+        // `space_path` is not a key, so this is a caller that addressed a card
+        // in the wrong namespace. The `UPDATE` matched 0 rows, and reporting
+        // that as a stage that does not exist in THIS Space is the honest
+        // sentence — a silent `Ok` here would show the user a card that never
+        // moved.
+        if touched == 0 {
+            return Err(missing_stage(&guard, space_path, to_stage));
+        }
+        let on_enter: String = guard.query_row(
+            "SELECT on_enter FROM stages WHERE space_path = ?1 AND slug = ?2",
+            params![space_path, to_stage],
+            |row| row.get(0),
+        )?;
+        Ok(MoveOutcome { on_enter })
+    }
+
+    /// Rewrite the manual order of the cards WITHIN ONE COLUMN of one Space.
+    ///
+    /// THE OTHER HALF OF SPEC §3'S TWO DRAG VERBS. The table there gives a card
+    /// dragged BETWEEN columns to `move_task` (writes `stage_slug`, runs
+    /// `on_enter`) and a card dragged WITHIN a column to a write of "`sort_order`
+    /// only". "Mirrored by nothing" in that table's third column means no
+    /// HARNESS tool mirrors it — ADR 0075's "position is not evidence", applied
+    /// inside a column, so the model never needs to see it. It does NOT mean
+    /// unpersisted: a position a person drags and loses on restart is a bug, and
+    /// the asymmetry is about the TOOL surface, not the storage surface.
+    ///
+    /// The shape is `reorder_spaces`/`reorder_sessions`, unchanged: ONE
+    /// `conn.lock()`, ONE `transaction()`, one `UPDATE` per row, and the slice
+    /// index becomes the stored value densely from 0.
+    ///
+    /// Three deliberate differences from `reorder_spaces`, each pinned by
+    /// `reorder_tasks_persists_the_new_within_stage_order_in_one_pass` or
+    /// `reorder_tasks_refuses_a_foreign_id_and_writes_nothing`:
+    ///
+    /// - **An id this call may not name is an ERROR, not a no-op.**
+    ///   `reorder_spaces` treats an unknown id as a no-op because a path matching
+    ///   no row is the only thing a caller can hand back. Here `tasks.id` is a
+    ///   GLOBAL key while `space_path`/`stage_slug` are the caller's namespace
+    ///   (ADR 0090: no foreign key, by design), so a caller CAN hand back a card
+    ///   that exists in another Space or another column. Writing it would move a
+    ///   card the user is not looking at — possibly into a column it is not in —
+    ///   so the `WHERE` clause scopes on all three columns and a row it fails to
+    ///   match is `MissingTask`, naming the id. The rejection returns from inside
+    ///   the transaction, so the whole call is atomic: the cards the caller DID
+    ///   name keep their old positions rather than landing half-renumbered.
+    /// - **`updated_at` is NOT touched**, because spec §3 says `sort_order`
+    ///   ONLY. `edit_task` and `move_task` both stamp it; this does not. A card
+    ///   whose position changed did not change — a "last edited" clock that a
+    ///   reorder moves is a clock that lies.
+    /// - **No renumbering across stages.** `sort_order` is PER-SPACE, not
+    ///   per-stage — `create_task`'s bottom join is
+    ///   `MAX(sort_order) … WHERE space_path = ?1`, so one column's cards do not
+    ///   own a private 0..n number line. This call therefore writes positions
+    ///   ONLY for the ids it is handed, and a card it never names keeps its
+    ///   number even when that number now collides with a freshly written one.
+    ///   That is `reorder_sessions`' documented steady state, not corruption:
+    ///   every board read is `ORDER BY sort_order ASC, number ASC`, which is
+    ///   total, so the order stays deterministic, and a column renders only its
+    ///   own cards, so no surface ever shows two columns' rows side by side by
+    ///   `sort_order` alone. Renumbering the untouched columns to keep the column
+    ///   globally unique would move cards the user did not drag, in columns they
+    ///   are not looking at.
+    pub fn reorder_tasks(
+        &self,
+        space_path: &str,
+        stage_slug: &str,
+        task_ids: &[String],
+    ) -> Result<(), BoardError> {
+        let mut guard = self.conn.lock().expect("db mutex poisoned");
+        // The STAGE is checked first, before any write: a slug that is not one of
+        // this Space's columns is the more informative answer than "the first id
+        // you named is not in it", and ADR 0090's Consequence requires the
+        // rejection to name the valid slugs so the caller self-corrects.
+        if !stage_slug_exists(&guard, space_path, stage_slug)? {
+            return Err(missing_stage(&guard, space_path, stage_slug));
+        }
+        let tx = guard.transaction()?;
+        for (index, task_id) in task_ids.iter().enumerate() {
+            let touched = tx.execute(
+                "UPDATE tasks SET sort_order = ?3 \
+                 WHERE id = ?1 AND space_path = ?2 AND stage_slug = ?4",
+                params![task_id, space_path, index as i64, stage_slug],
+            )?;
+            if touched == 0 {
+                // Either no row with this id, or a row the scope rejected. The
+                // message is the same for both and the id is the useful half of
+                // it; the early return drops the transaction without committing,
+                // which rolls the whole call back.
+                return Err(BoardError::MissingTask(task_id.to_string()));
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Record that a Session owns a card, and which stage it was linked at.
+    ///
+    /// `INSERT OR IGNORE`: the FIRST link wins, because the stage it recorded is
+    /// the stage a later `compact` moves FROM — overwriting it would silently
+    /// re-point the handoff. A missing Task is `MissingTask` (a write the caller
+    /// believes succeeded).
+    ///
+    /// `session_id` is NOT checked for existence here: the FK
+    /// (`REFERENCES sessions(id) ON DELETE CASCADE`, live because `Db::open`
+    /// turns the `foreign_keys` pragma on) rejects a dangling link loudly at the
+    /// statement, and a `sessions` lookup first would be a second lock spent on
+    /// a check SQLite already makes.
+    pub fn link_session(
+        &self,
+        task_id: &str,
+        session_id: &str,
+        stage_slug: Option<&str>,
+    ) -> Result<(), BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        let current: Option<String> = match guard.query_row(
+            "SELECT stage_slug FROM tasks WHERE id = ?1",
+            params![task_id],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(slug) => Some(slug),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
+        let Some(stage) = stage_slug.map(str::to_string).or(current) else {
+            return Err(BoardError::MissingTask(task_id.to_string()));
+        };
+        guard.execute(
+            "INSERT OR IGNORE INTO task_sessions (task_id, session_id, stage_slug) \
+             VALUES (?1, ?2, ?3)",
+            params![task_id, session_id, stage],
+        )?;
+        Ok(())
+    }
+
+    /// The Sessions linked to one card, oldest link first. The read behind
+    /// "which Session does this card own", and the board's survival assertion.
+    pub fn task_sessions(&self, task_id: &str) -> Result<Vec<TaskSessionRow>, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = guard.prepare(&format!(
+            "SELECT {} FROM task_sessions WHERE task_id = ?1 ORDER BY rowid ASC",
+            TASK_SESSION_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt
+            .query_map(params![task_id], task_session_row_from)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+}
+
+/// Insert the five default stages when this Space has none.
+///
+/// Idempotence is NOT the property being claimed here — being called under the
+/// CALLER's lock is. Every caller already holds `self.conn.lock()` and passes
+/// the guard down, because a seed that took a lock of its own would put a second
+/// lock between `create_task`'s `MAX(number)` read and its `INSERT`, which is
+/// precisely the interleave ADR 0090 forbids.
+///
+/// Called from `get_board` (spec §2's lazy seed) AND from `create_task`: a card
+/// cannot live in a Space with no columns, and `create_task` is reachable
+/// without the board ever having been opened (a Task-creating command makes the
+/// card and its Session together). The laziness the spec asks for is laziness
+/// per SPACE — a Space nobody touches still gets no rows — and
+/// `seeding_one_space_leaves_another_space_unseeded` pins that.
+fn seed_default_stages(conn: &mut Connection, space_path: &str) -> Result<(), BoardError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM stages WHERE space_path = ?1",
+        params![space_path],
+        |row| row.get(0),
+    )?;
+    if count > 0 {
+        return Ok(());
+    }
+    // The five defaults, spec §2. `label` is the slug capitalised and
+    // `sort_order` is the index; `on_enter` is left OUT of the column list so
+    // the DDL's `DEFAULT 'none'` stays the single source of that value instead
+    // of a second copy of it spelled here.
+    for (index, (slug, label)) in DEFAULT_STAGES.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO stages (space_path, slug, label, sort_order) VALUES (?1, ?2, ?3, ?4)",
+            params![space_path, slug, label, index as i64],
+        )?;
+    }
+    Ok(())
+}
+
+/// The five default stages, in order: `(slug, label)`.
+const DEFAULT_STAGES: [(&str, &str); 5] = [
+    ("backlog", "Backlog"),
+    ("research", "Research"),
+    ("approved", "Approved"),
+    ("doing", "Doing"),
+    ("done", "Done"),
+];
+
+/// Does this Space have a stage with this slug?
+fn stage_slug_exists(conn: &Connection, space_path: &str, slug: &str) -> Result<bool, BoardError> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM stages WHERE space_path = ?1 AND slug = ?2",
+        params![space_path, slug],
+        |row| row.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// This Space's stage slugs, comma-joined in `sort_order` — the list ADR 0090
+/// requires an invalid-slug rejection to carry, so the caller (a model, most
+/// often) self-corrects without a schema-discovery round trip.
+fn available_slugs(conn: &Connection, space_path: &str) -> Result<String, BoardError> {
+    let mut stmt = conn.prepare(
+        "SELECT slug FROM stages WHERE space_path = ?1 ORDER BY sort_order ASC, slug ASC",
+    )?;
+    let slugs = stmt
+        .query_map(params![space_path], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(slugs.join(", "))
+}
+
+/// The `MissingStage` for a slug this Space does not have, carrying the slugs it
+/// does have.
+fn missing_stage(conn: &Connection, space_path: &str, wanted: &str) -> BoardError {
+    BoardError::MissingStage {
+        wanted: wanted.to_string(),
+        available: available_slugs(conn, space_path).unwrap_or_default(),
+    }
 }
 
 // ── T5/S4 — the crate's persistence seam, implemented (plan Steps B + B-bis) ──
@@ -1400,7 +2110,17 @@ fn space_key(path: impl AsRef<std::path::Path>) -> Option<String> {
 }
 
 /// One-time backfill of `sessions.todos_json` from the newest non-read
-/// `manage_todo_list` write in `messages` (ADR 0073).
+/// checklist write in `messages` (ADR 0073).
+///
+/// THE MATCH IS DUAL AND STAYS THAT WAY: `manage_todo_list` OR
+/// `manage_checklist`. fulcrum#20 renames the tool, and the rows this reads are
+/// ALREADY WRITTEN in users' databases and are never rewritten — so a predicate
+/// naming one spelling silently backfills nothing for every row written under the
+/// other. ADR 0093 freezes the old name for exactly this reason; the widen adds a
+/// second literal and renames NOTHING (neither the tool, nor `todos_update` /
+/// `todos_clear`, nor the `todos_json` column). The release ORDER is the load-
+/// bearing part: this must ship BEFORE the tag bump that carries the rename, or
+/// existing installs upgrade to an empty Checklist with a green suite.
 fn backfill_session_todos(conn: &Connection) -> Result<(), DbError> {
     let mut session_stmt = conn.prepare("SELECT id FROM sessions WHERE is_subagent = 0")?;
     let session_ids = session_stmt
@@ -1412,7 +2132,8 @@ fn backfill_session_todos(conn: &Connection) -> Result<(), DbError> {
         let matching_todos = {
             let mut msg_stmt = conn.prepare(
                 "SELECT payload_json FROM messages \
-                 WHERE session_id = ?1 AND kind = 'tool-call' AND payload_json LIKE '%manage_todo_list%' \
+                 WHERE session_id = ?1 AND kind = 'tool-call' \
+                 AND (payload_json LIKE '%manage_todo_list%' OR payload_json LIKE '%manage_checklist%') \
                  ORDER BY id DESC",
             )?;
             let rows = msg_stmt.query_map(params![session_id], |row| row.get::<_, String>(0))?;
@@ -1423,8 +2144,17 @@ fn backfill_session_todos(conn: &Connection) -> Result<(), DbError> {
                 let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload_str) else {
                     continue;
                 };
-                if val.get("title").and_then(serde_json::Value::as_str) != Some("manage_todo_list")
-                {
+                // DUAL MATCH, permanently (fulcrum#20 / ADR 0093): the tool is
+                // being renamed `manage_todo_list` → `manage_checklist`, and rows
+                // under BOTH spellings exist in the wild and are never rewritten.
+                // Dropping the old literal here would make every pre-rename
+                // install backfill nothing — an empty Checklist, a green suite, no
+                // error. This widening must RELEASE BEFORE the tag bump that
+                // carries the rename, and it stays forever after.
+                if !matches!(
+                    val.get("title").and_then(serde_json::Value::as_str),
+                    Some("manage_todo_list") | Some("manage_checklist")
+                ) {
                     continue;
                 }
                 let Some(raw_input) = val.get("rawInput") else {
@@ -1601,7 +2331,55 @@ CREATE TABLE IF NOT EXISTS spaces (
     trusted INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS stages (
+    space_path TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    label TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    on_enter TEXT NOT NULL DEFAULT 'none',
+    PRIMARY KEY (space_path, slug)
+);
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    space_path TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT,
+    spec_path TEXT,
+    stage_slug TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_sessions (
+    task_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    stage_slug TEXT,
+    PRIMARY KEY (task_id, session_id)
+);
 "#;
+
+// ── The Task board tables (spec §2, ADR 0090) — notes on the batch above ───
+//
+// THREE new tables and ZERO migration entries. `gate` above is a transaction
+// factory for adding a COLUMN to an EXISTING table (it probes
+// `pragma_table_info`); a new table needs no gate because the
+// `CREATE TABLE IF NOT EXISTS` batch above is already idempotent on re-open.
+// `the_three_task_tables_are_in_schema_and_have_no_gate_entry` pins both halves.
+//
+// NO foreign key on `space_path`, on either board table (ADR 0090). Closing a
+// Space tab runs `delete_space` (`DELETE FROM spaces WHERE path = ?1`), so a
+// board that cascaded away with the tab would lose a person's whole workflow to
+// a click that deletes nothing else; `sessions.cwd` carries no FK for exactly
+// this reason. The consequence is accepted and named: a Task whose Space has no
+// open tab is a **Detached task**, unreachable from the board until the folder
+// is re-opened. `task_sessions.session_id` DOES carry the cascade clause the
+// `messages`/`native_messages` tables already use — a deleted Session really
+// should drop its link row, and the Task card survives it.
+//
+// `on_enter` is `'none' | 'compact' | 'fresh'` (spec §5). It is a COLUMN rather
+// than a constant so both boost strategies can be tried and compared without
+// reopening the schema; nothing in v1 writes anything but the default.
 
 #[cfg(test)]
 mod tests;

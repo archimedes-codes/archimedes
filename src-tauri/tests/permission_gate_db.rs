@@ -13,7 +13,7 @@
 //!     unit test is invisible to the desktop anyway; and
 //!   * the crate cannot reach `storage::Db` at all — `rusqlite` is not in its
 //!     dependency graph (`DbError` wraps `rusqlite::Error`, Step B-bis), and
-//!     reaching `crate::storage` would be the `fulcrum-core →
+//!     reaching `crate::storage` would be the `fulcrum-harness →
 //!     archimedes_lib` edge that IS the package cycle T5 severs.
 //!
 //! So these four follow the rule Step D already states for the two-sided

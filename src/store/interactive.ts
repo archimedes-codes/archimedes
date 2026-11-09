@@ -69,8 +69,15 @@ export const isInteractivePause = (
   method: InteractiveRequestData["method"],
 ): boolean => method === "ask" || method === "confirm" || method === "password";
 
-/** A todo list item (the `manage_todo_list` `TodoItem` shape). */
-export interface TodoItem {
+/**
+ * One checklist item.
+ *
+ * The field names mirror the `manage_todo_list` wire shape. The engine crate's
+ * own type for that shape keeps the old spelling — `pub struct TodoItem` at
+ * `fulcrum-harness` `src/todo.rs:38` — and is NOT renamed here: it is frozen by
+ * ADR 0093 alongside the tool name and the two wire strings.
+ */
+export interface ChecklistItem {
   content: string;
   description?: string;
   status: "pending" | "in_progress" | "completed";
@@ -79,7 +86,7 @@ export interface TodoItem {
 /** The bus `TODOS_UPDATE` payload (verbatim over the wire). */
 export interface TodoUpdatePayload {
   source: string;
-  todos: TodoItem[];
+  todos: ChecklistItem[];
 }
 
 /**
@@ -199,7 +206,7 @@ interface InteractiveState {
    * board (ADR 0041). Boards are persistent session state seeded on
    * open/resume; a clear leaves the board empty until the next `todos_update`.
    */
-  todos: Record<string, TodoItem[]>;
+  todos: Record<string, ChecklistItem[]>;
   /** The agent state machine (`working`/`idle`/`blocked`) — wired, not rendered in v1. */
   agentState: Record<string, "working" | "idle" | "blocked">;
   /**
@@ -309,7 +316,7 @@ export const useInteractive = create<InteractiveState>((set) => ({
 
   applyTodoUpdate: (sessionId, payload) =>
     set((state) => {
-      const p = payload as { todos?: TodoItem[] } | null;
+      const p = payload as { todos?: ChecklistItem[] } | null;
       if (!p || !Array.isArray(p.todos)) return state;
       // Branch-free on purpose: the board is keyed by the SESSION id the frame
       // already carries, never by `payload.source` — every frame the desktop

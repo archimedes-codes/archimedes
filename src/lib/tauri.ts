@@ -138,6 +138,19 @@ export type {
   TeamDto,
   ProviderBudgetRowDto,
   ProviderBudgetDto,
+  // The Task board wire shapes (spec §2, ADR 0090). TYPE-ONLY — they vanish at
+  // runtime, so `TAURI_RUNTIME_API` does NOT gain them (the
+  // `AccessRule`/`AccessDirection` precedent); the board's command wrappers do
+  // enter it, each in the commit that added its wrapper. Named to match the Rust
+  // `Serialize` types one-for-one rather than with a `Dto` suffix, because
+  // `SpaceRow` and `MessageRow` — the two storage-row types already on this list —
+  // carry no suffix either, and the board's consumers (the task store, the board
+  // components) were planned against `TaskRow`/`StageRow`/`StageWithTasks`.
+  StageRow,
+  StageWithTasks,
+  TaskRow,
+  TaskSessionRow,
+  MoveTaskOutcome,
 } from "./tauri/types";
 
 export {
@@ -190,6 +203,22 @@ export {
   spaceForPath,
   reorderSpaces,
 } from "./tauri/commands/spaces";
+
+export {
+  getBoard,
+  createTask,
+  getTask,
+  editTask,
+  moveTask,
+  reorderTasks,
+  linkSession,
+  // (A4, spec §3) Starts a Session for a card through the SAME path
+  // `startSession` uses (no `system_prompt` seed — see the wrapper's doc) and
+  // records the `task_sessions` link. It enters `TAURI_RUNTIME_API` and
+  // `TAURI_PUBLIC_API` in this commit; it returns the already-pinned
+  // `SessionInfo`, so no new TYPE name enters with it.
+  startTaskSession,
+} from "./tauri/commands/tasks";
 
 export {
   listSkills,

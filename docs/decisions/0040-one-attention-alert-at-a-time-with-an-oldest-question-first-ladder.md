@@ -254,3 +254,22 @@ now closed from the other side: `finish_subagent` emits
 teardown, and `App.tsx`'s one close listener clears BOTH the interactive and
 the permission store. The ladder itself — question-over-`settled`, positional
 rank, oldest-wins, the child-rides-at-parent's-rank amendment — is unchanged.
+
+## Amendment (2026-11-09) — the rail's copy of the cue is gone; the ladder is not
+
+ADR 0094 deleted the collapsed **Session list** rail along with both panes' collapsed state.
+The 2026-10-16 amendment above lists three surfaces the unified `?` mark is drawn on — the
+session row's leading slot, the collapsed rail, and the **Space**'s tab. It is now two: the row
+and the tab, both drawn by `SessionStatusMark`. The "rail's waiting count" that the passage
+above it leans on is gone with the rail, and ADR 0038 carries the matching amendment.
+
+**This weakens the mitigation, not the decision.** The consequence being recorded there is that
+a displaced question keeps waiting with no alert behind it, and the argument for accepting that
+is that the in-app affordances carry it. One of those affordances has been removed, so what
+reminds the user of a displaced question is the row's `?`, the tab's `?`, and the gate's own
+card presenting itself where the user is already looking — the last of which is untouched and is
+the strongest of the three, because it needs the user to look at nothing new.
+
+The ladder itself is unaffected: question-over-`settled`, positional rank, oldest-wins, the
+child riding at its parent's rank, and the one-alert-per-pause renderer memory (ADR 0039) all
+stand. Nothing in this decision read the collapsed state of a pane, so nothing here had to move.

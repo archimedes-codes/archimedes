@@ -7,7 +7,7 @@ import { RowButton } from "./RowButton";
  *
  * Five surfaces spell the same affordance by hand (`SpacesList`'s session row,
  * its Archived-section header, its archived row, and the Skills and Model picker
- * rows) and a sixth (`TodoBoardPanel.tsx:278`) spells a DIFFERENT one — Space
+ * rows) and a sixth (`ChecklistPanel.tsx:278`) spells a DIFFERENT one — Space
  * also activates there, with `preventDefault`. This file pins the shared half:
  * `role="button"`, `tabIndex={0}`, Enter activates, Space does NOT, and exactly
  * one `role="button"` ancestor per row.
@@ -86,7 +86,7 @@ describe("RowButton — the affordance", () => {
   });
 
   it("Space does NOT activate (this is a row, not a todo-board tile)", () => {
-    // `TodoBoardPanel.tsx:278` handles `Enter || " "` with `preventDefault` —
+    // `ChecklistPanel.tsx:278` handles `Enter || " "` with `preventDefault` —
     // a different affordance, deliberately NOT folded in here. If this test
     // ever goes red because someone added a Space branch, that fold has
     // happened by accident and it changes what a keypress does in five other

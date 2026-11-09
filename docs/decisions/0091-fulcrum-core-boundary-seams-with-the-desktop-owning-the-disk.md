@@ -115,3 +115,35 @@ the second position. **Expand brace groups, and read the line, not the count.**
 - Two `harness` structures were called "pure" and are not: `trait Store` (all six methods return
   `Result<_, DbError>`) and `trust.rs` (holds `Arc<Db>`). Both would have failed at compile time
   after the move.
+
+## Amendment (2026-11-09) — the crate is `fulcrum-harness`, published to crates.io; the boundary is untouched
+
+The package this ADR is named after was renamed `fulcrum-core` → `fulcrum-harness` in its own repo
+(fulcrum#17, commit `12488ee`) and published to crates.io as **`fulcrum-harness` 0.1.0** on
+2026-11-08, from fulcrum commit `b52ce68`. `src-tauri/Cargo.toml` now pins that release
+(`fulcrum-harness = "0.1.0"`) instead of the `v0.1.0` git tag — not by preference but because the
+tag cannot carry the new name: it peels to `ae1fe97`, whose manifest still declares
+`name = "fulcrum-core"`, so a tag pin of the renamed package fails resolution outright. The tag is
+never re-pointed; the return path to tag + version is a NEW fulcrum tag on a post-rename commit.
+`src-tauri/Cargo.toml`'s PIN FORM block carries the measurements.
+
+**What still stands, which is all of it.** The ruling is unchanged in every particular: *a thing the
+crate needs but cannot hold becomes a seam, and a thing that holds a desktop type splits in two*.
+The rename moved **no code across the boundary** — not one trait, one impl, or one `pub use`. The
+`pub use fulcrum_harness::…` re-export seam this ADR specifies is the same seam with a new prefix
+(11 files under `src-tauri/src`, 12 counting `tests/fulcrum_seams.rs` — the same counts this ADR's
+own instrument printed before the rename). The desktop still owns the disk, `rusqlite` is still
+absent from the crate's graph, and `FulcrumPersistence` — a trait NAME, not a crate name — is
+spelled exactly as it was.
+
+**Reading the `crates/fulcrum-core/src/<file>.rs:<line>` citations in the body.** They are where the
+code lived when the decision was made, and they are deliberately left alone. That is not tidiness
+but precedent: fulcrum's own rename commit changed only the name and **preserved all 22 of its
+`crates/fulcrum-core/src/…` historical citations**, so the published crate still carries them too.
+The current address form for a crate file is `fulcrum/src/<path>.rs` in
+`https://github.com/archimedes-codes/fulcrum`, published as `fulcrum-harness`. Every path this ADR
+names still resolves at that form — spot-checked against the published `0.1.0` artifact.
+
+The ADR **file is not renamed**, and its title is not retconned. Nothing references it by path (all
+18 in-tree references cite "ADR 0091" by number), and the name is now a historical label in the same
+way the commit hashes it cites are.

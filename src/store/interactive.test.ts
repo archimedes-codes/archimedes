@@ -130,7 +130,7 @@ describe("todos", () => {
   /**
    * The shape guard (`!Array.isArray(p.todos)`) is the only thing standing
    * between a malformed frame and every board consumer in the Client —
-   * `useMainTodoItems` hands its result straight to `TodoBoardPanel`'s
+   * `useMainChecklistItems` hands its result straight to `ChecklistPanel`'s
    * `.filter`/`.map`, so a write of `"nope"` or `{}` would throw inside the
    * Side pane, not merely render oddly. It is also the ONLY guard left: ADR
    * 0041 deleted the `source` branch, so a payload with a bad label and a

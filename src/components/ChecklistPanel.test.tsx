@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
-import TodoBoardPanel, { useBoardOpenCount, useMainTodoItems } from "./TodoBoardPanel";
-import { useInteractive, type TodoItem } from "../store/interactive";
+import ChecklistPanel, { useBoardOpenCount, useMainChecklistItems } from "./ChecklistPanel";
+import { useInteractive, type ChecklistItem } from "../store/interactive";
 import { useSessions } from "../store/sessions";
 import { useSubagents } from "../store/subagents";
 import { useSubagentSelection } from "../store/subagentSelection";
@@ -31,7 +31,7 @@ beforeEach(() => {
   useSessions.setState({ messages: {}, activeSessionId: null });
 });
 
-describe("TodoBoardPanel", () => {
+describe("ChecklistPanel", () => {
   it("renders the section header (the Todos label + N/M) with a progress indicator for a main column", () => {
     // 1 done / 3 total.
     useInteractive.getState().applyTodoUpdate("main1", {
@@ -42,7 +42,7 @@ describe("TodoBoardPanel", () => {
         { content: "later item", status: "pending" },
       ],
     });
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     // The section label (the `SidePane` hosts the board as a section — the
     // ZCode `Goal`/`Progress` treatment: the header carries the label +
     // the count, the body the progress bar + checklist).
@@ -68,7 +68,7 @@ describe("TodoBoardPanel", () => {
         { content: "later item", status: "pending" },
       ],
     });
-    render(<TodoBoardPanel sessionId="main1" />);
+    render(<ChecklistPanel sessionId="main1" />);
     // Done: a `size-4` circle with a check icon, `text-success`.
     const doneRow = screen.getByText("done item").parentElement;
     const circle = doneRow?.querySelector(".text-success");
@@ -84,7 +84,7 @@ describe("TodoBoardPanel", () => {
   });
 
   it("renders NOTHING when there are no todos (the board is visible only while open todos exist)", () => {
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     // No "No todos yet" placeholder — an empty board is hidden entirely.
     expect(screen.queryByText("No todos yet")).toBeNull();
     expect(container.firstChild).toBeNull();
@@ -98,7 +98,7 @@ describe("TodoBoardPanel", () => {
         { content: "done two", status: "completed" },
       ],
     });
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     // No progress header, no checklist rows — a fully-completed board is
     // hidden (it carries no attention cue; the badge is gone too, via the
     // same open-count derivation).
@@ -122,7 +122,7 @@ describe("TodoBoardPanel", () => {
         { content: "later item", status: "pending" },
       ],
     });
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     // The board is the MAIN section: header + `N/M` + the checklist rows.
     expect(screen.getByText("Todos")).toBeTruthy();
     expect(screen.getByText("1/3")).toBeTruthy();
@@ -148,14 +148,14 @@ describe("TodoBoardPanel", () => {
         { content: "live two", status: "pending" },
       ],
     });
-    const { rerender, container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { rerender, container } = render(<ChecklistPanel sessionId="main1" />);
     expect(screen.getByText("live one")).toBeTruthy();
     expect(screen.getByText("live two")).toBeTruthy();
 
     act(() => {
       useInteractive.getState().applyTodoClear("main1");
     });
-    rerender(<TodoBoardPanel sessionId="main1" />);
+    rerender(<ChecklistPanel sessionId="main1" />);
 
     expect(screen.queryByText("live one")).toBeNull();
     expect(screen.queryByText("live two")).toBeNull();
@@ -204,7 +204,7 @@ describe("TodoBoardPanel", () => {
         ],
       },
     });
-    const { result } = renderHook(() => useMainTodoItems("main1"));
+    const { result } = renderHook(() => useMainChecklistItems("main1"));
     expect(result.current).toEqual([]);
   });
 
@@ -213,13 +213,13 @@ describe("TodoBoardPanel", () => {
   // `addSession` STAMPS `startedAt` itself (`Date.now()`), so the seeders below
   // never pass it. Two children added in the same millisecond therefore share a
   // `startedAt`, and their relative order is the store's insertion order — that
-  // is arrival order, and it is pinned in `src/hooks/useTodoBoards.test.ts`. The
+  // is arrival order, and it is pinned in `src/hooks/useChecklists.test.ts`. The
   // cases here therefore assert membership by TEXT, never by index.
 
   const seedChild = (
     sessionId: string,
     agentName: string,
-    todos: TodoItem[],
+    todos: ChecklistItem[],
     status: "running" | "completed" = "running",
   ) => {
     useSubagents.getState().addSession({
@@ -243,7 +243,7 @@ describe("TodoBoardPanel", () => {
       { content: "child done two", status: "completed" },
       { content: "child pending", status: "pending" },
     ]);
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     const block = container.querySelector<HTMLElement>(
       '[data-testid="todo-board-child"]',
     );
@@ -273,7 +273,7 @@ describe("TodoBoardPanel", () => {
       { content: "child done one", status: "completed" },
       { content: "child done two", status: "completed" },
     ]);
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     // The same visibility rule the parent's own list obeys — a finished
     // checklist holds no block open (and, with no parent board either, the
     // panel is hidden entirely).
@@ -291,7 +291,7 @@ describe("TodoBoardPanel", () => {
       [{ content: "child pending", status: "pending" }],
       "completed",
     );
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     // The block disappearing IS the cleanup: the outcome still reads in the
     // parent's "Delegating" card and in the child's own sheet.
     expect(
@@ -312,7 +312,7 @@ describe("TodoBoardPanel", () => {
     seedChild("sub1", "reviewer", [
       { content: "child pending", status: "pending" },
     ]);
-    render(<TodoBoardPanel sessionId="main1" />);
+    render(<ChecklistPanel sessionId="main1" />);
     // A board yields to the boards beside it: one row — the `in_progress` one.
     expect(screen.getByText("parent working")).toBeTruthy();
     expect(screen.queryByText("parent done")).toBeNull();
@@ -342,7 +342,7 @@ describe("TodoBoardPanel", () => {
     seedChild("sub1", "reviewer", [
       { content: "child pending", status: "pending" },
     ]);
-    render(<TodoBoardPanel sessionId="main1" />);
+    render(<ChecklistPanel sessionId="main1" />);
     // The Current todo is the `in_progress` entry, else the FIRST OPEN one —
     // OPEN meaning "not `completed`" (`CONTEXT.md`), which this fixture happens
     // to fill with `pending` items; the case below pins an open item whose
@@ -355,7 +355,7 @@ describe("TodoBoardPanel", () => {
   it("disambiguates two children that share an agent name: `researcher` and `researcher 2`", () => {
     // The panel must render `board.label`, never `board.agentName`: the `" 2"`
     // suffix is what tells two same-named children apart, and it is computed by
-    // `todoBoardsOf`' rule 6, so a panel that reached past the label would
+    // `checklistsOf`' rule 6, so a panel that reached past the label would
     // re-collide two headings with nothing else in the suite noticing.
     //
     // Seeded with `setState` rather than `addSession`, because `addSession`
@@ -390,7 +390,7 @@ describe("TodoBoardPanel", () => {
       source: "native",
       todos: [{ content: "beta one", status: "pending" }],
     });
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     const first = container.querySelector<HTMLElement>(
       '[data-testid="todo-board-child"][data-child="sub1"]',
     )!;
@@ -421,8 +421,8 @@ describe("TodoBoardPanel", () => {
 
   it("reduces the PARENT to an open item whose `status` is outside the union", () => {
     // `open` is `status !== "completed"` (`useBoardOpenCount`, and rule 4 of
-    // `todoBoardsOf`), while `useMainTodoItems` casts ANY model-authored string
-    // into `TodoItem["status"]`. So a hyphenated `"in-progress"` counted toward
+    // `checklistsOf`), while `useMainChecklistItems` casts ANY model-authored string
+    // into `ChecklistItem["status"]`. So a hyphenated `"in-progress"` counted toward
     // the number that AUTO-OPENS the frame while the old fallback — the first
     // `pending` specifically — returned `undefined`: the frame opened and the
     // reduced parent row rendered NOTHING.
@@ -440,7 +440,7 @@ describe("TodoBoardPanel", () => {
     seedChild("sub1", "reviewer", [
       { content: "child pending", status: "pending" },
     ]);
-    render(<TodoBoardPanel sessionId="main1" />);
+    render(<ChecklistPanel sessionId="main1" />);
     expect(screen.getByText("parent in flight")).toBeTruthy();
     expect(screen.queryByText("parent done")).toBeNull();
   });
@@ -467,7 +467,7 @@ describe("TodoBoardPanel", () => {
     seedChild("sub2", "builder", [
       { content: "beta pending", status: "pending" },
     ]);
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     const alpha = container.querySelector<HTMLElement>(
       '[data-testid="todo-board-child"][data-child="sub1"]',
     )!;
@@ -485,7 +485,7 @@ describe("TodoBoardPanel", () => {
       { content: "beta work", status: "in_progress" },
       { content: "beta later", status: "pending" },
     ]);
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     expect(
       container.querySelectorAll('[data-testid="todo-board-child"]'),
     ).toHaveLength(2);
@@ -524,7 +524,7 @@ describe("TodoBoardPanel", () => {
       { content: "child work", status: "in_progress" },
       { content: "child later", status: "pending" },
     ]);
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     const block = container.querySelector<HTMLElement>(
       '[data-testid="todo-board-child"]',
     )!;
@@ -579,7 +579,7 @@ describe("TodoBoardPanel", () => {
     seedChild("sub1", "reviewer", [
       { content: "child pending", status: "pending" },
     ]);
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     const block = container.querySelector<HTMLElement>(
       '[data-testid="todo-board-child"]',
     )!;
@@ -619,7 +619,7 @@ describe("TodoBoardPanel", () => {
       { content: "child done one", status: "completed" },
       { content: "child work", status: "in_progress" },
     ]);
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     const block = container.querySelector<HTMLElement>(
       '[data-testid="todo-board-child"]',
     )!;
@@ -658,7 +658,7 @@ describe("TodoBoardPanel", () => {
       { content: "child one", status: "pending" },
       { content: "child two", status: "pending" },
     ]);
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     const block = container.querySelector<HTMLElement>(
       '[data-testid="todo-board-child"]',
     )!;
@@ -715,7 +715,7 @@ describe("TodoBoardPanel", () => {
       seedChild("sub1", "reviewer", [
         { content: "child pending", status: "pending" },
       ]);
-      const { container } = render(<TodoBoardPanel sessionId="main1" />);
+      const { container } = render(<ChecklistPanel sessionId="main1" />);
       const block = container.querySelector<HTMLElement>(
         '[data-testid="todo-board-child"]',
       )!;
@@ -756,7 +756,7 @@ describe("TodoBoardPanel", () => {
       (screen.getByText(content).closest("li") as HTMLElement).querySelector(
         ".sr-only",
       )?.textContent;
-    const { rerender } = render(<TodoBoardPanel sessionId="main1" />);
+    const { rerender } = render(<ChecklistPanel sessionId="main1" />);
     expect(stateOf("ship the parser")).toBe("done");
     expect(stateOf("harden the cache")).toBe("in progress");
     expect(stateOf("retire the shim")).toBe("pending");
@@ -767,7 +767,7 @@ describe("TodoBoardPanel", () => {
       { content: "child working", status: "in_progress" },
       { content: "child waiting", status: "pending" },
     ]);
-    rerender(<TodoBoardPanel sessionId="main1" />);
+    rerender(<ChecklistPanel sessionId="main1" />);
     expect(stateOf("child shipped")).toBe("done");
     expect(stateOf("child working")).toBe("in progress");
     expect(stateOf("child waiting")).toBe("pending");
@@ -791,7 +791,7 @@ describe("TodoBoardPanel", () => {
     seedChild("sub1", "reviewer", [
       { content: "child pending", status: "pending" },
     ]);
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     // Both halves are drawn (the block, and the pane's own header), and the
     // emitter's label is absent from every one of them.
     expect(screen.getByText("parent working")).toBeTruthy();
@@ -812,7 +812,7 @@ describe("TodoBoardPanel", () => {
     seedChild("sub1", "reviewer", [
       { content: "child pending", status: "pending" },
     ]);
-    const { container } = render(<TodoBoardPanel sessionId="main1" />);
+    const { container } = render(<ChecklistPanel sessionId="main1" />);
     // The gate is board-wide: a delegation whose parent has nothing open still
     // opens the section.
     expect(container.firstChild).not.toBeNull();
@@ -859,7 +859,7 @@ describe("TodoBoardPanel", () => {
         },
       ],
     });
-    render(<TodoBoardPanel sessionId="main1" />);
+    render(<ChecklistPanel sessionId="main1" />);
     const textNode = screen.getByText(/Task 1: Fix hardcoded discriminator/);
     expect(textNode.className).toContain("break-words");
     const row = textNode.closest("li");

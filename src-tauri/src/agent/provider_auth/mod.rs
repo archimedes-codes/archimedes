@@ -77,7 +77,7 @@ pub mod refresh;
 // the traffic: `crate::agent::provider_auth::gcloud::TestAdcOverride`
 // (`session/mod.rs`'s cfg(test) ADC fixture + `tests/provider_gcloud_adc.rs`)
 // needs the MODULE, not just the named symbols.
-pub use fulcrum_core::provider_auth::{budget, cli_sso, gcloud, litellm_oauth, oidc, store};
+pub use fulcrum_harness::provider_auth::{budget, cli_sso, gcloud, litellm_oauth, oidc, store};
 
 // ── the desktop half of the `ProviderSource` seam (T7/S7.2, ADR 0091) ───────
 
@@ -102,7 +102,7 @@ impl budget::ProviderSource for SettingsProviderSource {
 /// "here is where settings live").
 ///
 /// The seam's other half is the crate's
-/// [`BudgetPoller::new_with_source`](fulcrum_core::provider_auth::budget::BudgetPoller::new_with_source),
+/// [`BudgetPoller::new_with_source`](fulcrum_harness::provider_auth::budget::BudgetPoller::new_with_source),
 /// which takes an `Arc<dyn ProviderSource>` — a shape no desktop call site wants
 /// to spell, because every desktop call site has a settings DIRECTORY. This
 /// helper is where the directory becomes a source, so `load_settings` is named
@@ -126,11 +126,11 @@ pub fn budget_poller_for(
 // crate now owns six of them under `provider_auth` — but the ALIAS stays,
 // because `session/mod.rs` (two `validate_base_url` calls) and
 // `tests/provider_headers.rs` still address `provider_auth::headers::…`.
-pub use fulcrum_core::provider_headers as headers;
+pub use fulcrum_harness::provider_headers as headers;
 
 // ── the named surface, as this file exported it before the move, minus the
 // names no desktop path ever spelled ──────────────────────────────────────────
-// Everything here resolves through `fulcrum_core::provider_auth` via the module
+// Everything here resolves through `fulcrum_harness::provider_auth` via the module
 // aliases above — `budget` included since S7.2, `refresh` the one desktop
 // module. The three free functions that used to be DEFINED here are re-exported
 // from the crate — `resolve_bearer_at` is named by `commands/settings.rs`,
@@ -146,7 +146,7 @@ pub use budget::{
     BUDGET_POLL_INTERVAL_MILLIS,
 };
 // The three functions this file USED TO DEFINE, now crate-owned.
-pub use fulcrum_core::provider_auth::{
+pub use fulcrum_harness::provider_auth::{
     gcloud_token_auth_enabled, resolve_bearer, resolve_bearer_at,
 };
 // From here down, the named block VERBATIM as it landed before the move — the

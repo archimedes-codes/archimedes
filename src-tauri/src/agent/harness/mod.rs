@@ -9,7 +9,7 @@
 //! # T5/S5b — this directory is now an ALIAS with two staying files
 //!
 //! The whole `harness` module moved to `crates/fulcrum-core/src/harness/`
-//! (`fulcrum_core::harness`). Two files stayed HERE, and both for the same
+//! (`fulcrum_harness::harness`). Two files stayed HERE, and both for the same
 //! reason — they hold a `storage::Db`, and the crate has no `rusqlite` in its
 //! graph (Step B-bis: `DbError` wraps `rusqlite::Error`, so nothing that touches
 //! a `Db` can cross the boundary):
@@ -27,7 +27,7 @@
 //! `web/render.rs` in S2: one `mod` path, two packages underneath, and the
 //! crate's own view of `harness` complete and desktop-free — nothing in the
 //! crate can name `harness::store::SessionStore`, because
-//! `crates/fulcrum-core/src/harness/mod.rs` declares neither file.
+//! `fulcrum/src/harness/mod.rs` declares neither file.
 //!
 //! The module-level `pub use` line below is the load-bearing half (the S1
 //! measurement: 193 module-qualified consumer paths, 36 errors from deleting one
@@ -45,17 +45,17 @@ pub mod trust;
 // `crate::agent::harness::launch::…` and `crate::agent::harness::r#loop::…` are
 // named by files outside `agent/`, and a named-only block leaves every one of
 // them dangling.
-pub use fulcrum_core::harness::{
+pub use fulcrum_harness::harness::{
     ask, catalog, compact, dispatch, launch, prompt, provider, r#loop, retry, tool_specs,
 };
 
 // The two S4-era aliases, now pointing at the crate's own `harness` (they were
-// `pub use fulcrum_core::{model_key, wire}` — the same aliases, one level up).
+// `pub use fulcrum_harness::{model_key, wire}` — the same aliases, one level up).
 // `crate::agent::harness::model_key::ModelKey` (`session/naming.rs:30`) and
 // `crate::agent::harness::WireApi` (the STAYING `config.rs`) both resolve here.
-pub use fulcrum_core::harness::{model_key, wire};
+pub use fulcrum_harness::harness::{model_key, wire};
 
-pub use fulcrum_core::harness::{
+pub use fulcrum_harness::harness::{
     build_child_system_message, build_main_prompt, build_provider, discover_models, merge_catalog,
     AgentLoop, CompactionConfig, InProcessDispatcher, Model, ModelCatalog, ModelKey, ModelOptions,
     ModelRequest, OpenAiCompatibleProvider, Prompt, PromptContext, PromptTurn, Provider,
@@ -67,10 +67,10 @@ pub use fulcrum_core::harness::{
 // `tool_specs()` the crate's own block re-exports), and naming it a second time
 // under the same spelling is E0252. `commands/settings.rs`'s `use …::harness::{tool_specs, Model}` then
 // `tool_specs()` resolves through the alias, exactly as it did pre-move.
-pub use fulcrum_core::harness::{ChatMessage, ChatRole, FinishReason, MessageContent, WireApi};
+pub use fulcrum_harness::harness::{ChatMessage, ChatRole, FinishReason, MessageContent, WireApi};
 // The store SPLIT: the trait + the two crate-side implementations come from the
 // crate, `SessionStore` is the desktop half declared above.
 pub use crate::agent::harness::store::SessionStore;
-pub use fulcrum_core::harness::store::{DisplayRow, NoopStore, Store};
-pub use fulcrum_core::trust::{StaticTrustSource, TrustSource};
+pub use fulcrum_harness::harness::store::{DisplayRow, NoopStore, Store};
+pub use fulcrum_harness::trust::{StaticTrustSource, TrustSource};
 pub use trust::SqliteTrustSource;
