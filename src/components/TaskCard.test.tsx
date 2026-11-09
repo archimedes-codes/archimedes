@@ -54,6 +54,21 @@ const task = (over: Partial<TaskRow> = {}): TaskRow => ({
   ...over,
 });
 
+/**
+ * The class STRING via the ATTRIBUTE, not `el.className` — the property is an
+ * `SVGAnimatedString` for SVG elements (`MutedCaption.test.tsx` carries the same
+ * note, and this helper is copied from there). It moved from inside the ladder
+ * `describe` to module scope because the ANATOMY cases below read classes too, and
+ * a helper two `describe` blocks away from one of its readers is a trap.
+ */
+function classOf(el: Element): string {
+  return el.getAttribute("class") ?? "";
+}
+
+/** Whole class TOKENS, so a substring of a longer utility cannot satisfy a
+ *  `toContain` the way it would on the raw class string. */
+const classTokens = (el: Element): string[] => classOf(el).split(/\s+/);
+
 /** A spread surface that records which handler ran, so the spread can be asserted
  *  as BEHAVIOUR and not only as an attribute list. */
 const dragSurface = (): DragCardHandlers => ({
@@ -81,6 +96,45 @@ describe("TaskCard — what it renders", () => {
     unmount();
     render(<TaskCard task={task({ body: null })} />);
     expect(screen.getByText("Ship the board")).toBeTruthy();
+  });
+
+  it("a card title wraps instead of clipping", () => {
+    // The title is the card's subject, and a card that clips it to one line hides
+    // the only sentence on it. `truncate` is `overflow:hidden; white-space:nowrap`
+    // — it is a CLIP, so a two-line title lost its second half with no affordance.
+    // `line-clamp-2` bounds the height the same way (a card strip cannot grow
+    // without limit) but WRAPS to get there, and `leading-snug` is the reference's
+    // title rhythm.
+    //
+    // Class tokens and not a rendered height: jsdom performs no layout, so the
+    // honest instrument here is the utility the merge actually emitted.
+    render(<TaskCard task={task()} />);
+    const tokens = classTokens(screen.getByText("Ship the board"));
+    expect(tokens).toContain("line-clamp-2");
+    expect(tokens).toContain("font-medium");
+    expect(tokens).toContain("leading-snug");
+    expect(tokens).not.toContain("truncate");
+  });
+
+  it("a card with a spec shows the spec chip, and one without shows none", () => {
+    // Net-new coverage: `specPath` is stored, crosses IPC and is read by the boost
+    // prompt, but NOTHING rendered it — so no existing pin protected it and a
+    // dropped field would have been silent. The chip is CONDITIONAL on the data
+    // existing rather than a placeholder for its absence, and the query pins the
+    // LABEL and not a `data-testid`: the string is the thing that can drift.
+    const { unmount } = render(
+      <TaskCard task={task({ specPath: "/tmp/spec.md" })} />,
+    );
+    const chip = screen.getByText("spec");
+    const tokens = classTokens(chip);
+    expect(tokens).toContain("rounded-full");
+    expect(tokens).toContain("bg-chat");
+    // The path itself is not the chip's text — it is a pointer, not a title, and
+    // rendering it would put an absolute filesystem path on every card.
+    expect(chip.textContent).toBe("spec");
+    unmount();
+    render(<TaskCard task={task({ specPath: null })} />);
+    expect(screen.queryByText("spec")).toBeNull();
   });
 
   it("carries the task id as the drag payload handle", () => {
@@ -189,19 +243,6 @@ describe("TaskCard — what it is NOT", () => {
 });
 
 describe("TaskCard — the surface ladder (ADR 0097: raise)", () => {
-  /**
-   * The class STRING via the ATTRIBUTE, not `el.className` — the property is an
-   * `SVGAnimatedString` for SVG elements (`MutedCaption.test.tsx` carries the same
-   * note, and this helper is copied from there).
-   */
-  function classOf(el: Element): string {
-    return el.getAttribute("class") ?? "";
-  }
-
-  /** Whole class TOKENS, so a substring of a longer utility cannot satisfy a
-   *  `toContain` the way it would on the raw class string. */
-  const classTokens = (el: Element): string[] => classOf(el).split(/\s+/);
-
   it("a card raises", () => {
     // The raise half of the pair — the recess half lives in
     // `TasksBoard.test.tsx` ("a column recesses"). A card sits ON a column, so it

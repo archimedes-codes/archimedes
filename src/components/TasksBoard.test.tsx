@@ -566,7 +566,7 @@ describe("TasksBoard — the surface ladder (ADR 0097: island, then recess)", ()
     //
     // `min-w-0` is the LOAD-BEARING one and is pinned here: the board is a direct
     // child of `content-row`, which is a flex ROW with no `flex-col`, so the main
-    // axis is width and a long row of `w-60` columns would otherwise push the
+    // axis is width and a long row of `w-72` columns would otherwise push the
     // section wide instead of handing the width to `overflow-x-auto`.
     //
     // `min-h-0` is deliberately ABSENT and asserted so: the parent is a row, not a
@@ -632,26 +632,93 @@ describe("TasksBoard — the surface ladder (ADR 0097: island, then recess)", ()
     expect(tokens).not.toContain("border-border");
   });
 
-  it("the board's columns are not double-padded", () => {
-    // The island's own `m-1` now provides the gutter the scroller used to carry,
-    // so keeping `px-3 pb-3` would stack 12px of padding outside a 4px margin and
-    // give the board a visibly fat bottom edge. The scroller has NO `data-testid`
-    // and gets none: the class is the thing under test, so it is also the handle,
-    // and `overflow-x-auto` appears exactly once inside the board (no column or
-    // card carries it), which makes this selector single-match by construction.
+  it("the board's columns line up with its header", () => {
+    // THE ALIGNMENT FIX, and the correction of a wrong call. An earlier pass
+    // dropped `px-3 pb-3` from the scroller on the theory that the island's `m-1`
+    // "provides the gutter". It does not: `m-1` is the OUTER frame gap — the 4px of
+    // chrome plane that shows OUTSIDE the island — and not inner padding at all.
+    // With the scroller unpadded the header sat inset 12px (`px-3`) while the first
+    // column started at 0, so the board had two left edges. The padding is therefore
+    // RESTORED and this case now asserts the opposite of what it used to.
+    //
+    // The scroller has NO `data-testid` and gets none: the class is the thing under
+    // test, so it is also the handle, and `overflow-x-auto` appears exactly once
+    // inside the board (no column or card carries it), which makes this selector
+    // single-match by construction.
     seeded();
     const scroller = document.querySelector(
       '[data-testid="tasks-board"] .overflow-x-auto',
     ) as HTMLElement | null;
     expect(scroller).toBeTruthy();
     const tokens = classTokens(scroller as HTMLElement);
-    expect(tokens).not.toContain("px-3");
-    expect(tokens).not.toContain("pb-3");
-    // And the three that must SURVIVE the trim: without `overflow-x-auto` the
-    // `w-60` columns have no escape and the island clips them; without `min-h-0`
-    // the scroller cannot shrink inside the `flex-col` root.
+    expect(tokens).toContain("px-3");
+    expect(tokens).toContain("pb-3");
+    // And the three that must SURVIVE the change: without `overflow-x-auto` the
+    // `w-72` columns have no escape and the island clips them; without `min-h-0`
+    // the scroller cannot shrink inside the `flex-col` root; without `gap-2` the
+    // columns touch.
     expect(tokens).toContain("overflow-x-auto");
     expect(tokens).toContain("min-h-0");
     expect(tokens).toContain("gap-2");
+    // The header's inset is the OTHER half of "one left edge" — pinned so a future
+    // edit cannot restore the mismatch by moving the header instead of the columns.
+    const header = screen
+      .getByRole("heading", { name: "Tasks" })
+      .closest("header") as HTMLElement;
+    expect(classTokens(header)).toContain("px-3");
+  });
+
+  it("the columns hug their content, not the board's height", () => {
+    // THE MECHANISM, pinned as a class because that is the only honest handle
+    // here: jsdom performs no layout, so a column's HEIGHT cannot be asserted at all
+    // (the drag tests stub every `getBoundingClientRect` with hardcoded rects, which
+    // is precisely why real column height affects no other assertion in this repo).
+    //
+    // The scroller is a flex ROW, and a flex row's default `align-items` is
+    // `stretch` — that default, and nothing else, is what stretched every column to
+    // the full board height. `items-start` is therefore THE switch: drop it and the
+    // column fills return, silently, no matter what the inner list does. The inner
+    // list is the second half: `flex-1` + `overflow-y-auto` made a column fill and
+    // scroll INTERNALLY, which is the behaviour being removed — with content-height
+    // columns the board scrolls instead (the scroller's `overflow-y-auto`).
+    seeded();
+    const scroller = document.querySelector(
+      '[data-testid="tasks-board"] .overflow-x-auto',
+    ) as HTMLElement | null;
+    expect(scroller).toBeTruthy();
+    expect(classTokens(scroller as HTMLElement)).toContain("items-start");
+    // A tall column scrolls the BOARD, so the vertical axis has to be scrollable
+    // here once no column scrolls itself.
+    expect(classTokens(scroller as HTMLElement)).toContain("overflow-y-auto");
+    // The inner list is the card strip; the slot is its direct child, so the
+    // slot's parent IS the list — no new selector or attribute needed.
+    const slot = within(screen.getByTestId("task-column-backlog")).getByTestId(
+      "task-card-slot",
+    );
+    const list = slot.parentElement as HTMLElement;
+    expect(list).toBeTruthy();
+    const listTokens = classTokens(list);
+    expect(listTokens).toContain("flex");
+    expect(listTokens).toContain("flex-col");
+    expect(listTokens).not.toContain("flex-1");
+    expect(listTokens).not.toContain("overflow-y-auto");
+    expect(listTokens).not.toContain("min-h-0");
+  });
+
+  it("the column count is a pill on the island plane", () => {
+    // The count is a COUNT, not a caption, so it gets a fill rather than quiet ink.
+    // `bg-chat` is the one token that reads on BOTH surfaces it can sit near: it is
+    // one step ABOVE the column's `bg-panel` (measured 1.22) and one step BELOW the
+    // card's `bg-card` (1.21). `bg-panel` would be 1.00 — invisible — against a card
+    // in every palette, and `bg-card` likewise against the island.
+    seeded();
+    const count = within(screen.getByTestId("task-column-backlog")).getByText("1");
+    const tokens = classTokens(count);
+    expect(tokens).toContain("rounded-full");
+    expect(tokens).toContain("bg-chat");
+    // The number is DATA and not only a class — the column still reports its own
+    // count, which is what `renders one column per stage` and the empty-column case
+    // read through `textContent`.
+    expect(count.textContent).toBe("1");
   });
 });
