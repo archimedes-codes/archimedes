@@ -126,7 +126,14 @@ describe("settings primitives (the ZCode port)", () => {
     const card = container.querySelector('[data-slot="card"]') as HTMLElement;
     expect(card).toBeTruthy();
     expect(card.className).toContain("rounded-xl");
-    expect(card.className).toContain("bg-card");
+    // THE RECESSED TOKEN, not the raised one. `dracula.css` states the rule this
+    // pins: *"the slab is a high plane, so the only way to separate from it is
+    // downward"* — a section card lives INSIDE a `bg-chat` island, so it recesses
+    // the way `MessageBubble` / `ToolCallCard` / `CodemodeCard` recess inside the
+    // transcript. `ui/card.tsx` merges through `cn()`, so the caller's
+    // background token REPLACES Card's own rather than losing a cascade fight.
+    expect(card.className).toContain("bg-panel");
+    expect(card.className).not.toContain("bg-card");
   });
 });
 

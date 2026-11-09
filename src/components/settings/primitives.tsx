@@ -14,10 +14,20 @@ import {
 /**
  * A settings section card: a rounded-xl card hosting rows (the ZCode
  * `SettingsGroupCard` port).
+ *
+ * The RAISED token is replaced with the recessed one (`bg-panel`), because this
+ * card sits INSIDE an island. The transcript makes the same choice for the same
+ * reason (`MessageBubble`, `ToolCallCard`, `CodemodeCard`): `dracula.css` states
+ * the rule — *"the slab is a high plane, so the only way to separate from it is
+ * downward"*. A raised card inside a `bg-chat` island is a raise stacked on a
+ * raise and reads as mush; recessing it to `bg-panel` gives it the same 1.22 the
+ * Session list has to the transcript. `ui/card.tsx` merges through `cn()`, so
+ * this REPLACES the Card's own background token rather than fighting it. Do not
+ * "restore" the raised token here.
  */
 export function SettingsGroupCard({ children }: { children: ReactNode }): ReactElement {
   return (
-    <Card className="overflow-hidden rounded-xl border border-border bg-card py-0 shadow-none">
+    <Card className="overflow-hidden rounded-xl border border-border bg-panel py-0 shadow-none">
       <CardContent className="space-y-0 px-0">{children}</CardContent>
     </Card>
   );

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeAll, afterEach, beforeEach } from "vitest";
 import {
+  act,
   render,
   screen,
   fireEvent,
@@ -8,6 +9,10 @@ import {
   within,
 } from "@testing-library/react";
 import SettingsPage from "./SettingsPage";
+// The Session list, for the ONE case that pins ADR 0097's chrome/island boundary
+// from the client side (the new describe at the bottom). Nothing else in this
+// file touches it.
+import SpacesList from "@/components/SpacesList";
 import {
   authMcpServer,
   externalOpen,
@@ -2654,5 +2659,87 @@ describe("SettingsPage (the provider auth fields + the spend/budget line — #12
     expect(getProviderBudget).not.toHaveBeenCalledWith("true");
     // And the refresh's OWN contract still holds (the model catalog + windows).
     expect(listModels).toHaveBeenCalledWith("tama");
+  });
+});
+
+describe("SettingsPage (the two islands — ADR 0097)", () => {
+  /** The class STRING via the ATTRIBUTE, not `.className` (which is an
+   *  `SVGAnimatedString` on SVG — `MutedCaption.test.tsx` carries the same note). */
+  const classTokens = (el: Element): string[] =>
+    (el.getAttribute("class") ?? "").split(/\s+/);
+
+  /** The page root: the parent of the content island. */
+  const pageRoot = (): HTMLElement =>
+    screen.getByTestId("settings-content").parentElement as HTMLElement;
+
+  /** The Menu panel — the shell the section `<nav>` sits inside, identified
+   *  STRUCTURALLY (the root's first child) rather than by a class query, so the
+   *  assertions below cannot be satisfied by some other `rounded-xl` box that
+   *  happens to exist. The `contains` check makes that identification
+   *  self-verifying: if the first child were not the shell, this throws instead
+   *  of quietly asserting about the wrong element. */
+  const menuPanel = (): HTMLElement => {
+    const panel = pageRoot().children[0] as HTMLElement;
+    expect(panel.contains(screen.getByRole("navigation", { name: "Settings sections" }))).toBe(
+      true,
+    );
+    return panel;
+  };
+
+  it("the settings view renders TWO islands", async () => {
+    // The defect this replaces was a `grid` with NO background: the view
+    // inherited the frame colour `#191a21` — the exact colour the Session list is
+    // painted — so its contrast against the pane to its left was 1.00 and the
+    // surface read as the background showing through. Both halves of the island
+    // recipe are pinned: `m-1` (the 4px frame gap; two facing ones make the 8px
+    // gutter that replaced the `border-r`) and `rounded-xl` (what makes it read
+    // as an island rather than a column).
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
+    await loaded();
+    const panel = classTokens(menuPanel());
+    const content = classTokens(screen.getByTestId("settings-content"));
+    expect(panel).toContain("m-1");
+    expect(panel).toContain("rounded-xl");
+    expect(content).toContain("m-1");
+    expect(content).toContain("rounded-xl");
+    // TWO islands means a GAP, not a divider: the frame plane shows between them.
+    expect(pageRoot().className.split(/\s+/)).toContain("flex");
+  });
+
+  it("the Menu panel adds NO second navigation landmark", async () => {
+    // `getAllByRole` + a length, NOT `getByRole`: `getByRole` THROWS on the
+    // duplicate case this guards, so a test built on it cannot distinguish "one
+    // landmark" from "the shell and the inner nav both claim the name" — it would
+    // fail with an unhelpful throw instead of a readable count. The name belongs
+    // to the `<nav>` inside the shell and to nothing else; `App.test.tsx` queries
+    // it three times and would break on a second owner.
+    render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
+    await loaded();
+    expect(
+      screen.getAllByRole("navigation", { name: "Settings sections" }),
+    ).toHaveLength(1);
+  });
+
+  it("the Session list is NOT an island", async () => {
+    // ADR 0097's boundary, pinned from the client side: the `bg-frame` plane is
+    // CHROME — the titlebar and the Session list — and everything that happens is
+    // an island above it. `MenuPanel` floats; the Session list must not, or the
+    // two planes collapse into one and the rule stops meaning anything. Rendered
+    // beside the page (not inside it) because the pane is `App`'s, not a Settings
+    // child; `cleanup()` first so the `aside` found below is unambiguous.
+    cleanup();
+    render(<SpacesList />);
+    // The pane fires two boot catalog reads on mount (the Skills + Agents
+    // fetches); flush them so no state update lands outside `act`. Its OWN test
+    // file emits the same warnings by the hundred — this case just declines to
+    // add to the noise.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const pane = screen.getByText("Sessions").closest("aside") as HTMLElement;
+    expect(pane).toBeTruthy();
+    expect(classTokens(pane)).not.toContain("rounded-xl");
+    expect(classTokens(pane)).not.toContain("m-1");
+    expect(classTokens(pane)).toContain("bg-frame");
   });
 });
