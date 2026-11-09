@@ -67,7 +67,11 @@ export default function TaskCard({ task, drag, active }: TaskCardProps) {
       // reorder it.
       {...drag}
       className={cn(
-        "flex flex-col gap-1 rounded-lg border border-border bg-surface px-2.5 py-2",
+        // ADR 0097's RAISED rung: a card sits ON a column, so it goes up a step
+        // while the column goes down one — the two used to share a single
+        // translucent token, which made a card the same colour as the surface it
+        // rested on with the separation carried entirely by the border.
+        "flex flex-col gap-1 rounded-lg border border-border bg-card px-2.5 py-2",
         // A dragged card reads as LIFTED — its ink drops while it is in the air.
         // That is the card's ONLY state, because the card is what is being carried;
         // "you will land here" belongs to the column (see `data-over` above), so the

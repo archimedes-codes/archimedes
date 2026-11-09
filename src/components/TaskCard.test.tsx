@@ -187,3 +187,43 @@ describe("TaskCard — what it is NOT", () => {
     expect(el.tagName).toBe("DIV");
   });
 });
+
+describe("TaskCard — the surface ladder (ADR 0097: raise)", () => {
+  /**
+   * The class STRING via the ATTRIBUTE, not `el.className` — the property is an
+   * `SVGAnimatedString` for SVG elements (`MutedCaption.test.tsx` carries the same
+   * note, and this helper is copied from there).
+   */
+  function classOf(el: Element): string {
+    return el.getAttribute("class") ?? "";
+  }
+
+  /** Whole class TOKENS, so a substring of a longer utility cannot satisfy a
+   *  `toContain` the way it would on the raw class string. */
+  const classTokens = (el: Element): string[] => classOf(el).split(/\s+/);
+
+  it("a card raises", () => {
+    // The raise half of the pair — the recess half lives in
+    // `TasksBoard.test.tsx` ("a column recesses"). A card sits ON a column, so it
+    // goes UP a rung (`bg-card`) while the column goes down (`bg-panel`): the two
+    // used to share one translucent token, which made a card the same colour as
+    // the column it sat in, with the separation carried entirely by the border.
+    // Pinning ONE of the two would let a sweep that returns both to that shared
+    // token pass half the pair, so both files carry one half.
+    //
+    // Token strings and not computed colours: jsdom resolves no cascade, so
+    // `getComputedStyle` answers `""` here and would certify a broken card.
+    render(<TaskCard task={task()} />);
+    const tokens = classTokens(screen.getByTestId("task-card"));
+    expect(tokens).toContain("bg-card");
+    expect(tokens).not.toContain("bg-surface");
+    // The border is what carries the card in zai-light, where the recessed and the
+    // raised tokens are both `#ffffff`.
+    expect(tokens).toContain("border-border");
+    // And the class survives `cn()`'s merge — the lifted-ink comment below the
+    // string in source is a comment, not a second background, so exactly ONE
+    // background token is on the node.
+    expect(tokens.filter((token) => /^bg-/.test(token))).toEqual(["bg-card"]);
+    expect(classOf(screen.getByTestId("task-card"))).toBeTruthy();
+  });
+});

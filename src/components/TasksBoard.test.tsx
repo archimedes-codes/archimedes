@@ -162,6 +162,20 @@ const dropAt = (clientX: number, clientY = 10) => {
   return ev;
 };
 
+/**
+ * The class STRING via the ATTRIBUTE, not `el.className` — the property is an
+ * `SVGAnimatedString` for SVG elements, so reading the property would throw (or
+ * read an object) the moment one of these nodes is swapped for an SVG one.
+ * Copied from `MutedCaption.test.tsx`, which carries the same note.
+ */
+function classOf(el: Element): string {
+  return el.getAttribute("class") ?? "";
+}
+
+/** Whole class TOKENS, so `bg-panel` cannot be satisfied by a substring of some
+ *  longer utility the way a `toContain` on the raw string would allow. */
+const classTokens = (el: Element): string[] => classOf(el).split(/\s+/);
+
 beforeEach(() => {
   resetStores();
   useTasks.getState().reset();
@@ -522,5 +536,94 @@ describe("TasksBoard — the New Task modal's render site (A5)", () => {
         within(screen.getByTestId("task-column-backlog")).getByText("T9"),
       ).toBeTruthy(),
     );
+  });
+});
+
+describe("TasksBoard — the surface ladder (ADR 0097: island, then recess)", () => {
+  // Three of the four rungs the board owns, pinned as CLASS TOKENS. This file had
+  // zero className assertions before this block — everything else here reads
+  // `data-testid` / `data-*` / call counts — and the defect being fixed here is
+  // invisible to all of those: the board's root was painted the CHROME colour, the
+  // exact colour the Session list wears, so island-vs-chrome contrast was 1.00 and
+  // the board read as the background showing through. One level lower, the column
+  // and the card wore the SAME token, so a card sitting ON a column was the same
+  // colour as the column it sat in, separated only by its border.
+  //
+  // Token strings and not computed colours: jsdom resolves no cascade, so
+  // `getComputedStyle` would answer `""` for every one of these and the test would
+  // pass on a broken board.
+  const seeded = () => {
+    useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
+    render(<TasksBoard activeSpacePath={SPACE} />);
+  };
+
+  it("the board is an island", () => {
+    // The island recipe the Side pane and the Settings halves already wear:
+    // `m-1` (the 4px frame gap that lets the chrome plane show around it),
+    // `rounded-xl` (what makes it read as an island and not a column), `bg-chat`
+    // (the transcript's own plane, one rung above chrome), and `overflow-hidden`
+    // (the island clips its own corners).
+    //
+    // `min-w-0` is the LOAD-BEARING one and is pinned here: the board is a direct
+    // child of `content-row`, which is a flex ROW with no `flex-col`, so the main
+    // axis is width and a long row of `w-60` columns would otherwise push the
+    // section wide instead of handing the width to `overflow-x-auto`.
+    //
+    // `min-h-0` is deliberately ABSENT and asserted so: the parent is a row, not a
+    // column, so `min-height:auto` never blocks shrinking, and `overflow-hidden`
+    // already gives a flex item an automatic minimum size of zero per the flexbox
+    // spec. `SidePane`'s root — the exact structural twin (row child, `flex-col`,
+    // `overflow-hidden`) — carries neither.
+    seeded();
+    const tokens = classTokens(screen.getByTestId("tasks-board"));
+    expect(tokens).toContain("m-1");
+    expect(tokens).toContain("rounded-xl");
+    expect(tokens).toContain("bg-chat");
+    expect(tokens).toContain("overflow-hidden");
+    expect(tokens).toContain("min-w-0");
+    expect(tokens).not.toContain("min-h-0");
+    // The chrome token must be GONE, not merely joined by another: two background
+    // utilities on one node is a tie CSS resolves by stylesheet order, so a
+    // half-migrated root would still paint chrome on some themes.
+    expect(tokens).not.toContain("bg-frame");
+  });
+
+  it("a column recesses", () => {
+    // The recess half of the pair — the raise half lives in
+    // `TaskCard.test.tsx`, where the card's own tests live. Together they pin the
+    // PAIR: an edit that returns both to the one shared translucent token reddens
+    // one of the two. A column sits ON the island, so it goes DOWN a rung
+    // (`bg-panel`), which is what `MessageBubble` / `ToolCallCard` already do
+    // inside the transcript for the same reason. `border border-border` stays: in
+    // zai-light `bg-panel` and `bg-card` are both `#ffffff`, so there the border is
+    // the only thing separating a column from the island under it.
+    seeded();
+    const tokens = classTokens(screen.getByTestId("task-column-backlog"));
+    expect(tokens).toContain("bg-panel");
+    expect(tokens).not.toContain("bg-surface");
+    expect(tokens).toContain("border-border");
+  });
+
+  it("the board's columns are not double-padded", () => {
+    // The island's own `m-1` now provides the gutter the scroller used to carry,
+    // so keeping `px-3 pb-3` would stack 12px of padding outside a 4px margin and
+    // give the board a visibly fat bottom edge. The scroller has NO `data-testid`
+    // and gets none: the class is the thing under test, so it is also the handle,
+    // and `overflow-x-auto` appears exactly once inside the board (no column or
+    // card carries it), which makes this selector single-match by construction.
+    seeded();
+    const scroller = document.querySelector(
+      '[data-testid="tasks-board"] .overflow-x-auto',
+    ) as HTMLElement | null;
+    expect(scroller).toBeTruthy();
+    const tokens = classTokens(scroller as HTMLElement);
+    expect(tokens).not.toContain("px-3");
+    expect(tokens).not.toContain("pb-3");
+    // And the three that must SURVIVE the trim: without `overflow-x-auto` the
+    // `w-60` columns have no escape and the island clips them; without `min-h-0`
+    // the scroller cannot shrink inside the `flex-col` root.
+    expect(tokens).toContain("overflow-x-auto");
+    expect(tokens).toContain("min-h-0");
+    expect(tokens).toContain("gap-2");
   });
 });

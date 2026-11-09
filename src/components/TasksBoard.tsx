@@ -133,7 +133,20 @@ export default function TasksBoard({
 
   return (
     <section
-      className="flex min-w-0 flex-1 flex-col bg-frame"
+      // ADR 0097: the frame plane is CHROME and every view surface is an ISLAND
+      // above it. This root used to wear the chrome colour itself — the same one
+      // the Session list is painted — so the board sat at contrast 1.00 against
+      // the pane beside it and read as the background showing through rather than
+      // as a surface. It now floats on the island recipe the Side pane and both
+      // Settings halves wear: `m-1` (the 4px frame gap), `rounded-xl`, and the
+      // transcript's own plane. `overflow-hidden` clips the island's corners, and
+      // per the flexbox spec it also drops a flex item's automatic minimum size to
+      // zero — which is why NO `min-height` utility is needed here on top of the
+      // `min-w-0` that IS load-bearing: the parent (`content-row`) is a flex ROW,
+      // so width is the main axis and without it a long row of `w-60` columns
+      // would push this section wide instead of handing the overflow to the
+      // scroller below.
+      className="relative m-1 flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-chat"
       data-testid="tasks-board"
       aria-label="Task board"
     >
@@ -220,7 +233,7 @@ export default function TasksBoard({
         // error, and it must not claim the board is empty when the FETCH failed.
         <EmptyListLine>The board has not loaded yet.</EmptyListLine>
       ) : (
-        <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-3 pb-3">
+        <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto">
           {stages.length === 0 ? (
             <EmptyListLine>This Space has no stages yet.</EmptyListLine>
           ) : (
@@ -310,10 +323,10 @@ function TaskColumn({
       // `cn()` and NOT a ternary over two class lists: `classNameConvention.test.ts`
       // gates every ternary-shaped `className` through a pinned allowlist, and here
       // `cn()` is also simply the right tool — `bg-selected` must win the background
-      // group against the resting `bg-surface`, which a merge does and a concatenation
+      // group against the resting `bg-panel`, which a merge does and a concatenation
       // leaves to CSS order.
       className={cn(
-        "flex w-60 shrink-0 flex-col gap-1.5 rounded-lg border border-border bg-surface p-1.5",
+        "flex w-60 shrink-0 flex-col gap-1.5 rounded-lg border border-border bg-panel p-1.5",
         // The drop-target band. `border-brand` is the SAME ink the two existing drag
         // call sites use for "you will land here" (`SessionListRow`'s `border-brand`
         // edge, `SpaceTabs`' `border-brand`), so one gesture keeps one visual language.
