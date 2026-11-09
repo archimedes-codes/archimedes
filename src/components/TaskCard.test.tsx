@@ -217,13 +217,35 @@ describe("TaskCard — the surface ladder (ADR 0097: raise)", () => {
     const tokens = classTokens(screen.getByTestId("task-card"));
     expect(tokens).toContain("bg-card");
     expect(tokens).not.toContain("bg-surface");
-    // The border is what carries the card in zai-light, where the recessed and the
-    // raised tokens are both `#ffffff`.
-    expect(tokens).toContain("border-border");
+    // The seam is what carries the card in zai-light, where the recessed and the
+    // raised tokens are both `#ffffff` — and the seam is the SEAM token now, not
+    // the generic border (see the matching case in `TasksBoard.test.tsx`). The
+    // four quiet palettes keep `--color-card-border` aliasing `--color-border`
+    // (10% alpha) exactly so that sentence stays true; only Dracula retunes it.
+    expect(tokens).toContain("border-card-border");
+    expect(tokens).not.toContain("border-border");
     // And the class survives `cn()`'s merge — the lifted-ink comment below the
     // string in source is a comment, not a second background, so exactly ONE
     // background token is on the node.
     expect(tokens.filter((token) => /^bg-/.test(token))).toEqual(["bg-card"]);
     expect(classOf(screen.getByTestId("task-card"))).toBeTruthy();
+  });
+
+  it("the seam is the card-border token, not the generic border", () => {
+    // Dracula is the only palette whose `--color-border` is OPAQUE (`#6272a4`,
+    // 3.68 against the column fill it rests on) while its elevation ladder steps
+    // 1.22 / 1.47 — so a card outline drawn in that token out-shone the two fills
+    // it was meant to sit between. The palette already declares a seam token for
+    // this job (`--color-card-border`, retuned in `.theme-dracula` alone), so the
+    // card consumes THAT and the generic border is GONE rather than merely joined:
+    // two border-colour utilities on one node is a tie CSS resolves by stylesheet
+    // order, so a half-migrated card would still paint the loud ink on Dracula.
+    //
+    // Both halves are asserted because the migration is a SWAP: a pin that only
+    // checked for the new token would pass on a card carrying both.
+    render(<TaskCard task={task()} />);
+    const tokens = classTokens(screen.getByTestId("task-card"));
+    expect(tokens).toContain("border-card-border");
+    expect(tokens).not.toContain("border-border");
   });
 });

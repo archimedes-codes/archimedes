@@ -601,7 +601,35 @@ describe("TasksBoard — the surface ladder (ADR 0097: island, then recess)", ()
     const tokens = classTokens(screen.getByTestId("task-column-backlog"));
     expect(tokens).toContain("bg-panel");
     expect(tokens).not.toContain("bg-surface");
-    expect(tokens).toContain("border-border");
+    // The seam is the SEAM token now, not the generic border. The reasoning in the
+    // comment above still holds, it just applies to `--color-card-border`: in
+    // zai-light `bg-panel` and `bg-card` are both `#ffffff`, so there the seam is
+    // the only thing separating a column from the island under it — and the four
+    // quiet palettes keep that token aliasing `--color-border` (10% alpha) exactly
+    // so this sentence stays true.
+    expect(tokens).toContain("border-card-border");
+    expect(tokens).not.toContain("border-border");
+  });
+
+  it("the seam is the card-border token, not the generic border", () => {
+    // Dracula is the only palette whose `--color-border` is OPAQUE (`#6272a4`,
+    // 3.68 against the column fill) while its elevation ladder steps 1.22 / 1.47
+    // — so a column outline drawn in that token dominated the fills it was meant
+    // to sit between. The palette declares a seam token for exactly this job and
+    // it had effectively no consumer, so the board's resting seam routes through
+    // it and the generic border must be GONE rather than merely joined: two
+    // border-colour utilities on one node is a tie CSS resolves by stylesheet
+    // order, so a half-migrated column would still paint the loud ink on Dracula.
+    //
+    // The DRAG affordance is deliberately not pinned here. A drop target is meant
+    // to be loud, and the gesture state is DATA (`data-over`, asserted in the
+    // case above) rather than a class — the same reason `SessionStatusMark` is
+    // queried by `data-dot`: a test that asserts on the STATE cannot pass because
+    // a different utility happened to survive tailwind-merge.
+    seeded();
+    const tokens = classTokens(screen.getByTestId("task-column-backlog"));
+    expect(tokens).toContain("border-card-border");
+    expect(tokens).not.toContain("border-border");
   });
 
   it("the board's columns are not double-padded", () => {

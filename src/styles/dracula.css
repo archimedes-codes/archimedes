@@ -294,7 +294,26 @@
    * so this is a forward declaration; `bg-selected`, the white-overlay token
    * `.theme-zai-dark` shares, is what the sidebar rows actually paint with.) */
   --color-card-selected: #424450; /* Background Lighter — the selection state */
-  --color-card-border: var(--color-border);
+  /* THE SEAM — the line a resting surface is outlined with, and the only border
+   * token a board surface is allowed to draw.
+   *
+   * It used to alias `--color-border`, and that is the one palette where the
+   * alias is wrong: **Dracula is the only palette whose `--color-border` is
+   * OPAQUE** (`#6272a4`, Current Line — 3.68 against the column fill), while the
+   * other four are 10% alpha. So a seam that is quiet everywhere else screams
+   * here, and an outline that dominates the fills it separates inverts the
+   * elevation ladder it is supposed to sit under (the ladder steps 1.22 / 1.47).
+   *
+   * `#21222c` (Background Dark, the page step) is the exact midpoint of the two
+   * surfaces this line joins — the recessed column `#191a21` and the island
+   * `#282a36` — so the seam reads as neither highlight nor shadow, just a seam.
+   *
+   * MUST STAY A SPEC-PUBLISHED HEX: `paletteCompleteness.test.ts:646` rejects any
+   * hex in this block that the Dracula spec does not publish, so this value may
+   * not be "improved" into an invented hue. And `--color-border` itself is NOT
+   * touched — it feeds inputs, popovers, tabs and every divider app-wide and is
+   * graded by the LADDER and Selection gates. */
+  --color-card-border: #21222c;
   --color-popover: #282a36; /* floating interactive elements */
   --color-popover-foreground: var(--color-foreground);
   --color-popover-header: #191a21;

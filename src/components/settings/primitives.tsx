@@ -24,10 +24,20 @@ import {
  * Session list has to the transcript. `ui/card.tsx` merges through `cn()`, so
  * this REPLACES the Card's own background token rather than fighting it. Do not
  * "restore" the raised token here.
+ *
+ * NO border utility is spelled here at all, and that is a deletion rather than an
+ * omission: `ui/card.tsx` already draws the seam with `border-card-border`, and
+ * `border-border` is the SAME tailwind-merge group — so the `border border-border`
+ * this call site used to carry did not sit alongside the base's token, it deleted
+ * it. The seam token is the quiet one (in Dracula — the only palette whose
+ * `--color-border` is opaque — it is the page step rather than Current Line), so a
+ * section card inside a `bg-chat` island now rests on a seam instead of outlining
+ * itself in the loudest line in the palette. Replacing this with a second border
+ * utility would let the merge silently put the loud one back.
  */
 export function SettingsGroupCard({ children }: { children: ReactNode }): ReactElement {
   return (
-    <Card className="overflow-hidden rounded-xl border border-border bg-panel py-0 shadow-none">
+    <Card className="overflow-hidden rounded-xl bg-panel py-0 shadow-none">
       <CardContent className="space-y-0 px-0">{children}</CardContent>
     </Card>
   );

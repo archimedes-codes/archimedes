@@ -326,7 +326,7 @@ function TaskColumn({
       // group against the resting `bg-panel`, which a merge does and a concatenation
       // leaves to CSS order.
       className={cn(
-        "flex w-60 shrink-0 flex-col gap-1.5 rounded-lg border border-border bg-panel p-1.5",
+        "flex w-60 shrink-0 flex-col gap-1.5 rounded-lg border border-card-border bg-panel p-1.5",
         // The drop-target band. `border-brand` is the SAME ink the two existing drag
         // call sites use for "you will land here" (`SessionListRow`'s `border-brand`
         // edge, `SpaceTabs`' `border-brand`), so one gesture keeps one visual language.
