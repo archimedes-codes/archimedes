@@ -2198,7 +2198,9 @@ describe("App (the Task board view)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
 
-    fireEvent.change(await screen.findByRole("textbox"), {
+    // Named, not bare: the modal now has a Title `<input>` AND a Body `<textarea>`,
+    // and BOTH carry ARIA role `textbox`, so an unnamed query is an ambiguous match.
+    fireEvent.change(await screen.findByRole("textbox", { name: "Title" }), {
       target: { value: "Fix the parser" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Backlog" }));

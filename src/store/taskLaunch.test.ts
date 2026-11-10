@@ -392,7 +392,8 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
     seedBoard(column("backlog"), column("research"));
     const created = await createTaskFromDraft(
       SPACE,
-      "Wire the board\nIt needs a detail modal.",
+      "Wire the board",
+      "It needs a detail modal.",
       "backlog",
       CATALOGS(),
     );
@@ -412,7 +413,7 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
 
   it("lands the new card in the board the human is looking at", async () => {
     seedBoard(column("backlog"), column("research"));
-    await createTaskFromDraft(SPACE, "Wire the board", "backlog", CATALOGS());
+    await createTaskFromDraft(SPACE, "Wire the board", null, "backlog", CATALOGS());
     expect(
       useTasks.getState().boardsBySpace[SPACE]?.find((c) => c.stage.slug === "backlog")
         ?.tasks.map((t) => t.task.id),
@@ -421,7 +422,7 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
 
   it("creates the card BEFORE the Session is started for discuss", async () => {
     seedBoard(column("backlog"), column("research"));
-    await createTaskFromDraft(SPACE, "Wire the board", "discuss", CATALOGS());
+    await createTaskFromDraft(SPACE, "Wire the board", null, "discuss", CATALOGS());
     expect(createTask).toHaveBeenCalledTimes(1);
     expect(startTaskSession).toHaveBeenCalledTimes(1);
     // `task_sessions.task_id` carries NO foreign key (ADR 0090), so the Rust
@@ -434,7 +435,7 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
 
   it("files a research create in the research column, in one write", async () => {
     seedBoard(column("backlog"), column("research"));
-    await createTaskFromDraft(SPACE, "Wire the board", "research", CATALOGS());
+    await createTaskFromDraft(SPACE, "Wire the board", null, "research", CATALOGS());
     // `create_task` takes the stage directly, so a create-then-move would be two
     // writes for one fact — and the move's `on_enter` would fire for a card that
     // was never anywhere else.
@@ -453,7 +454,7 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
     // `createTask` store action surfaces the refusal as an error, so falling back
     // is the only path that does not lose the user's text.
     seedBoard(column("inbox"), column("doing"));
-    await createTaskFromDraft(SPACE, "Wire the board", "research", CATALOGS());
+    await createTaskFromDraft(SPACE, "Wire the board", null, "research", CATALOGS());
     expect(createTask).toHaveBeenCalledWith(
       SPACE,
       "Wire the board",
@@ -462,34 +463,52 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
     );
   });
 
-  it("refuses a blank draft without calling the IPC", async () => {
+  it("refuses a blank TITLE without calling the IPC", async () => {
     seedBoard(column("backlog"));
+    // The title field is what gates the create. A blank title is refused HERE rather
+    // than paid for with an IPC round trip whose sentence says the same thing.
     await expect(
-      createTaskFromDraft(SPACE, "   \n  \n ", "backlog", CATALOGS()),
+      createTaskFromDraft(SPACE, "   ", null, "backlog", CATALOGS()),
     ).rejects.toThrow(/title/i);
     expect(createTask).not.toHaveBeenCalled();
   });
 
-  it("keeps every line after the first as the body", async () => {
+  it("passes the two fields through as the two COLUMNS", async () => {
     seedBoard(column("backlog"));
     await createTaskFromDraft(
       SPACE,
-      "First line\nsecond\nthird",
+      "Default action for notifications",
+      "Clicking one should focus the window\nand open the session that raised it.",
       "backlog",
       CATALOGS(),
     );
     expect(createTask).toHaveBeenCalledWith(
       SPACE,
-      "First line",
-      "second\nthird",
+      "Default action for notifications",
+      "Clicking one should focus the window\nand open the session that raised it.",
       "backlog",
     );
   });
 
-  it("sends no body when the draft is one line", async () => {
+  it("sends no body when the body field is blank", async () => {
     seedBoard(column("backlog"));
-    await createTaskFromDraft(SPACE, "Just a title", "backlog", CATALOGS());
+    // Whitespace-only is ABSENT, not a body of spaces: `tasks.body` is nullable and a
+    // card whose body is three spaces renders as an empty paragraph in the detail
+    // dialog, which reads as a broken card rather than a body-less one.
+    await createTaskFromDraft(SPACE, "Just a title", "   \n  ", "backlog", CATALOGS());
     expect(createTask).toHaveBeenCalledWith(SPACE, "Just a title", null, "backlog");
+  });
+
+  it("a body never becomes the title, whatever it contains", async () => {
+    // The rule this replaces was "line 0 of one textarea is the title", so a paste
+    // whose first line was prose silently invented a heading from it. With two fields
+    // a blank title is refused even when the body is full — the body is never a
+    // fallback, because guessing at a heading is exactly what the user objected to.
+    seedBoard(column("backlog"));
+    await expect(
+      createTaskFromDraft(SPACE, "", "A long explanation with\nseveral lines.", "backlog", CATALOGS()),
+    ).rejects.toThrow(/title/i);
+    expect(createTask).not.toHaveBeenCalled();
   });
 
   it("launches with the row the SERVER returned, not the text it was given", async () => {
@@ -504,6 +523,7 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
     await createTaskFromDraft(
       SPACE,
       '"Cleaned title with quotes"',
+      null,
       "discuss",
       CATALOGS(),
     );
@@ -518,7 +538,7 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
       Object.assign(new Error("empty"), { kind: "empty_title" }),
     );
     await expect(
-      createTaskFromDraft(SPACE, "Whatever", "discuss", CATALOGS()),
+      createTaskFromDraft(SPACE, "Whatever", null, "discuss", CATALOGS()),
     ).rejects.toThrow();
     expect(startTaskSession).not.toHaveBeenCalled();
   });

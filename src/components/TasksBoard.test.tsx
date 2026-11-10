@@ -535,12 +535,14 @@ describe("TasksBoard — the New Task modal's render site (A5)", () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
     render(<TasksBoard activeSpacePath={SPACE} onReturnToWorkspace={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
-    fireEvent.change(await screen.findByRole("textbox"), {
+    // Named, not bare: the modal now has a Title `<input>` AND a Body `<textarea>`,
+    // and BOTH carry ARIA role `textbox`, so an unnamed query is an ambiguous match.
+    fireEvent.change(await screen.findByRole("textbox", { name: "Title" }), {
       target: { value: "Draft card" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Backlog" }));
 
-    // `null` and not `undefined` for the body: a one-line draft HAS no body, and the
+    // `null` and not `undefined` for the body: the Body field was left empty, and the
     // store's parameter is `body?: string | null`.
     await waitFor(() =>
       expect(createTask).toHaveBeenCalledWith(SPACE, "Draft card", null, "backlog"),

@@ -159,10 +159,27 @@ function renderDialog(args: RenderArgs = {}): {
   };
 }
 
+/** Type the TITLE field.
+ *
+ *  Resolved BY NAME, and the name is load-bearing rather than convenient: an
+ *  `<input>` and a `<textarea>` BOTH have ARIA role `textbox`, so a bare
+ *  `getByRole("textbox")` is now an ambiguous-match throw. Every helper that used to
+ *  take that shortcut had to acquire a name, which is the same reason the fields carry
+ *  one for people — a screen reader announcing two unlabelled edit boxes is the same
+ *  ambiguity with worse consequences.
+ */
 const typeDraft = (text: string): void => {
-  fireEvent.change(screen.getByRole("textbox"), {
-    target: { value: text },
-  });
+  fireEvent.change(titleField(), { target: { value: text } });
+};
+
+const titleField = (): HTMLElement =>
+  screen.getByRole("textbox", { name: "Title" });
+
+const bodyField = (): HTMLElement =>
+  screen.getByRole("textbox", { name: "Body" });
+
+const typeBody = (text: string): void => {
+  fireEvent.change(bodyField(), { target: { value: text } });
 };
 
 const button = (name: string): HTMLButtonElement =>
@@ -208,16 +225,62 @@ beforeEach(() => {
 });
 
 describe("NewTaskDialog — the shape (no LLM at creation time)", () => {
-  it("is one textarea and three buttons", () => {
-    // The whole point of the change: a card is a sentence, and getting a sentence
-    // onto a board must not require a chat. The previous version mounted `MessageList`
-    // and `ComposerRow` and made the FIRST SEND do the creating, so "just save this"
-    // was impossible without starting a Session.
+  /// TWO FIELDS, because "line 0 is the title" was a guess the user had to undo.
+  ///
+  /// One textarea with a newline rule meant a paste whose first line was prose
+  /// silently invented a heading from it, and a short title with a long body was
+  /// impossible without a newline you did not mean to type. The form now asks for
+  /// both, and nothing is inferred between them.
+  it("is a title field, a body field, and three buttons", () => {
     renderDialog();
-    expect(screen.getAllByRole("textbox")).toHaveLength(1);
+    expect(titleField()).toBeTruthy();
+    expect(bodyField()).toBeTruthy();
+    // The `<input>` is single-line: a title that could wrap would let a multi-line
+    // paste back into the field the split used to guess at.
+    expect(titleField().tagName).toBe("INPUT");
     expect(button("Backlog")).toBeTruthy();
     expect(button("Discuss")).toBeTruthy();
     expect(button("Research")).toBeTruthy();
+  });
+
+  it("writes the two fields to the two columns, with no split anywhere", async () => {
+    renderDialog();
+    typeDraft("Default action for notifications");
+    typeBody("Clicking one should focus the window.\nAnd open the session that raised it.");
+    fireEvent.click(await ready("Backlog"));
+    await waitFor(() => expect(createTask).toHaveBeenCalledTimes(1));
+    const call = vi.mocked(createTask).mock.calls[0]!;
+    expect(call[1]).toBe("Default action for notifications");
+    // The body keeps BOTH lines — the newline is content now, not a delimiter.
+    expect(call[2]).toBe(
+      "Clicking one should focus the window.\nAnd open the session that raised it.",
+    );
+  });
+
+  it("sends a null body when the body field is left empty", async () => {
+    renderDialog();
+    typeDraft("Just a title");
+    fireEvent.click(await ready("Backlog"));
+    await waitFor(() => expect(createTask).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(createTask).mock.calls[0]![2]).toBeNull();
+  });
+
+  /// The buttons gate on the TITLE alone. The body is optional by design — a card is
+  /// one sentence and the body is the extra — so gating on both would refuse the
+  /// common case, and gating on neither would let a title-less card through to a
+  /// server-side `empty_title` rejection the dialog could have avoided.
+  it("stays disabled with a body but no title", () => {
+    renderDialog();
+    typeBody("A long explanation with no title anywhere.");
+    for (const name of ["Backlog", "Discuss", "Research"] as const) {
+      expect(button(name).disabled).toBe(true);
+    }
+  });
+
+  it("enables on a title alone, with the body untouched", () => {
+    renderDialog();
+    typeDraft("A title is enough");
+    expect(button("Backlog").disabled).toBe(false);
   });
 
   it("renders NO chat surface", () => {
@@ -348,24 +411,21 @@ describe("NewTaskDialog — Backlog", () => {
     // backstop for any caller that is not this dialog, and that throw is pinned in
     // `taskLaunch.test.ts` rather than here.
     const { onClose } = renderDialog();
-    typeDraft("   \n  \n");
+    typeDraft("   ");
     for (const name of ["Backlog", "Discuss", "Research"] as const) {
       expect(button(name).disabled).toBe(true);
     }
     fireEvent.click(button("Backlog"));
     expect(createTask).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
-    // The whitespace survives — a dialog that clears a draft the person is still
+    // The whitespace survives — a dialog that clears a field the person is still
     // composing loses their text.
-    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(
-      "   \n  \n",
-    );
+    expect((titleField() as HTMLInputElement).value).toBe("   ");
   });
 
-  it("enables the buttons as soon as the draft has a title line", async () => {
-    // The gate is `draft.trim() !== ""`, the same predicate the split uses for "is
-    // there a title", so a button can never be enabled on a draft whose title would be
-    // empty.
+  it("enables the buttons as soon as the title field has text", async () => {
+    // The gate is `title.trim() !== ""` — the SAME predicate the store refuses on — so
+    // a button can never be enabled on a title that would be empty after trimming.
     renderDialog();
     expect(button("Backlog").disabled).toBe(true);
     typeDraft("A title");
@@ -456,24 +516,23 @@ describe("NewTaskDialog — Discuss and Research", () => {
     expect(sent).not.toContain("$discuss");
   });
 
-  it("splits the draft into title and body the same way for all three buttons", async () => {
-    // One rule, three buttons. If each button spelled its own split, a multi-line
-    // paste would produce a different card depending on which was clicked — and only
-    // the Backlog case would be visible on the board.
+  /// The rule that REPLACED the newline split, pinned for all three buttons: each
+  /// button files the SAME two fields, so which button you click never changes what
+  /// lands in which column. That is the invariant the old "one rule, three buttons"
+  /// case was really defending — it just could only express it through a split.
+  it("passes the same two fields for all three buttons", async () => {
     for (const name of ["Backlog", "Discuss", "Research"] as const) {
       vi.clearAllMocks();
       vi.mocked(listSkills).mockResolvedValue([skill("discuss"), skill("research")]);
       vi.mocked(createTask).mockResolvedValue(taskRow());
       const view = renderDialog();
-      typeDraft("First line\nsecond line\nthird");
+      typeDraft("First line");
+      typeBody("second line\nthird");
       fireEvent.click(await ready(name));
       await waitFor(() => expect(createTask).toHaveBeenCalledTimes(1));
       const call = vi.mocked(createTask).mock.calls[0]!;
       expect(call[1]).toBe("First line");
       expect(call[2]).toBe("second line\nthird");
-      // `unmount()` and not an Escape round-trip: Radix plays an exit animation, so the
-      // dialog node outlives `onClose` by a frame and the next iteration's render would
-      // see two of them.
       view.unmount();
     }
   });
@@ -515,7 +574,11 @@ describe("NewTaskDialog — Discuss and Research", () => {
       ),
     );
     expect(createTask).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("textbox")).toBeTruthy();
+    // Both fields survive with their text: the modal keeps what the person typed so the
+    // retry is one click, not a retype. Resolved by name — an `<input>` and a
+    // `<textarea>` are BOTH role `textbox`, so a bare query is an ambiguous match now.
+    expect((titleField() as HTMLInputElement).value).toBe("Discuss this please");
+    expect(bodyField()).toBeTruthy();
   });
 
   it("disables each button whose skill the catalog does not have", async () => {

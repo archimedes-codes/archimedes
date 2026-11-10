@@ -391,22 +391,33 @@ async function sendLaunchMessage(
   }
 }
 
-/** Split a draft into the title the server will accept and the body that follows.
+/** Normalise the two form fields into the two COLUMNS.
  *
- *  The FIRST LINE is the title and nothing else is re-implemented about it:
- *  `clean_title` runs server-side (whitespace collapse, one matching quote pair
- *  stripped, multi-byte-safe 80-char cap) and a title that cleans to nothing
- *  REJECTS with `kind: "empty_title"` rather than falling back to the raw string.
- *  Re-spelling that predicate locally would be the second implementation the spec
- *  forbids, so the only judgement here is "line 0 is the title, the rest is body".
+ *  There used to be a SPLIT here instead: one textarea, "line 0 is the title, the
+ *  rest is the body". That invented a heading out of whatever the first line of a
+ *  paste happened to be, and it made the body unaddressable — you could not write a
+ *  short title with a multi-line body without typing a newline you did not mean. The
+ *  form now has two fields, so this decides nothing about where a title ends. It only
+ *  trims, and maps an all-whitespace body to `null`, because `tasks.body` is nullable
+ *  and a body of three spaces renders as an empty paragraph in the detail dialog —
+ *  which reads as a broken card rather than a body-less one.
+ *
+ *  A blank title is refused here rather than sent. `clean_title` runs server-side and
+ *  would reject it anyway with `kind: "empty_title"`, but the caller has a dialog
+ *  open and the sentence is identical either way.
+ *
+ *  What this must NOT do is fall back to the body when the title is empty. Guessing a
+ *  heading out of prose is the exact behaviour the two fields exist to remove, and a
+ *  card filed under a sentence lifted from its own body is a lie the board repeats
+ *  forever. The title field is the only source of the title.
  */
-function splitDraft(draft: string): { title: string; body: string | null } {
-  const trimmed = draft.trim();
-  const newline = trimmed.indexOf("\n");
-  if (newline === -1) return { title: trimmed, body: null };
-  const title = trimmed.slice(0, newline).trim();
-  const body = trimmed.slice(newline + 1).trim();
-  return { title, body: body === "" ? null : body };
+function fieldsToColumns(
+  title: string,
+  body: string | null,
+): { title: string; body: string | null } {
+  const trimmedTitle = title.trim();
+  const trimmedBody = body?.trim();
+  return { title: trimmedTitle, body: trimmedBody ? trimmedBody : null };
 }
 
 /**
@@ -418,16 +429,17 @@ function splitDraft(draft: string): { title: string; body: string | null } {
  */
 export async function createTaskFromDraft(
   spacePath: string,
-  draft: string,
+  titleField: string,
+  bodyField: string | null,
   mode: TaskLaunchMode,
   catalogs: TaskLaunchCatalogs,
 ): Promise<TaskCreateOutcome> {
-  const { title, body } = splitDraft(draft);
+  const { title, body } = fieldsToColumns(titleField, bodyField);
   if (title === "") {
     // Refused HERE rather than paid for with an IPC round trip: the server's
     // `empty_title` rejection says the same thing, but the caller has a dialog open
     // and the sentence is identical either way.
-    throw new Error("Give the Task a title first — the first line becomes its title.");
+    throw new Error("Give the Task a title — the Title field names the card.");
   }
   const guardKey = `draft:${spacePath}:${title}`;
   if (inFlight.has(guardKey)) {

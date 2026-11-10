@@ -9,6 +9,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
+import { Input } from "./ui/input";
+import { Textarea } from "./ui/textarea";
 import { describeIpcError } from "../lib/ipcError";
 import { useMentionCatalogs } from "../hooks/useMentionCatalogs";
 import { createTaskFromDraft } from "../store/taskLaunch";
@@ -44,23 +46,33 @@ import type { TaskLaunchMode } from "../lib/taskPrompt";
  * say `research` while the click said Backlog. The button IS the choice now, and
  * `lib/taskPrompt`'s mode table is the only place a skill name is spelled.
  *
- * ## The draft splits at the first newline
+ * ## Two fields, and nothing inferred between them
  *
- * Line one is the title, everything after it is the body — ONE rule shared by all
- * three buttons, so a multi-line paste produces the same card whichever button is
- * clicked. Nothing else about the title is decided here: `clean_title` runs
- * server-side (whitespace collapse, one matching quote pair stripped, multi-byte-safe
- * cap) and a title that cleans to nothing REJECTS with `kind: "empty_title"` rather
- * than falling back to the raw string. Re-spelling that predicate locally would be
- * the second implementation the spec forbids, so the error path here only adds the
- * lead-in that names the action to take (ADR 0063 puts the sentence in Rust).
+ * Title and Body are separate inputs. This surface used to be ONE textarea with the
+ * rule "line 0 is the title, the rest is the body", which had two costs: a paste whose
+ * first line happened to be prose silently invented a heading out of it, and a short
+ * title with a long body was impossible without typing a newline you did not mean.
+ * Both fields now say what they are, and the only thing derived from either is a
+ * `trim()` — the body keeps its newlines as CONTENT rather than reading the first one
+ * as a delimiter.
+ *
+ * The title is the ONLY gate on the buttons, and the body is never a fallback for it.
+ * Guessing a heading from prose is exactly what the two fields exist to remove, so a
+ * blank title stays disabled even when the body is full.
+ *
+ * Nothing else about the title is decided here: `clean_title` runs server-side
+ * (whitespace collapse, one matching quote pair stripped, multi-byte-safe cap) and a
+ * title that cleans to nothing REJECTS with `kind: "empty_title"` rather than falling
+ * back to the raw string. Re-spelling that predicate locally would be the second
+ * implementation the spec forbids, so the error path here only adds the lead-in that
+ * names the action to take (ADR 0063 puts the sentence in Rust).
  *
  * ## What a failure leaves behind, and why the modal stays open
  *
- * Backlog failing writes nothing, so the draft survives. A Discuss/Research failure
+ * Backlog failing writes nothing, so both fields survive. A Discuss/Research failure
  * can land AFTER the card exists — at which point closing the dialog would take the
  * error line with it and leave the person believing their card was lost. So the
- * modal keeps its draft and shows the line, and the card that did get written is
+ * modal keeps both fields and shows the line, and the card that did get written is
  * already in the board the modal sits on top of.
  *
  * ## `onCreated(task, sessionId)` is the board's cue to leave
@@ -114,7 +126,8 @@ export default function NewTaskDialog({
   onClose,
   onCreated,
 }: NewTaskDialogProps) {
-  const [draft, setDraft] = useState("");
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -130,7 +143,7 @@ export default function NewTaskDialog({
     setBusy(true);
     setError(null);
     try {
-      const outcome = await createTaskFromDraft(spacePath, draft, mode, {
+      const outcome = await createTaskFromDraft(spacePath, title, body, mode, {
         skills,
         agents: [],
       });
@@ -140,7 +153,7 @@ export default function NewTaskDialog({
       onCreated(outcome.task, outcome.sessionId);
       onClose();
     } catch (err) {
-      // Stay open, keep the draft. `empty_title` gets a lead-in because the server's
+      // Stay open, keep both fields. `empty_title` gets a lead-in because the server's
       // sentence alone does not say what to type.
       const kindOfError = (err as { kind?: unknown } | null)?.kind;
       setError(
@@ -153,9 +166,13 @@ export default function NewTaskDialog({
     }
   };
 
-  const hasText = draft.trim() !== "";
+  // The TITLE alone gates the buttons. The body is optional by design — a card is one
+  // sentence and the body is the extra — so requiring both would refuse the common
+  // case, and requiring neither would ship a title-less card to a server-side
+  // `empty_title` rejection this dialog could have avoided.
+  const hasTitle = title.trim() !== "";
   const disabledFor = (mode: TaskLaunchMode): boolean => {
-    if (spacePath === null || busy || !hasText) return true;
+    if (spacePath === null || busy || !hasTitle) return true;
     if (mode === "backlog") return false;
     // The same predicate `store/taskLaunch` refuses on — see the module note.
     return !skills.some((s) => s.name === mode);
@@ -176,22 +193,49 @@ export default function NewTaskDialog({
         <DialogHeader>
           <DialogTitle>New task</DialogTitle>
           <DialogDescription>
-            The first line becomes the title, the rest the body. Backlog just saves
-            the card.
+            Backlog just saves the card. Discuss and Research also open a session for
+            it.
           </DialogDescription>
         </DialogHeader>
 
-        {/* A plain `textarea` and not `ComposerRow`. The composer owns the Mention
-            picker, the attachment lifecycle and the auto-grow that serves a chat
-            transcript; none of that belongs to a card that is one sentence. It carries
-            `role="textbox"` by default, which is what the tests resolve it by. */}
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="What needs doing?"
-          rows={5}
-          className="min-h-0 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-ui-base text-foreground outline-none placeholder:text-foreground-subtlest focus:border-brand"
-        />
+        {/* TWO labelled fields, wrapping `<label>` in the shape `NewSpaceDialog` uses
+            (the repo has no `Label` primitive and no `htmlFor` site, so the association
+            comes from nesting rather than an id). The name is load-bearing twice over:
+            an `<input>` and a `<textarea>` BOTH have ARIA role `textbox`, so two
+            unlabelled fields are one ambiguous "textbox" to a screen reader AND to the
+            tests that resolve them. */}
+        <label className="flex flex-col gap-1 text-ui-base">
+          Title
+          {/* A single-line `Input`, deliberately: a title that could wrap would let a
+              multi-line paste back into the field the old split used to guess at. */}
+          <Input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="What needs doing?"
+          />
+        </label>
+        {/* The hint sits OUTSIDE the `<label>`, and that placement is a correctness
+            detail rather than layout: a wrapping label's accessible name is its whole
+            text content, so a hint nested inside would name this field
+            "Body Optional. Newlines are kept." — which is both what a screen reader
+            would say and what the tests resolve it by. */}
+        <div className="flex flex-col gap-1">
+          <label className="flex flex-col gap-1 text-ui-base">
+            Body
+            {/* `Textarea` and not `ComposerRow`: the composer owns the Mention picker,
+                the attachment lifecycle and the auto-grow that serves a chat
+                transcript, and none of that belongs to a card. */}
+            <Textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              placeholder="Anything else worth knowing?"
+              rows={4}
+            />
+          </label>
+          <span className="text-ui-sm text-foreground-subtlest">
+            Optional. Newlines are kept.
+          </span>
+        </div>
 
         <IpcErrorLine error={error} className="shrink-0" />
 
