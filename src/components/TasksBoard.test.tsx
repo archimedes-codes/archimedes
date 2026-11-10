@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 
 import TasksBoard from "./TasksBoard";
 import { useTasks } from "../store/tasks";
+import { useSessions } from "../store/sessions";
 import { resetStores } from "../test/resetStores";
 import {
   createTask,
@@ -737,5 +738,63 @@ describe("TasksBoard — the surface ladder (ADR 0097: island, then recess)", ()
     // count, which is what `renders one column per stage` and the empty-column case
     // read through `textContent`.
     expect(count.textContent).toBe("1");
+  });
+});
+
+describe("TasksBoard — the sessions chip's wiring (issue #174)", () => {
+  it("the board hands the session store to the card", () => {
+    // THE WIRING, pinned where the store is imported. `TaskCard` is presentational
+    // and subscribes to NO store — so the board, which already reads `useTasks`,
+    // is what reads `useSessions.getState().openSession` and passes it down. A
+    // card that imported the sessions store itself would be a second owner of
+    // "which Session is open" and would have to be mocked by every test that
+    // renders one.
+    //
+    // `openSession` and NOT `setActiveSession`: `setActiveSession` only sets an id,
+    // while `openSession` resolves the owner Space by `cwd` across live / stored /
+    // archived membership and loads the history — which is what makes a CLOSED or
+    // archived Session openable from a card. A linked Session is not structurally
+    // in the card's Space (`sessions` has no `space_path`), so the Space has to be
+    // resolved rather than assumed.
+    //
+    // The action is OVERRIDDEN through the store rather than `vi.spyOn(useSessions, …)`:
+    // zustand actions are reached by selector, so a spy on the module object cannot
+    // see them (`SessionsSection.test.tsx` documents the same limitation). The
+    // override additionally keeps this from firing a real `loadHistory` IPC into
+    // jsdom.
+    const openSession = vi.fn();
+    useSessions.setState({ openSession });
+    const board: StageWithTasks[] = [
+      {
+        stage: stage("backlog"),
+        tasks: [
+          {
+            task: task("t1", 1, "backlog"),
+            // OLDEST FIRST, as the board read publishes it: `sess_old` was linked
+            // before `sess_new`, so `sess_new` is the one a click must open.
+            sessions: [
+              { taskId: "t1", sessionId: "sess_old", stageSlug: "backlog" },
+              { taskId: "t1", sessionId: "sess_new", stageSlug: "doing" },
+            ],
+            costUsd: 1.25,
+          },
+        ],
+      },
+    ];
+    // Both the store seed and the mount fetch, so the board cannot be replaced by
+    // the file's default `SEED` (whose cards carry no links) mid-case.
+    vi.mocked(getBoard).mockResolvedValue(board);
+    useTasks.setState({ boardsBySpace: { [SPACE]: board } });
+    render(<TasksBoard activeSpacePath={SPACE} />);
+
+    // The chip renders from the board's OWN card view — the board passes
+    // `sessions` and `costUsd` through rather than re-deriving them (the cost is
+    // summed in Rust, and the card adds nothing).
+    const chip = within(screen.getByTestId("task-column-backlog")).getByText(
+      "2 sessions · $1.25",
+    );
+    fireEvent.click(chip);
+    expect(openSession).toHaveBeenCalledTimes(1);
+    expect(openSession).toHaveBeenCalledWith("sess_new");
   });
 });

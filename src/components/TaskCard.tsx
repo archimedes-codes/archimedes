@@ -1,26 +1,35 @@
 import { MutedCaption } from "./MutedCaption";
+import { moneyOf } from "./SessionCostLine";
 import type { DragCardHandlers } from "../hooks/useDragCard";
-import type { TaskRow } from "../lib/tauri";
+import type { TaskRow, TaskSessionRow } from "../lib/tauri";
 import { relativeTimeFromInstant } from "../lib/sessionTime";
 import { cn } from "./lib/utils";
 
 /**
  * One **Task** card on the board.
  *
- * PRESENTATIONAL, and deliberately thin. It takes a `TaskRow` and the drag surface
- * the board's `useDragCard` instance produced for it, and it renders. It subscribes
- * to NO store: the board already holds the slice, and a card that read the store
- * for itself would be a second owner of "which board is showing" — the same reason
- * `SessionListRow` takes its `drag` and `dropEdge` as props rather than calling
- * `useDragReorder` at the row.
+ * PRESENTATIONAL, and deliberately thin. It takes a card's `TaskRow` plus the two
+ * board-only facts the wire carries beside it (`sessions`, `costUsd`), the drag
+ * surface the board's `useDragCard` instance produced for it, and one callback —
+ * and it renders. It subscribes to NO store: the board already holds the slice, and
+ * a card that read the store for itself would be a second owner of "which board is
+ * showing" — the same reason `SessionListRow` takes its `drag` and `dropEdge` as
+ * props rather than calling `useDragReorder` at the row. Issue #174 added the
+ * sessions chip and the card still holds that line: the chip's callback is
+ * `TasksBoard` forwarding `useSessions.getState().openSession`, not a read here.
  *
  * NOT a `RowButton`, and that is a decision rather than an oversight. `RowButton`'s
  * own header states the constraint: exactly ONE `role="button"` per row is
  * load-bearing, because `SpacesList.test.tsx` resolves rows through
  * `.closest('[role="button"]')` at eight sites, and `RowButton.test.tsx` keeps the
  * count at zero elsewhere. A card is also not one of the five row affordances that
- * component owns, and in v1 it is not a control at all — it is DRAGGED, not
- * clicked. Opening a Task is a later surface.
+ * component owns, and the CARD ITSELF is still not a control — it is DRAGGED, not
+ * clicked, and it grows no `onClick` of its own. What issue #174 added is one
+ * nested control, the sessions chip, and the distinction is what keeps both facts
+ * true: the card stays a plain `div` with no `role` and no `tabindex` (pinned in
+ * its test), and the chip is a real `<button>` INSIDE it, which is exactly the
+ * shape `RowButton.test.tsx` proves contributes ZERO `[role="button"]` matches.
+ * Opening a Task as a whole is still a later surface.
  *
  * THE DRAG SURFACE IT SPREADS IS `useDragCard`'s FIVE-KEY one, not
  * `useDragReorder`'s six-key `DragReorderHandlers`. That distinction is the whole
@@ -38,6 +47,25 @@ import { cn } from "./lib/utils";
  */
 export interface TaskCardProps {
   task: TaskRow;
+  /** This card's linked Sessions, OLDEST FIRST — exactly what the board read
+   *  publishes (`ORDER BY ts.rowid ASC`, the same order `Db::task_sessions`
+   *  uses). REQUIRED and not optional for the reason `TaskCardView.sessions` is
+   *  required in `types.ts`: an optional prop compiles against a caller that
+   *  forgot it, and a card that forgot it renders a linked card with no chip —
+   *  silent, green, and wrong. The card renders ONE fact from this list: its
+   *  length, plus the newest entry when the chip is clicked. */
+  sessions: TaskSessionRow[];
+  /** The summed cost of those Sessions, computed in RUST. `null` means "no linked
+   *  Session ever had a call report a cost" and renders NO figure; `0` means "a
+   *  real zero" and renders `$0.00`. That is ADR 0082, and the card does not own
+   *  the rule — `moneyOf` does, imported rather than copied, so this surface and
+   *  the Session line cannot drift apart. */
+  costUsd: number | null;
+  /** Opens a Session. The board hands this down as
+   *  `useSessions.getState().openSession`; the card deliberately does NOT read the
+   *  sessions store itself — that would give a presentational component a second
+   *  store and make every test that renders one mock the world. */
+  onOpenSession?: (sessionId: string) => void;
   /** This card's `useDragCard` spread (`dragProps(task.id)`), or nothing when the
    *  board cannot drag (no board loaded yet). Absent means NO gesture at all —
    *  `draggable` is not spelled without the handlers that would answer it. */
@@ -46,7 +74,26 @@ export interface TaskCardProps {
   active?: boolean;
 }
 
-export default function TaskCard({ task, drag, active }: TaskCardProps) {
+export default function TaskCard({
+  task,
+  sessions,
+  costUsd,
+  onOpenSession,
+  drag,
+  active,
+}: TaskCardProps) {
+  // The chip's money, resolved through the ONE rule (ADR 0082). `null` is
+  // "never reported" and prints NOTHING; `0` is "a real zero" and prints
+  // `$0.00`. Gating on this value rather than on `costUsd` is the whole
+  // difference: `costUsd && …` is false for `0` and would hide a reported zero,
+  // and coalescing `null` to `0` before formatting invents a figure for a cost
+  // nobody ever measured — which is why `moneyOf` is imported and the arithmetic
+  // is never spelled at this site.
+  const money = moneyOf(costUsd);
+  // NEWEST is LAST, because the query is oldest-first. This is the same choice
+  // `pick_compact_target` makes (`.last()`), so the card that opens a Session and
+  // the board that compacts one never point at two different Sessions.
+  const newest = sessions[sessions.length - 1];
   return (
     <div
       data-testid="task-card"
@@ -126,6 +173,61 @@ export default function TaskCard({ task, drag, active }: TaskCardProps) {
         <span className="inline-flex items-center gap-1 rounded-full bg-background px-2 py-0.5 text-ui-xs text-foreground-subtle">
           spec
         </span>
+      )}
+      {/* The Sessions chip (issue #174): one clickable mark saying how many
+          Sessions this card owns and what they cost in total — NOT a session list.
+          The card is small, it is already a drag surface, and a per-session row is
+          a different design (the issue records that as out of scope).
+
+          A real `<button type="button">` and not a `<span>` with a click handler:
+          it activates from the keyboard and it names itself to a screen reader. It
+          carries NO `role`, so the card's own `role` stays absent (the card is
+          dragged and not clicked, and `RowButton`'s one-`role="button"`-per-row
+          rule is pinned above) — a `<button>` needs no role spelled, and spelling
+          one would put a SECOND `[role="button"]` node in the tree the sidebar
+          resolves rows through.
+
+          NO `e.stopPropagation()`, and that is a measurement rather than an
+          oversight: there is nothing to stop. This component has no other
+          `onClick`; `useDragCard`'s five keys and `useDragReorder`'s six are all
+          `DragEventHandler`s with no click or mouse handler; the board's two
+          `onClick`s are the header's New-Task and the boost note's Dismiss, neither
+          an ancestor of a card; and the only window-level mouse listeners in the
+          app are `SidePane`'s pane resize. A handler that stops nothing is dead
+          code that reads as load-bearing.
+
+          `self-start` because the card is a `flex-col`: without it the button is
+          stretched to the card's width and reads as a full-width action rather than
+          the quiet mark it is. The fill is the page step (`bg-background`) for the
+          same reason as the `T{n}` pill above — it has to differ from BOTH surfaces
+          it can sit on (`bg-panel` column, `bg-card` card) in EVERY palette, and
+          `bg-chat` is exactly `bg-card` in zai-dark. The ink-only hover is the
+          `FileChip` idiom: an affordance that says "clickable" without gaining a
+          second fill. */}
+      {sessions.length > 0 && (
+        <button
+          type="button"
+          onClick={() => onOpenSession?.(newest.sessionId)}
+          className={cn(
+            // The fill and geometry are the card's own pill recipe (see the `T{n}`
+            // pill above). `self-start` is the chip's own addition: the card is a
+            // `flex-col`, so without it the button stretches to the card's width and
+            // reads as a full-width action instead of a quiet mark.
+            //
+            // The INK changes on hover and nothing else — no hover FILL, because a
+            // second pill-shaped patch on a card that is itself the raised surface is
+            // the "second button on the card" Dracula visual pass warns about, and no
+            // `transition-*`, the same call `FileChip` records for its chip.
+            "self-start cursor-pointer rounded-full bg-background px-2 py-0.5 text-ui-xs text-foreground-subtle hover:text-foreground",
+          )}
+        >
+          {/* The count is the fact and the money is a segment of it, so they are ONE
+              label and not two controls. `money` is `null` for "never reported" and
+              the segment is then ABSENT rather than empty — ADR 0082's rule, owned by
+              `moneyOf` and imported, never re-spelled here. */}
+          {sessions.length} {sessions.length === 1 ? "session" : "sessions"}
+          {money !== null && ` · ${money}`}
+        </button>
       )}
       {task.body && (
         <span className="line-clamp-2 text-ui-sm text-foreground-subtlest">

@@ -312,9 +312,18 @@ describe("the board pills' fill, per palette (the zai-dark collision)", () => {
    *  `bg-chat` fill, because the bug was never in the palette — it was in a
    *  class list, chosen from one palette's arithmetic. Same reason this file
    *  already reads the float components for their `shadow-`: a class a palette
-   *  test cannot see is still a palette failure. */
+   *  test cannot see is still a palette failure.
+   *
+   *  TWO ENTRIES, THREE PILLS: the card carries two (`T{n}` and the spec chip)
+   *  and the column carries one (the count). Issue #174 added the card's THIRD —
+   *  the sessions chip — and it wears the same fill, so the entry needed no new
+   *  row (each entry is FILE-scoped: the gate reads a file and censuses every
+   *  `rounded-full` literal in it) but the count below did move, 2 → 3. */
   const PILLS: Array<{ file: string; label: string }> = [
-    { file: "src/components/TaskCard.tsx", label: "the card's `T{n}` pill and spec chip" },
+    {
+      file: "src/components/TaskCard.tsx",
+      label: "the card's `T{n}` pill, spec chip and sessions chip",
+    },
     { file: "src/components/TasksBoard.tsx", label: "the column count pill" },
   ];
 
@@ -335,9 +344,11 @@ describe("the board pills' fill, per palette (the zai-dark collision)", () => {
         );
       }
       // A CENSUS, so a pill cannot dodge the gate by losing `rounded-full`.
+      // The card carries THREE (`T{n}`, the spec chip, the sessions chip — the
+      // last one is issue #174's) and the column still carries one.
       const fills = literals.filter((l) => /(^|\s)bg-background(\s|$)/.test(l));
       expect(fills.length, `${pill.file} pill count drifted`).toBe(
-        pill.file.endsWith("TaskCard.tsx") ? 2 : 1,
+        pill.file.endsWith("TaskCard.tsx") ? 3 : 1,
       );
     });
   }
