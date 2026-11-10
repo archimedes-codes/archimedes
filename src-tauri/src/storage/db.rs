@@ -387,7 +387,13 @@ pub struct TaskSessionRow {
     pub stage_slug: Option<String>,
 }
 
-/// The ONE `task_sessions` SELECT list (`task_sessions` reads only).
+/// The `task_sessions` column list, in the order [`task_session_row_from`] reads
+/// it by POSITION. `Db::task_sessions` interpolates it; `get_board`'s link
+/// statement cannot (it joins `sessions`, so it must qualify these same names
+/// with `ts.`) and is pinned against it instead by
+/// `the_board_link_statement_selects_the_columns_the_const_owns` — NOT the only
+/// `task_sessions` projection in the file, so a rename or a reorder here must be
+/// mirrored there or that pin reddens.
 const TASK_SESSION_COLUMNS: [&str; 3] = ["task_id", "session_id", "stage_slug"];
 
 const TASK_SESSION_ROW_FIELDS: usize = 3;

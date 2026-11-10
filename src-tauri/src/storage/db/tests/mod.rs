@@ -4701,7 +4701,8 @@ fn deleting_a_linked_session_drops_its_link_row_and_its_share_of_the_cost() {
 /// The DRIFT PIN for the board's card payload (issue #174).
 ///
 /// `types.ts`'s `TaskCardView` is a HAND-WRITTEN mirror — no Rust↔TS shape pin
-/// exists in this repo — so the key list below is spelled a second time in
+/// exists in this repo — so the THREE key lists below (`FROZEN_CARD_KEYS`,
+/// `FROZEN_TASK_KEYS`, `FROZEN_LINK_KEYS`) are spelled a second time in
 /// `src/store/tasks.test.ts` as `the task card view wire keys are frozen (mirror
 /// of the Rust pin)`, byte-identical. A rename on either side reddens one of the
 /// two. Modelled on `closed_reason_spellings_are_frozen`.
@@ -4724,6 +4725,12 @@ fn the_task_card_view_wire_keys_are_frozen() {
         "createdAt",
         "updatedAt",
     ];
+    // The TS mirror of these THREE is `export interface TaskSessionRow` in the
+    // SAME file (`src/lib/tauri/types.ts`), spelled byte-identically by its
+    // mirror test `the task card view wire keys are frozen (mirror of the Rust
+    // pin)` in `src/store/tasks.test.ts`. This is the list the chip reads
+    // (`sessions[].sessionId`), so it is frozen alongside the other two.
+    const FROZEN_LINK_KEYS: [&str; 3] = ["taskId", "sessionId", "stageSlug"];
 
     let view = TaskCardView {
         task: TaskRow {
@@ -4778,6 +4785,26 @@ fn the_task_card_view_wire_keys_are_frozen() {
          nothing to it, which is what keeps get_task/create_task/edit_task honest"
     );
 
+    // The THIRD list: the nested link the chip actually reads. `sessions[0]` is
+    // the only place `sessionId` reaches the card at all, so without this the
+    // `session_id` ↔ `sessionId` seam sat unfrozen on a path the UI depends on —
+    // a rename would redden nothing here and silently blank every chip.
+    let link = &value["sessions"][0];
+    let mut link_keys: Vec<&str> = link
+        .as_object()
+        .expect("a link is a map")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    link_keys.sort_unstable();
+    let mut expected_link_keys = FROZEN_LINK_KEYS;
+    expected_link_keys.sort_unstable();
+    assert_eq!(
+        link_keys, expected_link_keys,
+        "`sessions[]` is exactly `{{taskId, sessionId, stageSlug}}` — `sessionId` is \
+         what the card's chip opens, so this key is load-bearing, not decoration"
+    );
+
     assert_eq!(
         value.get("costUsd").and_then(serde_json::Value::as_f64),
         Some(1.75),
@@ -4800,6 +4827,100 @@ fn the_task_card_view_wire_keys_are_frozen() {
     assert!(
         absent.get("costUsd").expect("the key is there").is_null(),
         "…and it is JSON `null`, which is what `moneyOf(null)` renders as nothing"
+    );
+}
+
+/// (issue #174, the drift pin) `get_board`'s link statement and
+/// [`TASK_SESSION_COLUMNS`] select the SAME names in the SAME order.
+///
+/// Both reads hand their rows to the SAME positional mapper
+/// [`task_session_row_from`] (position 0 → `task_id`, 1 → `session_id`, 2 →
+/// `stage_slug`), but only `Db::task_sessions` builds its SQL FROM the const
+/// (`TASK_SESSION_COLUMNS.join(", ")`); `get_board` spells its projection by
+/// hand because it joins `sessions` and so must qualify every column with the
+/// `ts.` alias — and the const's unqualified names are exactly what a
+/// two-table join cannot reuse. That is why the const is interpolated where it
+/// can be and pinned here where it cannot: the alternative (a `ts.`-prefixed
+/// second projection built from the const) would be a second list to keep
+/// honest, and it would bury a SQL literal this file documents in detail.
+///
+/// Source-text lint, not a DB assertion: a mutation that renames or reorders a
+/// name in ONE of the two lists is invisible to every behavioural test until a
+/// user's board silently reads `session_id` into `task_id`. Same technique the
+/// schema guards above use (`include_str!` + `matches(…).count()`, and
+/// `tests/provider_oidc.rs` lints `src/lib.rs` the same way).
+///
+/// Compared UNSORTED on purpose — unlike the wire-key pins above, where JSON
+/// object key order is not observable on the wire, here order IS the contract,
+/// because the mapper reads columns by POSITION.
+#[test]
+fn the_board_link_statement_selects_the_columns_the_const_owns() {
+    let source = include_str!("../../db.rs");
+
+    // ONE anchor, or `rfind` below would read an arbitrary statement and the
+    // pin would grade the wrong SQL.
+    const ANCHOR: &str = "FROM task_sessions ts";
+    assert_eq!(
+        source.matches(ANCHOR).count(),
+        1,
+        "this pin reads the projection that sits immediately before `{ANCHOR}`; a \
+         second `task_sessions ts` read would silently point it at the wrong statement"
+    );
+    let head = &source[..source.find(ANCHOR).expect("the board's link statement")];
+    let projection = &head[head
+        .rfind("SELECT ")
+        .expect("a SELECT ahead of the board's link statement")
+        + "SELECT ".len()..];
+
+    // The statement is a multi-line literal with `\` continuations; flatten it
+    // so each selected term is one trimmed token.
+    let flattened = projection.replace(['\\', '\n'], " ");
+    let terms: Vec<&str> = flattened
+        .split(',')
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+        .collect();
+
+    assert!(
+        terms.len() > TASK_SESSION_COLUMNS.len(),
+        "the board's link projection must carry the const's {} columns PLUS the \
+         joined cost column — it selected only {terms:?}",
+        TASK_SESSION_COLUMNS.len()
+    );
+
+    // Drop the `ts.` alias: the const names columns UNQUALIFIED, the join must
+    // not. Stripping the alias is what makes the two lists comparable at all.
+    let selected: Vec<&str> = terms
+        .iter()
+        .map(|term| term.strip_prefix("ts.").unwrap_or(term))
+        .collect();
+    assert_eq!(
+        &selected[..TASK_SESSION_COLUMNS.len()],
+        &TASK_SESSION_COLUMNS[..],
+        "`get_board` and `task_sessions` feed the SAME positional mapper, so they \
+         must select the SAME names in the SAME order — the const holds \
+         {TASK_SESSION_COLUMNS:?}, the board's link statement holds {selected:?} \
+         (a rename or a reorder on either side mis-assigns every card's links)"
+    );
+    for term in &selected[..TASK_SESSION_COLUMNS.len()] {
+        assert!(
+            !term.contains('.'),
+            "every mapped column must come from `task_sessions` itself — a \
+             table-qualified name (`{term}`) in the first three means the mapper is \
+             reading the JOINED `sessions` table"
+        );
+    }
+    // Position 3 is not incidental: `get_board`'s row closure reads exactly
+    // `row.get::<_, Option<f64>>(3)` as the cost. Columns AFTER it are free to
+    // grow; a column at THIS index would silently become the card's figure.
+    assert_eq!(
+        selected[TASK_SESSION_COLUMNS.len()],
+        "s.cost_usd",
+        "position {} is what `get_board` reads as the card's cost — the mapper owns \
+         0..{}, so the cost must sit at {}",
+        TASK_SESSION_COLUMNS.len(),
+        TASK_SESSION_COLUMNS.len(),
+        TASK_SESSION_COLUMNS.len()
     );
 }
 
