@@ -72,16 +72,27 @@ const link = (sessionId: string, over: Partial<TaskSessionRow> = {}): TaskSessio
  *  anatomy cases below, which have no links for the callback to open. */
 const noopOpenSession = (): void => {};
 
+/** Same argument as above, for the card's OTHER callback. `onOpenTask` is REQUIRED
+ *  because the card IS now a control (it is a `RowButton`), so a card rendered
+ *  without it is a keyboard-focusable row that does nothing when activated — the
+ *  exact silent-green shape this file's own `onOpenSession` pin documents, arriving
+ *  one prop later. */
+const noopOpenTask = (): void => {};
+
 /** The three props every render must pass, spelled out at every call site that has
  *  nothing to say about Sessions. They are REQUIRED props rather than optional ones
  *  for the same reason `TaskCardView`'s fields are required in `types.ts`: an
  *  optional prop compiles against a caller that forgot it, and a card that forgot
  *  them renders a linked card with no chip — or a chip that opens nothing. A case
  *  that cares about links overrides them; the anatomy cases below do not. */
-const NO_LINKS: Pick<TaskCardProps, "sessions" | "costUsd" | "onOpenSession"> = {
+const NO_LINKS: Pick<
+  TaskCardProps,
+  "sessions" | "costUsd" | "onOpenSession" | "onOpenTask"
+> = {
   sessions: [],
   costUsd: null,
   onOpenSession: noopOpenSession,
+  onOpenTask: noopOpenTask,
 };
 
 /**
@@ -276,20 +287,126 @@ describe("TaskCard — the drag surface it spreads", () => {
   });
 });
 
-describe("TaskCard — what it is NOT", () => {
-  it("is not a RowButton: no role=button, no tabindex", () => {
-    // `RowButton`'s header states the constraint: exactly ONE `role="button"` per
-    // row is load-bearing, because `SpacesList.test.tsx` resolves rows through
-    // `.closest('[role="button"]')` at eight sites. A card that adopted it would be
-    // a sixth hand-rolled affordance and would not even be a control — a card is
-    // dragged, not clicked, in v1.
-    render(
-      <TaskCard task={task()} {...NO_LINKS} drag={dragSurface()} />,
-    );
+describe("TaskCard — the card is a control (issue #177 inverts this)", () => {
+  it("is a RowButton: role=button, tabindex=0, and Enter activates", () => {
+    // THE DELIBERATE INVERSION. Until now the card was a plain `div` with no role
+    // and no tabindex, on the reasoning that a card is DRAGGED and not clicked.
+    // Opening a Task as a whole is the surface that reasoning deferred ("a later
+    // surface" in this file's own header), and it arrived here rather than as a
+    // second control on the card because a card whose whole area is not clickable
+    // reads as broken once clicking it is the way to read it.
+    //
+    // `RowButton` and not a hand-rolled `role`: it is the repo's ONE component for
+    // this affordance, and its header's constraint is exactly what the two cases
+    // below re-pin — ONE `role="button"` per row, and the nested chip stays a plain
+    // `<button>` with no role so it contributes zero selector matches.
+    render(<TaskCard task={task()} {...NO_LINKS} drag={dragSurface()} />);
     const el = screen.getByTestId("task-card");
-    expect(el.getAttribute("role")).toBeNull();
-    expect(el.hasAttribute("tabindex")).toBe(false);
+    expect(el.getAttribute("role")).toBe("button");
+    expect(el.getAttribute("tabindex")).toBe("0");
     expect(el.tagName).toBe("DIV");
+  });
+
+  it("a click on the card opens the Task", () => {
+    // `fireEvent.click` and not `userEvent`: the card is `draggable`, and the
+    // question here is only whether the handler is wired. (That a real drag
+    // suppresses the click is browser behaviour jsdom cannot produce — so the
+    // `draggable` + `onClick` coexistence is pinned as DATA below instead, which is
+    // the part a test here can actually see.)
+    const onOpenTask = vi.fn();
+    render(
+      <TaskCard
+        task={task()}
+        {...NO_LINKS}
+        onOpenTask={onOpenTask}
+        drag={dragSurface()}
+      />,
+    );
+    fireEvent.click(screen.getByText("Ship the board"));
+    expect(onOpenTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("Enter on the focused card opens the Task (the keyboard path)", () => {
+    // A card reachable only by mouse is not reachable: the board is a grid of
+    // focusable rows now, and `RowButton`'s Enter handler is the whole keyboard
+    // contract. Space stays inert — that is `RowButton`'s rule, pinned in its own
+    // test, and re-asserted here because a card is a bigger click target for a
+    // mis-keystroke than a sidebar row is.
+    const onOpenTask = vi.fn();
+    render(<TaskCard task={task()} {...NO_LINKS} onOpenTask={onOpenTask} />);
+    const row = screen.getByTestId("task-card");
+    fireEvent.keyDown(row, { key: "Enter" });
+    expect(onOpenTask).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(row, { key: " " });
+    expect(onOpenTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("is BOTH draggable and clickable, and the drag surface still lands", () => {
+    // The two gestures share one element, and the risk is a spread that silently
+    // drops the drag half. `RowButton` spreads `...rest` LAST, so `draggable` and
+    // the four drag handlers survive onto the DOM after its own `role` / `onClick`.
+    const drag = dragSurface();
+    render(<TaskCard task={task()} {...NO_LINKS} drag={drag} />);
+    const el = screen.getByTestId("task-card");
+    expect(el.getAttribute("draggable")).toBe("true");
+    fireEvent.dragStart(el);
+    expect(drag.onDragStart).toHaveBeenCalledTimes(1);
+    fireEvent.click(el);
+  });
+
+  it("the sessions chip still resolves to the CARD as its role=button ancestor", () => {
+    // `RowButton`'s constraint is ONE match per row, and this is the assertion that
+    // would catch a second `role` appearing (on the chip, say). It used to read
+    // "closest is null" because the card had no role at all; now the card is the
+    // role, so the chip must resolve TO the card and not to something nearer.
+    render(
+      <TaskCard
+        task={task()}
+        sessions={[link("sess_1")]}
+        costUsd={null}
+        onOpenSession={vi.fn()}
+        onOpenTask={vi.fn()}
+      />,
+    );
+    const chip = screen.getByText("1 session");
+    expect(chip.closest('[role="button"]')).toBe(screen.getByTestId("task-card"));
+    // The chip is a real `<button>` and carries NO role of its own, so it adds
+    // nothing to the selector the sidebar resolves rows through.
+    expect(chip.getAttribute("role")).toBeNull();
+    expect(document.querySelectorAll('[role="button"]')).toHaveLength(1);
+  });
+
+  it("a chip click opens the SESSION and does NOT also open the detail modal", () => {
+    // THE `stopPropagation` PIN, and it reverses this file's previous measurement.
+    // The chip's old comment said "there is nothing to stop" — true when the card
+    // had no `onClick`. Now the card IS the affordance, so a chip click bubbles into
+    // the row's handler and BOTH surfaces open: the Session appears and the modal
+    // paints over it. That is not a cosmetic double-open — the modal then sits on
+    // top of the transcript the user just asked to see.
+    const onOpenSession = vi.fn();
+    const onOpenTask = vi.fn();
+    render(
+      <TaskCard
+        task={task()}
+        sessions={[link("sess_1")]}
+        costUsd={null}
+        onOpenSession={onOpenSession}
+        onOpenTask={onOpenTask}
+      />,
+    );
+    fireEvent.click(screen.getByText("1 session"));
+    expect(onOpenSession).toHaveBeenCalledTimes(1);
+    expect(onOpenTask).not.toHaveBeenCalled();
+  });
+
+  it("a card with no links is still clickable", () => {
+    // The chip is conditional; the row is not. A card with no Session is the common
+    // case on a fresh board and it has to open too.
+    const onOpenTask = vi.fn();
+    render(<TaskCard task={task()} {...NO_LINKS} onOpenTask={onOpenTask} />);
+    expect(screen.queryByRole("button", { name: /session/ })).toBeNull();
+    fireEvent.click(screen.getByTestId("task-card"));
+    expect(onOpenTask).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -359,6 +476,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         sessions={[link("sess_old"), link("sess_new")]}
         costUsd={1.75}
         onOpenSession={noopOpenSession}
+        onOpenTask={noopOpenTask}
       />,
     );
     expect(screen.getByText("2 sessions · $1.75")).toBeTruthy();
@@ -380,6 +498,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         sessions={[link("sess_1")]}
         costUsd={null}
         onOpenSession={noopOpenSession}
+        onOpenTask={noopOpenTask}
       />,
     );
     expect(screen.getByText("1 session")).toBeTruthy();
@@ -400,6 +519,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         sessions={[link("sess_1")]}
         costUsd={0}
         onOpenSession={noopOpenSession}
+        onOpenTask={noopOpenTask}
       />,
     );
     expect(screen.getByText("1 session · $0.00")).toBeTruthy();
@@ -419,6 +539,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         sessions={[link("sess_first"), link("sess_second"), link("sess_last")]}
         costUsd={0.5}
         onOpenSession={onOpenSession}
+        onOpenTask={noopOpenTask}
       />,
     );
     fireEvent.click(screen.getByText("3 sessions · $0.50"));
@@ -504,6 +625,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         sessions={[link("sess_alpha"), link("sess_beta")]}
         costUsd={2.5}
         onOpenSession={onOpenSession}
+        onOpenTask={noopOpenTask}
       />,
     );
     const chip = screen.getByText("2 sessions · $2.50");
@@ -512,7 +634,13 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
     // broke: a real `<button>` inside a card is in the tab order whether or not
     // anything answers it.
     expect(chip.getAttribute("type")).toBe("button");
-    expect(chip.closest('[role="button"]')).toBeNull();
+    // The chip resolves to the CARD's role, not to itself — issue #177 made the card
+    // a `RowButton`, and this assertion used to demand `null` because the card had no
+    // role at all. What has NOT changed is that the chip owns no role of its own: the
+    // whole tree holds exactly ONE `[role="button"]`, which is `RowButton`'s
+    // load-bearing constraint.
+    expect(chip.getAttribute("role")).toBeNull();
+    expect(document.querySelectorAll('[role="button"]')).toHaveLength(1);
     fireEvent.click(chip);
     expect(onOpenSession).toHaveBeenCalledTimes(1);
     expect(onOpenSession).toHaveBeenCalledWith("sess_beta");
@@ -557,14 +685,17 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
     //
     // It is a real `<button type="button">` and not a `<span>` with a click
     // handler: it activates from the keyboard and it says what it is to a screen
-    // reader. It does NOT carry a `role` — the card's own `role` must stay absent
-    // (pinned above), and a `<button>` needs no role spelled.
+    // reader. It does NOT carry a `role` of its own: a `<button>` needs no role
+    // spelled, and the card wears the row's ONE role (see the case above), so a role
+    // here would be a second `[role="button"]` match in the tree the sidebar
+    // resolves rows through.
     render(
       <TaskCard
         task={task()}
         sessions={[link("sess_1")]}
         costUsd={0.25}
         onOpenSession={vi.fn()}
+        onOpenTask={vi.fn()}
       />,
     );
     const chip = screen.getByText("1 session · $0.25");
@@ -574,6 +705,8 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
     expect(tokens).toContain("rounded-full");
     expect(tokens).toContain("bg-background");
     expect(tokens).not.toContain("bg-chat");
-    expect(chip.closest('[role="button"]')).toBeNull();
+    // No role ON THE CHIP (the card's role is the row's one role — see the case
+    // above). This used to be `closest(…).toBeNull()`, which issue #177 inverted.
+    expect(chip.getAttribute("role")).toBeNull();
   });
 });

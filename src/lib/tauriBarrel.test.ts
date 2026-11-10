@@ -578,15 +578,22 @@ describe("the scanner actually reads the tree", () => {
     // the two API pins below (`TAURI_PUBLIC_API`, `TAURI_RUNTIME_API`) are
     // untouched and green, because A5 adds no IPC wrapper — `startTaskSession`
     // and the four board commands shipped in A1/A4.
-    // And 52 -> 53 when Task interaction (issue #177) landed
-    // `src/store/taskLaunch.test.ts` — the launch orchestrator's test, which drives
-    // `startTaskSession` / `sendPrompt` / `moveTask` / `createTask` through the
-    // documented seam. It is a mocker because it asserts on WHICH arguments reached
-    // the wire (the create-before-start and move-before-start ORDERINGS, which are
-    // load-bearing per ADR 0090's missing foreign key), and an assertion about an
-    // argument needs a spy rather than a real `invoke`.
-    expect(mockers).toHaveLength(53);
-    // 52 of the 53 SPREAD `vi.importActual`, which is the shape that makes the
+    // And 52 -> 54 when Task interaction (issue #177) landed TWO mockers, each
+    // needing the seam for its own reason:
+    //  - `src/store/taskLaunch.test.ts` — the launch orchestrator, which asserts on
+    //    WHICH arguments reached the wire and in WHAT ORDER (create-before-start and
+    //    move-before-start are load-bearing per ADR 0090's missing foreign key), and
+    //    an assertion about an argument needs a spy rather than a real `invoke`.
+    //  - `src/components/TaskDetailDialog.test.tsx` — the detail modal, which drives
+    //    the same launch through its two buttons AND reads the skill catalog to decide
+    //    whether those buttons are enabled at all. `listSkills` un-mocked would make
+    //    every button permanently disabled in jsdom and the file would assert on a
+    //    refusal rather than on the launch.
+    // Neither re-spells an existing mock, and `src/lib/taskPrompt.test.ts` is NOT a
+    // mocker — it asserts on a returned string and touches no IPC, which is the shape
+    // the seam prefers.
+    expect(mockers).toHaveLength(54);
+    // 53 of the 54 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. Both new mockers spread
     // too (each lists the arms its own tests drive and leaves every other barrel
     // export — `invoke` included — to the real module), so the remaining one
@@ -597,7 +604,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(readFileSync(f, "utf8")),
       ).length,
-).toBe(52);
+).toBe(53);
   });
 });
 

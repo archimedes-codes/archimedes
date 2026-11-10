@@ -2118,6 +2118,64 @@ describe("App (the Task board view)", () => {
     expect(getBoard).toHaveBeenCalledTimes(2);
   });
 
+  it("a card click opens the detail modal, and its chip leaves the board", async () => {
+    // THE WIRING PROOF AT THE TOP. `TasksBoard.test.tsx` pins that the board calls
+    // `onReturnToWorkspace`; this proves `App` actually HANDS it the view switch. A
+    // board-side test cannot see that: an optional prop nobody passes is green in
+    // every test file except this one, and the shipped behaviour is a click that does
+    // nothing visible — which is precisely the defect issue #177 found in #174's chip.
+    await bootedWithActiveSession();
+    vi.mocked(getBoard).mockResolvedValue([
+      {
+        stage: {
+          spacePath: "/tmp/ws",
+          slug: "backlog",
+          label: "Backlog",
+          sortOrder: 0,
+          onEnter: "none",
+        },
+        tasks: [
+          {
+            task: {
+              id: "tsk_x",
+              spacePath: "/tmp/ws",
+              number: 4,
+              title: "Open me",
+              body: null,
+              specPath: null,
+              stageSlug: "backlog",
+              sortOrder: 0,
+              createdAt: 1,
+              updatedAt: 1,
+            },
+            sessions: [
+              { taskId: "tsk_x", sessionId: "s1", stageSlug: "backlog" },
+            ],
+            costUsd: 0.25,
+          },
+        ],
+      },
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
+    // Await the board's own mount fetch: `TasksBoard` loads on mount rather than at
+    // boot, so the first frame after the door click is the spinner and there is no
+    // card to click yet.
+    await waitFor(() => expect(screen.getByText("Open me")).toBeTruthy());
+
+    fireEvent.click(screen.getByText("Open me"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    // The dialog is a SIBLING of the board inside this arm, not a portal outside
+    // `App`: closing it must return to the board and not to the workspace.
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByTestId("tasks-board")).toBeTruthy();
+
+    // The chip: open the Session AND leave the board, in one click.
+    fireEvent.click(screen.getByText("1 session · $0.25"));
+    await waitFor(() => expect(screen.queryByTestId("tasks-board")).toBeNull());
+    expect(screen.getByText("Sessions")).toBeTruthy();
+  });
+
   it("the board's New task modal creates the Task and its Session through the real App tree", async () => {
     // The ONE case that proves the two boot mocks above are load-bearing rather
     // than decorative: it walks `App` → the `"board"` arm → `TasksBoard`'s
