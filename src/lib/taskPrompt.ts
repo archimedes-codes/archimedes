@@ -66,22 +66,21 @@ export function escapeAttr(value: string): string {
  * title is an ATTRIBUTE and is escaped; the body is element content, where the
  * one sequence that matters is the one that could close the tag early.
  *
- * `body` falls back to the TITLE when the card has no body. That is deliberate
- * and not padding: `tasks.body` is nullable, and a card created from a one-line
- * sentence has nothing but its title — an empty element body would hand the model
- * a block whose content is one blank line. The title is already repeated as
- * element content on the line after the tag, which is what the pre-existing
- * `NewTaskDialog` shape did (it passed the first line of the draft as the body).
+ * The title is carried ONCE, in the attribute. It used to be echoed as the first
+ * line of element content too, and `body` fell back to the title when the card
+ * had none — so a one-line card reached the model with its sentence TWICE, both
+ * copies the same text. That read as two fields agreeing, which is a worse signal
+ * than an empty body: it implies there IS a body and it happens to be the title.
+ * A body-less card now has an empty element body, which is the truth.
  */
 export function taskBlock(task: TaskRow): string {
-  const body = task.body ?? task.title;
-  return (
+  const open =
     `<task id="${escapeAttr(task.id)}" stage="${escapeAttr(task.stageSlug)}"` +
-    ` title="${escapeAttr(task.title)}">\n` +
-    `${task.title}\n\n` +
-    `${body.replace(/<\/task>/gi, "&lt;/task>")}\n` +
-    `</task>`
-  );
+    ` title="${escapeAttr(task.title)}">`;
+  const body = task.body?.replace(/<\/task>/gi, "&lt;/task>");
+  // An empty element when there is no body, rather than an element holding one
+  // blank line: the blank line is whitespace the model has to explain to itself.
+  return body ? `${open}\n${body}\n</task>` : `${open}\n</task>`;
 }
 
 /** The two ways a card is opened as a Session, and the one skill each loads.

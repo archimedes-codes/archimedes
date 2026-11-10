@@ -184,17 +184,52 @@ describe("taskLaunch — the discuss launch", () => {
     });
   });
 
-  it("expands the $discuss token into a <skill> block ahead of the <task> block", async () => {
+  /// A model-VISIBLE skill is sent as the bare `$discuss` token, NOT inlined.
+  ///
+  /// The token was always there; what used to ride alongside it was the whole
+  /// SKILL.md — 18 KB for `discuss`, 12 KB for `research` — appended by
+  /// `expandMentions` at the END of the text, with the `<task>` block concatenated
+  /// after it. That shape is what broke the transcript: `MessageBubble` renders via
+  /// `splitMentionBlocks`, whose NO-LOSS rule refuses to parse when anything trails
+  /// the last block, so it gave up and printed the ENTIRE skill as literal text.
+  /// Measured on a real launch message: 0 blocks collapsed, 18,076 of 18,076
+  /// characters rendered raw, in the user's own bubble.
+  ///
+  /// The model loads it itself instead: the system prompt's `<available_skills>`
+  /// section already tells it to `read_skill` BY NAME, and the instruction line
+  /// "Let's discuss this task." is a trigger phrase `discuss`'s own description
+  /// advertises. Verified end to end — the launched session followed the skill and
+  /// reached its `ask`-tool gate.
+  it("sends a visible skill as the bare token and inlines no body", async () => {
     await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
     const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
-    // `expandMentions` APPENDS the block and LEAVES the token in place — that is
-    // ADR 0013's shape, so the bubble shows what was typed and the block carries the
-    // body. An earlier version of this test asserted the token was GONE, which is
-    // simply not what the ONE expansion path does.
-    expect(sent).toContain("<skill");
-    expect(sent.indexOf("<skill")).toBeLessThan(sent.indexOf("<task "));
+    expect(sent).toContain("$discuss");
+    expect(sent).not.toContain("<skill");
+    expect(sent).not.toContain("DISCUSS BODY");
     expect(sent.trimEnd().endsWith("</task>")).toBe(true);
     expect(sent).toContain('id="tsk_1"');
+    // The instruction line survives, and it is what makes the token organic rather
+    // than an unexplained string: it is the phrase the skill's description matches.
+    expect(sent).toContain("Let's discuss this task.");
+  });
+
+  /// The exception, and it is a documented behaviour rather than a leftover:
+  /// `read_skill` REFUSES a `disable-model-invocation` skill ("the Agent may not
+  /// load it"), so for a hidden skill the token route would open a Session with no
+  /// methodology and no error — a confident, well-formed nothing. Client-side
+  /// inlining is the ONLY thing that reaches those, which is what `missingSkill`'s
+  /// comment means by "a `$name` Mention reaches it … which is exactly this path".
+  /// So inlining survives for exactly this case.
+  it("still inlines the body for a skill the model is refused", async () => {
+    const hidden = CATALOGS();
+    hidden.skills = hidden.skills.map((k) =>
+      k.name === "discuss" ? { ...k, disableModelInvocation: true } : k,
+    );
+    await launchTaskSession(SPACE, taskRow(), "discuss", hidden);
+    const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
+    expect(sent).toContain('<skill name="discuss"');
+    expect(sent).toContain("DISCUSS BODY");
+    expect(sent).toContain("$discuss");
   });
 
   it("settles the turn on success, so the composer is not left locked", async () => {
@@ -261,8 +296,9 @@ describe("taskLaunch — the research launch (the column transition)", () => {
     seedBoard(column("backlog", [taskRow()]), column("research"));
     await launchTaskSession(SPACE, taskRow(), "research", CATALOGS());
     const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
-    expect(sent).toContain("<skill name=\"research\"");
-    expect(sent).not.toContain("<skill name=\"discuss\"");
+    expect(sent).toContain("$research");
+    expect(sent).not.toContain("$discuss");
+    expect(sent).not.toContain("<skill");
   });
 
   it("does NOT move the card when the Space has no research column", async () => {

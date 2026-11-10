@@ -318,9 +318,14 @@ describe("TaskDetailDialog — the two buttons", () => {
     await waitFor(() => expect(startTaskSession).toHaveBeenCalledTimes(1));
     expect(moveTask).not.toHaveBeenCalled();
     const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
-    expect(sent).toContain('<skill name="discuss"');
+    // The `$` TOKEN, not an inlined body: `taskLaunch.shouldInlineSkill` sends a
+    // model-visible skill as a token and lets the Worker `read_skill` it. Asserting
+    // the name rather than a block keeps this pin about WHICH skill the button
+    // picks, which is the only thing this surface decides.
+    expect(sent).toContain("$discuss");
+    expect(sent).not.toContain("$research");
+    expect(sent).not.toContain("<skill");
     expect(sent).toContain("<task ");
-    expect(sent.indexOf("<skill")).toBeLessThan(sent.indexOf("<task "));
   });
 
   it("Research moves the card to the research column AND loads the research skill", async () => {
@@ -331,7 +336,8 @@ describe("TaskDetailDialog — the two buttons", () => {
     await waitFor(() => expect(startTaskSession).toHaveBeenCalledTimes(1));
     expect(moveTask).toHaveBeenCalledWith(SPACE, "tsk_1", "research");
     const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
-    expect(sent).toContain('<skill name="research"');
+    expect(sent).toContain("$research");
+    expect(sent).not.toContain("$discuss");
   });
 
   it("leaves the board view once a session is open", async () => {

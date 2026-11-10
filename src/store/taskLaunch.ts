@@ -186,6 +186,53 @@ function missingSkill(
   return known ? null : new Error(`This Space has no \`${skill}\` skill to load.`);
 }
 
+/** Decide whether a launch must INLINE the skill body or may send the bare token.
+ *
+ *  Default: send the token and let the model load it. The system prompt's
+ *  `<available_skills>` section already instructs the model to load a skill BY
+ *  NAME with `read_skill`, and the launch's own instruction line ("Let's discuss
+ *  this task.") is a trigger phrase the target skill's description advertises, so
+ *  the load is organic rather than a token the model has to decode.
+ *
+ *  Inlining `discuss` put 18 KB (and 12 KB for `research`) into every launch
+ *  message. Worse, `expandMentions` APPENDS its block at the END of the text while
+ *  `buildLaunchMessage` concatenates the `<task>` block AFTER the expansion, so the
+ *  wire shape was `<skill>…</skill>` then `<task>…</task>`. `MessageBubble` renders
+ *  through `splitMentionBlocks`, whose NO-LOSS rule refuses to parse when anything
+ *  trails the last block, so it bailed and printed the whole skill as literal text
+ *  in the user's own bubble — measured on a real launch: 0 blocks collapsed, 18,076
+ *  of 18,076 characters raw.
+ *
+ *  Two cases still need the body inlined, and both are about the token route being
+ *  UNAVAILABLE rather than merely unwelcome:
+ *   - `disableModelInvocation` — `read_skill` REFUSES such a skill ("the Agent may
+ *     not load it"), so a token would open a Session with no methodology and no
+ *     error. Client-side inlining is the only route that reaches it, which is what
+ *     `missingSkill`'s comment means by "a `$name` Mention reaches it … exactly this
+ *     path". NOTE the consequence: in that case the raw-dump rendering still
+ *     happens, because the block is still appended before the `<task>` block. That
+ *     is the pre-existing shape, and it is a display wart on a path that must stay;
+ *     the renderer's NO-LOSS rule is load-bearing for pasted-block cases
+ *     (`skills.test.ts`) and was left alone deliberately.
+ *
+ *  There is deliberately no "name outside the `$` grammar" arm. The mode's skill
+ *  name is the literal `"discuss"` / `"research"` from `skillOfMode`, both of which
+ *  the grammar carries, and `missingSkill` already REFUSED any launch whose catalog
+ *  has no exact-named row — so an unmatchable name can never reach here. An arm for
+ *  it would be unreachable code pretending to be a guard.
+ */
+function shouldInlineSkill(
+  mode: TaskLaunchMode,
+  catalogs: TaskLaunchCatalogs,
+): boolean {
+  const name = skillOfMode(mode);
+  if (name === null) return false;
+  const skill = catalogs.skills.find((s) => s.name === name);
+  // `undefined` cannot reach here either (the same guard), but inlining is the
+  // safe answer for a catalog we cannot read, so it is not a panic.
+  return skill?.disableModelInvocation ?? true;
+}
+
 /**
  * Open an EXISTING card as a Session: optionally move it, start a linked Session,
  * select it, and send the first message.
@@ -273,12 +320,15 @@ async function sendLaunchMessage(
   mode: TaskLaunchMode,
   catalogs: TaskLaunchCatalogs,
 ): Promise<void> {
+  const inline = shouldInlineSkill(mode, catalogs);
   const text = buildLaunchMessage(task, mode, (head) =>
-    expandMentions(head, {
-      skills: catalogs.skills,
-      agents: catalogs.agents,
-      mcpServers: [],
-    }),
+    inline
+      ? expandMentions(head, {
+          skills: catalogs.skills,
+          agents: catalogs.agents,
+          mcpServers: [],
+        })
+      : head,
   );
   const sessions = useSessions.getState();
   sessions.addUserMessage(info.sessionId, text);

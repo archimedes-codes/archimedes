@@ -59,11 +59,11 @@ describe("taskPrompt — the <task> block", () => {
     expect(block).toContain('id="tsk_1a2b"');
     expect(block).toContain('stage="backlog"');
     expect(block).toContain('title="Wire up the board"');
-    // The title is BOTH an attribute and the first line of element content — the
-    // shape the pre-existing `NewTaskDialog` block had, kept byte-compatible so
-    // `NewTaskDialog.test.tsx`'s ordering assertions still describe this output.
-    expect(block.split("\n")[1]).toBe("Wire up the board");
-    expect(block).toContain("Cards need a detail modal.");
+    // The title rides the ATTRIBUTE only; the element content is the body. The
+    // old shape echoed the title as the first content line too, which made a
+    // body-less card read as its title twice.
+    expect(block.split("\n")[1]).toBe("Cards need a detail modal.");
+    expect(block.match(/Wire up the board/g)).toHaveLength(1);
   });
 
   it("emits EXACTLY one closing tag even when the body contains one", () => {
@@ -76,12 +76,26 @@ describe("taskPrompt — the <task> block", () => {
     expect(block).toContain("tail");
   });
 
-  it("falls back to the title when the card has no body", () => {
-    // `tasks.body` is NULLABLE and a card made from one sentence has nothing but a
-    // title. An empty element body would hand the model a block whose content is a
-    // blank line, which reads as a broken card rather than as a body-less one.
+  it("does NOT repeat the title when the card has no body", () => {
+    // `tasks.body` is NULLABLE, and this used to fall back to the TITLE, so a
+    // one-line card reached the model with its sentence TWICE — once as the
+    // attribute, once as element content — and both copies were the same truncated
+    // 80 chars. The repetition read as two different fields agreeing, which is a
+    // worse signal than an empty body: it implies there IS a body and it is this.
+    // The title rides the attribute, so nothing is lost by leaving the element empty.
     const block = taskBlock(task({ body: null }));
-    expect(block).toContain("Wire up the board\n\nWire up the board\n</task>");
+    expect(block).toBe(
+      '<task id="tsk_1a2b" stage="backlog" title="Wire up the board">\n</task>',
+    );
+    expect(block.match(/Wire up the board/g)).toHaveLength(1);
+  });
+
+  it("emits the body as element content when the card HAS one", () => {
+    const block = taskBlock(task());
+    expect(block).toContain("Cards need a detail modal.");
+    // The title is an attribute only — it is not echoed as content even when a
+    // body exists, so the two fields never blur into one repeated sentence.
+    expect(block.match(/Wire up the board/g)).toHaveLength(1);
   });
 
   it("escapes every character that could break out of an attribute", () => {

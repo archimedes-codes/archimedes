@@ -430,9 +430,14 @@ describe("NewTaskDialog — Discuss and Research", () => {
     fireEvent.click(await ready("Discuss"));
     await waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
     const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
-    expect(sent).toContain('<skill name="discuss"');
+    // The token, not the body — see `taskLaunch.shouldInlineSkill`. The block-order
+    // assertion this replaced was pinning a shape that BROKE the transcript: a
+    // `<task>` block trailing the appended `<skill>` block makes
+    // `splitMentionBlocks` refuse to parse, so the bubble rendered the entire skill
+    // as literal text.
+    expect(sent).toContain("$discuss");
+    expect(sent).not.toContain("<skill");
     expect(sent).toContain("<task ");
-    expect(sent.indexOf("<skill")).toBeLessThan(sent.indexOf("<task "));
     expect(sent.trimEnd().endsWith("</task>")).toBe(true);
   });
 
@@ -447,7 +452,8 @@ describe("NewTaskDialog — Discuss and Research", () => {
     expect(vi.mocked(createTask).mock.calls[0]![3]).toBe("research");
     expect(moveTask).not.toHaveBeenCalled();
     const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
-    expect(sent).toContain('<skill name="research"');
+    expect(sent).toContain("$research");
+    expect(sent).not.toContain("$discuss");
   });
 
   it("splits the draft into title and body the same way for all three buttons", async () => {
