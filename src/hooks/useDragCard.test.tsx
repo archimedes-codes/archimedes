@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useDragCard } from "./useDragCard";
 import { useWindowDropBackstop } from "./useWindowDropBackstop";
-import type { StageRow, StageWithTasks } from "../lib/tauri";
+import type { StageRow, StageWithTasks, TaskCardView } from "../lib/tauri";
 
 /**
  * `useDragCard` — the CROSS-COLUMN gesture, and the reason it is a separate hook.
@@ -93,17 +93,25 @@ const stage = (slug: string): StageRow => ({
   onEnter: "none",
 });
 
-const card = (id: string, stageSlug: string) => ({
-  id,
-  spacePath: "/w/alpha",
-  number: Number(id.replace(/\D/g, "")),
-  title: id,
-  body: null,
-  specPath: null,
-  stageSlug,
-  sortOrder: 0,
-  createdAt: 1,
-  updatedAt: 1,
+/** One board CARD (issue #174): the wire element is a `TaskCardView` — the row
+ *  under `.task` plus its `sessions`/`costUsd`. This hook only ever reads
+ *  `.task.id`, so the wrapper is empty here on purpose; a card built as a bare
+ *  `TaskRow` no longer typechecks against `StageWithTasks.tasks`. */
+const card = (id: string, stageSlug: string): TaskCardView => ({
+  task: {
+    id,
+    spacePath: "/w/alpha",
+    number: Number(id.replace(/\D/g, "")),
+    title: id,
+    body: null,
+    specPath: null,
+    stageSlug,
+    sortOrder: 0,
+    createdAt: 1,
+    updatedAt: 1,
+  },
+  sessions: [],
+  costUsd: null,
 });
 
 /** Three columns, the third EMPTY — because the seeded default board is mostly
@@ -145,8 +153,12 @@ function Probe(props: {
           {...hook.columnProps()}
         >
           {column.tasks.map((t) => (
-            <div key={t.id} data-testid={`card-${t.id}`} {...hook.dragProps(t.id)}>
-              {t.id}
+            <div
+              key={t.task.id}
+              data-testid={`card-${t.task.id}`}
+              {...hook.dragProps(t.task.id)}
+            >
+              {t.task.id}
             </div>
           ))}
         </div>

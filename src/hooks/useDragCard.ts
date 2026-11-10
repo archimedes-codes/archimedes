@@ -147,10 +147,14 @@ export function useDragCard(args: {
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [overStageSlug, setOverStageSlug] = useState<string | null>(null);
 
-  /** The column a card lives in, per the board the last render showed. */
+  /** The column a card lives in, per the board the last render showed. A board
+   *  element is a `TaskCardView` (issue #174), so the card's own id sits under
+   *  `.task` — the ONLY thing this hook reaches through. The hit test below stays
+   *  pointer-driven and rect-driven; which column a card LIVES in is still answered
+   *  from the board slice, never from the event target. */
   const homeOf = useCallback(
     (taskId: string): string | null =>
-      stages.find((column) => column.tasks.some((t) => t.id === taskId))?.stage
+      stages.find((column) => column.tasks.some((t) => t.task.id === taskId))?.stage
         .slug ?? null,
     [stages],
   );

@@ -315,7 +315,10 @@ function TaskColumn({
   columnDrop: DropTargetHandlers;
   onReorder: (ids: string[]) => void;
 }) {
-  const ids = useMemo(() => column.tasks.map((t) => t.id), [column.tasks]);
+  const ids = useMemo(
+    () => column.tasks.map((t) => t.task.id),
+    [column.tasks],
+  );
   // The within-column gesture, reused UNCHANGED with the default `axis: "y"` — a
   // vertical strip, so the pointer's half of the target row is read off Y. Nothing
   // here computes an index: the hook already answers before-or-after for the
@@ -392,18 +395,22 @@ function TaskColumn({
         // `TasksBoard.test.tsx` ("the columns hug their content") because jsdom
         // performs no layout and a height cannot be asserted here.
         <div className="flex flex-col gap-2">
-          {column.tasks.map((task) => {
-            const edge = reorder.overId === task.id ? reorder.overEdge : null;
+          // A board element is a `TaskCardView` (issue #174): the row the card
+          // renders sits under `.task`, so every id here reaches through it. The
+          // card itself still takes a plain `TaskRow` — the wrapper's `sessions`
+          // and `costUsd` are unread until the chip lands.
+          {column.tasks.map((card) => {
+            const edge = reorder.overId === card.task.id ? reorder.overEdge : null;
             return (
               // The SLOT carries the within-column surface and the drop-edge class;
               // the CARD inside it carries the cross-column surface and `draggable`.
               // Two spreads on one node would leave the second
               // `onDragOver`/`onDrop` winning in silence — see the header.
               <div
-                key={task.id}
+                key={card.task.id}
                 data-testid="task-card-slot"
                 data-edge={edge ?? undefined}
-                {...reorder.dragProps(task.id)}
+                {...reorder.dragProps(card.task.id)}
                 className={cn(
                   // `border-2` is reserved for the drop edge (the
                   // `SessionListRow`/`SpaceTabs` idiom), so the slot carries no border
@@ -414,9 +421,9 @@ function TaskColumn({
                 )}
               >
                 <TaskCard
-                  task={task}
-                  drag={cardDrag(task.id)}
-                  active={draggingTaskId === task.id}
+                  task={card.task}
+                  drag={cardDrag(card.task.id)}
+                  active={draggingTaskId === card.task.id}
                 />
               </div>
             );

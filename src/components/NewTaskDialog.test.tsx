@@ -510,7 +510,7 @@ describe("NewTaskDialog — the first send creates the Task and its Session", ()
     );
     // The Task row is NOT rolled back: the card is the board's truth and the
     // Session is live; only the prompt failed.
-    expect(useTasks.getState().boardsBySpace[SPACE]?.[0]?.tasks.map((t) => t.id))
+    expect(useTasks.getState().boardsBySpace[SPACE]?.[0]?.tasks.map((t) => t.task.id))
       .toContain("tsk1");
   });
 });
@@ -647,7 +647,7 @@ describe("NewTaskDialog — closing leaves both artifacts", () => {
     // "Nothing is lost to a dismissed dialog" is the STORE's truth, not the
     // DOM's: the card is in the board's first column and the Session is listed.
     expect(
-      useTasks.getState().boardsBySpace[SPACE]?.[0]?.tasks.map((t) => t.id),
+      useTasks.getState().boardsBySpace[SPACE]?.[0]?.tasks.map((t) => t.task.id),
     ).toContain("tsk1");
     expect(useSessions.getState().sessions.map((s) => s.sessionId)).toContain(
       "snap1",

@@ -11,6 +11,7 @@ import {
   reorderTasks,
   type StageRow,
   type StageWithTasks,
+  type TaskCardView,
   type TaskRow,
 } from "../lib/tauri";
 
@@ -91,14 +92,23 @@ const task = (id: string, number: number, stageSlug: string): TaskRow => ({
   updatedAt: 1,
 });
 
+/** A board CARD as the wire shape carries it (issue #174): the row under `task`
+ *  plus the two board-only fields. `task()` stays a plain `TaskRow` because
+ *  `createTask` still answers one — the wrapper exists ONLY on the board read. */
+const card = (id: string, number: number, stageSlug: string): TaskCardView => ({
+  task: task(id, number, stageSlug),
+  sessions: [],
+  costUsd: null,
+});
+
 /** The NESTED wire shape. A board built flat (`{ slug, label, tasks }`) is the
  *  failure mode this file exists to catch: it renders BLANK columns without a type
  *  error, so the column-header assertions below are the pin, not decoration. */
 const SEED: StageWithTasks[] = [
-  { stage: stage("backlog", { sortOrder: 0 }), tasks: [task("t1", 1, "backlog")] },
+  { stage: stage("backlog", { sortOrder: 0 }), tasks: [card("t1", 1, "backlog")] },
   {
     stage: stage("doing", { sortOrder: 3, onEnter: "compact" }),
-    tasks: [task("t2", 2, "doing"), task("t3", 3, "doing")],
+    tasks: [card("t2", 2, "doing"), card("t3", 3, "doing")],
   },
   { stage: stage("done", { sortOrder: 4 }), tasks: [] },
 ];

@@ -148,6 +148,7 @@ export type {
   // components) were planned against `TaskRow`/`StageRow`/`StageWithTasks`.
   StageRow,
   StageWithTasks,
+  TaskCardView,
   TaskRow,
   TaskSessionRow,
   MoveTaskOutcome,

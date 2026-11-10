@@ -10,9 +10,49 @@ import {
   type MoveTaskOutcome,
   type StageRow,
   type StageWithTasks,
+  type TaskCardView,
   type TaskRow,
 } from "../lib/tauri";
 import { resetStores } from "../test/resetStores";
+
+// Node's `fs` through a COMPUTED specifier — this app ships no `@types/node`, so a
+// bare `import "node:fs"` does not typecheck. The idiom `classNameConvention.test.ts`
+// / `tauriBoundary.test.ts` / `TaskCard.test.tsx` use, borrowed here for the ONE
+// assertion below that can only be made against the mirror's SOURCE (the drift pin).
+const NODE_FS = "node:" + "fs";
+const { readFileSync } = (await import(NODE_FS)) as {
+  readFileSync: (path: string, encoding: string) => string;
+};
+
+/** Strip JS comments before scanning, matching the helper those files use. A field
+ *  name that appears only in a doc-comment is PROSE, not a declared key. */
+const stripJsComments = (source: string): string =>
+  source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((line) => !/^\s*\/\//.test(line))
+    .join("\n");
+
+/** The fields `types.ts` declares on an interface, IN DECLARATION ORDER, with the
+ *  `?` modifier and the declared type kept so the shape can be asserted and not
+ *  merely the key names. Throws rather than returning `[]`: a mirror that lost the
+ *  interface entirely must fail LOUDLY, not green-by-emptiness. */
+const interfaceFields = (
+  source: string,
+  name: string,
+): { key: string; optional: boolean; type: string }[] => {
+  const header = `export interface ${name} {`;
+  const open = source.indexOf(header);
+  if (open === -1) throw new Error(`types.ts declares no \`${header}\``);
+  const close = source.indexOf("\n}", open);
+  if (close === -1) throw new Error(`\`${name}\` has no closing brace in types.ts`);
+  const body = source.slice(open + header.length, close);
+  return [...body.matchAll(/^ *([A-Za-z0-9_]+)(\?)?: *([^;\n]+);$/gm)].map((m) => ({
+    key: m[1]!,
+    optional: m[2] !== undefined,
+    type: m[3]!,
+  }));
+};
 
 /**
  * `src/store/tasks.ts` — the per-Space Task board store.
@@ -80,9 +120,18 @@ const task = (id: string, number: number, stageSlug: string, title = `T${number}
   updatedAt: 1,
 });
 
+/** A board card as the wire shape actually carries it (issue #174): the row under
+ *  `task`, with the two board-only fields. A board built from bare `TaskRow`s no
+ *  longer typechecks against `StageWithTasks.tasks` — which is the point. */
+const cardOf = (row: TaskRow): TaskCardView => ({
+  task: row,
+  sessions: [],
+  costUsd: null,
+});
+
 /** A two-column board, NESTED the way the wire shape is (`{ stage, tasks }`). */
 const board = (...cols: [StageRow, TaskRow[]][]): StageWithTasks[] =>
-  cols.map(([s, tasks]) => ({ stage: s, tasks }));
+  cols.map(([s, tasks]) => ({ stage: s, tasks: tasks.map(cardOf) }));
 
 const backlog = stage("backlog");
 const doing = stage("doing", { sortOrder: 3, onEnter: "compact" });
@@ -121,7 +170,7 @@ beforeEach(() => {
 const idsOf = (spacePath: string, slug: string): string[] =>
   (useTasks.getState().boardsBySpace[spacePath] ?? [])
     .find((c) => c.stage.slug === slug)
-    ?.tasks.map((t) => t.id) ?? [];
+    ?.tasks.map((t) => t.task.id) ?? [];
 
 describe("useTasks.load", () => {
   it("populates boardsBySpace for the Space it loaded and clears loading", async () => {
@@ -215,8 +264,8 @@ describe("useTasks.moveTask (the cross-column drag verb)", () => {
     await useTasks.getState().moveTask(SPACE, "t1", "doing");
     const moved = (useTasks.getState().boardsBySpace[SPACE] ?? [])
       .flatMap((c) => c.tasks)
-      .find((t) => t.id === "t1");
-    expect(moved?.stageSlug).toBe("doing");
+      .find((t) => t.task.id === "t1");
+    expect(moved?.task.stageSlug).toBe("doing");
   });
 
   it("surfaces a `boostNote` as a warning — the card moved AND the note is readable", async () => {
@@ -345,6 +394,16 @@ describe("useTasks.createTask / useTasks.linkSession", () => {
     expect(row).toEqual(created);
     // The board shows the new card without waiting for a reload.
     expect(idsOf(SPACE, "backlog")).toEqual(["t1", "t2", "t4"]);
+    // …and the board's element is the WRAPPER, spelled out: `create_task` answers a
+    // plain `TaskRow`, so an empty `sessions` and a `null` cost are BUILT here. Both
+    // are the truth for a card that just came into the world — it has no links, and
+    // no Session has ever reported a cost for it. `costUsd: null` and not `0` is
+    // ADR 0082 ("never reported" renders NOTHING; a `0` here would be a phantom
+    // `$0.00` on the chip), and `undefined` would not be this type at all.
+    const landed = (useTasks.getState().boardsBySpace[SPACE] ?? [])
+      .flatMap((c) => c.tasks)
+      .find((t) => t.task.id === "t4");
+    expect(landed).toEqual({ task: created, sessions: [], costUsd: null });
   });
 
   it("createTask forwards an explicit body and stage", async () => {
@@ -404,5 +463,93 @@ describe("useTasks.reset — the store-owned half of isolation", () => {
     expect(typeof useTasks.getState().load).toBe("function");
     expect(typeof useTasks.getState().moveTask).toBe("function");
     expect(typeof useTasks.getState().reorderWithinStage).toBe("function");
+  });
+});
+
+describe("the board's wire shape — the Rust↔TS drift pin (issue #174)", () => {
+  /**
+   * THE DRIFT PIN for the board's card payload, on the TypeScript side.
+   *
+   * `src/lib/tauri/types.ts` is a HAND-WRITTEN mirror of the Rust `Serialize`
+   * types and this repo holds NO automated Rust↔TS shape check (verified: no Rust
+   * test reads a `.ts` file), so the only thing standing between the two is that
+   * the key list below is spelled a SECOND time and is BYTE-IDENTICAL to
+   * `FROZEN_CARD_KEYS` / `FROZEN_TASK_KEYS` in
+   * `src-tauri/src/storage/db/tests/mod.rs::the_task_card_view_wire_keys_are_frozen`.
+   * A rename on either side reddens one of the two. Modelled on
+   * `closed_reason_spellings_are_frozen`, which is the repo's existing
+   * spellings-freeze idiom.
+   *
+   * WHY IT LIVES HERE rather than in `src/lib/tauri/`: `types.ts` is a pure type
+   * module — every field it declares vanishes at compile time, so a test of the
+   * interface can only be a test of its SOURCE text plus a literal that the
+   * compiler checks. Both halves are here because the store is the file that
+   * CONSUMES the shape (it builds a card out of a bare `TaskRow`), which is where
+   * a drifted mirror would actually do damage.
+   *
+   * The `?` (optional) check is the load-bearing extra: an optional `sessions`
+   * compiles against every fixture in the repo and then renders NOTHING when real
+   * data arrives — the silent-green failure the plan calls out for this field.
+   */
+  it("the task card view wire keys are frozen (mirror of the Rust pin)", () => {
+    // BYTE-IDENTICAL to `FROZEN_CARD_KEYS` in
+    // `src-tauri/src/storage/db/tests/mod.rs::the_task_card_view_wire_keys_are_frozen`.
+    const FROZEN_CARD_KEYS = ["task", "sessions", "costUsd"];
+    // BYTE-IDENTICAL to `FROZEN_TASK_KEYS` in that same Rust test — the UNCHANGED
+    // 10-field `TaskRow`, which the wrapper adds nothing to. That is what keeps
+    // `get_task`/`create_task`/`edit_task` (all plain `TaskRow`) telling the truth.
+    const FROZEN_TASK_KEYS = [
+      "id",
+      "spacePath",
+      "number",
+      "title",
+      "body",
+      "specPath",
+      "stageSlug",
+      "sortOrder",
+      "createdAt",
+      "updatedAt",
+    ];
+
+    const types = stripJsComments(readFileSync("src/lib/tauri/types.ts", "utf8"));
+    const card = interfaceFields(types, "TaskCardView");
+    const row = interfaceFields(types, "TaskRow");
+
+    // The Rust test compares a SORTED key set, so the sorted read is the pin that
+    // must match it byte-for-byte; the declaration-order read below is the stricter
+    // TS-side pin (the repo's frozen tuples are in interface order, not alphabetical).
+    expect([...card.map((f) => f.key)].sort()).toEqual([...FROZEN_CARD_KEYS].sort());
+    expect(card.map((f) => f.key)).toEqual(FROZEN_CARD_KEYS);
+    expect([...row.map((f) => f.key)].sort()).toEqual([...FROZEN_TASK_KEYS].sort());
+    expect(row.map((f) => f.key)).toEqual(FROZEN_TASK_KEYS);
+
+    // NO optional field on either. `sessions?:`/`costUsd?:` would compile against
+    // every existing fixture and then render nothing while real data arrives.
+    expect(card.filter((f) => f.optional).map((f) => f.key)).toEqual([]);
+    expect(row.filter((f) => f.optional).map((f) => f.key)).toEqual([]);
+
+    // The TYPES behind the keys, so `string` cannot quietly replace `number | null`
+    // (that swap is what would let a phantom `$0.00` reach the card).
+    expect(card.map((f) => f.type)).toEqual(["TaskRow", "TaskSessionRow[]", "number | null"]);
+
+    // The column carries CARDS, not rows — the other half of the wrapper.
+    expect(interfaceFields(types, "StageWithTasks").map((f) => f.type)).toEqual([
+      "StageRow",
+      "TaskCardView[]",
+    ]);
+
+    // The RUNTIME mirror of the Rust test's `None` half of ADR 0082: `costUsd` must
+    // be PRESENT and `null` for a card with no figure, never absent. Rust pins that
+    // against `serde_json` (a `skip_serializing_if` would delete the key); the TS
+    // side pins it against the compiler plus the literal the store writes — a card
+    // that omitted `costUsd` does not typecheck, and `undefined` is not assignable.
+    const unmeasured: TaskCardView = {
+      task: task("t_frozen", 1, "backlog"),
+      sessions: [],
+      costUsd: null,
+    };
+    expect(Object.keys(unmeasured).sort()).toEqual([...FROZEN_CARD_KEYS].sort());
+    expect("costUsd" in unmeasured).toBe(true);
+    expect(unmeasured.costUsd).toBeNull();
   });
 });
