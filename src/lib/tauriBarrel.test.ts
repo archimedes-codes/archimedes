@@ -578,8 +578,15 @@ describe("the scanner actually reads the tree", () => {
     // the two API pins below (`TAURI_PUBLIC_API`, `TAURI_RUNTIME_API`) are
     // untouched and green, because A5 adds no IPC wrapper — `startTaskSession`
     // and the four board commands shipped in A1/A4.
-    expect(mockers).toHaveLength(52);
-    // 51 of the 52 SPREAD `vi.importActual`, which is the shape that makes the
+    // And 52 -> 53 when Task interaction (issue #177) landed
+    // `src/store/taskLaunch.test.ts` — the launch orchestrator's test, which drives
+    // `startTaskSession` / `sendPrompt` / `moveTask` / `createTask` through the
+    // documented seam. It is a mocker because it asserts on WHICH arguments reached
+    // the wire (the create-before-start and move-before-start ORDERINGS, which are
+    // load-bearing per ADR 0090's missing foreign key), and an assertion about an
+    // argument needs a spy rather than a real `invoke`.
+    expect(mockers).toHaveLength(53);
+    // 52 of the 53 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. Both new mockers spread
     // too (each lists the arms its own tests drive and leaves every other barrel
     // export — `invoke` included — to the real module), so the remaining one
@@ -590,7 +597,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(readFileSync(f, "utf8")),
       ).length,
-).toBe(51);
+).toBe(52);
   });
 });
 
