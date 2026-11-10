@@ -169,11 +169,54 @@ export interface TaskSessionRow {
 }
 
 
+/** One board card plus what the board read knows about its Sessions (issue #174).
+ *
+ * The TS mirror of Rust's `TaskCardView` (`src-tauri/src/storage/db.rs`), which is
+ * what `get_board` puts in `StageWithTasks.tasks`. The three keys
+ * (`task`/`sessions`/`costUsd`) and the ten inside `task` are frozen TWICE: by
+ * `the_task_card_view_wire_keys_are_frozen` in
+ * `src-tauri/src/storage/db/tests/mod.rs`, and by its mirror
+ * `the task card view wire keys are frozen (mirror of the Rust pin)` in
+ * `src/store/tasks.test.ts`. Both spell the same list, so a rename in either
+ * language reddens one of them — this repo holds no automated Rust↔TS shape check.
+ *
+ * A WRAPPER, deliberately NOT a field on [`TaskRow`]: `get_task`, `create_task`
+ * and `edit_task` all answer a plain `TaskRow`, and had `TaskRow` grown a
+ * `sessions` field those three would have to either join on every single-row read
+ * or return an empty `sessions` for a card that HAS links — a confident,
+ * well-formed lie on the wire no test would catch. Decoration lives only on the
+ * board payload, so the single-row commands keep telling the truth and the store's
+ * `createTask` has to build this wrapper by hand from the `TaskRow` it gets back.
+ *
+ * Every field is REQUIRED, never optional: an optional `sessions` compiles against
+ * every fixture in the repo and then renders nothing when real data arrives.
+ */
+export interface TaskCardView {
+  /** The card — the UNCHANGED 10-field [`TaskRow`]. */
+  task: TaskRow;
+  /** Linked Sessions, OLDEST FIRST (what `Db::task_sessions` publishes), so the
+   *  card's "newest" is `sessions[sessions.length - 1]`. */
+  sessions: TaskSessionRow[];
+  /** The summed cost of the linked Sessions, computed in RUST (one number, so the
+   *  null rule has one owner). ADR 0082 verbatim: `null` means "no linked Session
+   *  ever reported a cost" and renders NOTHING; `0` means "a real zero" and renders
+   *  `$0.00`. They are never interchangeable, and `moneyOf`
+   *  (`src/components/SessionCostLine.tsx`) is the rule's only implementation — a
+   *  card that wrote `costUsd != null ? … : ""` over a raw `toFixed` reintroduces the
+   *  phantom `$0.00` for the never-reported case. A card with NO links gets
+   *  `sessions: []` and `costUsd: null`, never `0`. */
+  costUsd: number | null;
+}
+
+
 /** The board read payload: one column plus its cards. ONE payload rather than
- *  two lists the frontend joins — an empty column arrives as an empty `tasks`. */
+ *  two lists the frontend joins — an empty column arrives as an empty `tasks`.
+ *
+ *  `tasks` holds [`TaskCardView`]s and NOT bare [`TaskRow`]s: a card is read as
+ *  `card.task.id`, and its Sessions as `card.sessions`. */
 export interface StageWithTasks {
   stage: StageRow;
-  tasks: TaskRow[];
+  tasks: TaskCardView[];
 }
 
 

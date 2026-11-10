@@ -15,6 +15,7 @@ import {
   type DropTargetHandlers,
 } from "../hooks/useDragCard";
 import { useTasks } from "../store/tasks";
+import { useSessions } from "../store/sessions";
 import type { StageWithTasks } from "../lib/tauri";
 
 /**
@@ -64,6 +65,16 @@ import type { StageWithTasks } from "../lib/tauri";
  * **Session** row leaves it too. Two exits per view, both owned by the pane — a
  * board-level `Back` would be a third way out that only this surface offered, and
  * it invited a reader to re-add a control the design retired.
+ *
+ * IT READS TWO STORES, AND ONLY SUBSCRIBES TO ONE. `useTasks` is the board's own
+ * slice and is read through selectors. `useSessions` (issue #174) is read through
+ * `getState()` for ONE action, `openSession`, and forwarded to every card's chip —
+ * no subscription, because the board renders nothing derived from the sessions
+ * store and a subscription would re-render it for nothing. The card takes the
+ * action as a prop rather than reading it itself: `TaskCard` is presentational with
+ * no store of its own, and `openSession` (not `setActiveSession`) is the call that
+ * resolves a linked Session's owner Space by `cwd` and loads its transcript, closed
+ * and archived Sessions included.
  */
 export interface TasksBoardProps {
   /** The active **Space**'s folder — the SAME derivation `SidePane` and the
@@ -88,6 +99,23 @@ export default function TasksBoard({
   const moveCard = useTasks((s) => s.moveTask);
   const reorderInStage = useTasks((s) => s.reorderWithinStage);
   const dismissBoostNote = useTasks((s) => s.dismissBoostNote);
+  // The Session half of a card's chip (issue #174). Read through `getState()` and
+  // NOT through a selector because this board needs the ACTION and not a slice of
+  // state: zustand actions keep their identity for the life of the store, so a
+  // subscription here would re-render the board for nothing while buying nothing.
+  //
+  // `openSession` and NOT `setActiveSession`: `setActiveSession` only sets an id.
+  // `openSession` resolves the owner Space by `cwd` across live / stored / archived
+  // membership, sets the active Space (so the tab bar follows) and loads the
+  // transcript — which is what makes a CLOSED or archived Session openable from a
+  // card, and it matters here because a linked Session is not structurally in the
+  // card's Space (`sessions` has no `space_path`; the Space comes from `cwd`).
+  //
+  // It is passed DOWN rather than imported by the card: `TaskCard` is
+  // presentational and subscribes to no store, and a card that read the sessions
+  // store for itself would be a second owner of "which Session is open" — see its
+  // own header.
+  const openSession = useSessions.getState().openSession;
   // The New Task modal's open flag, in THIS component's state. It lives here
   // because this is where the board's columns already are — the modal needs the
   // first stage to file a Task under, and mounting it at `App` level would mean
@@ -260,6 +288,7 @@ export default function TasksBoard({
                 draggingTaskId={draggingTaskId}
                 cardDrag={dragProps}
                 columnDrop={columnDrop}
+                onOpenSession={openSession}
                 onReorder={(ids) =>
                   reorderInStage(activeSpacePath, column.stage.slug, ids)
                 }
@@ -302,6 +331,7 @@ function TaskColumn({
   draggingTaskId,
   cardDrag,
   columnDrop,
+  onOpenSession,
   onReorder,
 }: {
   column: StageWithTasks;
@@ -313,9 +343,17 @@ function TaskColumn({
   cardDrag: (taskId: string) => DragCardHandlers;
   /** The board-wide cross-column column surface (the target half). */
   columnDrop: DropTargetHandlers;
+  /** Opens a Session — the board's one read of `useSessions.getState().openSession`,
+   *  forwarded to every card's chip (issue #174). It is threaded through here and
+   *  not read again because the board owns the store reads and this column is
+   *  already a pure function of what it was handed. */
+  onOpenSession: (sessionId: string) => void;
   onReorder: (ids: string[]) => void;
 }) {
-  const ids = useMemo(() => column.tasks.map((t) => t.id), [column.tasks]);
+  const ids = useMemo(
+    () => column.tasks.map((t) => t.task.id),
+    [column.tasks],
+  );
   // The within-column gesture, reused UNCHANGED with the default `axis: "y"` — a
   // vertical strip, so the pointer's half of the target row is read off Y. Nothing
   // here computes an index: the hook already answers before-or-after for the
@@ -392,18 +430,26 @@ function TaskColumn({
         // `TasksBoard.test.tsx` ("the columns hug their content") because jsdom
         // performs no layout and a height cannot be asserted here.
         <div className="flex flex-col gap-2">
-          {column.tasks.map((task) => {
-            const edge = reorder.overId === task.id ? reorder.overEdge : null;
+          {/* A board element is a `TaskCardView` (issue #174): the row the card
+              renders sits under `.task`, so every id here reaches through it, and
+              the wrapper's `sessions` / `costUsd` go to the card as the chip's two
+              facts. This block used to be spelled as a `//` line comment, which is
+              NOT a comment slot in JSX — jsdom printed the prose as the column's
+              first child (it shows up in the DOM dump of any failing case in
+              `TasksBoard.test.tsx`) and `tsc` could not see it. A brace-wrapped
+              block comment is the only spelling that stays out of the render. */}
+          {column.tasks.map((card) => {
+            const edge = reorder.overId === card.task.id ? reorder.overEdge : null;
             return (
               // The SLOT carries the within-column surface and the drop-edge class;
               // the CARD inside it carries the cross-column surface and `draggable`.
               // Two spreads on one node would leave the second
               // `onDragOver`/`onDrop` winning in silence — see the header.
               <div
-                key={task.id}
+                key={card.task.id}
                 data-testid="task-card-slot"
                 data-edge={edge ?? undefined}
-                {...reorder.dragProps(task.id)}
+                {...reorder.dragProps(card.task.id)}
                 className={cn(
                   // `border-2` is reserved for the drop edge (the
                   // `SessionListRow`/`SpaceTabs` idiom), so the slot carries no border
@@ -414,9 +460,12 @@ function TaskColumn({
                 )}
               >
                 <TaskCard
-                  task={task}
-                  drag={cardDrag(task.id)}
-                  active={draggingTaskId === task.id}
+                  task={card.task}
+                  sessions={card.sessions}
+                  costUsd={card.costUsd}
+                  onOpenSession={onOpenSession}
+                  drag={cardDrag(card.task.id)}
+                  active={draggingTaskId === card.task.id}
                 />
               </div>
             );

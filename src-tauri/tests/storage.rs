@@ -898,7 +898,7 @@ fn stages_and_tasks_seed_and_list_stepwise_from_a_fresh_db() {
         after[0]
             .tasks
             .iter()
-            .map(|t| t.title.as_str())
+            .map(|t| t.task.title.as_str())
             .collect::<Vec<_>>(),
         vec!["first card"],
         "the card is in the backlog column on the way back out"
@@ -969,7 +969,7 @@ fn task_board_survives_delete_space_through_the_public_api() {
     let cards: Vec<&str> = board
         .iter()
         .flat_map(|column| column.tasks.iter())
-        .map(|card| card.id.as_str())
+        .map(|card| card.task.id.as_str())
         .collect();
     assert_eq!(cards, vec![task.id.as_str()], "the card is still there");
     assert_eq!(

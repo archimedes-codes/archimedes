@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 
-import { SessionCostLine } from "./SessionCostLine";
+import { SessionCostLine, moneyOf } from "./SessionCostLine";
 import { useInteractive } from "../store/interactive";
 import { useSessions } from "../store/sessions";
 import { makeSessionRow } from "../test/fixtures";
@@ -121,6 +121,75 @@ describe("SessionCostLine (the session's cumulative USD figure under its name, #
     seed("other", [{ costUsd: 0.5 }]);
     const { container } = render(<SessionCostLine sessionId="s1" />);
     expect(container.firstChild).toBeNull();
+  });
+});
+
+/**
+ * `moneyOf` DIRECTLY — the guard every surface that prints money leans on.
+ *
+ * This rule is imported by THREE other files (`ProviderAuthSection`'s key-row
+ * spend/budget line, `SubagentDelegatingCard`'s metadata line, and issue #174's
+ * `TaskCard` sessions chip) rather than copied, which is the point of exporting it —
+ * and it is also why the guard is pinned HERE, with its owner: one test of the owner
+ * covers all four renderers, whereas a guard case per consumer would be four tests of
+ * the same three lines that could disagree with each other. The card tests assert what
+ * a chip PRINTS; nothing but this block asserted what the rule REJECTS.
+ *
+ * The guard is not defensive padding. `sessions.cost_usd` — the column the board read
+ * sums into `TaskCardView.costUsd`, which issue #174's chip now prints — is a plain
+ * `REAL` with no `CHECK` (`SCHEMA` in `src-tauri/src/storage/db.rs`, and the one-time
+ * migration adds it as `ALTER TABLE sessions ADD COLUMN cost_usd REAL`), so a `NaN` or
+ * a negative value written by a harness bug or an external writer reaches `moneyOf`
+ * through `get_board`, and `(-1).toFixed(2)` is the string `"-1.00"`: the app would
+ * print `-$1.00` as a confident figure. `ProviderAuthSection`'s two figures arrive the
+ * same way from the provider's ledger response rather than from a column, which is the
+ * other reason the guard belongs to the shared rule and not to a caller. `null` is the
+ * wire's own "never reported" and renders nothing (D5 / ADR 0082).
+ */
+describe("moneyOf — the non-finite and negative guard (no figure is invented)", () => {
+  it("returns null for NaN (a corrupt figure renders NOTHING, not `NaN`)", () => {
+    // `NaN >= 0.01` is false, so without the guard the value falls through every
+    // branch and the last one prints the inequality `"<$0.000001"` — a claim about
+    // money that is not a number.
+    expect(moneyOf(NaN)).toBeNull();
+  });
+
+  it("returns null for Infinity (an overflow renders NOTHING, not `$Infinity`)", () => {
+    // The dangerous one of the set: `Infinity >= 0.01` is TRUE, so without the guard
+    // the first printing branch runs and `Infinity.toFixed(2)` is the literal
+    // `"Infinity"` — the chip would read `1 session · $Infinity`.
+    expect(moneyOf(Infinity)).toBeNull();
+  });
+
+  it("returns null for -Infinity (a negative overflow renders NOTHING)", () => {
+    expect(moneyOf(-Infinity)).toBeNull();
+  });
+
+  it("returns null for a negative total (a signed figure would read as money earned)", () => {
+    // `sessions.cost_usd` has no `CHECK (cost_usd >= 0)` — the DB will store `-1.0`
+    // and hand it back on the next `get_board`. `moneyOf(-1)` unguarded is
+    // `"$-1.00"`, which is not a figure anyone can act on.
+    expect(moneyOf(-1)).toBeNull();
+  });
+
+  it("returns null for null (D5's never-reported, the same answer as a bad value)", () => {
+    // The case every renderer already leans on, pinned at the owner so the four
+    // consumers cannot each assume a different answer.
+    expect(moneyOf(null)).toBeNull();
+  });
+
+  it("still returns $0.00 for 0 — a real zero is NOT swept up by the guard", () => {
+    // THE vacuity guard for the five cases above, and the reason they are not simply
+    // "return null for anything odd": `-1 < 0` and `0 === 0` sit one character apart.
+    // A guard written as `total <= 0` (or `!total`) passes all five cases over above
+    // and deletes the reported-zero case this whole rule exists to keep.
+    expect(moneyOf(0)).toBe("$0.00");
+    expect(moneyOf(0)).not.toBeNull();
+    // And the guard's boundary sits exactly where it should: a tiny NEGATIVE is
+    // rejected and a tiny POSITIVE still prints, so the arm keys on the SIGN and not
+    // on how small the number is.
+    expect(moneyOf(-0.0000001)).toBeNull();
+    expect(moneyOf(0.0000001)).toBe("<$0.000001");
   });
 });
 

@@ -356,6 +356,7 @@ const TAURI_PUBLIC_API = [
   "SubagentFailureReason",
   "SubagentMetrics",
   "SubagentSessionStartedPayload",
+  "TaskCardView",
   "TaskRow",
   "TaskSessionRow",
   "TeamDto",
@@ -381,8 +382,9 @@ const TAURI_RUNTIME_API = [
   "cancelSession",
   "closeSession",
   "compactSession",
-  // (Task board, ADR 0090) The board wrappers. The FIVE companion type names
-  // (`StageRow`/`StageWithTasks`/`TaskRow`/`TaskSessionRow`/`MoveTaskOutcome`) are
+  // (Task board, ADR 0090) The board wrappers. The SIX companion type names
+  // (`StageRow`/`StageWithTasks`/`TaskCardView`/`TaskRow`/`TaskSessionRow`
+  // `/MoveTaskOutcome`) are
   // in `TAURI_PUBLIC_API` ONLY — they vanish at runtime, so they never enter this
   // list (the `AccessRule`/`AccessDirection` precedent). No count stated here on
   // purpose: this file's own header says the ARRAY is the expectation.

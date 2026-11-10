@@ -5,5 +5,5 @@ mod db;
 
 pub use db::{
     BoardError, Db, DbError, MessageRow, MoveOutcome, SessionRecency, SessionRow, SpaceRow,
-    StageRow, StageWithTasks, TaskRow, TaskSessionRow,
+    StageRow, StageWithTasks, TaskCardView, TaskRow, TaskSessionRow,
 };

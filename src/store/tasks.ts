@@ -6,6 +6,7 @@ import {
   moveTask as moveTaskCommand,
   reorderTasks as reorderTasksCommand,
   type StageWithTasks,
+  type TaskCardView,
   type TaskRow,
 } from "../lib/tauri";
 import { describeIpcError } from "../lib/ipcError";
@@ -145,7 +146,16 @@ export const useTasks = create<BoardState>((set, get) => ({
       set({ error: "No board loaded for this Space." });
       return;
     }
-    const from = columns.find((c) => c.tasks.some((t) => t.id === taskId));
+    // A board element is a `TaskCardView` (issue #174): the card's own fields live
+    // under `.task`, so every read of a card here reaches through it. The WRAPPER is
+    // carried along untouched by the spread below, which is what keeps the optimistic
+    // slice's `sessions`/`costUsd` standing instead of quietly dropping them — and
+    // that sentence is now PINNED, not prose: `carries the card's sessions and cost
+    // across the drop (the chip survives a drag)` in this file's test moves a card
+    // with TWO links and a non-null cost. Every other `moveTask` case moves a card
+    // built with `sessions: []`/`costUsd: null`, which a mutation dropping both would
+    // have satisfied.
+    const from = columns.find((c) => c.tasks.some((t) => t.task.id === taskId));
     const to = columns.find((c) => c.stage.slug === toStageSlug);
     // A drag whose endpoints are not both in the loaded board is a STALE gesture
     // (the board reloaded mid-drag). Refusing beats inventing a column.
@@ -154,16 +164,22 @@ export const useTasks = create<BoardState>((set, get) => ({
     // THE OPTIMISTIC SLICE, and the value the revert restores. The card moves to
     // the END of the destination column: within-column position is the OTHER verb
     // (`reorderTasks`), so a cross-column drop appends and leaves ordering alone.
-    const moved = from.tasks.find((t) => t.id === taskId)!;
+    const moved = from.tasks.find((t) => t.task.id === taskId)!;
     const previous = columns;
     const next: StageWithTasks[] = columns.map((c) => {
       if (c.stage.slug === from.stage.slug) {
-        return { ...c, tasks: c.tasks.filter((t) => t.id !== taskId) };
+        return { ...c, tasks: c.tasks.filter((t) => t.task.id !== taskId) };
       }
       if (c.stage.slug === toStageSlug) {
         // `stageSlug` travels with the card. Leaving it pointing at the column it
         // left would make the NEXT drag read a stage the card is no longer in.
-        return { ...c, tasks: [...c.tasks, { ...moved, stageSlug: toStageSlug }] };
+        return {
+          ...c,
+          tasks: [
+            ...c.tasks,
+            { ...moved, task: { ...moved.task, stageSlug: toStageSlug } },
+          ],
+        };
       }
       return c;
     });
@@ -210,10 +226,18 @@ export const useTasks = create<BoardState>((set, get) => ({
     const columns = get().boardsBySpace[spacePath];
     if (columns) {
       const at = columns.findIndex((c) => c.stage.slug === row.stageSlug);
+      // The command answers a plain `TaskRow` (`create_task` was never widened —
+      // see `TaskCardView`), so the board's element is BUILT here rather than
+      // spliced in raw. An empty `sessions` and a `null` cost are the truth for a
+      // card that exists a moment: it has no links and no Session has reported a
+      // cost. Written out rather than left undefined, because `costUsd: undefined`
+      // is not this type (`number | null`) and ADR 0082's "never reported" is
+      // `null`, not absence.
+      const card: TaskCardView = { task: row, sessions: [], costUsd: null };
       const next =
         at === -1
           ? columns
-          : columns.map((c, i) => (i === at ? { ...c, tasks: [...c.tasks, row] } : c));
+          : columns.map((c, i) => (i === at ? { ...c, tasks: [...c.tasks, card] } : c));
       set((state) => ({
         boardsBySpace: { ...state.boardsBySpace, [spacePath]: next },
       }));
@@ -222,9 +246,15 @@ export const useTasks = create<BoardState>((set, get) => ({
   },
 
   linkSession: async (taskId, sessionId, stageSlug) => {
-    // No board write: a link is a row in `task_sessions`, not a change to a card's
-    // stage or order. The board cannot render it, so reflecting it here would be a
-    // second owner of a fact the command already holds.
+    // No board write, and that is a scheduling decision rather than a shape one: a
+    // link is a row in `task_sessions`, not a change to a card's stage or order, and
+    // the board CAN now render it (issue #174 — `TaskCardView.sessions`) but only
+    // from what the last `get_board` returned. So the chip on a card reflects the
+    // LAST BOARD LOAD, and a link written after that load appears on the next
+    // `load`. Optimistically inventing the link here would duplicate state the
+    // command already owns for a surface no component drives yet: zero call sites
+    // call `linkSession` today (links are written by the harness's
+    // `start_task_session`), so an optimistic write would be a path with no caller.
     await linkSessionCommand(taskId, sessionId, stageSlug);
   },
 
@@ -236,7 +266,7 @@ export const useTasks = create<BoardState>((set, get) => ({
     // The order the drag replaced — the exact value the revert restores, captured
     // BEFORE the optimistic publish destroys it.
     const previous = columns;
-    const byId = new Map(column.tasks.map((t) => [t.id, t]));
+    const byId = new Map(column.tasks.map((t) => [t.task.id, t]));
     // Rebuild the column from the dragged slice. An id the column does not hold is
     // SKIPPED (it cannot be rendered, so inserting it would put `undefined` in the
     // strip) and a card the slice never named keeps its place at the END (the same
@@ -244,11 +274,11 @@ export const useTasks = create<BoardState>((set, get) => ({
     // write instead of vanishing with it).
     const ordered = ids
       .map((id) => byId.get(id))
-      .filter((t): t is TaskRow => t !== undefined);
-    const seen = new Set(ordered.map((t) => t.id));
+      .filter((t): t is TaskCardView => t !== undefined);
+    const seen = new Set(ordered.map((t) => t.task.id));
     const nextColumn = {
       ...column,
-      tasks: [...ordered, ...column.tasks.filter((t) => !seen.has(t.id))],
+      tasks: [...ordered, ...column.tasks.filter((t) => !seen.has(t.task.id))],
     };
     const next = columns.map((c) => (c.stage.slug === stageSlug ? nextColumn : c));
     set((state) => ({
