@@ -408,11 +408,50 @@ fn task_session_row_from(row: &Row<'_>) -> rusqlite::Result<TaskSessionRow> {
 /// ONE payload, not two lists the frontend joins — the board renders columns,
 /// so a column with no cards has to arrive as an empty `tasks`, not as an
 /// absent key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// NOT `Eq`, and that is load-bearing rather than careless: `tasks` holds
+/// [`TaskCardView`], which carries an `f64`, and `f64` is not `Eq` (no reflexive
+/// equality over `NaN`). Nothing keys either type in a `HashSet`/`BTreeMap`
+/// (verified: zero hits for `HashSet<StageWithTasks>`/`HashMap<StageWithTasks…`/
+/// `BTreeSet<StageWithTasks`), and `PartialEq` is all `assert_eq!` needs — the
+/// same derive set `fulcrum_harness`'s `DisplayRow` (re-exported by
+/// `agent/harness/mod.rs`) already carries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StageWithTasks {
     pub stage: StageRow,
-    pub tasks: Vec<TaskRow>,
+    pub tasks: Vec<TaskCardView>,
+}
+
+/// One board card plus what the board read knows about its Sessions (issue #174).
+///
+/// A WRAPPER, deliberately not a field on [`TaskRow`]: `get_task`, `create_task`
+/// and `edit_task` all return a plain `TaskRow`, and if `TaskRow` grew a
+/// `sessions` field those three would have to either join on every single-row
+/// read or return an empty `sessions` for a card that HAS links — a confident,
+/// well-formed lie on the wire that no test would see. Decoration lives only on
+/// the board payload, so the single-row commands keep telling the truth.
+///
+/// `#[serde(flatten)]` is deliberately NOT used on `task`: keeping the nested
+/// `task` key makes the two shapes distinguishable in the JSON, and the repo has
+/// no `serde(flatten)` precedent to follow. The three wire keys
+/// (`task`/`sessions`/`costUsd`) are frozen by
+/// `the_task_card_view_wire_keys_are_frozen`, whose TS mirror lives in
+/// `src/lib/tauri/types.ts`.
+///
+/// ADR 0082's two meanings for `sessions.cost_usd` survive the trip in
+/// `cost_usd`: `None` means "no linked Session ever reported a cost" (the chip
+/// renders NOTHING), `Some(0.0)` means "a real zero" (it renders `$0.00`). A card
+/// with no links gets `sessions: []` and `cost_usd: None` — never `Some(0.0)`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskCardView {
+    /// The card — the UNCHANGED 10-field [`TaskRow`].
+    pub task: TaskRow,
+    /// Linked Sessions, OLDEST FIRST (what `Db::task_sessions` publishes).
+    pub sessions: Vec<TaskSessionRow>,
+    /// Summed cost; ADR 0082: `None` = never reported, `Some(0.0)` = a real zero.
+    pub cost_usd: Option<f64>,
 }
 
 /// What a `move_task` reports: the destination stage's `on_enter`.
@@ -1508,6 +1547,49 @@ impl Db {
                 .collect::<Result<Vec<_>, _>>()?;
             rows
         };
+        // Each card's linked Sessions plus the one figure the chip renders
+        // (issue #174). THREE deliberate choices:
+        //
+        //   - `task_id IN (SELECT id FROM tasks WHERE space_path = ?1)`, NOT a
+        //     `cwd` filter. A linked Session is not STRUCTURALLY in the card's
+        //     Space — `sessions` has no `space_path` column, the Space is derived
+        //     from `cwd` — so filtering on `cwd` would silently drop a link whose
+        //     Session was started somewhere else, and pull in another Space's
+        //     links whose Session happens to run in this directory. The scoping
+        //     question is "whose card is this", and only `task_id` answers it.
+        //     `?1` is ONE parameter bound once for the whole statement.
+        //   - `JOIN`, not `LEFT JOIN`. `foreign_keys` is ON and
+        //     `task_sessions.session_id` is `ON DELETE CASCADE`, so a link to a
+        //     missing Session cannot exist; and if one somehow did, an inner join
+        //     drops it rather than inventing a cost-less phantom link. (That same
+        //     cascade is what makes the two joins indistinguishable HERE — the
+        //     falsifiable pin is
+        //     `deleting_a_linked_session_drops_its_link_row_and_its_share_of_the_cost`.)
+        //   - `ORDER BY ts.rowid ASC`, table-qualified (unqualified `rowid` in a
+        //     two-table join is an SQLite "ambiguous column name"), matching the
+        //     oldest-first order `Db::task_sessions` already publishes.
+        //
+        // Stays AFTER `seed_default_stages`: the seed WRITES and every statement
+        // below READS, so reordering them would put a read above a write.
+        // `is_subagent` needs no filter: `start_task_session` is the only writer
+        // of links and never creates a subagent Session, so no linked Session is
+        // one today — filtering for a case that cannot occur would be a lie about
+        // the writer set.
+        let links = {
+            let mut stmt = guard.prepare(
+                "SELECT ts.task_id, ts.session_id, ts.stage_slug, s.cost_usd \
+                 FROM task_sessions ts \
+                 JOIN sessions s ON s.id = ts.session_id \
+                 WHERE ts.task_id IN (SELECT id FROM tasks WHERE space_path = ?1) \
+                 ORDER BY ts.rowid ASC",
+            )?;
+            let rows = stmt
+                .query_map(params![space_path], |row| {
+                    Ok((task_session_row_from(row)?, row.get::<_, Option<f64>>(3)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
         // Group per stage in one pass. A card whose `stage_slug` matches no
         // stage row is DROPPED from this payload rather than given an invented
         // column: the board renders columns, and a column that does not exist
@@ -1519,7 +1601,30 @@ impl Db {
                 tasks: tasks
                     .iter()
                     .filter(|task| task.stage_slug == stage.slug)
-                    .cloned()
+                    .map(|task| {
+                        // The links are already oldest-first from the statement,
+                        // so a stable filter keeps that order — no second sort.
+                        let mine: Vec<&(TaskSessionRow, Option<f64>)> = links
+                            .iter()
+                            .filter(|(link, _)| link.task_id == task.id)
+                            .collect();
+                        // ADR 0082: `None` means "never reported", `Some(0.0)`
+                        // means "a real zero". This fold IS SQL's SUM over
+                        // nullable inputs — NULL iff every input is NULL — done
+                        // here rather than in SQL because the rule must stay
+                        // visible and pinned to the type that carries it.
+                        let mut cost: Option<f64> = None;
+                        for (_, reported) in mine.iter() {
+                            if let Some(value) = reported {
+                                cost = Some(cost.unwrap_or(0.0) + value);
+                            }
+                        }
+                        TaskCardView {
+                            task: task.clone(),
+                            sessions: mine.into_iter().map(|(link, _)| link.clone()).collect(),
+                            cost_usd: cost,
+                        }
+                    })
                     .collect(),
                 stage,
             })

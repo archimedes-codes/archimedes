@@ -4078,7 +4078,7 @@ fn delete_space_leaves_the_board_rows_in_place() {
         board
             .iter()
             .flat_map(|c| c.tasks.iter())
-            .map(|t| t.id.as_str())
+            .map(|t| t.task.id.as_str())
             .collect::<Vec<_>>(),
         vec![task.id.as_str()],
         "the card is still there — ADR 0090: a board that cascaded away on a tab \
@@ -4347,7 +4347,7 @@ fn get_board_groups_tasks_under_their_stage_in_stage_order() {
         .map(|c| {
             (
                 c.stage.slug.as_str(),
-                c.tasks.iter().map(|t| t.title.as_str()).collect(),
+                c.tasks.iter().map(|t| t.task.title.as_str()).collect(),
             )
         })
         .collect();
@@ -4366,6 +4366,440 @@ fn get_board_groups_tasks_under_their_stage_in_stage_order() {
         db.list_tasks(&space).expect("list_tasks").len(),
         2,
         "the flat read agrees with the grouped one"
+    );
+}
+
+// ── issue #174: the board read carries each card's Sessions and its cost ───
+//
+// Eight pins for one new statement + one new wrapper type. The shape being
+// pinned is `TaskCardView { task, sessions, costUsd }`, and the load-bearing
+// half of it is ADR 0082's two meanings for `sessions.cost_usd`: `NULL` means
+// "no model call ever reported a cost" (render NOTHING) and `0.0` means "a real
+// zero" (render `$0.00`). Every cost test below exists to keep those two
+// distinguishable through the fold — collapsing them at the board read would
+// put a phantom `$0.00` on a card that has spent nothing measurable.
+
+/// The board's cards as ONE flat list in column order — the shape the tests
+/// below read, so each one says "the card" rather than re-spelling the find.
+fn board_cards(db: &Db, space: &str) -> Vec<TaskCardView> {
+    db.get_board(space)
+        .expect("get_board")
+        .into_iter()
+        .flat_map(|column| column.tasks)
+        .collect()
+}
+
+/// Record a Session (the FK on `task_sessions.session_id` requires the row to
+/// exist before a link) and, when `cost` is `Some`, write its cost figure.
+/// `None` leaves the column at NULL — "never reported", NOT zero.
+fn record_linkable_session(db: &Db, id: &str, cwd: &str, cost: Option<f64>) {
+    let mut info = title_session(id);
+    info.cwd = std::path::PathBuf::from(cwd);
+    db.record_session(&info)
+        .expect("record_session (the link's FK target)");
+    if let Some(total) = cost {
+        db.record_session_cost(id, total)
+            .expect("record_session_cost (a snapshot write)");
+    }
+}
+
+/// (issue #174, the happy path) A card with two linked Sessions carries BOTH
+/// link rows and ONE summed figure.
+///
+/// The cost arrives as a single number, not as two: summing it in TypeScript
+/// would put ADR 0082's NULL/zero rule in a second language with nothing tying
+/// the two together. The links come back OLDEST FIRST because that is the order
+/// `Db::task_sessions` already publishes, so the card's "newest" is `last()` and
+/// the two readers of this table agree.
+#[test]
+fn get_board_returns_each_card_with_its_linked_sessions_and_the_total_cost() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-board-cost-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("cost");
+    db.get_board(&space).expect("seed");
+    let card = db
+        .create_task(&space, "worked", None, None)
+        .expect("create");
+
+    record_linkable_session(&db, "sess-old", "/tmp/proj", Some(1.50));
+    record_linkable_session(&db, "sess-new", "/tmp/proj", Some(0.25));
+    db.link_session(&card.id, "sess-old", None).expect("link");
+    db.link_session(&card.id, "sess-new", None).expect("link");
+
+    let cards = board_cards(&db, &space);
+    assert_eq!(cards.len(), 1, "one card on this board");
+    let view = &cards[0];
+    assert_eq!(view.task.id, card.id, "the card itself rides along intact");
+    assert_eq!(
+        view.sessions
+            .iter()
+            .map(|link| link.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["sess-old", "sess-new"],
+        "both links, OLDEST FIRST — the same order `Db::task_sessions` publishes, \
+         so the card's newest is `last()`"
+    );
+    assert_eq!(
+        view.cost_usd,
+        Some(1.75),
+        "ONE summed figure, computed server-side"
+    );
+    assert_eq!(
+        view.sessions
+            .iter()
+            .map(|link| link.task_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![card.id.as_str(), card.id.as_str()],
+        "the link rows carry their own `task_id` — the same `TaskSessionRow` the \
+         single-card read returns, not a new shape"
+    );
+}
+
+/// (issue #174, the case that must NOT become `Some(0.0)`) a card with no links
+/// has no Sessions and NO cost.
+///
+/// `Some(0.0)` here would render `$0.00` on a card that never ran a Session —
+/// the exact phantom ADR 0082 forbids, and invisible to every other test because
+/// it is a well-formed number in the wrong slot.
+#[test]
+fn a_card_with_no_links_gets_no_sessions_and_a_null_cost() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-board-nolink-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("no-link");
+    db.get_board(&space).expect("seed");
+    db.create_task(&space, "untouched", None, None)
+        .expect("create");
+    // A Session exists in the database; it is simply not linked to this card.
+    record_linkable_session(&db, "sess-unlinked", "/tmp/proj", Some(9.99));
+
+    let cards = board_cards(&db, &space);
+    assert_eq!(cards.len(), 1);
+    assert!(
+        cards[0].sessions.is_empty(),
+        "no links, no sessions; got {:?}",
+        cards[0].sessions
+    );
+    assert_eq!(
+        cards[0].cost_usd, None,
+        "`None` — never `Some(0.0)`. A card that has never run a Session has no \
+         figure, not a free one."
+    );
+}
+
+/// (ADR 0082's whole point, at the board read) a Session that reported a genuine
+/// zero contributes `Some(0.0)`, not `None`.
+///
+/// `record_session_cost` is a snapshot write, so `0.0` is a figure a model call
+/// actually produced. The card must render `$0.00` for it, which requires the
+/// fold to preserve the distinction rather than treat zero as nothing.
+#[test]
+fn a_real_zero_cost_is_some_zero_not_null() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-board-zero-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("zero");
+    db.get_board(&space).expect("seed");
+    let card = db.create_task(&space, "free", None, None).expect("create");
+
+    record_linkable_session(&db, "sess-zero", "/tmp/proj", Some(0.0));
+    db.link_session(&card.id, "sess-zero", None).expect("link");
+
+    let cards = board_cards(&db, &space);
+    assert_eq!(cards[0].sessions.len(), 1, "the link is there");
+    assert_eq!(
+        cards[0].cost_usd,
+        Some(0.0),
+        "a reported zero SURVIVES the fold as `Some(0.0)` — the card renders \
+         `$0.00`, and `None` here would silently render nothing"
+    );
+}
+
+/// (the fold IS SQL's SUM over nullable inputs) NULL iff EVERY input is NULL.
+///
+/// Two Sessions that never reported a cost sum to `None`. An implementation that
+/// seeded the accumulator with `Some(0.0)` — the shape a `SUM`-free loop falls
+/// into — passes the two-figure tests above and fails HERE.
+#[test]
+fn all_unreported_costs_sum_to_null_not_zero() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-board-null-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("all-null");
+    db.get_board(&space).expect("seed");
+    let card = db
+        .create_task(&space, "unmeasured", None, None)
+        .expect("create");
+
+    record_linkable_session(&db, "sess-a", "/tmp/proj", None);
+    record_linkable_session(&db, "sess-b", "/tmp/proj", None);
+    db.link_session(&card.id, "sess-a", None).expect("link");
+    db.link_session(&card.id, "sess-b", None).expect("link");
+
+    let cards = board_cards(&db, &space);
+    assert_eq!(
+        cards[0].sessions.len(),
+        2,
+        "both links are present — the NULLs are about COST, not about the link"
+    );
+    assert_eq!(
+        cards[0].cost_usd, None,
+        "every input NULL, so the sum is NULL. `Some(0.0)` here is the phantom \
+         `$0.00` ADR 0082 exists to prevent."
+    );
+}
+
+/// (one NULL does not poison the sum) `NULL + 2.00` is `Some(2.00)`.
+///
+/// SQL's `SUM` skips NULLs, and so must this fold: a Session that has never
+/// reported must not erase the figure one of its siblings did report.
+#[test]
+fn one_reported_and_one_unreported_cost_yields_the_reported_figure() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-board-mixed-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("mixed");
+    db.get_board(&space).expect("seed");
+    let card = db
+        .create_task(&space, "half measured", None, None)
+        .expect("create");
+
+    // Linked in the order that puts the NULL FIRST, so an implementation that
+    // stopped at the first NULL would show up as `None` rather than limping past.
+    record_linkable_session(&db, "sess-null", "/tmp/proj", None);
+    record_linkable_session(&db, "sess-two", "/tmp/proj", Some(2.0));
+    db.link_session(&card.id, "sess-null", None).expect("link");
+    db.link_session(&card.id, "sess-two", None).expect("link");
+
+    let cards = board_cards(&db, &space);
+    assert_eq!(cards[0].sessions.len(), 2);
+    assert_eq!(
+        cards[0].cost_usd,
+        Some(2.0),
+        "the reported figure survives; the unreported Session contributes nothing"
+    );
+}
+
+/// (issue #174, the scoping rule) the link read is restricted to THIS Space's
+/// cards by `task_id IN (SELECT id FROM tasks WHERE space_path = ?1)` — never by
+/// the Session's `cwd`.
+///
+/// Both directions are pinned, because a `cwd` filter fails in BOTH of them:
+///   - a linked Session whose `cwd` is NOT the card's Space must still appear
+///     (`sessions` has no `space_path`; the Space is derived from `cwd`, and a
+///     Session can be started from anywhere) — a `cwd` filter would DROP it;
+///   - another Space's card, linked to a Session whose `cwd` IS this Space's
+///     path, must contribute NOTHING here — a `cwd` filter would PULL it in.
+///     The second card lives in another Space and its link is simply not in
+///     this payload.
+#[test]
+fn get_board_does_not_include_another_spaces_links() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-board-scope-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("scoped");
+    let other = board_space("scoped-other");
+    db.get_board(&space).expect("seed");
+    db.get_board(&other).expect("seed the other board");
+
+    let mine = db.create_task(&space, "mine", None, None).expect("create");
+    let theirs = db
+        .create_task(&other, "theirs", None, None)
+        .expect("create in another space");
+
+    // MY card's Session runs somewhere ELSE (the default `/tmp/proj` cwd, which
+    // is not this Space's path) — a `cwd` filter would drop this link.
+    record_linkable_session(&db, "sess-mine-elsewhere", "/tmp/proj", Some(1.00));
+    // THEIR card's Session runs IN MY Space — a `cwd` filter would pull this one in.
+    record_linkable_session(&db, "sess-theirs-in-my-space", &space, Some(5.00));
+
+    db.link_session(&mine.id, "sess-mine-elsewhere", None)
+        .expect("link my card to a session with another cwd");
+    db.link_session(&theirs.id, "sess-theirs-in-my-space", None)
+        .expect("link the other card to a session inside my Space's directory");
+
+    let cards = board_cards(&db, &space);
+    assert_eq!(
+        cards.iter().map(|c| c.sessions.len()).sum::<usize>(),
+        1,
+        "exactly ONE link row on this board — the other Space's card contributes \
+         nothing even though its Session's `cwd` IS this Space's path"
+    );
+    assert_eq!(
+        cards[0]
+            .sessions
+            .iter()
+            .map(|link| link.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["sess-mine-elsewhere"],
+        "and my own link survives although its Session's `cwd` is not this Space \
+         — the restriction is by task_id, never by cwd"
+    );
+    assert_eq!(
+        cards[0].cost_usd,
+        Some(1.00),
+        "the other Space's $5.00 Session is not folded into my card's figure"
+    );
+
+    // The far side reads its own link, and nothing of mine.
+    let elsewhere = board_cards(&db, &other);
+    assert_eq!(
+        elsewhere
+            .iter()
+            .flat_map(|c| c.sessions.iter())
+            .map(|link| link.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["sess-theirs-in-my-space"],
+        "the other board sees its own link and none of mine"
+    );
+}
+
+/// (issue #174, the falsifiable JOIN check) deleting a linked Session drops its
+/// link row AND its share of the card's figure.
+///
+/// This is the test that replaces a `JOIN`-vs-`LEFT JOIN` mutation check: with
+/// `foreign_keys` ON and `ON DELETE CASCADE`, a link to a missing Session cannot
+/// exist, so no row distinguishes the two joins at this read. What CAN break is
+/// the cascade not reaching the board — a stale link would leave a phantom count
+/// and a figure that keeps charging for a deleted Session. Same delete path
+/// `task_sessions_cascade_with_the_session_and_not_with_the_space` uses.
+#[test]
+fn deleting_a_linked_session_drops_its_link_row_and_its_share_of_the_cost() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-board-cascade-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("cascade");
+    db.get_board(&space).expect("seed");
+    let card = db
+        .create_task(&space, "two sessions", None, None)
+        .expect("create");
+
+    record_linkable_session(&db, "sess-keep", "/tmp/proj", Some(1.00));
+    record_linkable_session(&db, "sess-drop", "/tmp/proj", Some(2.00));
+    db.link_session(&card.id, "sess-keep", None).expect("link");
+    db.link_session(&card.id, "sess-drop", None).expect("link");
+
+    let before = board_cards(&db, &space);
+    assert_eq!(before[0].sessions.len(), 2, "both links, to start with");
+    assert_eq!(before[0].cost_usd, Some(3.00), "and the summed figure");
+
+    db.delete_session("sess-drop")
+        .expect("delete_session (the FK's ON DELETE CASCADE target)");
+
+    let after = board_cards(&db, &space);
+    assert_eq!(
+        after[0]
+            .sessions
+            .iter()
+            .map(|link| link.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["sess-keep"],
+        "the cascade reaches the board read: the deleted Session's link is gone"
+    );
+    assert_eq!(
+        after[0].cost_usd,
+        Some(1.00),
+        "and its $2.00 left the figure with it — a card that still charged for a \
+         deleted Session would be a phantom cost"
+    );
+}
+
+/// The DRIFT PIN for the board's card payload (issue #174).
+///
+/// `types.ts`'s `TaskCardView` is a HAND-WRITTEN mirror — no Rust↔TS shape pin
+/// exists in this repo — so the key list below is spelled a second time in
+/// `src/store/tasks.test.ts` as `the task card view wire keys are frozen (mirror
+/// of the Rust pin)`, byte-identical. A rename on either side reddens one of the
+/// two. Modelled on `closed_reason_spellings_are_frozen`.
+#[test]
+fn the_task_card_view_wire_keys_are_frozen() {
+    // The TS mirror is `src/lib/tauri/types.ts`'s
+    // `export interface TaskCardView { task: TaskRow; sessions: TaskSessionRow[];
+    // costUsd: number | null; }` — these THREE keys, in this order, no more.
+    const FROZEN_CARD_KEYS: [&str; 3] = ["task", "sessions", "costUsd"];
+    // The TS mirror of these TEN is `export interface TaskRow` in the same file.
+    const FROZEN_TASK_KEYS: [&str; 10] = [
+        "id",
+        "spacePath",
+        "number",
+        "title",
+        "body",
+        "specPath",
+        "stageSlug",
+        "sortOrder",
+        "createdAt",
+        "updatedAt",
+    ];
+
+    let view = TaskCardView {
+        task: TaskRow {
+            id: "tsk_frozen".to_string(),
+            space_path: "/board-space/frozen".to_string(),
+            number: 1,
+            title: "frozen".to_string(),
+            body: None,
+            spec_path: None,
+            stage_slug: "backlog".to_string(),
+            sort_order: 0,
+            created_at: 0,
+            updated_at: 0,
+        },
+        sessions: vec![TaskSessionRow {
+            task_id: "tsk_frozen".to_string(),
+            session_id: "sess-frozen".to_string(),
+            stage_slug: None,
+        }],
+        cost_usd: Some(1.75),
+    };
+    let value = serde_json::to_value(&view).expect("TaskCardView serializes");
+
+    let mut card_keys: Vec<&str> = value
+        .as_object()
+        .expect("a struct serializes to a map")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    card_keys.sort_unstable();
+    let mut expected_card_keys = FROZEN_CARD_KEYS;
+    expected_card_keys.sort_unstable();
+    assert_eq!(
+        card_keys, expected_card_keys,
+        "the card payload is exactly `{{task, sessions, costUsd}}` — `#[serde(flatten)]` \
+         is deliberately NOT used, so the nested `task` key is part of the wire shape"
+    );
+
+    let task = value.get("task").expect("the nested task key");
+    let mut task_keys: Vec<&str> = task
+        .as_object()
+        .expect("task is a map")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    task_keys.sort_unstable();
+    let mut expected_task_keys = FROZEN_TASK_KEYS;
+    expected_task_keys.sort_unstable();
+    assert_eq!(
+        task_keys, expected_task_keys,
+        "`task` is the UNCHANGED 10-field `TaskRow` in camelCase — the wrapper adds \
+         nothing to it, which is what keeps get_task/create_task/edit_task honest"
+    );
+
+    assert_eq!(
+        value.get("costUsd").and_then(serde_json::Value::as_f64),
+        Some(1.75),
+        "`cost_usd` rides the wire as `costUsd` (rename_all = camelCase)"
+    );
+    // The `None` half of ADR 0082 has to survive the wire too: the key must be
+    // PRESENT and `null`, not absent. A `skip_serializing_if` would delete it and
+    // the TS mirror's `number | null` would be a lie the frontend could not tell.
+    let unmeasured = TaskCardView {
+        task: view.task,
+        sessions: vec![],
+        cost_usd: None,
+    };
+    let absent = serde_json::to_value(&unmeasured).expect("the null-cost card serializes");
+    assert!(
+        absent.get("costUsd").is_some(),
+        "`costUsd` must be PRESENT when there is no figure — a `skip_serializing_if` \
+         would make the key vanish and the TS mirror's `number | null` would be a lie"
+    );
+    assert!(
+        absent.get("costUsd").expect("the key is there").is_null(),
+        "…and it is JSON `null`, which is what `moneyOf(null)` renders as nothing"
     );
 }
 
@@ -4454,7 +4888,7 @@ fn reorder_tasks_persists_the_new_within_stage_order_in_one_pass() {
     let seen: Vec<(&str, i64)> = backlog
         .tasks
         .iter()
-        .map(|task| (task.title.as_str(), task.sort_order))
+        .map(|task| (task.task.title.as_str(), task.task.sort_order))
         .collect();
     assert_eq!(
         seen,
