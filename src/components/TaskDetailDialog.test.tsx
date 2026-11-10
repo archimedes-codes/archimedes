@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 
 import TaskDetailDialog from "./TaskDetailDialog";
 import { resetTaskLaunchInFlight } from "../store/taskLaunch";
+import { useSessions } from "../store/sessions";
 import { useTasks } from "../store/tasks";
 import { resetStores } from "../test/resetStores";
 import { clearSkillCatalogCache } from "../hooks/useSkillCatalog";
@@ -349,6 +350,32 @@ describe("TaskDetailDialog — the two buttons", () => {
     const { onLaunched } = renderDialog();
     fireEvent.click(await screen.findByRole("button", { name: "Discuss" }));
     await waitFor(() => expect(onLaunched).toHaveBeenCalledTimes(1));
+  });
+
+  /// THE NAVIGATION MUST NOT WAIT FOR THE TURN.
+  ///
+  /// `launch` awaited `sendLaunchMessage`, and `sendPrompt` resolves only when the
+  /// turn SETTLES — `router.rs` resolves `pending_turn` on `agent_settled`, and the
+  /// `discuss` skill's whole shape is to end its turn on an `ask` gate. So on a real
+  /// click the board stayed up for the entire first turn.
+  ///
+  /// That is not merely slow, it is a DEADLOCK: the board view replaces
+  /// `ChatStream` in `App`'s ternary, and `AskQuestionCard` is rendered ONLY by
+  /// `MessageList` under `ChatStream`. So the gate the turn is waiting on has no
+  /// renderer while the launch is in flight, and the turn cannot settle to let the
+  /// view switch that would mount one. Every mocked `sendPrompt` in this file
+  /// resolves immediately, which is why the existing pins pass and the feature does
+  /// not.
+  it("leaves the board WITHOUT waiting for the first turn to settle", async () => {
+    // A turn that never settles — the `ask`-gate case, not a pathological fixture.
+    vi.mocked(sendPrompt).mockReturnValue(new Promise(() => {}));
+    const { onLaunched } = renderDialog();
+    fireEvent.click(await screen.findByRole("button", { name: "Discuss" }));
+    // The navigation happens on the START of the turn, not at its end.
+    await waitFor(() => expect(onLaunched).toHaveBeenCalledTimes(1));
+    // And the turn is still in flight — proof the assertion above did not simply
+    // race a fast mock to the finish line.
+    expect(useSessions.getState().inTurn["sess_new"]).toBeTruthy();
   });
 
   it("closes itself after launching", async () => {

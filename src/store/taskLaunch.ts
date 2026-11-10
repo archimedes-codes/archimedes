@@ -6,6 +6,7 @@ import {
   type TaskLaunchMode,
 } from "../lib/taskPrompt";
 import { sendPrompt, startTaskSession, type SessionInfo } from "../lib/tauri";
+import { describeIpcError } from "../lib/ipcError";
 import type { AgentDefinitionDto, SkillInfo, TaskRow } from "../lib/tauri";
 import { useSessions } from "./sessions";
 import { useTasks } from "./tasks";
@@ -303,16 +304,54 @@ async function startAndSendLinked(
   // row AND selects it, which is what puts the row in the sidebar and makes this
   // transcript the one on screen.
   useSessions.getState().addSession(info);
-  await sendLaunchMessage(info, task, mode, catalogs);
+  // DISPATCHED, NOT AWAITED — see `sendLaunchMessage`'s header for why awaiting it
+  // deadlocks. The Session exists and the prompt is committed, so this half's job is
+  // done; the turn's outcome belongs to the transcript, not to the click.
+  void sendLaunchMessage(info, task, mode, catalogs);
   return { sessionId: info.sessionId, note: null };
 }
 
-/** The send tail: build the ONE string, record it, send it, settle it.
+/** Record the first message and dispatch it, WITHOUT holding the caller.
+ *
+ *  ## Why nothing above this awaits it
+ *
+ *  `sendPrompt` resolves when the turn SETTLES — `router.rs` resolves the session's
+ *  `pending_turn` on `agent_settled`. Awaiting it here therefore held the click for
+ *  the whole first turn, and for these two skills that is not a latency problem, it
+ *  is a DEADLOCK:
+ *
+ *    - `discuss`'s whole shape is to end a turn on an `ask` gate, and `ask_flow`
+ *      blocks on a oneshot with NO timeout (`harness/ask.rs`);
+ *    - that gate renders through `AskQuestionCard`, which is mounted ONLY by
+ *      `MessageList` under `ChatStream`;
+ *    - and `App`'s view ternary renders the board INSTEAD of `ChatStream`.
+ *
+ *  So the turn waits on a gate that has no renderer, and the gate cannot appear
+ *  until the turn ends to let the view switch. A Discuss click produced a Session,
+ *  a sidebar row, and a board that never moved. Every `sendPrompt` mock in the suite
+ *  resolves immediately, which is why the pins for "leaves the board view" passed
+ *  while the feature did not.
+ *
+ *  The composer does not have this problem and this is the asymmetry to keep in
+ *  mind: `useChatPromptDispatch.sendText` awaits `sendPrompt` too, but by then the
+ *  transcript it needs is already on screen.
+ *
+ *  ## Where a failure goes instead
+ *
+ *  It cannot propagate: the dialog that used to render it through
+ *  `describeIpcError` is closed by the time this settles, so a rejection would be
+ *  reported NOWHERE — the user would see their own message sitting in a fresh
+ *  transcript with no reply and no sentence saying why. So the failure appends a
+ *  line to the Session it failed in, through `addSystemLine`, which is how the
+ *  composer already reports a command it could not run. It renders as an agent-text
+ *  bubble (that is what `addSystemLine` emits) — the same known imprecision the
+ *  `/compact` notice has, chosen over a new message kind, a new store field, and a
+ *  banner that would need mounting outside the view ternary to be visible at all.
  *
  *  `addUserMessage` → `beginTurn` → `sendPrompt` with the SAME string, then
- *  `turnCompleted` — which is what `useChatPromptDispatch.sendText` does, and for
- *  the same reason (ADR 0031's dedupe key is content-based, so a bubble and a wire
- *  text that diverge re-import the turn on the next resume).
+ *  `turnCompleted` — which is what `sendText` does, and for the same reason (ADR
+ *  0031's dedupe key is content-based, so a bubble and a wire text that diverge
+ *  re-import the turn on the next resume).
  */
 async function sendLaunchMessage(
   info: SessionInfo,
@@ -337,12 +376,18 @@ async function sendLaunchMessage(
     const reason = await sendPrompt(info.sessionId, text);
     useSessions.getState().turnCompleted(info.sessionId, reason);
   } catch (err) {
-    // Settle FIRST, then rethrow: `turnCompleted` is the only thing that clears
-    // `inTurn`, and a turn that never settles locks this composer for the life of
-    // the Session. The message stays recorded — it was recorded at COMMIT, not at
-    // settle, so a failed send must not resurrect it into the composer.
+    // Settle FIRST: `turnCompleted` is the only thing that clears `inTurn`, and a
+    // turn that never settles locks this composer for the life of the Session. The
+    // message stays recorded — it was recorded at COMMIT, not at settle, so a failed
+    // send must not resurrect it into the composer.
     useSessions.getState().turnCompleted(info.sessionId, "end_turn");
-    throw err;
+    // Reported INSTEAD of rethrown (see the header): nothing upstream can show it.
+    useSessions
+      .getState()
+      .addSystemLine(
+        info.sessionId,
+        `That message was never sent — ${describeIpcError(err)}`,
+      );
   }
 }
 

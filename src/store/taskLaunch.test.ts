@@ -232,6 +232,28 @@ describe("taskLaunch — the discuss launch", () => {
     expect(sent).toContain("$discuss");
   });
 
+  /// A send failure must NOT vanish behind the navigation.
+  ///
+  /// The launch no longer awaits the turn (see `sendLaunchMessage`), so the dialog
+  /// that used to render a rejection through `describeIpcError` is already closed.
+  /// Dropping the rejection there would be this repo's silent-green shape: the user
+  /// sees their own message in a fresh transcript and no hint that it never reached
+  /// the model. So the failure lands as a line IN THAT TRANSCRIPT — the existing
+  /// `addSystemLine` surface, which is how the composer reports a command it could
+  /// not run — and the turn still settles.
+  it("reports a failed first send inside the session it failed in", async () => {
+    vi.mocked(sendPrompt).mockRejectedValue(new Error("session is not live"));
+    const launched = await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
+    // The launch itself SUCCEEDS — the Session exists, the navigation is correct,
+    // and a rejection here would strand the user on the board with a dead Session.
+    expect(launched.sessionId).toBe("sess_new");
+    await vi.waitFor(() => {
+      const lines = useSessions.getState().messages["sess_new"] ?? [];
+      expect(lines.some((m) => m.kind === "agent-text" && /session is not live/.test((m as { text: string }).text))).toBe(true);
+    });
+    expect(useSessions.getState().inTurn["sess_new"]).toBeFalsy();
+  });
+
   it("settles the turn on success, so the composer is not left locked", async () => {
     await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
     expect(useSessions.getState().inTurn["sess_new"]).toBeFalsy();
@@ -239,16 +261,21 @@ describe("taskLaunch — the discuss launch", () => {
 
   it("settles the turn when the SEND rejects — a stuck turn locks the session forever", async () => {
     vi.mocked(sendPrompt).mockRejectedValue(new Error("provider is down"));
-    await expect(
-      launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS()),
-    ).rejects.toThrow("provider is down");
-    // THE whole point of this case: `turnCompleted` is the ONLY frontend path that
-    // clears `inTurn`. A launch that rethrows without settling leaves the composer
-    // locked and the working indicator spinning for the life of the Session.
-    expect(useSessions.getState().inTurn["sess_new"]).toBeFalsy();
-    // And the user's message stays recorded — it was recorded at commit, not at
-    // settle, so a failed send must not resurrect it into the composer.
-    expect(useSessions.getState().messages["sess_new"]).toHaveLength(1);
+    // The launch RESOLVES. It no longer awaits the turn (see `sendLaunchMessage`),
+    // so there is no rejection left to propagate — the report moved into the
+    // transcript, pinned by the case above. What this case still owns is the
+    // `inTurn` settle, and it now needs a microtask flush because the settle happens
+    // on a promise nothing awaits.
+    await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
+    await vi.waitFor(() =>
+      expect(useSessions.getState().inTurn["sess_new"]).toBeFalsy(),
+    );
+    // The user's message stays recorded — it was recorded at commit, not at settle,
+    // so a failed send must not resurrect it into the composer. The notice line is
+    // the SECOND row, so the prompt row is still there beneath it.
+    const rows = useSessions.getState().messages["sess_new"] ?? [];
+    expect(rows[0]?.kind).toBe("user");
+    expect(rows).toHaveLength(2);
   });
 
   it("does not start a Session when the start itself fails", async () => {
