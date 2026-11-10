@@ -1,3 +1,12 @@
+// `Array.prototype.at` is ES2022 and this project's `lib` is `["ES2020", "DOM"]`
+// (`tsconfig.json`; `EmptyStateFilm.test.tsx` documents the same limit and reaches
+// for `[length - 1]` instead). The pragma pulls in the ONE lib file that declares
+// `at` for this module rather than raising the project's `lib` — a global `lib` bump
+// would retypes the whole app for one call, and every `lib.es2022.*` member would
+// become available to code that ships against a WebView whose support this repo has
+// never censused. The runtime has had `at` since Chromium 92 / Safari 15.4, both far
+// below the Tauri WebView this app targets, so this is a TYPES gap and not a shim.
+/// <reference lib="es2022.array" />
 import { MutedCaption } from "./MutedCaption";
 import { moneyOf } from "./SessionCostLine";
 import type { DragCardHandlers } from "../hooks/useDragCard";
@@ -64,8 +73,18 @@ export interface TaskCardProps {
   /** Opens a Session. The board hands this down as
    *  `useSessions.getState().openSession`; the card deliberately does NOT read the
    *  sessions store itself — that would give a presentational component a second
-   *  store and make every test that renders one mock the world. */
-  onOpenSession?: (sessionId: string) => void;
+   *  store and make every test that renders one mock the world.
+   *
+   *  REQUIRED, on the same argument that made `sessions` and `costUsd` required
+   *  above and every field of `TaskCardView` required in `types.ts` — an optional
+   *  prop is this repo's silent-green shape, and here it is the WORST variant of it:
+   *  the chip is a real `<button type="button">`, so a card rendered without this
+   *  prop paints a keyboard-focusable control that does nothing at all. Nothing
+   *  fails, nothing warns, the tab order just grows. `sessions.length > 0` cannot
+   *  save it either, because the caller that omitted the callback is usually the one
+   *  that also passed links. Requiring it moves the decision to the call site, which
+   *  is the only place that knows whether a Session can be opened from there. */
+  onOpenSession: (sessionId: string) => void;
   /** This card's `useDragCard` spread (`dragProps(task.id)`), or nothing when the
    *  board cannot drag (no board loaded yet). Absent means NO gesture at all —
    *  `draggable` is not spelled without the handlers that would answer it. */
@@ -93,7 +112,17 @@ export default function TaskCard({
   // NEWEST is LAST, because the query is oldest-first. This is the same choice
   // `pick_compact_target` makes (`.last()`), so the card that opens a Session and
   // the board that compacts one never point at two different Sessions.
-  const newest = sessions[sessions.length - 1];
+  //
+  // `.at(-1)` and NOT `sessions[sessions.length - 1]`: the index form is `undefined`
+  // for an empty list and the compiler does not say so — `tsconfig.json` sets no
+  // `noUncheckedIndexedAccess` (verified), so the type lied. It was safe only while
+  // the JSX guard beneath it held, which is a coincidence and not a contract: move
+  // the guard, or reorder the rows, and the seeded board (five columns of cards with
+  // no links, the common case) throws on render. `.at(-1)` returns `undefined` as
+  // part of its type, so the render gate below can be put on the LINK ITSELF — one
+  // condition decides both "is there a chip" and "what does the click open", where
+  // the old shape had two conditions that merely happened to agree.
+  const newest = sessions.at(-1);
   return (
     <div
       data-testid="task-card"
@@ -187,6 +216,13 @@ export default function TaskCard({
           one would put a SECOND `[role="button"]` node in the tree the sidebar
           resolves rows through.
 
+          GATED on the resolved link (`newest !== undefined`) and not on
+          `sessions.length > 0`. Same answer — a link exists exactly when the newest
+          one resolves — but ONE condition instead of two that merely happen to
+          agree, and the value the click reads is the value that decided to render.
+          The behaviour is unchanged: no links, no chip at all (pinned in the card's
+          own test), no placeholder and no disabled affordance.
+
           NO `e.stopPropagation()`, and that is a measurement rather than an
           oversight: there is nothing to stop. This component has no other
           `onClick`; `useDragCard`'s five keys and `useDragReorder`'s six are all
@@ -204,10 +240,10 @@ export default function TaskCard({
           `bg-chat` is exactly `bg-card` in zai-dark. The ink-only hover is the
           `FileChip` idiom: an affordance that says "clickable" without gaining a
           second fill. */}
-      {sessions.length > 0 && (
+      {newest !== undefined && (
         <button
           type="button"
-          onClick={() => onOpenSession?.(newest.sessionId)}
+          onClick={() => onOpenSession(newest.sessionId)}
           className={cn(
             // The fill and geometry are the card's own pill recipe (see the `T{n}`
             // pill above). `self-start` is the chip's own addition: the card is a

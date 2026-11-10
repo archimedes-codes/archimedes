@@ -12,6 +12,7 @@ import {
   type StageWithTasks,
   type TaskCardView,
   type TaskRow,
+  type TaskSessionRow,
 } from "../lib/tauri";
 import { resetStores } from "../test/resetStores";
 
@@ -128,6 +129,26 @@ const cardOf = (row: TaskRow): TaskCardView => ({
   sessions: [],
   costUsd: null,
 });
+
+/** One `task_sessions` link as the wire row carries it. `stageSlug` is NULLABLE on
+ *  the column (`task_sessions.stage_slug`) and is the stage the Session was in when
+ *  the link was written — a later drag compacts from it. */
+const linkOf = (
+  taskId: string,
+  sessionId: string,
+  stageSlug: string | null = null,
+): TaskSessionRow => ({ taskId, sessionId, stageSlug });
+
+/** A card that HAS links — the shape `cardOf` cannot express, and the shape this
+ *  branch exists to carry. The optimistic paths in `tasks.ts` all claim to leave
+ *  the wrapper's two board-only fields alone; every assertion made with `cardOf`
+ *  is made against `sessions: []`/`costUsd: null`, which a mutation dropping both
+ *  would satisfy. This is the fixture that makes those claims checkable. */
+const linkedCardOf = (
+  row: TaskRow,
+  sessions: TaskSessionRow[],
+  costUsd: number | null,
+): TaskCardView => ({ task: row, sessions, costUsd });
 
 /** A two-column board, NESTED the way the wire shape is (`{ stage, tasks }`). */
 const board = (...cols: [StageRow, TaskRow[]][]): StageWithTasks[] =>
@@ -268,6 +289,64 @@ describe("useTasks.moveTask (the cross-column drag verb)", () => {
     expect(moved?.task.stageSlug).toBe("doing");
   });
 
+  it("carries the card's sessions and cost across the drop (the chip survives a drag)", async () => {
+    // THE case every other `moveTask` test in this file skipped, and the reason
+    // the store comment's claim ("the WRAPPER is carried along untouched by the
+    // spread") was prose: all of them move a card built by `cardOf`, whose
+    // `sessions` is `[]` and whose `costUsd` is `null` — so a destination write
+    // that rebuilt the wrapper from the `TaskRow` alone and dropped BOTH fields
+    // passed the whole suite. Those two fields are the entire payload this branch
+    // exists to carry: drop them on the optimistic path and the chip on a card the
+    // user just dragged vanishes until the next `get_board`, silently, green.
+    //
+    // A card with TWO links (not one) so the array is not something a `slice`/`pop`
+    // style mutation could survive by accident, and a NON-NULL cost so the
+    // ADR 0082 `null`-vs-figure distinction is exercised rather than defaulted.
+    vi.mocked(getBoard).mockResolvedValue([
+      {
+        stage: backlog,
+        tasks: [
+          linkedCardOf(
+            task("t1", 1, "backlog"),
+            [linkOf("t1", "sess_first", "backlog"), linkOf("t1", "sess_second", null)],
+            1.75,
+          ),
+          cardOf(task("t2", 2, "backlog")),
+        ],
+      },
+      { stage: doing, tasks: [cardOf(task("t3", 3, "doing"))] },
+    ]);
+    await useTasks.getState().load(SPACE);
+    vi.mocked(moveTask).mockResolvedValue(quiet);
+
+    await useTasks.getState().moveTask(SPACE, "t1", "doing");
+
+    const moved = (useTasks.getState().boardsBySpace[SPACE] ?? [])
+      .flatMap((c) => c.tasks)
+      .find((t) => t.task.id === "t1");
+    // The whole wrapper, asserted as ONE equality: the row's `stageSlug` updated
+    // AND both board-only fields standing, in the order the wire published them.
+    expect(moved).toEqual(
+      linkedCardOf(
+        task("t1", 1, "doing"),
+        [linkOf("t1", "sess_first", "backlog"), linkOf("t1", "sess_second", null)],
+        1.75,
+      ),
+    );
+    // Spelled again as separate assertions so a failure names WHICH field dropped
+    // rather than diffing an object the reader has to decode.
+    expect(moved?.task.stageSlug).toBe("doing");
+    expect(moved?.sessions.map((s) => s.sessionId)).toEqual([
+      "sess_first",
+      "sess_second",
+    ]);
+    expect(moved?.costUsd).toBe(1.75);
+    // And the destination column is the only place it now reads — the source
+    // column did not keep a stale copy carrying the same links.
+    expect(idsOf(SPACE, "backlog")).toEqual(["t2"]);
+    expect(idsOf(SPACE, "doing")).toEqual(["t3", "t1"]);
+  });
+
   it("surfaces a `boostNote` as a warning — the card moved AND the note is readable", async () => {
     // Spec §5's caveat 2: a `compact` stage with no live Session is a SILENT
     // no-op. The card moved; the boost did not fire. Swallowing the note here is
@@ -378,6 +457,83 @@ describe("useTasks.reorderWithinStage (the within-column drag verb)", () => {
     expect(reorderTasks).not.toHaveBeenCalled();
     expect(idsOf(SPACE, "backlog")).toEqual(["t1", "t2"]);
   });
+
+  it("skips an id the column does not hold, keeps an unseen card at the END, and still sends the ORIGINAL slice", async () => {
+    // The two ordering rules the store states in prose (`tasks.ts` — "an id the
+    // column does not hold is SKIPPED… a card the slice never named keeps its
+    // place at the END") had NO test: every other case in this file hands over a
+    // COMPLETE slice (`["t2","t1"]`) or an empty one, so both arms were unreachable
+    // and either could be deleted with the suite green. Both arms exist for a real
+    // race — a card created mid-drag, or a board that reloaded under the gesture.
+    //
+    // A THREE-card column, so "unseen card at the END" is distinguishable from
+    // "nothing moved at all": the shared two-card fixture cannot tell those apart.
+    vi.mocked(getBoard).mockResolvedValue([
+      {
+        stage: backlog,
+        tasks: [
+          cardOf(task("t1", 1, "backlog")),
+          cardOf(task("t2", 2, "backlog")),
+          cardOf(task("t4", 4, "backlog")),
+        ],
+      },
+      { stage: doing, tasks: [cardOf(task("t3", 3, "doing"))] },
+    ]);
+    await useTasks.getState().load(SPACE);
+    // The command REFUSES the slice, and that is the state this case is really
+    // about: the server rejects an id it does not hold (`BoardError::MissingTask`),
+    // so the optimistic preview is a preview and nothing more.
+    vi.mocked(reorderTasks).mockRejectedValue({
+      kind: "not_found",
+      message: "task t9 is not in stage backlog",
+    });
+
+    // ONE call, two shapes: `t9` is a phantom the column never held, and `t1` is a
+    // card the slice never named.
+    const ids = ["t4", "t9", "t2"];
+    useTasks.getState().reorderWithinStage(SPACE, "backlog", ids);
+    // (i) the phantom id is NOT painted — inserting what `byId.get` cannot resolve
+    // would put `undefined` in the strip and take the column's render down:
+    expect(idsOf(SPACE, "backlog")).toEqual(["t4", "t2", "t1"]);
+    expect(
+      (useTasks.getState().boardsBySpace[SPACE] ?? [])
+        .find((c) => c.stage.slug === "backlog")
+        ?.tasks.some((t) => t.task.id === "t9"),
+    ).toBe(false);
+    // (ii) the omitted card SURVIVES, at the END — the same new-row rule
+    // `reorderSpaces` follows. Losing it here is a card vanishing from the board on
+    // a drag that never touched it, with no failure to explain the absence.
+    expect(idsOf(SPACE, "backlog")).toContain("t1");
+    expect(idsOf(SPACE, "backlog")[idsOf(SPACE, "backlog").length - 1]).toBe("t1");
+    // (iii) THE load-bearing assertion. The command is called with the caller's
+    // ORIGINAL `ids` — phantom `t9` included — and NOT with the filtered preview
+    // the optimistic paint produced. A reviewer verified the server refuses an
+    // unknown id (`BoardError::MissingTask`) and the `.catch` reverts the slice, so
+    // the phantom is refused loudly and undone; and the optimistic filter is safe
+    // ONLY because what gets SENT is the untouched slice. Silently sending the
+    // filtered list would renumber the column against a slice the user never
+    // dragged and hide the phantom from the one place that could report it.
+    expect(reorderTasks).toHaveBeenCalledWith(SPACE, "backlog", ["t4", "t9", "t2"]);
+    const [, , sent] = vi.mocked(reorderTasks).mock.calls[0]!;
+    // The SAME array object the caller handed the store — not a copy, not a filter.
+    // `toHaveBeenCalledWith` is a deep-equality check and would pass on a rebuilt
+    // list that happened to read alike; identity is what says nothing was rebuilt.
+    expect(sent).toBe(ids);
+    expect(sent).toContain("t9");
+    expect(sent).not.toEqual(idsOf(SPACE, "backlog"));
+    // Let that first refusal's `.catch` land before driving the verb again — two
+    // rejections in flight at once would race over who restores which slice, and
+    // this case is about WHICH slice was sent, not about the revert's ordering.
+    await settle();
+    // The refusal path is the other half of why (iii) matters: the server rejects
+    // the phantom (`reorderTasks` is still mocked to refuse, set above), the
+    // `.catch` restores the pre-drag order, and the human sees the order they had
+    // rather than a quietly renumbered column.
+    useTasks.getState().reorderWithinStage(SPACE, "backlog", ids);
+    await settle();
+    expect(idsOf(SPACE, "backlog")).toEqual(["t1", "t2", "t4"]);
+    expect(useTasks.getState().error).toBe("task t9 is not in stage backlog");
+  });
 });
 
 describe("useTasks.createTask / useTasks.linkSession", () => {
@@ -474,7 +630,7 @@ describe("the board's wire shape — the Rust↔TS drift pin (issue #174)", () =
    * types and this repo holds NO automated Rust↔TS shape check (verified: no Rust
    * test reads a `.ts` file), so the only thing standing between the two is that
    * the key list below is spelled a SECOND time and is BYTE-IDENTICAL to
-   * `FROZEN_CARD_KEYS` / `FROZEN_TASK_KEYS` in
+   * `FROZEN_CARD_KEYS` / `FROZEN_TASK_KEYS` / `FROZEN_LINK_KEYS` in
    * `src-tauri/src/storage/db/tests/mod.rs::the_task_card_view_wire_keys_are_frozen`.
    * A rename on either side reddens one of the two. Modelled on
    * `closed_reason_spellings_are_frozen`, which is the repo's existing
@@ -510,10 +666,19 @@ describe("the board's wire shape — the Rust↔TS drift pin (issue #174)", () =
       "createdAt",
       "updatedAt",
     ];
+    // BYTE-IDENTICAL to `FROZEN_LINK_KEYS` in that same Rust test
+    // (`src-tauri/src/storage/db/tests/mod.rs::the_task_card_view_wire_keys_are_frozen`),
+    // which asserts it against the SERIALIZED `value["sessions"][0]`. This is the
+    // THIRD list and the one the chip actually reads: `sessionId` is what a click
+    // on the card's chip hands to `openSession`, so a `session_id` ↔ `sessionId`
+    // rename would redden nothing in the TS suite and blank every chip on the
+    // board — the `#[serde(rename_all = "camelCase")]` seam sat unfrozen.
+    const FROZEN_LINK_KEYS = ["taskId", "sessionId", "stageSlug"];
 
     const types = stripJsComments(readFileSync("src/lib/tauri/types.ts", "utf8"));
     const card = interfaceFields(types, "TaskCardView");
     const row = interfaceFields(types, "TaskRow");
+    const link = interfaceFields(types, "TaskSessionRow");
 
     // The Rust test compares a SORTED key set, so the sorted read is the pin that
     // must match it byte-for-byte; the declaration-order read below is the stricter
@@ -522,15 +687,24 @@ describe("the board's wire shape — the Rust↔TS drift pin (issue #174)", () =
     expect(card.map((f) => f.key)).toEqual(FROZEN_CARD_KEYS);
     expect([...row.map((f) => f.key)].sort()).toEqual([...FROZEN_TASK_KEYS].sort());
     expect(row.map((f) => f.key)).toEqual(FROZEN_TASK_KEYS);
+    expect([...link.map((f) => f.key)].sort()).toEqual([...FROZEN_LINK_KEYS].sort());
+    expect(link.map((f) => f.key)).toEqual(FROZEN_LINK_KEYS);
 
-    // NO optional field on either. `sessions?:`/`costUsd?:` would compile against
-    // every existing fixture and then render nothing while real data arrives.
+    // NO optional field on any of the three. `sessions?:`/`costUsd?:` would compile
+    // against every existing fixture and then render nothing while real data
+    // arrives, and an optional `sessionId?` on the link would make the chip's click
+    // hand `undefined` to `openSession` — the same silent-green shape one level down.
     expect(card.filter((f) => f.optional).map((f) => f.key)).toEqual([]);
     expect(row.filter((f) => f.optional).map((f) => f.key)).toEqual([]);
+    expect(link.filter((f) => f.optional).map((f) => f.key)).toEqual([]);
 
     // The TYPES behind the keys, so `string` cannot quietly replace `number | null`
-    // (that swap is what would let a phantom `$0.00` reach the card).
+    // (that swap is what would let a phantom `$0.00` reach the card). The link's
+    // `stageSlug` is NULLABLE (`task_sessions.stage_slug` is a nullable column) and
+    // its `sessionId` is not — swapping those two is how a chip starts opening a
+    // Session that does not exist.
     expect(card.map((f) => f.type)).toEqual(["TaskRow", "TaskSessionRow[]", "number | null"]);
+    expect(link.map((f) => f.type)).toEqual(["string", "string", "string | null"]);
 
     // The column carries CARDS, not rows — the other half of the wrapper.
     expect(interfaceFields(types, "StageWithTasks").map((f) => f.type)).toEqual([

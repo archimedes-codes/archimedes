@@ -65,15 +65,23 @@ const link = (sessionId: string, over: Partial<TaskSessionRow> = {}): TaskSessio
   ...over,
 });
 
-/** The two link props, spelled out at every call site that has nothing to say
- *  about Sessions. They are REQUIRED props rather than optional ones for the same
- *  reason `TaskCardView`'s fields are required in `types.ts`: an optional prop
- *  compiles against a caller that forgot it, and a card that forgot them renders a
- *  linked card with no chip — silent, green, and wrong. A case that cares about
- *  links overrides them; the anatomy cases below do not. */
-const NO_LINKS: Pick<TaskCardProps, "sessions" | "costUsd"> = {
+/** A callback that exists and does nothing, for the cases whose subject is not the
+ *  chip's click. `onOpenSession` is a REQUIRED prop (see `TaskCardProps`), so every
+ *  render has to answer "what opens the Session?" — and a `vi.fn()` per case would
+ *  read like the click is what the case is about. `NO_LINKS` carries it for the
+ *  anatomy cases below, which have no links for the callback to open. */
+const noopOpenSession = (): void => {};
+
+/** The three props every render must pass, spelled out at every call site that has
+ *  nothing to say about Sessions. They are REQUIRED props rather than optional ones
+ *  for the same reason `TaskCardView`'s fields are required in `types.ts`: an
+ *  optional prop compiles against a caller that forgot it, and a card that forgot
+ *  them renders a linked card with no chip — or a chip that opens nothing. A case
+ *  that cares about links overrides them; the anatomy cases below do not. */
+const NO_LINKS: Pick<TaskCardProps, "sessions" | "costUsd" | "onOpenSession"> = {
   sessions: [],
   costUsd: null,
+  onOpenSession: noopOpenSession,
 };
 
 /**
@@ -350,6 +358,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         task={task()}
         sessions={[link("sess_old"), link("sess_new")]}
         costUsd={1.75}
+        onOpenSession={noopOpenSession}
       />,
     );
     expect(screen.getByText("2 sessions · $1.75")).toBeTruthy();
@@ -366,7 +375,12 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
     // which is a confident lie about money nobody measured, and it is the exact
     // collapse of "free" and "unknown" that `SessionCostLine` was written to stop.
     render(
-      <TaskCard task={task()} sessions={[link("sess_1")]} costUsd={null} />,
+      <TaskCard
+        task={task()}
+        sessions={[link("sess_1")]}
+        costUsd={null}
+        onOpenSession={noopOpenSession}
+      />,
     );
     expect(screen.getByText("1 session")).toBeTruthy();
     expect(screen.queryByText("$0.00")).toBeNull();
@@ -381,7 +395,12 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
     // why the gate below is on `moneyOf`'s return value and not on the number's
     // truthiness (`0` is falsy, and a truthiness gate would hide a real zero).
     render(
-      <TaskCard task={task()} sessions={[link("sess_1")]} costUsd={0} />,
+      <TaskCard
+        task={task()}
+        sessions={[link("sess_1")]}
+        costUsd={0}
+        onOpenSession={noopOpenSession}
+      />,
     );
     expect(screen.getByText("1 session · $0.00")).toBeTruthy();
   });
@@ -389,7 +408,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
   it("clicking the chip opens the newest linked session", () => {
     // NEWEST, and newest is LAST: the board's link query is
     // `ORDER BY ts.rowid ASC` — the same oldest-first order `Db::task_sessions`
-    // publishes — so `sessions[sessions.length - 1]` is the most recent link. That
+    // publishes — so `sessions.at(-1)` is the most recent link. That
     // matches the board's other reader, `pick_compact_target`, which prefers the
     // last link too; two readers that disagreed about "newest" would compact one
     // Session and open another.
@@ -407,6 +426,34 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
     expect(onOpenSession).toHaveBeenCalledWith("sess_last");
   });
 
+  it("resolves the chip's link from the list and not from an unguarded index", () => {
+    // `sessions[sessions.length - 1]` is `undefined` for an EMPTY list — TypeScript
+    // does not catch it here because `tsconfig.json` sets no
+    // `noUncheckedIndexedAccess` (verified), so the only thing standing between that
+    // `undefined` and a dereference was the JSX guard two lines below it. Move the
+    // guard, or reorder the rows, and the common case (the seeded board: five
+    // columns of cards with NO links) throws on render.
+    //
+    // `sessions.at(-1)` returns `undefined` HONESTLY, so the render gate can be put
+    // on the resolved link instead of on `length` — and then the value the click
+    // reads and the decision to render are the SAME value, which is the difference
+    // between "two conditions that happen to agree" and "one condition".
+    //
+    // A source assertion because the DOM cannot see a bug that the guard prevents:
+    // the failure this pins is one edit away in the future, and the repo's other
+    // instrument for exactly that class is a comment-stripped source read (see the
+    // `useDragCard` pin above and `tauriBoundary.test.ts`).
+    const src = stripJsComments(readFileSync("src/components/TaskCard.tsx", "utf8"));
+    expect(src).toContain("sessions.at(-1)");
+    expect(src).not.toContain("sessions[sessions.length - 1]");
+    // The gate names the RESOLVED LINK. `sessions.length > 0` as the gate over an
+    // index-read `newest` is the two-conditions shape this case exists to forbid.
+    expect(src).not.toContain("sessions.length > 0");
+    // Vacuity guard, the same one the drag pin runs: the strip must have left real
+    // code standing, or every `not.toContain` above passes on an empty string.
+    expect(src).toContain("export default function TaskCard");
+  });
+
   it("a card with no sessions renders no chip", () => {
     // The common case: the seeded board is five columns of cards with no links.
     // No chip at all — not an empty pill, not `0 sessions`, not a disabled
@@ -420,6 +467,63 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
     expect(
       screen.getByTestId("task-card").querySelector("button"),
     ).toBeNull();
+  });
+
+  it("the sessions chip is a real control that opens the newest link when clicked", () => {
+    // THE case this branch's own doctrine demands and no existing case made: a
+    // card with links, a SPY for the callback, and all three facts asserted
+    // together — the chip EXISTS, it is a `button` (so it is reachable from the
+    // keyboard, which a `<span onClick>` is not), and ONE click hands the spy
+    // exactly the NEWEST id. The two existing chip cases each hold a piece: one
+    // clicks and reads the id but never checks the element is a control; the other
+    // checks `tagName` and never clicks. Split that way, a chip that rendered a
+    // focusable `<button>` wired to nothing, or a `<span>` wired correctly, still
+    // left the file green.
+    const onOpenSession = vi.fn();
+    render(
+      <TaskCard
+        task={task()}
+        sessions={[link("sess_alpha"), link("sess_beta")]}
+        costUsd={2.5}
+        onOpenSession={onOpenSession}
+      />,
+    );
+    const chip = screen.getByText("2 sessions · $2.50");
+    expect(chip.tagName).toBe("BUTTON");
+    // Focusable, and that is the property the optional-callback version silently
+    // broke: a real `<button>` inside a card is in the tab order whether or not
+    // anything answers it.
+    expect(chip.getAttribute("type")).toBe("button");
+    expect(chip.closest('[role="button"]')).toBeNull();
+    fireEvent.click(chip);
+    expect(onOpenSession).toHaveBeenCalledTimes(1);
+    expect(onOpenSession).toHaveBeenCalledWith("sess_beta");
+  });
+
+  it("requires the open-session callback, so a card with links cannot be handed no way to open one", () => {
+    // THE silent-green failure this branch spent two commits arguing against —
+    // `sessions`/`costUsd` were made REQUIRED on exactly this ground (`types.ts`'s
+    // JSDoc: an optional field "compiles against every fixture in the repo and then
+    // renders nothing when real data arrives") — and `onOpenSession` was the one
+    // prop left optional. `onOpenSession?:` plus a real `<button type="button">` is
+    // worse than a missing chip: the card renders a keyboard-focusable control that
+    // does NOTHING, and the caller that forgot the prop gets no error. Production
+    // (`TasksBoard`) always passes it, which is why no behaviour test could see it.
+    //
+    // A SOURCE assertion, because the compiler is the instrument here and `tsc` does
+    // not run inside vitest: the `?` on the prop declaration is the whole defect, and
+    // the repo's own frozen-keys idiom (this file's drag-surface pin,
+    // `store/tasks.test.ts`) reads source for exactly this class of claim.
+    const src = stripJsComments(readFileSync("src/components/TaskCard.tsx", "utf8"));
+    expect(src).not.toContain("onOpenSession?:");
+    expect(src).toMatch(/onOpenSession: *\(sessionId: string\) => void;/);
+    // And the call site is a PLAIN call, not `onOpenSession?.(…)`: optional chaining
+    // at the call is the same silent no-op spelled one line later — a click that
+    // resolves to `undefined` and reports nothing.
+    expect(src).not.toContain("onOpenSession?.(");
+    expect(src).toContain("onOpenSession(newest.sessionId)");
+    // Vacuity guard: real code survived the strip.
+    expect(src).toContain("export default function TaskCard");
   });
 
   it("the sessions chip wears the page-step fill, never the island plane", () => {

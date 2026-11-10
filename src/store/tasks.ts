@@ -149,7 +149,12 @@ export const useTasks = create<BoardState>((set, get) => ({
     // A board element is a `TaskCardView` (issue #174): the card's own fields live
     // under `.task`, so every read of a card here reaches through it. The WRAPPER is
     // carried along untouched by the spread below, which is what keeps the optimistic
-    // slice's `sessions`/`costUsd` standing instead of quietly dropping them.
+    // slice's `sessions`/`costUsd` standing instead of quietly dropping them — and
+    // that sentence is now PINNED, not prose: `carries the card's sessions and cost
+    // across the drop (the chip survives a drag)` in this file's test moves a card
+    // with TWO links and a non-null cost. Every other `moveTask` case moves a card
+    // built with `sessions: []`/`costUsd: null`, which a mutation dropping both would
+    // have satisfied.
     const from = columns.find((c) => c.tasks.some((t) => t.task.id === taskId));
     const to = columns.find((c) => c.stage.slug === toStageSlug);
     // A drag whose endpoints are not both in the loaded board is a STALE gesture

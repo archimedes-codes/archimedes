@@ -68,6 +68,13 @@ const SUB_CLIFF_CEILING = 0.00005;
  * `null` — the identical rule, so the two surfaces (this session line and the
  * subagent card) cannot drift. The rule stays owned HERE; the card imports it
  * rather than copying it, and the exact pins below are the card's guarantees too.
+ *
+ * TWO MORE surfaces have since joined it, on the same argument:
+ * `ProviderAuthSection`'s key-row `spend / maxBudget` line, and issue #174's
+ * `TaskCard` sessions chip, which prints the board read's `TaskCardView.costUsd`.
+ * That is why the guard's own cases live in this file's test rather than being
+ * re-asserted per consumer — four renderers reading one rule, and a guard test per
+ * renderer would be four tests of the same three lines that can disagree.
  */
 export function moneyOf(total: number | null): string | null {
   if (total === null || !Number.isFinite(total) || total < 0) return null;
