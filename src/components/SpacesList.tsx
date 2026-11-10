@@ -66,7 +66,7 @@ function spaceNameFor(cwd: string, spaces: { path: string }[]): string {
 }
 
 /**
- * THE SIDEBAR'S FOUR LABELLED COMMAND BUTTONS (Skills, Agents, Settings, Tasks) — one ghost
+ * THE SIDEBAR'S FOUR LABELLED COMMAND BUTTONS (Tasks, Skills, Agents, Settings) — one ghost
  * `<Button>` recipe, spelled ONCE because all four draw the identical box. (The two
  * that used to ride this recipe — `Open Space` and `New Session` — are gone: the
  * first left the sidebar for the chrome bar, the second is now the `+` in the
@@ -519,6 +519,39 @@ export default function SpacesList({
           (a `flex-1` scroller inside a `flex-1` column) needs the nesting. */}
       <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-col gap-2 p-3">
+        {/* The Task board's door, and it LEADS the strip. It joined the labelled
+            commands after **Agents** (spec §3) and was later moved to the front: the
+            board is where work starts, and a door below three others is a door nobody
+            finds. Leading costs the adjacency the order used to defend — Settings, the
+            other VIEW door, is now LAST with the two modal commands between them. See
+            **Settings**' note for what that split was for and what it no longer buys.
+            It is a COMMAND button and NOT a section header like
+            `Sessions`, because a board is one surface rather than a list of rows —
+            so it takes the shared recipe verbatim and owns no chevron, no count and
+            no list. `ListTodoIcon` is lucide's kanban glyph for a list of work
+            items; the label is the word a person says.
+
+            The same two halves as **Settings**: pressed while the board is up, and
+            clicking the pressed door leaves it. The guard is on the door's OWN view
+            and not on `currentView === "workspace"`, so board → Settings is one
+            click rather than a trip back through the workspace. */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="default"
+          aria-pressed={currentView === "board"}
+          onClick={() =>
+            currentView === "board" ? onReturnToWorkspace?.() : onOpenBoard?.()
+          }
+          className={cn(
+            SIDEBAR_COMMAND_BUTTON,
+            PANE_COMMAND_ROW,
+            currentView === "board" && "bg-selected",
+          )}
+        >
+          <ListTodoIcon className="size-4" />
+          <span className="flex-1 text-left">Tasks</span>
+        </Button>
         <Button
           type="button"
           variant="ghost"
@@ -549,11 +582,17 @@ export default function SpacesList({
             the other doors, and the bar's top-right belongs to the window manager
             alone.
 
-            BETWEEN **Agents** and **Tasks**, so the two VIEW doors stay adjacent and
-            the two MODAL commands stay adjacent. That split is the whole design: a
-            modal is not a location, so Skills and Agents raise a dialog and carry NO
-            `aria-pressed`; Settings and Tasks name a view, so they say which one is
-            showing and toggle off when clicked again. Two exits per view (N1) — its
+            LAST in the strip, which is a position chosen for it rather than a leftover:
+            the order used to be Skills / Agents / Settings / Tasks precisely so the two
+            VIEW doors stayed adjacent and the two MODAL commands stayed adjacent, and
+            **Tasks** moving to the front broke that. The adjacency was only ever a
+            tiebreaker for where **Settings** should sit — nothing reads its neighbours,
+            and the `aria-pressed` behaviour is per-button and order-independent. What
+            the split genuinely still carries is the KIND difference: a modal is not a
+            location, so Skills and Agents raise a dialog and carry NO `aria-pressed`;
+            Settings and Tasks name a view, so they say which one is showing and toggle
+            off when clicked again. That distinction is now invisible in the layout and
+            lives only in the behaviour — the accepted cost of putting Tasks first. Two exits per view (N1) — its
             own door, or any **Session** row — so no view is a dead end. That is what
             makes the Settings page's own `Back` redundant (it is retired);
             this pane owns no exit control of its own.
@@ -584,35 +623,6 @@ export default function SpacesList({
         >
           <SettingsIcon className="size-4" />
           <span className="flex-1 text-left">Settings</span>
-        </Button>
-        {/* The Task board's door (spec §3: it joined the labelled commands after
-            **Agents**, and Settings joined between them, so the two view doors stay
-            adjacent). It is a COMMAND button and NOT a section header like
-            `Sessions`, because a board is one surface rather than a list of rows —
-            so it takes the shared recipe verbatim and owns no chevron, no count and
-            no list. `ListTodoIcon` is lucide's kanban glyph for a list of work
-            items; the label is the word a person says.
-
-            The same two halves as **Settings**: pressed while the board is up, and
-            clicking the pressed door leaves it. The guard is on the door's OWN view
-            and not on `currentView === "workspace"`, so board → Settings is one
-            click rather than a trip back through the workspace. */}
-        <Button
-          type="button"
-          variant="ghost"
-          size="default"
-          aria-pressed={currentView === "board"}
-          onClick={() =>
-            currentView === "board" ? onReturnToWorkspace?.() : onOpenBoard?.()
-          }
-          className={cn(
-            SIDEBAR_COMMAND_BUTTON,
-            PANE_COMMAND_ROW,
-            currentView === "board" && "bg-selected",
-          )}
-        >
-          <ListTodoIcon className="size-4" />
-          <span className="flex-1 text-left">Tasks</span>
         </Button>
       </div>
       {/* The Sessions header: the label + the `New Session` `+` (right-aligned,
