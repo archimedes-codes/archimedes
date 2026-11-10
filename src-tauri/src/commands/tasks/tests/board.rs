@@ -58,6 +58,53 @@ fn require_title_cleans_like_the_session_namer_and_refuses_an_empty_one() {
     }
 }
 
+/// A Task title is NOT capped. The card's label is the user's own sentence, and
+/// cutting it at 80 characters DESTROYS TEXT: `tasks.title` is `NOT NULL`, the
+/// truncation is lossy, and nothing else stores the remainder — a body is only
+/// written when the draft had a second line, so a long single-line card loses
+/// everything past the cut with no way back. This was measured on a real card:
+/// `What is the default action for notifications, i want to be able to click a notif`
+/// — 80 chars, mid-word, `body` NULL.
+///
+/// The cap belongs to the SESSION namer, where it is a pi parity rule
+/// (`replace(/\s+/g, " ").trim().replace(quoteRe).slice(0, 80)`) on a title a
+/// MODEL invented. A card's title is not that artefact, and the two share the
+/// cleaning CHAIN (whitespace collapse, one quote layer) without sharing the cut.
+#[test]
+fn a_long_task_title_is_kept_whole_and_never_cut_at_the_session_namer_cap() {
+    let long = "What is the default action for notifications, i want to be able to click a notification and have it open the session that raised it";
+    // 132 chars. Spelled as a literal because `TITLE_MAX_CHARS` lives in the private
+    // `mod session` and is deliberately NOT re-exported through the `agent` hop to
+    // satisfy a test; naming.rs pins the constant's VALUE itself.
+    assert!(
+        long.chars().count() > 80,
+        "the fixture must exceed the session namer's 80-char cap or this proves nothing"
+    );
+    let got = require_title(long).expect("a long title is valid");
+    assert_eq!(
+        got, long,
+        "the user's sentence is stored as typed, not truncated"
+    );
+    assert_eq!(got.chars().count(), long.chars().count());
+}
+
+/// The other half: whitespace still collapses and one quote layer still strips,
+/// so lifting the cut did not quietly drop the cleaning. Both rules are the
+/// session namer's and are still shared with it — this pins that the SHARED chain
+/// survived the change, which a test that only checked length could not see.
+#[test]
+fn an_uncapped_title_still_gets_the_shared_cleaning() {
+    let padded = format!("  \"{}   keeps   its  inner spacing\"\n", "a".repeat(100));
+    let got = require_title(&padded).expect("valid");
+    assert!(
+        !got.starts_with('"') && !got.ends_with('"'),
+        "one quote layer strips: {got}"
+    );
+    assert!(!got.contains("   "), "whitespace runs collapse: {got}");
+    assert_eq!(got.split_whitespace().count(), got.split(' ').count());
+    assert!(got.len() > 80, "and it is still uncapped: {}", got.len());
+}
+
 /// The `empty_title` kind is the wire discriminator the frontend branches on
 /// (ADR 0063), so it is pinned as a literal rather than derived.
 #[test]
