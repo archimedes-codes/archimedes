@@ -408,7 +408,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
   it("clicking the chip opens the newest linked session", () => {
     // NEWEST, and newest is LAST: the board's link query is
     // `ORDER BY ts.rowid ASC` — the same oldest-first order `Db::task_sessions`
-    // publishes — so `sessions.at(-1)` is the most recent link. That
+    // publishes — so the LAST element of `sessions` is the most recent link. That
     // matches the board's other reader, `pick_compact_target`, which prefers the
     // last link too; two readers that disagreed about "newest" would compact one
     // Session and open another.
@@ -427,30 +427,48 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
   });
 
   it("resolves the chip's link from the list and not from an unguarded index", () => {
-    // `sessions[sessions.length - 1]` is `undefined` for an EMPTY list — TypeScript
-    // does not catch it here because `tsconfig.json` sets no
-    // `noUncheckedIndexedAccess` (verified), so the only thing standing between that
-    // `undefined` and a dereference was the JSX guard two lines below it. Move the
-    // guard, or reorder the rows, and the common case (the seeded board: five
+    // What this case pins, stated once: THE LAST ELEMENT MUST NEVER BE DEREFERENCED
+    // OUTSIDE A GUARD THAT HAS ALREADY ESTABLISHED THE LIST IS NON-EMPTY.
+    //
+    // `sessions[sessions.length - 1]` is `undefined` for an EMPTY list and TypeScript
+    // does not say so — `tsconfig.json` sets no `noUncheckedIndexedAccess` (verified)
+    // — so an unguarded `newest` is a value that was never resolved and still types as
+    // a link. The only thing standing between it and a dereference is then whatever
+    // JSX guard happens to sit below it, which is a coincidence and not a contract:
+    // move the guard, or reorder the rows, and the common case (the seeded board: five
     // columns of cards with NO links) throws on render.
     //
-    // `sessions.at(-1)` returns `undefined` HONESTLY, so the render gate can be put
-    // on the resolved link instead of on `length` — and then the value the click
-    // reads and the decision to render are the SAME value, which is the difference
-    // between "two conditions that happen to agree" and "one condition".
+    // The shape that satisfies this is GUARD-THEN-INDEX: resolve the link up front
+    // behind a non-emptiness check that yields `undefined` for an empty list, and gate
+    // the chip on that resolved value. Note what this case does NOT forbid — gating on
+    // `length` is CORRECT once the index read sits inside that guard (`length > 0`
+    // implies the last element exists), so an earlier revision of this pin that banned
+    // the substring `sessions.length > 0` over-constrained a sound implementation and
+    // is gone. `Array.prototype.at` is likewise no longer required here: it is ES2022
+    // and this project's `lib` is `["ES2020", "DOM"]`, and an ES2020 target does not
+    // down-level it — see the `EmptyStateFilm.test.tsx` note on the same limit.
     //
     // A source assertion because the DOM cannot see a bug that the guard prevents:
     // the failure this pins is one edit away in the future, and the repo's other
     // instrument for exactly that class is a comment-stripped source read (see the
     // `useDragCard` pin above and `tauriBoundary.test.ts`).
     const src = stripJsComments(readFileSync("src/components/TaskCard.tsx", "utf8"));
-    expect(src).toContain("sessions.at(-1)");
-    expect(src).not.toContain("sessions[sessions.length - 1]");
-    // The gate names the RESOLVED LINK. `sessions.length > 0` as the gate over an
-    // index-read `newest` is the two-conditions shape this case exists to forbid.
-    expect(src).not.toContain("sessions.length > 0");
+    // GUARD-THEN-INDEX, whitespace-tolerant so the assertion is about the SHAPE and
+    // not about how the line happens to be wrapped: a non-emptiness check, then the
+    // index read, then `undefined` for the empty case.
+    expect(src).toMatch(
+      /sessions\.length *>\s*0\s*\?\s*sessions\[sessions\.length\s*-\s*1\]\s*:\s*undefined/,
+    );
+    // And the same fact from the other side: the index read never stands alone as the
+    // whole initialiser, i.e. no `const newest = sessions[sessions.length - 1];`.
+    expect(src).not.toMatch(
+      /const newest = sessions\[sessions\.length\s*-\s*1\]\s*;/,
+    );
+    // The chip is gated on the RESOLVED LINK, so the value the click reads and the
+    // decision to render are ONE value and not two conditions that merely agree.
+    expect(src).toMatch(/newest !== undefined/);
     // Vacuity guard, the same one the drag pin runs: the strip must have left real
-    // code standing, or every `not.toContain` above passes on an empty string.
+    // code standing, or every negative assertion above passes on an empty string.
     expect(src).toContain("export default function TaskCard");
   });
 

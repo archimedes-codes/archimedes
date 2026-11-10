@@ -1,12 +1,3 @@
-// `Array.prototype.at` is ES2022 and this project's `lib` is `["ES2020", "DOM"]`
-// (`tsconfig.json`; `EmptyStateFilm.test.tsx` documents the same limit and reaches
-// for `[length - 1]` instead). The pragma pulls in the ONE lib file that declares
-// `at` for this module rather than raising the project's `lib` — a global `lib` bump
-// would retypes the whole app for one call, and every `lib.es2022.*` member would
-// become available to code that ships against a WebView whose support this repo has
-// never censused. The runtime has had `at` since Chromium 92 / Safari 15.4, both far
-// below the Tauri WebView this app targets, so this is a TYPES gap and not a shim.
-/// <reference lib="es2022.array" />
 import { MutedCaption } from "./MutedCaption";
 import { moneyOf } from "./SessionCostLine";
 import type { DragCardHandlers } from "../hooks/useDragCard";
@@ -113,16 +104,28 @@ export default function TaskCard({
   // `pick_compact_target` makes (`.last()`), so the card that opens a Session and
   // the board that compacts one never point at two different Sessions.
   //
-  // `.at(-1)` and NOT `sessions[sessions.length - 1]`: the index form is `undefined`
-  // for an empty list and the compiler does not say so — `tsconfig.json` sets no
-  // `noUncheckedIndexedAccess` (verified), so the type lied. It was safe only while
-  // the JSX guard beneath it held, which is a coincidence and not a contract: move
-  // the guard, or reorder the rows, and the seeded board (five columns of cards with
-  // no links, the common case) throws on render. `.at(-1)` returns `undefined` as
-  // part of its type, so the render gate below can be put on the LINK ITSELF — one
-  // condition decides both "is there a chip" and "what does the click open", where
-  // the old shape had two conditions that merely happened to agree.
-  const newest = sessions.at(-1);
+  // The link is resolved ONCE, UP FRONT, and the chip below is gated on the resolved
+  // value — not on a second, separately-spelled condition. That is the safety
+  // property: `sessions[sessions.length - 1]` is `undefined` for an empty list and
+  // the compiler does not say so (`tsconfig.json` sets no `noUncheckedIndexedAccess`,
+  // verified), so an unguarded read hands back a value that was never resolved while
+  // still typing as a link. Whatever JSX guard happens to sit below it is then doing
+  // all the work by coincidence: move the guard, or reorder the rows, and the seeded
+  // board (five columns of cards with no links, the common case) throws on render.
+  // Resolving behind the non-emptiness check means the only way `newest` is a link is
+  // that a link was actually read, and `newest !== undefined` at the chip decides
+  // both "is there a chip" and "what does the click open" from that ONE value.
+  //
+  // The ternary form is DELIBERATE and not a missed simplification: this project's
+  // `lib` is `["ES2020", "DOM"]` and an ES2020 target does not down-level
+  // `Array.prototype.at`, so reaching for it here would put an ES2022 runtime member
+  // in the shipped bundle for a cosmetic win — and the WebView this app ships into is
+  // WebKitGTK on Linux, whose version varies by distro and which `docs/decisions/`
+  // records no minimum for. `EmptyStateFilm.test.tsx` documents the same `lib` limit
+  // and reaches for a `[length - 1]` index for the same reason. Do not "tidy" this
+  // line into a call to `Array.prototype.at`: that re-adds an unverified runtime
+  // dependency to buy nothing.
+  const newest = sessions.length > 0 ? sessions[sessions.length - 1] : undefined;
   return (
     <div
       data-testid="task-card"
@@ -216,12 +219,13 @@ export default function TaskCard({
           one would put a SECOND `[role="button"]` node in the tree the sidebar
           resolves rows through.
 
-          GATED on the resolved link (`newest !== undefined`) and not on
-          `sessions.length > 0`. Same answer — a link exists exactly when the newest
-          one resolves — but ONE condition instead of two that merely happen to
-          agree, and the value the click reads is the value that decided to render.
-          The behaviour is unchanged: no links, no chip at all (pinned in the card's
-          own test), no placeholder and no disabled affordance.
+          GATED on the resolved link (`newest !== undefined`) rather than on a fresh
+          `sessions.length > 0` written here at the JSX: the non-emptiness check
+          belongs to the RESOLUTION above, and repeating it at the render site would
+          put two conditions where one value already decides both "is there a chip"
+          and "what does the click open". The value the click reads IS the value that
+          decided to render. The behaviour is unchanged: no links, no chip at all
+          (pinned in the card's own test), no placeholder and no disabled affordance.
 
           NO `e.stopPropagation()`, and that is a measurement rather than an
           oversight: there is nothing to stop. This component has no other
