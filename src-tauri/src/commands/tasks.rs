@@ -72,15 +72,23 @@ const NO_LIVE_SESSION: &str = "no live session to compact";
 /// make the two title writers disagree about what a title is.
 ///
 /// Reuses the session namer's `clean_title` (whitespace runs collapse, ONE layer
-/// of matching quotes strips, capped at 80 CHARS) rather than writing the chain a
-/// second time. It reaches here through the two-hop `pub(crate) use` chain in
-/// `agent/mod.rs` + `agent/session/mod.rs`, because `mod naming` and
-/// `mod session` are both private and stay that way.
+/// of matching quotes strips) rather than writing the chain a second time. It
+/// reaches here through the two-hop `pub(crate) use` chain in `agent/mod.rs` +
+/// `agent/session/mod.rs`, because `mod naming` and `mod session` are both
+/// private and stay that way.
+///
+/// `max_chars` is `None`, so a Task title is NOT capped. The namer's 80-char cut
+/// is pi parity on a title a MODEL invented; a card's title is the user's own
+/// sentence and `tasks.title` has nowhere to put the overflow — a one-line draft
+/// truncated at 80 loses the rest for good, which is exactly what a user hit
+/// before this parameter existed (`body` was `NULL` because the draft had no
+/// second line to become a body). The cap lives at the CALL SITE, so lifting it
+/// for tasks could never lift it for session titles.
 ///
 /// The Ok payload is the CLEANED title and that is what gets stored: the caller
 /// writes what this approved, never what it was handed.
 fn require_title(raw: &str) -> Result<String, TasksError> {
-    crate::agent::clean_title(raw).ok_or(TasksError::EmptyTitle)
+    crate::agent::clean_title(raw, None).ok_or(TasksError::EmptyTitle)
 }
 
 /// Flatten the TWO error layers a board command crosses: the join (the worker

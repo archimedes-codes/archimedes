@@ -11,7 +11,6 @@ import {
   listSpaces,
   moveTask,
   reorderTasks,
-  sendPrompt,
   sessionRecency,
   startTaskSession,
   listenInteractiveRequestClose,
@@ -2118,17 +2117,71 @@ describe("App (the Task board view)", () => {
     expect(getBoard).toHaveBeenCalledTimes(2);
   });
 
-  it("the board's New task modal creates the Task and its Session through the real App tree", async () => {
-    // The ONE case that proves the two boot mocks above are load-bearing rather
-    // than decorative: it walks `App` → the `"board"` arm → `TasksBoard`'s
-    // affordance → `NewTaskDialog`'s composer → send. With `startTaskSession`
-    // un-mocked this case does not fail loudly — `createTask` resolves, the
-    // start rejects against the real `invoke`, and the assertion below would be
-    // reading the modal's error line. That is AGENTS.md's trap in its exact
-    // shape, which is why the mock and this case land in the same commit.
-    // A board WITH columns. The file's default `getBoard` resolves `[]`, and the
-    // modal correctly refuses to file a Task when the board has no first stage —
-    // so leaving the default here would assert the refusal path, not the send.
+  it("a card click opens the detail modal, and its chip leaves the board", async () => {
+    // THE WIRING PROOF AT THE TOP. `TasksBoard.test.tsx` pins that the board calls
+    // `onReturnToWorkspace`; this proves `App` actually HANDS it the view switch. A
+    // board-side test cannot see that: an optional prop nobody passes is green in
+    // every test file except this one, and the shipped behaviour is a click that does
+    // nothing visible — which is precisely the defect PR #178 found in #174's chip.
+    await bootedWithActiveSession();
+    vi.mocked(getBoard).mockResolvedValue([
+      {
+        stage: {
+          spacePath: "/tmp/ws",
+          slug: "backlog",
+          label: "Backlog",
+          sortOrder: 0,
+          onEnter: "none",
+        },
+        tasks: [
+          {
+            task: {
+              id: "tsk_x",
+              spacePath: "/tmp/ws",
+              number: 4,
+              title: "Open me",
+              body: null,
+              specPath: null,
+              stageSlug: "backlog",
+              sortOrder: 0,
+              createdAt: 1,
+              updatedAt: 1,
+            },
+            sessions: [
+              { taskId: "tsk_x", sessionId: "s1", stageSlug: "backlog" },
+            ],
+            costUsd: 0.25,
+          },
+        ],
+      },
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
+    // Await the board's own mount fetch: `TasksBoard` loads on mount rather than at
+    // boot, so the first frame after the door click is the spinner and there is no
+    // card to click yet.
+    await waitFor(() => expect(screen.getByText("Open me")).toBeTruthy());
+
+    fireEvent.click(screen.getByText("Open me"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    // The dialog is a SIBLING of the board inside this arm, not a portal outside
+    // `App`: closing it must return to the board and not to the workspace.
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByTestId("tasks-board")).toBeTruthy();
+
+    // The chip: open the Session AND leave the board, in one click.
+    fireEvent.click(screen.getByText("1 session · $0.25"));
+    await waitFor(() => expect(screen.queryByTestId("tasks-board")).toBeNull());
+    expect(screen.getByText("Sessions")).toBeTruthy();
+  });
+
+  it("the board's New task modal creates a Backlog card through the real App tree", async () => {
+    // THE SAME WIRING PROOF, restated for the text-only modal: it walks
+    // `App` → the `"board"` arm → `TasksBoard`'s affordance → `NewTaskDialog`'s
+    // form → `createTask` (no `startTaskSession` on Backlog). With `startTaskSession`
+    // un-mocked this case does NOT fail — the new modal does not call it for
+    // Backlog — which is why this case is GREEN without the mock and red if the
+    // old chat surface sneaks back in.
     vi.mocked(getBoard).mockResolvedValue([
       {
         stage: {
@@ -2145,32 +2198,25 @@ describe("App (the Task board view)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
 
-    const island = await screen.findByTestId("composer-island");
-    const textarea = island.querySelector("textarea") as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: "Fix the parser" } });
-    fireEvent.click(within(island).getByRole("button", { name: "Send" }));
+    // Named, not bare: the modal now has a Title `<input>` AND a Body `<textarea>`,
+    // and BOTH carry ARIA role `textbox`, so an unnamed query is an ambiguous match.
+    fireEvent.change(await screen.findByRole("textbox", { name: "Title" }), {
+      target: { value: "Fix the parser" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Backlog" }));
 
-    // `waitFor` rather than a counted number of microtask drains: the send chain
-    // here is createTask → startTaskSession → addSession → expand → sendPrompt, so
-    // the tick count is an implementation detail of the chain and a hardcoded
-    // count would break on an unrelated refactor instead of on a real regression.
-    await waitFor(() => expect(sendPrompt).toHaveBeenCalled());
-    // Task first, then the Session linked to it — the order ADR 0090's missing FK
-    // forces, across the REAL component tree rather than a direct mount.
-    expect(createTask).toHaveBeenCalledWith(
-      "/tmp/ws",
-      "Fix the parser",
-      undefined,
-      "backlog",
+    await waitFor(() =>
+      expect(createTask).toHaveBeenCalledWith("/tmp/ws", "Fix the parser", null, "backlog"),
     );
-    expect(startTaskSession).toHaveBeenCalledWith("/tmp/ws", "tsk_new", "backlog");
-    expect(sendPrompt).toHaveBeenCalledTimes(1);
-    // The started Session is a sidebar row (spec §3: closing the modal leaves a
-    // card AND a row) — `addSession` upserted it, and the row list is what the
-    // sidebar renders when the board closes.
-    expect(useSessions.getState().sessions.map((s) => s.sessionId)).toContain(
-      "new1",
+    // The card lands in the column the board is showing — no refetch, the store
+    // write is visible immediately.
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("task-column-backlog")).getByText("T1"),
+      ).toBeTruthy(),
     );
+    // `startTaskSession` was NOT called: Backlog starts nothing.
+    expect(startTaskSession).not.toHaveBeenCalled();
   });
 
   it("a child's pending `ask` stays answerable over the BOARD view (the overlay is a sibling of the ternary)", async () => {

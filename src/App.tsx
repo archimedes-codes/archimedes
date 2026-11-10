@@ -551,7 +551,16 @@ function App() {
             // the board and the transcript cannot disagree about which folder is
             // showing; `null` (no active Session) is a value `TasksBoard` renders
             // rather than one it sends to `get_board`.
-            <TasksBoard activeSpacePath={spaceCwd} />
+            // `onReturnToWorkspace` is what makes a card's sessions reachable. The
+            // board renders IN PLACE OF `ChatStream`, so `openSession` alone selects a
+            // Session in the store and leaves its transcript behind this section — the
+            // click reads as a visible nothing. The board is handed the SAME
+            // `setView("workspace")` a Session row and the `Tasks` door already use; it
+            // owns no view of its own (ADR 0095), so it is told rather than wired.
+            <TasksBoard
+              activeSpacePath={spaceCwd}
+              onReturnToWorkspace={() => setView("workspace")}
+            />
           ) : (
             <>
               {/* The center column: the chat (the Spaces are the chrome

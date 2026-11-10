@@ -344,18 +344,38 @@ fn strip_one_quote_layer(s: &str) -> &str {
     }
 }
 
-/// Clean a model answer: whitespace runs → one space, trim, strip ONE layer
-/// of matching surrounding quotes (`"…"` / `'…'`), then cap at
-/// `TITLE_MAX_CHARS` CHARS. `None` when nothing survives — an empty title is
-/// a failure, not a write of `""` into `sessions.title`.
+/// Clean a title: whitespace runs → one space, trim, strip ONE layer of
+/// matching surrounding quotes (`"…"` / `'…'`). `None` when nothing survives —
+/// an empty title is a failure, not a write of `""` into a `NOT NULL` column.
+///
+/// `max_chars` is a PARAMETER because the two callers disagree about the cut and
+/// agree about everything else:
+///
+///  - the session namer passes `Some(TITLE_MAX_CHARS)` — pi parity, and a title a
+///    MODEL invented, where a rambling answer has to be bounded somewhere;
+///  - `commands/tasks.rs::require_title` passes `None`. A **Task** title is the
+///    user's own sentence, stored in `tasks.title` (`NOT NULL`) with nowhere else
+///    to keep the remainder: a card whose draft was one long line loses every
+///    character past the cut permanently. Measured on a real card — a 132-char
+///    draft stored as 80, mid-word, `body` NULL.
+///
+/// A parameter rather than a second function: the alternative is two copies of
+/// the collapse-and-strip chain, which is the second title implementation this
+/// repo has repeatedly documented as the thing not to do (`require_title`'s own
+/// doc named the reuse as its reason for existing). The disagreement is one
+/// boolean's worth of behaviour, so it is one argument.
 ///
 /// The trim happens BEFORE the quote strip because that is pi's chain order
 /// (`replace(/\s+/g, " ").trim().replace(quoteRe).slice(0, 80)`); a quote
 /// pair that wraps inner spaces therefore keeps them, exactly as pi does —
 /// not worth a deviation that changes what a title looks like.
-pub(crate) fn clean_title(raw: &str) -> Option<String> {
+pub(crate) fn clean_title(raw: &str, max_chars: Option<usize>) -> Option<String> {
     let collapsed = raw.split_whitespace().collect::<Vec<&str>>().join(" ");
-    let title = cap_chars(strip_one_quote_layer(&collapsed), TITLE_MAX_CHARS);
+    let stripped = strip_one_quote_layer(&collapsed);
+    let title = match max_chars {
+        Some(n) => cap_chars(stripped, n),
+        None => stripped.to_string(),
+    };
     (!title.is_empty()).then_some(title)
 }
 
@@ -774,7 +794,7 @@ pub(crate) async fn name_session(request: NamingRequest) {
         note_failure(&request.state, session_id);
         return;
     }
-    let cleaned = clean_title(&text);
+    let cleaned = clean_title(&text, Some(TITLE_MAX_CHARS));
     if finish == FinishReason::Length {
         let is_valid = match &cleaned {
             Some(title) => {
@@ -1187,7 +1207,7 @@ mod tests {
     #[test]
     fn whitespace_runs_collapse_and_the_ends_trim() {
         assert_eq!(
-            clean_title("  Porting   the session namer \n"),
+            clean_title("  Porting   the session namer \n", Some(TITLE_MAX_CHARS)),
             Some("Porting the session namer".to_string())
         );
     }
@@ -1197,10 +1217,13 @@ mod tests {
         // The models answer in quotes more often than not; pi strips exactly
         // one layer (`/^(\"|')((?:(?!\1).)*)\1$/`).
         assert_eq!(
-            clean_title("\"Porting the session namer\""),
+            clean_title("\"Porting the session namer\"", Some(TITLE_MAX_CHARS)),
             Some("Porting the session namer".to_string())
         );
-        assert_eq!(clean_title("'x'"), Some("x".to_string()));
+        assert_eq!(
+            clean_title("'x'", Some(TITLE_MAX_CHARS)),
+            Some("x".to_string())
+        );
     }
 
     #[test]
@@ -1209,32 +1232,38 @@ mod tests {
         // its own quote character is not a wrapped answer — pi's `(?!\1)`
         // refuses both, so a `"x"` inside the answer survives.
         assert_eq!(
-            clean_title("\"unbalanced"),
+            clean_title("\"unbalanced", Some(TITLE_MAX_CHARS)),
             Some("\"unbalanced".to_string())
         );
         assert_eq!(
-            clean_title("\"a\" and \"b\""),
+            clean_title("\"a\" and \"b\"", Some(TITLE_MAX_CHARS)),
             Some("\"a\" and \"b\"".to_string())
         );
         // A single quote character is not a pair.
-        assert_eq!(clean_title("\""), Some("\"".to_string()));
+        assert_eq!(
+            clean_title("\"", Some(TITLE_MAX_CHARS)),
+            Some("\"".to_string())
+        );
         // A doubly-wrapped answer loses NOTHING (one layer means one layer).
-        assert_eq!(clean_title("\"\"x\"\""), Some("\"\"x\"\"".to_string()));
+        assert_eq!(
+            clean_title("\"\"x\"\"", Some(TITLE_MAX_CHARS)),
+            Some("\"\"x\"\"".to_string())
+        );
     }
 
     #[test]
     fn an_answer_with_nothing_left_is_not_a_title() {
-        assert_eq!(clean_title(""), None);
-        assert_eq!(clean_title("   "), None);
-        assert_eq!(clean_title("\n\t \n"), None);
+        assert_eq!(clean_title("", Some(TITLE_MAX_CHARS)), None);
+        assert_eq!(clean_title("   ", Some(TITLE_MAX_CHARS)), None);
+        assert_eq!(clean_title("\n\t \n", Some(TITLE_MAX_CHARS)), None);
         // Stripping the quotes can empty the answer: no title, so the caller
         // counts a failure rather than writing `""` to `sessions.title`.
-        assert_eq!(clean_title("\"\""), None);
+        assert_eq!(clean_title("\"\"", Some(TITLE_MAX_CHARS)), None);
     }
 
     #[test]
     fn a_long_answer_is_capped_at_the_title_max_in_chars() {
-        let got = clean_title(&"a".repeat(200)).expect("text survives");
+        let got = clean_title(&"a".repeat(200), Some(TITLE_MAX_CHARS)).expect("text survives");
         assert_eq!(got.chars().count(), TITLE_MAX_CHARS);
     }
 
@@ -1242,11 +1271,11 @@ mod tests {
     fn a_multi_byte_title_is_capped_at_chars_not_bytes() {
         // 80 multi-byte chars are >80 BYTES: the cap is 80 CHARS (a byte cap
         // would fit fewer characters, or panic on a byte-slice boundary).
-        let got = clean_title(&"é".repeat(200)).expect("text survives");
+        let got = clean_title(&"é".repeat(200), Some(TITLE_MAX_CHARS)).expect("text survives");
         assert_eq!(got.chars().count(), TITLE_MAX_CHARS);
         assert_eq!(got, "é".repeat(TITLE_MAX_CHARS));
         assert_eq!(
-            clean_title(&"é".repeat(80))
+            clean_title(&"é".repeat(80), Some(TITLE_MAX_CHARS))
                 .expect("text survives")
                 .chars()
                 .count(),

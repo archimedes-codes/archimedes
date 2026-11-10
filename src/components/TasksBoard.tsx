@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { PlusIcon, XIcon } from "lucide-react";
 import NewTaskDialog from "./NewTaskDialog";
 import TaskCard from "./TaskCard";
+import TaskDetailDialog from "./TaskDetailDialog";
 import { EmptyListLine } from "./EmptyListLine";
 import { IpcErrorLine } from "./IpcErrorLine";
 import { Button } from "./ui/button";
@@ -16,7 +17,7 @@ import {
 } from "../hooks/useDragCard";
 import { useTasks } from "../store/tasks";
 import { useSessions } from "../store/sessions";
-import type { StageWithTasks } from "../lib/tauri";
+import type { StageWithTasks, TaskRow } from "../lib/tauri";
 
 /**
  * The **Task board** — the surface `App`'s `"board"` view renders in place of the
@@ -82,10 +83,28 @@ export interface TasksBoardProps {
    *  active: the board renders its header and an empty line rather than calling
    *  `get_board(null)`. */
   activeSpacePath: string | null;
+  /** Leave the board view: a **Session** is now open and the chat column is behind
+   *  this board.
+   *
+   *  THE BUG THIS EXISTS FOR. `useSessions.openSession` selects the Session in the
+   *  store, and the store is the source of truth — but `App`'s `"board"` arm renders
+   *  this section IN PLACE OF `ChatStream`, so selecting a Session while the board is
+   *  up changes the transcript nobody can see. Issue #174 shipped the card's sessions
+   *  chip on the reasoning that `openSession` resolves the owner Space and loads the
+   *  transcript, and all of that was true; what nobody had checked is that the view
+   *  ternary above it never moved. So a chip click produced a visible nothing.
+   *
+   *  OPTIONAL rather than required, and only because that is the shape `SpacesList`
+   *  uses for the identical callback (`onReturnToWorkspace?`) — the board's own card
+   *  and modal surfaces both route through it here, so within this file it is always
+   *  passed. `App` hands it the same `setView("workspace")` the Session rows and the
+   *  `Tasks` door already use; the board does not own a view and does not start here. */
+  onReturnToWorkspace?: () => void;
 }
 
 export default function TasksBoard({
   activeSpacePath,
+  onReturnToWorkspace,
 }: TasksBoardProps) {
   const columns = useTasks((s) =>
     activeSpacePath ? s.boardsBySpace[activeSpacePath] : undefined,
@@ -99,7 +118,7 @@ export default function TasksBoard({
   const moveCard = useTasks((s) => s.moveTask);
   const reorderInStage = useTasks((s) => s.reorderWithinStage);
   const dismissBoostNote = useTasks((s) => s.dismissBoostNote);
-  // The Session half of a card's chip (issue #174). Read through `getState()` and
+  // The Session half of a card's chip (issue #174), read through `getState()` and
   // NOT through a selector because this board needs the ACTION and not a slice of
   // state: zustand actions keep their identity for the life of the store, so a
   // subscription here would re-render the board for nothing while buying nothing.
@@ -111,11 +130,20 @@ export default function TasksBoard({
   // card, and it matters here because a linked Session is not structurally in the
   // card's Space (`sessions` has no `space_path`; the Space comes from `cwd`).
   //
-  // It is passed DOWN rather than imported by the card: `TaskCard` is
-  // presentational and subscribes to no store, and a card that read the sessions
-  // store for itself would be a second owner of "which Session is open" — see its
-  // own header.
-  const openSession = useSessions.getState().openSession;
+  // Wrapped rather than handed down raw, because "open a Session" and "look at it"
+  // are one intent for a person and two facts for this app. Every path out of this
+  // surface to a transcript goes through the wrapper: the card's chip, the detail
+  // modal's session list, and the modal's two launch buttons (which arrive through
+  // `onLaunched`, since a launch calls `addSession` and not `openSession`).
+  //
+  // It is passed DOWN rather than imported by the card: `TaskCard` is presentational
+  // and subscribes to no store, and a card that read the sessions store for itself
+  // would be a second owner of "which Session is open" — see its own header.
+  const openSessionAndLeave = (sessionId: string): void => {
+    useSessions.getState().openSession(sessionId);
+    onReturnToWorkspace?.();
+  };
+
   // The New Task modal's open flag, in THIS component's state. It lives here
   // because this is where the board's columns already are — the modal needs the
   // first stage to file a Task under, and mounting it at `App` level would mean
@@ -124,6 +152,48 @@ export default function TasksBoard({
   // board's affordance, and a Task already created survives because the store
   // and the sessions list own it, not this flag.
   const [newTaskOpen, setNewTaskOpen] = useState(false);
+  // The **detail modal** names a CARD by id rather than holding an open flag.
+  //
+  // The id is the state and not a `boolean` plus a separately-stored row, for two
+  // reasons. (1) A flag plus a lookup is two cells for one fact, and the failure mode
+  // of that shape is a dialog open against the card a PREVIOUS click named. (2) The
+  // id is what every command takes, so the modal's launch buttons need it anyway —
+  // storing the whole row would mean re-deriving nothing and going stale on everything.
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
+
+  /** A card the New Task modal finished with. Two outcomes, and only one of them
+   *  leaves the view: a card filed to the Backlog is something to look at ON the
+   *  board, while a launched Session is something this board is currently HIDING (its
+   *  arm renders this section in place of `ChatStream`). So the Session id decides,
+   *  and the modal's `onCreated` is what carries it — the modal has never owned a view
+   *  and does not start here.
+   *
+   *  The card itself needs no work here: `store/tasks`' `createTask` action lands it in
+   *  the column set the human is looking at rather than refetching, because `get_board`
+   *  seeds stages on read and a refetch would be a wider mutation than the one being
+   *  displayed. `_task` is therefore unread, and that is deliberate rather than a
+   *  dropped requirement.
+   *
+   *  It does NOT close the modal. `NewTaskDialog` calls `onCreated` and then
+   *  `onClose`, so the flag has one owner; closing here too would be a second write of
+   *  the same cell, and a flag with two writers is the shape that hides which path
+   *  left it open. */
+  const handleTaskCreated = (_task: TaskRow, sessionId: string | null): void => {
+    if (sessionId !== null) onReturnToWorkspace?.();
+  };
+
+  // The card the modal names, resolved from the CURRENT board slice. Reading it back
+  // out of the store rather than freezing the row at click time means the modal shows
+  // the card AS THE BOARD HAS IT: drag the card while its modal is open and the
+  // modal's stage line follows, instead of describing a column the card left.
+  // `undefined` (a card a reload dropped) renders no dialog at all, so a modal can
+  // not outlive its own row.
+  const detailCard =
+    detailTaskId === null
+      ? undefined
+      : (columns ?? [])
+          .flatMap((column) => column.tasks)
+          .find((card) => card.task.id === detailTaskId);
 
   // The board reads its own store, on mount and whenever the Space changes. The
   // action captures its own failure into `error`, so nothing throws out of here.
@@ -288,7 +358,8 @@ export default function TasksBoard({
                 draggingTaskId={draggingTaskId}
                 cardDrag={dragProps}
                 columnDrop={columnDrop}
-                onOpenSession={openSession}
+                onOpenSession={openSessionAndLeave}
+                onOpenTask={setDetailTaskId}
                 onReorder={(ids) =>
                   reorderInStage(activeSpacePath, column.stage.slug, ids)
                 }
@@ -304,11 +375,23 @@ export default function TasksBoard({
           columns, the active Space) right where it is read. It is mounted only
           while open — a closed modal that keeps a `MessageList` and a composer
           alive would be a second idle chat surface behind the board. */}
+      {detailCard !== undefined && (
+        <TaskDetailDialog
+          task={detailCard.task}
+          sessions={detailCard.sessions}
+          costUsd={detailCard.costUsd}
+          spacePath={activeSpacePath}
+          onClose={() => setDetailTaskId(null)}
+          onOpenSession={openSessionAndLeave}
+          onLaunched={() => onReturnToWorkspace?.()}
+        />
+      )}
+
       {newTaskOpen && (
         <NewTaskDialog
           spacePath={activeSpacePath}
-          boards={stages}
           onClose={() => setNewTaskOpen(false)}
+          onCreated={handleTaskCreated}
         />
       )}
     </section>
@@ -332,6 +415,7 @@ function TaskColumn({
   cardDrag,
   columnDrop,
   onOpenSession,
+  onOpenTask,
   onReorder,
 }: {
   column: StageWithTasks;
@@ -348,6 +432,8 @@ function TaskColumn({
    *  not read again because the board owns the store reads and this column is
    *  already a pure function of what it was handed. */
   onOpenSession: (sessionId: string) => void;
+  /** Opens this card's detail modal — the board's `detailTaskId` setter. */
+  onOpenTask: (taskId: string) => void;
   onReorder: (ids: string[]) => void;
 }) {
   const ids = useMemo(
@@ -464,6 +550,7 @@ function TaskColumn({
                   sessions={card.sessions}
                   costUsd={card.costUsd}
                   onOpenSession={onOpenSession}
+                  onOpenTask={onOpenTask}
                   drag={cardDrag(card.task.id)}
                   active={draggingTaskId === card.task.id}
                 />

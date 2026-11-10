@@ -5,9 +5,11 @@ import TasksBoard from "./TasksBoard";
 import { useTasks } from "../store/tasks";
 import { useSessions } from "../store/sessions";
 import { resetStores } from "../test/resetStores";
+import { clearSkillCatalogCache } from "../hooks/useSkillCatalog";
 import {
   createTask,
   getBoard,
+  listSkills,
   moveTask,
   reorderTasks,
   type StageRow,
@@ -496,8 +498,11 @@ describe("TasksBoard — the New Task modal's render site (A5)", () => {
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
     const heading = await screen.findByRole("heading", { name: "New task" });
     expect(heading).toBeTruthy();
-    // The composer comes with it — the modal IS a chat, not a form.
-    expect(document.querySelector('[data-testid="composer-island"]')).toBeTruthy();
+    // The modal is a FORM, not a chat. No composer island, no send affordance, no
+    // message list — the text-only shape the rewrite introduced is what this case
+    // exists to keep visible.
+    expect(document.querySelector('[data-testid="composer-island"]')).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() =>
@@ -509,9 +514,12 @@ describe("TasksBoard — the New Task modal's render site (A5)", () => {
     expect(screen.getAllByTestId(/^task-column-/)).toHaveLength(3);
   });
 
-  it("the modal files Tasks in the board's FIRST stage", async () => {
-    // The wiring assertion that makes the render site more than a boolean: the
-    // modal gets the board's own columns, so its first stage IS `backlog`.
+  it("the modal files a Backlog card in the backlog column", async () => {
+    // The wiring assertion that makes the render site more than a boolean, restated
+    // for the text-only modal: the modal resolves its column from the STORE the board
+    // seeded, so a card lands in the column the human is looking at — without a refetch
+    // (`get_board` seeds stages on read, so a refetch is a wider mutation than the one
+    // being displayed).
     vi.mocked(createTask).mockResolvedValue({
       id: "tsk_new",
       spacePath: SPACE,
@@ -525,28 +533,28 @@ describe("TasksBoard — the New Task modal's render site (A5)", () => {
       updatedAt: 1,
     });
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard activeSpacePath={SPACE} onReturnToWorkspace={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
-    const island = await waitFor(() => {
-      const el = document.querySelector(
-        '[data-testid="composer-island"] textarea',
-      );
-      expect(el).toBeTruthy();
-      return el as HTMLTextAreaElement;
+    // Named, not bare: the modal now has a Title `<input>` AND a Body `<textarea>`,
+    // and BOTH carry ARIA role `textbox`, so an unnamed query is an ambiguous match.
+    fireEvent.change(await screen.findByRole("textbox", { name: "Title" }), {
+      target: { value: "Draft card" },
     });
-    fireEvent.change(island, { target: { value: "Draft card" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(screen.getByRole("button", { name: "Backlog" }));
 
+    // `null` and not `undefined` for the body: the Body field was left empty, and the
+    // store's parameter is `body?: string | null`.
     await waitFor(() =>
-      expect(createTask).toHaveBeenCalledWith(SPACE, "Draft card", undefined, "backlog"),
+      expect(createTask).toHaveBeenCalledWith(SPACE, "Draft card", null, "backlog"),
     );
-    // And the card lands in the column the board is showing — the store write the
-    // modal performs through `useTasks.createTask` is visible without a refetch.
     await waitFor(() =>
       expect(
         within(screen.getByTestId("task-column-backlog")).getByText("T9"),
       ).toBeTruthy(),
     );
+    // Backlog starts no Session, so the board STAYS — the new card is the thing to
+    // look at, and it is on this surface.
+    expect(screen.getByTestId("tasks-board")).toBeTruthy();
   });
 });
 
@@ -796,5 +804,186 @@ describe("TasksBoard — the sessions chip's wiring (issue #174)", () => {
     fireEvent.click(chip);
     expect(openSession).toHaveBeenCalledTimes(1);
     expect(openSession).toHaveBeenCalledWith("sess_new");
+  });
+});
+
+describe("TasksBoard — opening a card (PR #178)", () => {
+  /** The nth card of one column. Scoped, because the detail modal renders the same
+   *  title text as the card it came from. */
+  const cardIn = (slug: string, index: number): HTMLElement =>
+    within(screen.getByTestId(`task-column-${slug}`)).getAllByTestId(
+      "task-card",
+    )[index]!;
+
+  /** The board with one linked card, seeded AND fetched, so the mount effect cannot
+   *  replace the slice mid-case with the file's card-less `SEED`. */
+  const seedLinkedBoard = (): void => {
+    const board: StageWithTasks[] = [
+      {
+        stage: stage("backlog"),
+        tasks: [
+          {
+            task: task("t1", 1, "backlog"),
+            sessions: [{ taskId: "t1", sessionId: "sess_1", stageSlug: "backlog" }],
+            costUsd: 0.5,
+          },
+        ],
+      },
+      { stage: stage("doing"), tasks: [] },
+    ];
+    vi.mocked(getBoard).mockResolvedValue(board);
+    useTasks.setState({ boardsBySpace: { [SPACE]: board } });
+  };
+
+  it("clicking a card opens the detail modal for THAT card", () => {
+    // The board owns the modal's open flag and the id it names, exactly as it owns
+    // the New Task modal's flag: the columns the modal needs are already here.
+    seedLinkedBoard();
+    render(<TasksBoard activeSpacePath={SPACE} onReturnToWorkspace={vi.fn()} />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Clicked through the COLUMN, because the modal renders the same title text the
+    // card does — an unscoped `getByText("Card 1")` would be a multiple-match throw
+    // once the modal is up, which is a fixture artifact and not the behaviour.
+    fireEvent.click(cardIn("backlog", 0));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("T1")).toBeTruthy();
+  });
+
+  it("one card click opens ONE modal, not one per card", () => {
+    // A flag that stored `true` instead of an id would render a dialog per card, and
+    // every one of them would name the first card.
+    const board: StageWithTasks[] = [
+      {
+        stage: stage("backlog"),
+        tasks: [
+          { task: task("t1", 1, "backlog"), sessions: [], costUsd: null },
+          { task: task("t2", 2, "backlog"), sessions: [], costUsd: null },
+        ],
+      },
+    ];
+    vi.mocked(getBoard).mockResolvedValue(board);
+    useTasks.setState({ boardsBySpace: { [SPACE]: board } });
+    render(<TasksBoard activeSpacePath={SPACE} onReturnToWorkspace={vi.fn()} />);
+    fireEvent.click(cardIn("backlog", 1));
+    const dialogs = screen.getAllByRole("dialog");
+    expect(dialogs).toHaveLength(1);
+    expect(within(dialogs[0]!).getByText("T2")).toBeTruthy();
+  });
+
+  it("closing the modal leaves the board", async () => {
+    seedLinkedBoard();
+    render(<TasksBoard activeSpacePath={SPACE} onReturnToWorkspace={vi.fn()} />);
+    fireEvent.click(cardIn("backlog", 0));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByTestId("tasks-board")).toBeTruthy();
+  });
+
+  it("the modal disappears when the board leaves, so no dialog floats over Settings", () => {
+    // The flag lives in THIS component, so unmounting the board unmounts the modal —
+    // the same reason the New Task flag lives here rather than at `App`. Pinned
+    // because moving the flag to `App` for convenience would put a Task dialog over
+    // the Settings page, where the card it names is not even visible.
+    seedLinkedBoard();
+    const { unmount } = render(
+      <TasksBoard activeSpacePath={SPACE} onReturnToWorkspace={vi.fn()} />,
+    );
+    fireEvent.click(cardIn("backlog", 0));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    unmount();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("the chip opens its session AND leaves the board", () => {
+    // THE BUG THIS CHANGE FIXES. `openSession` selects the Session in the store, but
+    // the board VIEW covers the chat column — `App`'s "board" arm renders the board in
+    // place of `ChatStream`. So before this prop existed, clicking the chip started a
+    // visible nothing: the row appeared in the sidebar beside the board and the
+    // transcript stayed behind it.
+    const openSession = vi.fn();
+    useSessions.setState({ openSession });
+    const onReturnToWorkspace = vi.fn();
+    seedLinkedBoard();
+    render(
+      <TasksBoard
+        activeSpacePath={SPACE}
+        onReturnToWorkspace={onReturnToWorkspace}
+      />,
+    );
+    fireEvent.click(screen.getByText("1 session · $0.50"));
+    expect(openSession).toHaveBeenCalledWith("sess_1");
+    expect(onReturnToWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it("the detail modal leaves the board when it launches a session", async () => {
+    // The same occlusion, one surface later: a launched Session is invisible behind
+    // the board. The modal calls `onLaunched`, the board turns it into the view
+    // switch, and `App` owns `setView` — the board has never owned a view and does
+    // not start here.
+    // THE FILE'S DEFAULT `listSkills` RESOLVES `[]`, and `store/taskLaunch` REFUSES a
+    // launch whose skill the catalog lacks (an unmatched `$discuss` token would ride
+    // the message verbatim). So this case has to install the skill, or it is asserting
+    // a refusal it never intended to test — the launch fails, the modal stays up, and
+    // the view switch never happens. That refusal is itself pinned in
+    // `TaskDetailDialog.test.tsx`; here it is only an obstacle.
+    vi.mocked(listSkills).mockResolvedValue([
+      {
+        name: "discuss",
+        description: "discuss",
+        path: "/s/discuss.md",
+        dir: "/s",
+        scope: "user",
+        body: "DISCUSS",
+        disableModelInvocation: false,
+        shadowed: [],
+      },
+    ]);
+    // The catalog is MODULE-CACHED per Space, and an earlier case in this file already
+    // rendered the modal against the default `[]`, so the mock alone would never be
+    // consulted — the cached promise answers first. The cache that holds SKILLS is
+    // `useSkillCatalog`'s own Map and NOT `useMentionCatalogs`' three (the skills hook
+    // keeps its independent Map precisely so an agent-overwrite invalidation cannot
+    // evict the shared skill listing), so clearing the wrong one is a silent no-op.
+    clearSkillCatalogCache();
+    const onReturnToWorkspace = vi.fn();
+    seedLinkedBoard();
+    render(
+      <TasksBoard
+        activeSpacePath={SPACE}
+        onReturnToWorkspace={onReturnToWorkspace}
+      />,
+    );
+    fireEvent.click(cardIn("backlog", 0));
+    // Wait for ENABLED, not merely for the button to exist: each button is gated on
+    // the skill it needs, and the catalog is an async fetch that starts empty. Clicking
+    // the first paint would click a disabled button and assert on nothing.
+    const discuss = await waitFor(() => {
+      const b = screen.getByRole("button", {
+        name: "Discuss",
+      }) as HTMLButtonElement;
+      expect(b.disabled).toBe(false);
+      return b;
+    });
+    fireEvent.click(discuss);
+    await waitFor(() => expect(onReturnToWorkspace).toHaveBeenCalledTimes(1));
+  });
+
+  it("leaves the board when a session row in the sidebar is clicked", () => {
+    // The board carries no exit control (ADR 0095: the Session list IS the switcher),
+    // so if a Session row did not leave the view, a card's chip would be the ONLY way
+    // to reach a transcript — and the modal's session list routes through the very
+    // same `openSession`.
+    const onReturnToWorkspace = vi.fn();
+    seedLinkedBoard();
+    render(
+      <TasksBoard
+        activeSpacePath={SPACE}
+        onReturnToWorkspace={onReturnToWorkspace}
+      />,
+    );
+    fireEvent.click(cardIn("backlog", 0));
+    fireEvent.click(within(screen.getByRole("dialog")).getByTestId("task-session-row"));
+    expect(onReturnToWorkspace).toHaveBeenCalledTimes(1);
   });
 });

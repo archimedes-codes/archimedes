@@ -1358,13 +1358,21 @@ describe("SpacesList (archive, ADR 0016)", () => {
   // -- (a `for` over expanded/collapsed); the collapsed state is retired with the
   // -- pane's collapse flag, so it is pinned once, for the one state the pane has. --
 
-  it("the command strip reads Skills, Agents, Settings, Tasks", () => {
+  it("the command strip reads Tasks, Skills, Agents, Settings", () => {
     // The strip is the app's ONE navigation surface, so its order is a fact worth
-    // pinning: the two modal commands first (they raise a dialog), then the two
-    // VIEW doors (Settings, Tasks) — the door that opens a view is the door that
-    // closes it, so both carry `aria-pressed` (pinned in `App.test.tsx`).
-    // `Settings` sits between `Agents` and `Tasks`, not last: the two view doors
-    // stay adjacent.
+    // pinning. **Tasks** leads it: the board is where work gets started, and a door
+    // that sits below three others is a door nobody finds.
+    //
+    // This is a deliberate break with the order that came before
+    // (`Skills, Agents, Settings, Tasks`), whose rationale was that the two MODAL
+    // commands stay adjacent and the two VIEW doors stay adjacent. Tasks leading
+    // means the doors are no longer adjacent — Settings is last, with the two modal
+    // commands between it and Tasks. The adjacency was a tiebreaker for where
+    // `Settings` should go, not a property anything depends on: nothing reads
+    // neighbours, the `aria-pressed` behaviour each door carries is per-button and
+    // order-independent (pinned in `App.test.tsx`), and the two modal buttons still
+    // carry no `aria-pressed` at all (pinned below). What the split DOES cost is the
+    // grouping-by-kind cue — you can no longer tell modal from door by where it sits.
     render(<SpacesList />);
     const strip = screen
       .getByRole("button", { name: "Skills" })
@@ -1373,7 +1381,7 @@ describe("SpacesList (archive, ADR 0016)", () => {
       [...strip.querySelectorAll("button")].map(
         (b) => b.textContent?.trim() ?? "",
       ),
-    ).toEqual(["Skills", "Agents", "Settings", "Tasks"]);
+    ).toEqual(["Tasks", "Skills", "Agents", "Settings"]);
   });
 
   it("a pressed view door wears the active row's bg-selected, and neither modal button ever does", () => {

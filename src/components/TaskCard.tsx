@@ -1,4 +1,5 @@
 import { MutedCaption } from "./MutedCaption";
+import { RowButton } from "./RowButton";
 import { moneyOf } from "./SessionCostLine";
 import type { DragCardHandlers } from "../hooks/useDragCard";
 import type { TaskRow, TaskSessionRow } from "../lib/tauri";
@@ -18,18 +19,37 @@ import { cn } from "./lib/utils";
  * sessions chip and the card still holds that line: the chip's callback is
  * `TasksBoard` forwarding `useSessions.getState().openSession`, not a read here.
  *
- * NOT a `RowButton`, and that is a decision rather than an oversight. `RowButton`'s
- * own header states the constraint: exactly ONE `role="button"` per row is
- * load-bearing, because `SpacesList.test.tsx` resolves rows through
- * `.closest('[role="button"]')` at eight sites, and `RowButton.test.tsx` keeps the
- * count at zero elsewhere. A card is also not one of the five row affordances that
- * component owns, and the CARD ITSELF is still not a control — it is DRAGGED, not
- * clicked, and it grows no `onClick` of its own. What issue #174 added is one
- * nested control, the sessions chip, and the distinction is what keeps both facts
- * true: the card stays a plain `div` with no `role` and no `tabindex` (pinned in
- * its test), and the chip is a real `<button>` INSIDE it, which is exactly the
- * shape `RowButton.test.tsx` proves contributes ZERO `[role="button"]` matches.
- * Opening a Task as a whole is still a later surface.
+ * THE CARD IS A `RowButton` SINCE PR #178, and that reverses this file's
+ * original position, so the reasoning is recorded on BOTH sides. It used to say the
+ * card was deliberately NOT a control: it is DRAGGED, not clicked, and it grew no
+ * `onClick` of its own. What it also said — "Opening a Task as a whole is still a
+ * later surface" — is the surface that arrived here. Once clicking a card is how
+ * you read a card, a card whose area is not clickable reads as broken, so the
+ * question was never whether to add the affordance but whether to add it to the CARD
+ * or as a THIRD control beside the chip. The card won: a card that looks like a
+ * card and must be hit in a 12px corner to open is worse than a card that is a row.
+ *
+ * `RowButton` and not a hand-rolled `role="button"` — it is the repo's ONE component
+ * for this affordance (five surfaces already use it), and its header's constraint is
+ * the thing this change has to respect rather than escape: EXACTLY ONE
+ * `role="button"` per row, because `SpacesList.test.tsx` resolves rows through
+ * `.closest('[role="button"]')` at eight sites. The sessions chip therefore stays a
+ * plain `<button type="button">` with NO role, so it contributes zero selector
+ * matches — `RowButton.test.tsx` proves that shape contributes nothing, and
+ * `TaskCard.test.tsx` re-pins it for the card.
+ *
+ * TWO GESTURES, ONE ELEMENT, and the ORDER of the spreads is what makes it work.
+ * `RowButton` emits `role` / `tabIndex` / its own `onClick` / `className` and then
+ * spreads `...rest`, so `drag` goes through `rest` and its `draggable` plus four
+ * `DragEventHandler`s land AFTER — nothing is overwritten, because the two surfaces
+ * share no key (`onClick` vs `onDragOver`). A `drag` surface that ever grew an
+ * `onClick` would silently win over the row's, which is the failure mode to look for
+ * if cards stop opening.
+ *
+ * THE CHIP STOPS PROPAGATION NOW. Its old comment measured "there is nothing to
+ * stop" against a card with no `onClick`; the card has one, so an unstopped chip
+ * click opens the Session AND paints the detail modal over the transcript the user
+ * just asked to see.
  *
  * THE DRAG SURFACE IT SPREADS IS `useDragCard`'s FIVE-KEY one, not
  * `useDragReorder`'s six-key `DragReorderHandlers`. That distinction is the whole
@@ -76,6 +96,11 @@ export interface TaskCardProps {
    *  that also passed links. Requiring it moves the decision to the call site, which
    *  is the only place that knows whether a Session can be opened from there. */
   onOpenSession: (sessionId: string) => void;
+  /** Opens this card's **Task detail modal**. REQUIRED for the same reason
+   *  `onOpenSession` is: the card is now a `RowButton`, so a card rendered without
+   *  this prop is a keyboard-focusable row that does nothing when activated — the
+   *  silent-green shape this file already argues against one prop above. */
+  onOpenTask: (taskId: string) => void;
   /** This card's `useDragCard` spread (`dragProps(task.id)`), or nothing when the
    *  board cannot drag (no board loaded yet). Absent means NO gesture at all —
    *  `draggable` is not spelled without the handlers that would answer it. */
@@ -89,6 +114,7 @@ export default function TaskCard({
   sessions,
   costUsd,
   onOpenSession,
+  onOpenTask,
   drag,
   active,
 }: TaskCardProps) {
@@ -127,7 +153,7 @@ export default function TaskCard({
   // dependency to buy nothing.
   const newest = sessions.length > 0 ? sessions[sessions.length - 1] : undefined;
   return (
-    <div
+    <RowButton
       data-testid="task-card"
       data-task-id={task.id}
       // The gesture state is DATA and not only a class, for the same reason
@@ -146,6 +172,14 @@ export default function TaskCard({
       // DOM shows; nothing else in `drag` is an attribute. Spreading it verbatim is
       // the point — the hook owns the handler set and this component does not get to
       // reorder it.
+      // The row's own activation, spelled BEFORE `{...drag}` for readability only —
+      // the two surfaces share no key, so order cannot change which handler wins.
+      // `task.id` and not the card's title: the id is the key every command takes.
+      onClick={() => onOpenTask(task.id)}
+      // The drag surface goes LAST so its `draggable` (and only that) is what the
+      // DOM shows; nothing else in `drag` is an attribute. Spreading it verbatim is
+      // the point — the hook owns the handler set and this component does not get to
+      // reorder it.
       {...drag}
       className={cn(
         // ADR 0097's RAISED rung: a card sits ON a column, so it goes up a step
@@ -154,9 +188,15 @@ export default function TaskCard({
         // rested on with the separation carried entirely by the border.
         "flex flex-col gap-2 rounded-lg border border-card-border bg-card px-3 py-2.5",
         // A dragged card reads as LIFTED — its ink drops while it is in the air.
-        // That is the card's ONLY state, because the card is what is being carried;
-        // "you will land here" belongs to the column (see `data-over` above), so the
-        // board never paints one target affordance twice.
+        // That is the card's ONLY drag state, because the card is what is being
+        // carried; "you will land here" belongs to the column (see `data-over`
+        // above), so the board never paints one target affordance twice.
+        //
+        // `cursor-pointer` is NEW and it is load-bearing rather than decorative: a
+        // card that opens on click but wears the default arrow reads as text, and
+        // the pointer is the only thing distinguishing "click me" from "drag me" on
+        // a surface that does BOTH.
+        "cursor-pointer",
       )}
     >
       {/* THREE ROWS: meta / title / chips-and-body. The reference board's anatomy,
@@ -247,7 +287,18 @@ export default function TaskCard({
       {newest !== undefined && (
         <button
           type="button"
-          onClick={() => onOpenSession(newest.sessionId)}
+          // STOPPED, and that reverses the measurement this comment used to carry
+          // ("NO `e.stopPropagation()`, because there is nothing to stop"). There IS
+          // something to stop now: the card became a `RowButton`, so an unstopped
+          // chip click bubbles into the row's `onClick` and opens the detail modal ON
+          // TOP of the Session the click just asked to see. This is the one place in
+          // the app where a nested control sits inside a `RowButton` that this file
+          // owns, and it is the reason `RowButton`'s one-role-per-row rule and this
+          // call live in the same file.
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenSession(newest.sessionId);
+          }}
           className={cn(
             // The fill and geometry are the card's own pill recipe (see the `T{n}`
             // pill above). `self-start` is the chip's own addition: the card is a
@@ -274,6 +325,6 @@ export default function TaskCard({
           {task.body}
         </span>
       )}
-    </div>
+    </RowButton>
   );
 }

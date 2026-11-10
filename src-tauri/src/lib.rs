@@ -33,6 +33,58 @@ use crate::agent::{
 };
 use crate::storage::Db;
 
+/// The path to THIS executable that is guaranteed to still be spawnable.
+///
+/// `current_exe()` is not that. On Linux it is `readlink("/proc/self/exe")`, and
+/// the kernel marks a replaced binary by appending the literal text
+/// `" (deleted)"` to the target it prints. Cargo replaces `target/debug/archimedes`
+/// **by unlinking and re-linking**, so a process still running the old inode reads
+/// back `/…/target/debug/archimedes (deleted)` — a string that is not a path, and
+/// `execve` on it fails `ENOENT`.
+///
+/// That is the `tauri dev` rebuild case, and it is not hypothetical: `make dev`
+/// starts the app, any Rust edit relinks the binary under the running app, and
+/// every Session started after that moment dies with
+/// `spawn the session's Worker: worker error: io: spawn the worker: No such file
+/// or directory (os error 2)`. The app itself keeps running fine (its image is
+/// already mapped), so nothing else looks broken.
+///
+/// The magic link ITSELF is still resolvable — the kernel holds the unlinked
+/// inode alive for the running process — so exec'ing the literal path
+/// `/proc/self/exe` works after the on-disk name is gone. It must be the literal:
+/// readlinking it first is exactly the call that produced the poisoned string.
+///
+/// The real path is preferred when it still exists, so nothing about a healthy
+/// start changes: the AppImage case (where `current_exe()` resolves THROUGH the
+/// FUSE mount to `/tmp/.mount_*/usr/bin/archimedes`, and that path is
+/// load-bearing for the env scrub in `fulcrum_harness::hostenv`) and every
+/// installed build keep the argv[0] they have always had. The fallback is only
+/// reached when the name is gone.
+///
+/// Gated on `target_os = "linux"`, NOT `unix`: macOS is unix and has no `/proc`.
+/// A `tauri dev` rebuild on macOS or Windows therefore still hits this — stated
+/// rather than papered over, because neither fallback is verifiable from this
+/// tree and a guess at `_NSGetExecutablePath` semantics here would be an
+/// unmeasured claim about a platform nobody on this machine can run.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn worker_program_from(current_exe: std::path::PathBuf) -> std::path::PathBuf {
+    if current_exe.exists() {
+        return current_exe;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::path::PathBuf::from("/proc/self/exe")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Nothing better exists here: the name is gone and there is no
+        // magic-link equivalent to hand the spawner. Returning the dead path
+        // keeps the failure the plain `ENOENT` it already was rather than
+        // inventing a path that may exist and may not be this binary.
+        current_exe
+    }
+}
+
 /// The production `WorkerFactory` (the `current_exe()` Worker — the
 /// `--worker` mode of this same binary; the `WorkerHandle`'s spawn
 /// passes the flag). Tests inject the `fake_worker` fixture instead
@@ -42,7 +94,7 @@ pub struct ProductionWorkerFactory;
 impl WorkerFactory for ProductionWorkerFactory {
     fn spawn(&self) -> Result<WorkerHandle, crate::agent::worker::client::WorkerError> {
         let exe = std::env::current_exe().expect("the current exe (the Worker binary)");
-        WorkerHandle::spawn(exe.as_path())
+        WorkerHandle::spawn(worker_program_from(exe).as_path())
     }
 }
 
@@ -732,7 +784,95 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{focus_probe_trace, key_focus_grab_needed, webview_focus_trace, KeyFocusTrigger};
+    use super::{
+        focus_probe_trace, key_focus_grab_needed, webview_focus_trace, worker_program_from,
+        KeyFocusTrigger,
+    };
+
+    // ── The Worker binary path after a `tauri dev` rebuild ─────────────────
+    //
+    // A card's `Discuss` button starts a Session, and a Session is a spawned
+    // Worker (`WorkerHandle::spawn(current_exe())`, ADR 0022 — no in-process
+    // fallback). Cargo relinks `target/debug/<bin>` by UNLINKING and re-linking,
+    // so once the app is running against the old inode, `current_exe()` returns
+    // the old name with the literal suffix `" (deleted)"` appended by the kernel —
+    // and `execve` on that string is `ENOENT`. The app keeps running (its image is
+    // already mapped), so this surfaced as "only Discuss is broken".
+    //
+    // These pin the resolution rule. The behaviour itself — spawning a Worker from
+    // a deleted inode — is NOT reproducible inside a test binary: a test process
+    // cannot replace its own executable while holding it. It was reproduced out of
+    // band instead, with a Rust program that sleeps, is rebuilt under itself, and
+    // then reports both `current_exe()` (`"/tmp/exeverify/v (deleted)"`,
+    // `.exists() == false`, spawn fails) and the `/proc/self/exe` fallback (spawn
+    // succeeds). So the tests here are the DECISION table, and the reproduction
+    // above is the evidence that the table's branches are the real ones.
+
+    /// A live path is handed through untouched. This is every healthy start —
+    /// installed builds, and the AppImage case whose `/tmp/.mount_*` path the env
+    /// scrub in `fulcrum_harness::hostenv` depends on.
+    #[test]
+    fn a_live_exe_path_is_returned_unchanged() {
+        let this = std::env::current_exe().expect("a test binary has a path");
+        assert!(this.exists(), "the test binary is live: {this:?}");
+        assert_eq!(worker_program_from(this.clone()), this);
+    }
+
+    /// A missing path is NOT handed through. This is the whole bug: the old code
+    /// was `WorkerHandle::spawn(exe.as_path())` with no check, so the dead name
+    /// went straight to `execve`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_deleted_exe_path_falls_back_to_the_magic_link() {
+        // The literal `/proc/self/exe`, NOT a readlink of it: readlinking is the
+        // call that produced the poisoned `" (deleted)"` string in the first
+        // place, so a fallback built from `current_exe()`'s value would reproduce
+        // the bug rather than escape it.
+        let dead = std::path::PathBuf::from("/home/user/proj/target/debug/archimedes (deleted)");
+        assert!(
+            !dead.exists(),
+            "the fixture must be a path that is not there"
+        );
+        assert_eq!(
+            worker_program_from(dead),
+            std::path::Path::new("/proc/self/exe"),
+        );
+    }
+
+    /// The fallback is the literal path and not the fixture's own name with the
+    /// suffix trimmed. Trimming `" (deleted)"` looks equivalent and is a trap: it
+    /// re-creates a path that exists ONLY if nothing else was written to that name
+    /// since, and after a rebuild that name is the NEW binary — so the Worker would
+    /// spawn a different build than the one running, silently.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_fallback_never_resembles_a_trimmed_deleted_name() {
+        let got = worker_program_from(std::path::PathBuf::from(
+            "/home/user/proj/target/debug/archimedes (deleted)",
+        ));
+        assert_eq!(got.as_os_str(), "/proc/self/exe");
+        assert!(
+            !got.to_string_lossy().contains("archimedes"),
+            "trimming the suffix would hand the spawner the NEW binary at that              name, i.e. a Worker from a different build than this one",
+        );
+    }
+
+    /// The magic link is real and resolvable, so the fallback is not a hopeful
+    /// string. This runs under `cargo test`, where the test binary IS live, which
+    /// is exactly why the link resolves.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_magic_link_resolves_from_inside_a_running_process() {
+        let link = std::path::Path::new("/proc/self/exe");
+        assert!(
+            link.exists(),
+            "/proc/self/exe must resolve for a running process",
+        );
+        assert!(
+            std::fs::metadata(link).map(|m| m.is_file()).unwrap_or(false),
+            "the magic link must describe a file, so `Command::new` on it has an              executable to load",
+        );
+    }
 
     // ── The platform gate (`key_focus_grab_needed`) ─────────────────────────
     //
