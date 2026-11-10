@@ -498,8 +498,11 @@ describe("TasksBoard — the New Task modal's render site (A5)", () => {
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
     const heading = await screen.findByRole("heading", { name: "New task" });
     expect(heading).toBeTruthy();
-    // The composer comes with it — the modal IS a chat, not a form.
-    expect(document.querySelector('[data-testid="composer-island"]')).toBeTruthy();
+    // The modal is a FORM, not a chat. No composer island, no send affordance, no
+    // message list — the text-only shape the rewrite introduced is what this case
+    // exists to keep visible.
+    expect(document.querySelector('[data-testid="composer-island"]')).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() =>
@@ -511,9 +514,12 @@ describe("TasksBoard — the New Task modal's render site (A5)", () => {
     expect(screen.getAllByTestId(/^task-column-/)).toHaveLength(3);
   });
 
-  it("the modal files Tasks in the board's FIRST stage", async () => {
-    // The wiring assertion that makes the render site more than a boolean: the
-    // modal gets the board's own columns, so its first stage IS `backlog`.
+  it("the modal files a Backlog card in the backlog column", async () => {
+    // The wiring assertion that makes the render site more than a boolean, restated
+    // for the text-only modal: the modal resolves its column from the STORE the board
+    // seeded, so a card lands in the column the human is looking at — without a refetch
+    // (`get_board` seeds stages on read, so a refetch is a wider mutation than the one
+    // being displayed).
     vi.mocked(createTask).mockResolvedValue({
       id: "tsk_new",
       spacePath: SPACE,
@@ -527,28 +533,26 @@ describe("TasksBoard — the New Task modal's render site (A5)", () => {
       updatedAt: 1,
     });
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard activeSpacePath={SPACE} onReturnToWorkspace={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
-    const island = await waitFor(() => {
-      const el = document.querySelector(
-        '[data-testid="composer-island"] textarea',
-      );
-      expect(el).toBeTruthy();
-      return el as HTMLTextAreaElement;
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: "Draft card" },
     });
-    fireEvent.change(island, { target: { value: "Draft card" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(screen.getByRole("button", { name: "Backlog" }));
 
+    // `null` and not `undefined` for the body: a one-line draft HAS no body, and the
+    // store's parameter is `body?: string | null`.
     await waitFor(() =>
-      expect(createTask).toHaveBeenCalledWith(SPACE, "Draft card", undefined, "backlog"),
+      expect(createTask).toHaveBeenCalledWith(SPACE, "Draft card", null, "backlog"),
     );
-    // And the card lands in the column the board is showing — the store write the
-    // modal performs through `useTasks.createTask` is visible without a refetch.
     await waitFor(() =>
       expect(
         within(screen.getByTestId("task-column-backlog")).getByText("T9"),
       ).toBeTruthy(),
     );
+    // Backlog starts no Session, so the board STAYS — the new card is the thing to
+    // look at, and it is on this surface.
+    expect(screen.getByTestId("tasks-board")).toBeTruthy();
   });
 });
 

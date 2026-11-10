@@ -17,7 +17,7 @@ import {
 } from "../hooks/useDragCard";
 import { useTasks } from "../store/tasks";
 import { useSessions } from "../store/sessions";
-import type { StageWithTasks } from "../lib/tauri";
+import type { StageWithTasks, TaskRow } from "../lib/tauri";
 
 /**
  * The **Task board** — the surface `App`'s `"board"` view renders in place of the
@@ -160,6 +160,27 @@ export default function TasksBoard({
   // id is what every command takes, so the modal's launch buttons need it anyway —
   // storing the whole row would mean re-deriving nothing and going stale on everything.
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
+
+  /** A card the New Task modal finished with. Two outcomes, and only one of them
+   *  leaves the view: a card filed to the Backlog is something to look at ON the
+   *  board, while a launched Session is something this board is currently HIDING (its
+   *  arm renders this section in place of `ChatStream`). So the Session id decides,
+   *  and the modal's `onCreated` is what carries it — the modal has never owned a view
+   *  and does not start here.
+   *
+   *  The card itself needs no work here: `store/tasks`' `createTask` action lands it in
+   *  the column set the human is looking at rather than refetching, because `get_board`
+   *  seeds stages on read and a refetch would be a wider mutation than the one being
+   *  displayed. `_task` is therefore unread, and that is deliberate rather than a
+   *  dropped requirement.
+   *
+   *  It does NOT close the modal. `NewTaskDialog` calls `onCreated` and then
+   *  `onClose`, so the flag has one owner; closing here too would be a second write of
+   *  the same cell, and a flag with two writers is the shape that hides which path
+   *  left it open. */
+  const handleTaskCreated = (_task: TaskRow, sessionId: string | null): void => {
+    if (sessionId !== null) onReturnToWorkspace?.();
+  };
 
   // The card the modal names, resolved from the CURRENT board slice. Reading it back
   // out of the store rather than freezing the row at click time means the modal shows
@@ -369,8 +390,8 @@ export default function TasksBoard({
       {newTaskOpen && (
         <NewTaskDialog
           spacePath={activeSpacePath}
-          boards={stages}
           onClose={() => setNewTaskOpen(false)}
+          onCreated={handleTaskCreated}
         />
       )}
     </section>
