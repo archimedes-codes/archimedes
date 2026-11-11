@@ -2,6 +2,10 @@ import { useImperativeHandle } from "react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, act, screen, fireEvent } from "@testing-library/react";
 import MessageList, { type MessageListProps } from "./MessageList";
+import {
+  getAttentionFocusRequest,
+  setAttentionFocusRequest,
+} from "../../lib/attentionFocusSignal";
 import type { RenderUnit } from "../../lib/toolGroups";
 import type { Message } from "../../store/sessions";
 import type { PermissionPromptData } from "../../store/permissions";
@@ -121,6 +125,17 @@ function makeProps(overrides: Partial<MessageListProps> = {}): MessageListProps 
     ...overrides,
   };
 }
+
+// The Attention-alert focus signal is MODULE-SCOPED (no store, no React — see
+// the warning in `lib/attentionFocusSignal.ts`), and the cases below raise it
+// directly. A pending request left by one case is consumed by EVERY later
+// `render()` in this file, which shows up as one extra
+// `scrollToIndex({ index: "LAST" })` in a case that never passed the prop — the
+// kind of red that reads like the feature is broken when the leak is the cause.
+// FILE scope, not one `describe`: this file has nested suites.
+beforeEach(() => {
+  setAttentionFocusRequest(null);
+});
 
 describe("MessageList scroll behavior", () => {
   beforeEach(() => {
@@ -1536,6 +1551,221 @@ describe("MessageList scroll behavior", () => {
       flushRaf();
 
       expect(pinCalls()).toBe(1);
+    });
+  });
+
+  /**
+   * ATTENTION-ALERT CLICK FOCUS — the one-shot `focusRequest` prop.
+   *
+   * The listener that raises it lives with `App` and runs in a Tauri event
+   * callback OUTSIDE React, so it cannot scroll anything itself; it leaves a
+   * pending `{ sessionId, nonce }` and this component consumes it (see
+   * `MessageList.tsx`'s Effect 4). These cases pin the four properties the
+   * consumer has to have, and the first one is the reason the signal exists at
+   * all: the count-keyed gate effect CANNOT cover this transition.
+   */
+  describe("attention-alert click focus (the one-shot focusRequest)", () => {
+    const pinCalls = () =>
+      virtuosoHandleRef.scrollToIndex.mock.calls.filter(
+        ([loc]) => loc?.index === "LAST" && loc?.align === "end",
+      ).length;
+
+    it("a pending request scrolls to the bottom even though the user had scrolled up (isBottomLocked false, gate counts unchanged)", () => {
+      const { container, rerender } = render(
+        <MessageList {...makeProps({ units: [single(textMsg("m1"))] })} />,
+      );
+      flushRaf();
+
+      // The user scrolled up: the lock is released and the floating button is
+      // up — the state the click has to overcome.
+      act(() => {
+        simulateScrollUp(container);
+      });
+      expect(
+        container.querySelector('[data-testid="scroll-to-bottom-button"]'),
+      ).not.toBeNull();
+      virtuosoHandleRef.scrollToIndex.mockClear();
+
+      rerender(
+        <MessageList
+          {...makeProps({
+            units: [single(textMsg("m1"))],
+            focusRequest: { sessionId: "s1", nonce: 1 },
+          })}
+        />,
+      );
+
+      // Synchronous (not one frame later, as Effect 1 does): the click is a
+      // deliberate arrival, the same as a button click.
+      expect(virtuosoHandleRef.scrollToIndex).toHaveBeenCalledTimes(1);
+      expect(virtuosoHandleRef.scrollToIndex).toHaveBeenCalledWith({
+        index: "LAST",
+        align: "end",
+      });
+      // The same HANDSHAKE the floating button performs — the scroller takes
+      // focus so it does not drop to `<body>` when the button unmounts — because
+      // the consumer calls `handleScrollToBottom` rather than a second scroll
+      // authority.
+      const scroller = container.querySelector(
+        '[data-testid="virtuoso-stand-in"]',
+      );
+      expect(scroller?.getAttribute("tabindex")).toBe("-1");
+      expect(document.activeElement).toBe(scroller);
+      // And the lock is back, so the button is gone (the follow resumes).
+      expect(
+        container.querySelector('[data-testid="scroll-to-bottom-button"]'),
+      ).toBeNull();
+      // The pending value is DRAINED by the consumer that acted on it, so no
+      // later mount replays the scroll.
+      expect(getAttentionFocusRequest()).toBeNull();
+    });
+
+    it("one-gate → one-gate: the request scrolls where the count-keyed gate effect fires nothing", () => {
+      // THE motivating transition (spec §4): clicking an alert for a Session
+      // with one gate while another one-gate Session is open. Effect 1 keys on
+      // `prompts.length`, so the counts do not change and it stays silent; case
+      // 4c above already proves that blindness for units, and this proves the fix
+      // reaches past it.
+      const prompt1: PermissionPromptData = {
+        requestId: "p1",
+        toolTitle: "Run command",
+        options: [{ optionId: "allow", name: "Allow" }],
+      };
+      const { container, rerender } = render(
+        <MessageList
+          {...makeProps({ units: [single(textMsg("m1"))], prompts: [prompt1] })}
+        />,
+      );
+      flushRaf();
+      act(() => {
+        simulateScrollUp(container);
+      });
+      virtuosoHandleRef.scrollToIndex.mockClear();
+
+      rerender(
+        <MessageList
+          {...makeProps({
+            units: [single(textMsg("m1"))],
+            // A DIFFERENT prompt object, the SAME count — the count-keyed
+            // effect cannot see this change either.
+            prompts: [{ ...prompt1, requestId: "p2", toolTitle: "Edit file" }],
+            focusRequest: { sessionId: "s1", nonce: 7 },
+          })}
+        />,
+      );
+
+      expect(pinCalls()).toBe(1);
+      expect(getAttentionFocusRequest()).toBeNull();
+    });
+
+    it("a repeat click with a NEW nonce scrolls again; the SAME nonce does not (idempotent per nonce)", () => {
+      // The idempotency half is what makes a StrictMode / Session-switch double
+      // MOUNT scroll once rather than twice: the signal module outlives the
+      // remount, so the consumed-nonce ref — not the drain — is what stops the
+      // replay.
+      const { rerender } = render(
+        <MessageList {...makeProps({ units: [single(textMsg("m1"))] })} />,
+      );
+      flushRaf();
+      virtuosoHandleRef.scrollToIndex.mockClear();
+
+      rerender(
+        <MessageList
+          {...makeProps({
+            units: [single(textMsg("m1"))],
+            focusRequest: { sessionId: "s1", nonce: 1 },
+          })}
+        />,
+      );
+      expect(pinCalls()).toBe(1);
+
+      // The SAME nonce in a fresh object (a re-render, or a second mount reading
+      // the same request before the drain landed): no second scroll.
+      virtuosoHandleRef.scrollToIndex.mockClear();
+      rerender(
+        <MessageList
+          {...makeProps({
+            units: [single(textMsg("m1"))],
+            focusRequest: { sessionId: "s1", nonce: 1 },
+          })}
+        />,
+      );
+      expect(pinCalls()).toBe(0);
+
+      // A NEW nonce is a NEW click on the same Session and must re-fire — the
+      // reason the request carries a nonce instead of just a session id.
+      setAttentionFocusRequest({ sessionId: "s1", nonce: 2 });
+      rerender(
+        <MessageList
+          {...makeProps({
+            units: [single(textMsg("m1"))],
+            focusRequest: { sessionId: "s1", nonce: 2 },
+          })}
+        />,
+      );
+      expect(pinCalls()).toBe(1);
+    });
+
+    it("a request for a DIFFERENT session does not scroll this transcript and is left pending", () => {
+      const { rerender } = render(
+        <MessageList {...makeProps({ units: [single(textMsg("m1"))] })} />,
+      );
+      flushRaf();
+      virtuosoHandleRef.scrollToIndex.mockClear();
+      setAttentionFocusRequest({ sessionId: "s2", nonce: 1 });
+
+      rerender(
+        <MessageList
+          {...makeProps({
+            units: [single(textMsg("m1"))],
+            focusRequest: { sessionId: "s2", nonce: 1 },
+          })}
+        />,
+      );
+
+      expect(
+        virtuosoHandleRef.scrollToIndex,
+        "an `s1` transcript must not answer an `s2` request",
+      ).not.toHaveBeenCalled();
+      // Left PENDING, not drained: `openSession` mounts the matching transcript,
+      // which consumes it then. Draining here would eat the user's click.
+      expect(getAttentionFocusRequest()).toEqual({ sessionId: "s2", nonce: 1 });
+    });
+
+    it("the EMPTY branch drains a matching request without scrolling (a stored session's first frame)", () => {
+      // `openSession` fetches the history page, so the first frame a STORED
+      // session renders is the empty branch — no Virtuoso, nothing to scroll,
+      // and the gate card is already on screen. The branch must consume the
+      // request so a later mount does not replay it.
+      setAttentionFocusRequest({ sessionId: "s1", nonce: 3 });
+
+      const { container } = render(
+        <MessageList
+          {...makeProps({
+            units: [],
+            focusRequest: { sessionId: "s1", nonce: 3 },
+          })}
+        />,
+      );
+
+      expect(container.querySelector('[data-testid="virtuoso-stand-in"]')).toBeNull();
+      expect(virtuosoHandleRef.scrollToIndex).not.toHaveBeenCalled();
+      expect(getAttentionFocusRequest()).toBeNull();
+    });
+
+    it("the EMPTY branch leaves a request for another session pending", () => {
+      setAttentionFocusRequest({ sessionId: "s2", nonce: 4 });
+
+      render(
+        <MessageList
+          {...makeProps({
+            units: [],
+            focusRequest: { sessionId: "s2", nonce: 4 },
+          })}
+        />,
+      );
+
+      expect(getAttentionFocusRequest()).toEqual({ sessionId: "s2", nonce: 4 });
     });
   });
 });

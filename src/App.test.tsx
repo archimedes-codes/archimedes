@@ -13,10 +13,12 @@ import {
   reorderTasks,
   sessionRecency,
   startTaskSession,
+  listenAttentionAlertClicked,
   listenInteractiveRequestClose,
   listenSessionTitled,
   listenSubagentClosed,
   listenSubagentSessionStarted,
+  raiseAttentionWindow,
   startSession,
 } from "./lib/tauri";
 import { useSessions } from "./store/sessions";
@@ -29,6 +31,11 @@ import {
   getNewSpaceDialogOpen,
   setNewSpaceDialogOpen,
 } from "./lib/newSpaceDialogState";
+import {
+  getAttentionFocusRequest,
+  setAttentionFocusRequest,
+  subscribeAttentionFocus,
+} from "./lib/attentionFocusSignal";
 
 // Mock the Tauri IPC layer (the `importActual` pattern from
 // `NewSpaceDialog.test.tsx`): the boot `useEffect` loads `listSessions` /
@@ -155,6 +162,24 @@ vi.mock("./lib/tauri", async () => {
     // `attention alert failed:` — stderr noise instead of a green-and-silent run.
     attentionArm: vi.fn().mockResolvedValue(undefined),
     attentionDisarm: vi.fn().mockResolvedValue(undefined),
+    // THE ATTENTION-ALERT CLICK ROUTE (`useAttentionAlertClick`, mounted with
+    // `App`). Added in the SAME commit that mounts the listener — the deferral
+    // is recorded in T2's commit body, and it is AGENTS.md's rule for this file:
+    // an un-mocked export resolves through the `importActual` spread to the REAL
+    // wrapper, which rejects in jsdom.
+    //
+    // BOTH are required, for two DIFFERENT failure shapes:
+    //  - `listenAttentionAlertClicked`: un-mocked, the hook's registration
+    //    `Promise` rejects, and the rejection surfaces in the hook's CLEANUP
+    //    (an unhandled rejection, and no listener to drive at all);
+    //  - `raiseAttentionWindow`: un-mocked, every valid-click case fires a real
+    //    `invoke` and prints a `window raise failed` line — green-but-noisy, the
+    //    shape that hides a real fetch failure.
+    //
+    // `raiseAttentionWindow` resolves `undefined` (the real wrapper returns
+    // `Promise<void>`), and the unlisten is a no-op function.
+    listenAttentionAlertClicked: vi.fn().mockResolvedValue(() => {}),
+    raiseAttentionWindow: vi.fn().mockResolvedValue(undefined),
     // The **External open** command (ADR 0051): `OpenAnchor`'s click handler
     // calls it, and the real one reaches `invoke` — mocked so the two
     // `SpaceCwdProvider` tests below can assert the cwd it is handed.
@@ -291,6 +316,14 @@ beforeAll(() => {
 // has nothing to do with them.
 beforeEach(() => {
   setNewSpaceDialogOpen(false);
+  // The Attention-alert focus signal is MODULE-scoped too (see the warning in
+  // `lib/attentionFocusSignal.ts`), and this file raises it — every valid click
+  // its listener cases drive leaves a pending request. A leak does not merely
+  // make a later "the signal is null" assertion wrong: `ChatStream` subscribes
+  // to the module, so every later `render(<App/>)` re-renders with a request in
+  // hand and its transcript consumes it (one extra scroll-to-bottom) — a red in
+  // a case that never mentioned attention alerts.
+  setAttentionFocusRequest(null);
 });
 
 describe("App (the Settings door + the settings view swap)", () => {
@@ -1308,6 +1341,261 @@ describe("App (the `session-titled` listener)", () => {
     expect(useSessions.getState().sessions[0].title).toBe(
       "Porting the session namer",
     );
+  });
+});
+
+describe("App (the attention-alert-clicked listener)", () => {
+  // The click route is APP-scoped (mounted with `App`, beside
+  // `useAttentionAlert`) precisely because the two non-workspace views UNMOUNT
+  // the workspace — so the cases that matter most are the ones where the click
+  // arrives while Settings or the Board is up. `useAttentionAlertClick.test.ts`
+  // owns the hook's own five steps; what lives here is the integration the hook
+  // cannot see on its own: the real view ternary, the real Space tabs, the real
+  // Settings page coming down.
+  const clearStore = () =>
+    useSessions.setState({
+      sessions: [],
+      historySessions: [],
+      archivedSessions: [],
+      spaces: [],
+      activeSessionId: null,
+      activeSpacePath: null,
+      messages: {},
+    });
+  beforeEach(() => {
+    clearStore();
+    // `TasksBoard` loads its board on MOUNT and `useTasks` is module-global, so
+    // the board this file's Board case opens must not survive into the next case
+    // (the same reason the Task-board describe resets it).
+    useTasks.getState().reset();
+  });
+  afterEach(clearStore);
+
+  /** Render, let the boot trio land, THEN seed the rows.
+   *
+   *  The order is the point, not ceremony: the boot effect calls
+   *  `setSpaces([])`, which rewrites `activeSpacePath` unconditionally, so a
+   *  seed placed before the drain is erased by the boot effect rather than by
+   *  the click — and the case would be asserting the boot effect's behaviour.
+   *  The three rows are the three lists the dead-token guard tests: one live,
+   *  one stored, one archived, in three different Spaces. */
+  async function bootedWithRows(): Promise<void> {
+    render(<App />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => {
+      useSessions.setState({
+        spaces: [
+          { path: "/tmp/alpha", createdAt: 1, lastOpenedAt: 1, trusted: false },
+          { path: "/tmp/beta", createdAt: 2, lastOpenedAt: 2, trusted: false },
+          { path: "/tmp/gamma", createdAt: 3, lastOpenedAt: 3, trusted: false },
+        ],
+        sessions: [
+          {
+            sessionId: "s-live",
+            cwd: "/tmp/alpha",
+            capabilities: {},
+            archived: false,
+            title: "Live session",
+          },
+        ],
+        historySessions: [
+          {
+            sessionId: "s-stored",
+            cwd: "/tmp/beta",
+            capabilities: {},
+            archived: false,
+            title: "Stored session",
+          },
+        ],
+        archivedSessions: [
+          {
+            sessionId: "s-archived",
+            cwd: "/tmp/gamma",
+            capabilities: {},
+            archived: true,
+            title: "Archived session",
+          },
+        ],
+        activeSessionId: "s-live",
+        activeSpacePath: "/tmp/alpha",
+      });
+    });
+  }
+
+  /** Drive the click the way the webview does: the LAST registration is this
+   *  render's (the file never clears mocks, so earlier tests' renders pushed
+   *  theirs first — the `session-titled` case above is the exact pattern). */
+  function clickAlert(token: string): void {
+    const calls = vi.mocked(listenAttentionAlertClicked).mock.calls;
+    const onClick = calls[calls.length - 1][0];
+    act(() => {
+      onClick({ token });
+    });
+  }
+
+  it("a click selects the Session that raised the alert and moves the Space tab to its owner", async () => {
+    await bootedWithRows();
+    expect(useSessions.getState().activeSessionId).toBe("s-live");
+
+    // A STORED session — the honest shape of "go to the finished session" the
+    // spec names, and the case `openSession`'s transcript fetch matters for.
+    clickAlert("s-stored");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(useSessions.getState().activeSessionId).toBe("s-stored");
+    // The Space follows the Session (matched by `cwd` across stored
+    // membership), so the tab bar lands on `/tmp/beta` — the owning Space, not
+    // the one that happened to be open when the alert fired.
+    expect(useSessions.getState().activeSpacePath).toBe("/tmp/beta");
+    // The raise is the best-effort half, and it is the wrapper's call — no
+    // payload on the wire.
+    expect(raiseAttentionWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("a click while the SETTINGS view is open leaves Settings and shows the workspace (the unmount trap's pin)", async () => {
+    // THE regression the design would otherwise ship: the listener is
+    // app-scoped, so it runs while Settings is up, and without the `setView`
+    // step it would set `activeSessionId` and PAINT THE SETTINGS PAGE with a
+    // hidden transcript — the click would look like it did nothing.
+    await bootedWithRows();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(
+      screen.getByRole("navigation", { name: "Settings sections" }),
+    ).toBeTruthy();
+    expect(screen.getByText("General")).toBeTruthy();
+
+    clickAlert("s-live");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Settings is GONE (the null pattern the row-click case uses), so the
+    // transcript the click scrolled is the surface on screen.
+    expect(
+      screen.queryByRole("navigation", { name: "Settings sections" }),
+    ).toBeNull();
+    expect(screen.queryByText("General")).toBeNull();
+    expect(useSessions.getState().activeSessionId).toBe("s-live");
+    // The Settings door is on screen again and no longer pressed.
+    expect(
+      screen.getByRole("button", { name: "Settings" }).getAttribute("aria-pressed"),
+    ).toBe("false");
+  });
+
+  it("a click while the BOARD view is open leaves the Board and shows the workspace", async () => {
+    // The SECOND non-workspace arm. The Board is the arm a `setView` written as
+    // `view !== "settings"` would miss, and the ternary's else-branch is the
+    // workspace, so the board has to be named explicitly — the same reason it
+    // needs its own case here rather than riding on the Settings one.
+    await bootedWithRows();
+    fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
+    expect(screen.getByTestId("tasks-board")).toBeTruthy();
+
+    clickAlert("s-stored");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId("tasks-board")).toBeNull();
+    expect(useSessions.getState().activeSessionId).toBe("s-stored");
+  });
+
+  it("a click for a Session that is gone logs one line and changes NOTHING", async () => {
+    // The signal is watched through a subscription rather than by reading the
+    // pending value at the end: the mounted `MessageList` DRAINS a request it
+    // matches, so a post-click `getAttentionFocusRequest()` would read `null`
+    // even if the guard were removed and the request raised — a passing
+    // assertion that pins nothing. The notify is synchronous, so an empty log
+    // here means the raise never happened.
+    const raised: Array<string | null> = [];
+    const unsubscribe = subscribeAttentionFocus(() => {
+      raised.push(getAttentionFocusRequest()?.sessionId ?? "drained");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await bootedWithRows();
+      // Settings is the view the click is driven from, so the dead-token case
+      // also pins the ORDER: the guard returns BEFORE the `setView` step, so a
+      // stale alert cannot pull the user out of the page they are on. A guard
+      // placed after step 2 would switch the view and then log, and this
+      // assertion is what that ordering mistake turns red.
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      expect(
+        screen.getByRole("navigation", { name: "Settings sections" }),
+      ).toBeTruthy();
+
+      // A token in NONE of the three lists (the Session was deleted while the
+      // alert sat in the notification centre).
+      clickAlert("ghost");
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      // `openSession` has NO guard of its own — it sets `activeSessionId`
+      // unconditionally and its history fetch answers an unknown id with an
+      // EMPTY page rather than an error — so "nothing moved" has to be asserted
+      // here: the selection and the Space both stay put, and no focus request
+      // is raised.
+      expect(useSessions.getState().activeSessionId).toBe("s-live");
+      expect(useSessions.getState().activeSpacePath).toBe("/tmp/alpha");
+      expect(raised).toEqual([]);
+      // No raise either: a click that navigates nowhere does not steal focus.
+      expect(raiseAttentionWindow).not.toHaveBeenCalled();
+      // The page the user was on is still on screen.
+      expect(
+        screen.getByRole("navigation", { name: "Settings sections" }),
+      ).toBeTruthy();
+      // ONE line, at `warn` (the client-side best-effort severity — `error` is
+      // `useAttentionAlert`'s armed-command failure channel).
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain("no session matches");
+      expect(warn.mock.calls[0][0]).toContain("ghost");
+    } finally {
+      warn.mockRestore();
+      unsubscribe();
+    }
+  });
+
+  it("a valid click raises the transcript focus signal, and the mounted transcript drains it", async () => {
+    // The raise is observed at its INSTANT through a subscription of our own:
+    // the signal module notifies synchronously, so the callback reads the value
+    // the listener just wrote. Reading `getAttentionFocusRequest()` after the
+    // click instead would be vacuous in both directions — the mounted
+    // `MessageList` (an EMPTY transcript here, since the boot mocks resolve no
+    // rows) consumes the request in its effect, so the pending value is `null`
+    // whether or not the click ever raised one.
+    const raised: Array<{ sessionId: string; nonce: number } | null> = [];
+    const unsubscribe = subscribeAttentionFocus(() => {
+      raised.push(getAttentionFocusRequest());
+    });
+    try {
+      await bootedWithRows();
+
+      clickAlert("s-archived");
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      // The archived list counts as membership (a resumed archived Session sits
+      // in TWO lists at once — ADR 0016), and the signal names the token so the
+      // matching transcript scrolls itself. The nonce is the signal module's
+      // counter, not this file's business.
+      expect(raised[0]).toEqual({
+        sessionId: "s-archived",
+        nonce: expect.any(Number),
+      });
+      // And it is DRAINED once consumed — the end-to-end half only this file can
+      // see, because only this file renders the real `ChatStream` →
+      // `MessageList` chain that consumes it. A request left pending after the
+      // transcript had acted on it would scroll the next mount too.
+      expect(getAttentionFocusRequest()).toBeNull();
+    } finally {
+      unsubscribe();
+    }
   });
 });
 
