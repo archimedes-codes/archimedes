@@ -17,6 +17,10 @@ import { isInlineChildGate } from "../../hooks/useChildGates";
 import type { StopReason } from "../../lib/tauri";
 import { unitKeys } from "../../lib/transcript/unitKeys";
 import { useFirstItemIndex } from "../../hooks/useFirstItemIndex";
+import {
+  setAttentionFocusRequest,
+  type AttentionFocusRequest,
+} from "../../lib/attentionFocusSignal";
 
 /** A unit that reads as a TOOL ROW (a tool call, or a folded `Changes` group). */
 function isToolUnit(unit: RenderUnit): boolean {
@@ -109,6 +113,25 @@ export interface MessageListProps {
    * change still lands without a reload.
    */
   emptyStateAnimation?: string | null;
+  /**
+   * One-shot "scroll this transcript to the bottom" from an Attention alert
+   * click (ADR 0038/0039's click-to-navigate), threaded by `ChatStream`.
+   *
+   * A PROP, never a subscription: this component is props-only by design and
+   * MUST NOT read stores, so the module-scoped signal is read by `ChatStream`
+   * (which already subscribes to everything else here) and handed down. What
+   * this file imports from the signal module is its TYPE plus the DRAIN — the
+   * consumer clears the pending value it has acted on; it never subscribes.
+   *
+   * OPTIONAL with a `null` default, deliberately (the `emptyStateAnimation`
+   * precedent): every pre-existing render site in the suite omits it, and a
+   * REQUIRED prop would have to be added to all of them.
+   *
+   * `null` means nothing is pending. A request naming a DIFFERENT session is
+   * left pending, not dropped — that session's transcript may mount later, and
+   * `openSession` is what makes it mount.
+   */
+  focusRequest?: AttentionFocusRequest | null;
 }
 
 const BOTTOM_THRESHOLD = 80;
@@ -204,6 +227,8 @@ interface TranscriptScrollerProps {
   hasMore: boolean;
   loadingMore: boolean;
   onStartReached: () => void;
+  /** See `MessageListProps.focusRequest` — passed straight through. */
+  focusRequest?: AttentionFocusRequest | null;
 }
 
 /**
@@ -279,6 +304,7 @@ function TranscriptScroller({
   hasMore,
   loadingMore,
   onStartReached,
+  focusRequest = null,
 }: TranscriptScrollerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollerElementRef = useRef<HTMLElement | null>(null);
@@ -467,6 +493,43 @@ function TranscriptScroller({
     openSettle();
     virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
   };
+
+  // Effect 4: Attention-alert click focus — one-shot, per nonce.
+  //
+  // NECESSARY, not redundant with Effects 1–3: Effect 1 keys on gate COUNTS
+  // (`prompts.length` / `stackedAskRequests.length` / `inlineGateCount`), so a
+  // one-gate Session → one-gate Session switch fires NOTHING even though the
+  // question moved; and Effect 2 is gated on `isBottomLockedRef`, so a user who
+  // had scrolled up lands on the right Session with the question still
+  // off-screen. The gate card renders in Virtuoso's `Footer`, so "the question"
+  // IS the bottom — which is why this calls the EXISTING `handleScrollToBottom`
+  // rather than a second scroll authority (re-lock, re-arm the settle, then the
+  // one `scrollToIndex`).
+  //
+  // `consumedFocusNonceRef` makes consumption idempotent per nonce: the whole
+  // workspace re-mounts on a Session switch (and `main.tsx` wraps `App` in
+  // StrictMode, which double-mounts), while the signal module is NOT reset by a
+  // remount — so without the ref a double mount would scroll twice, and the
+  // drain below is what stops a consumed request re-firing on a later,
+  // unrelated mount.
+  const consumedFocusNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!focusRequest) return;
+    // Not this transcript. Left PENDING on purpose: `openSession` is what
+    // mounts the matching one, and a fresh raise always overwrites.
+    if (focusRequest.sessionId !== activeSessionId) return;
+    if (consumedFocusNonceRef.current === focusRequest.nonce) return;
+    consumedFocusNonceRef.current = focusRequest.nonce;
+    // Drain first: the notify this write fires re-renders `ChatStream`, and a
+    // request that outlived its scroll would scroll the next mount too.
+    setAttentionFocusRequest(null);
+    handleScrollToBottom();
+    // `handleScrollToBottom` is re-declared every render (as every handler here
+    // is — the file uses no `useCallback`), and it reads only refs plus the two
+    // stable setters, so calling it from here needs it in no dependency list.
+    // `focusRequest`'s OBJECT IDENTITY is the change signal this effect keys on:
+    // each raise mints a fresh object, so a new nonce is a new reference.
+  }, [focusRequest, activeSessionId]);
 
   const handleWheel = (e: React.WheelEvent) => {
     if (!isBottomLockedRef.current) return;
@@ -710,7 +773,12 @@ function TranscriptScroller({
  * and the stop-reason line.
  *
  * Props-only by design — it MUST NOT read the stores (every value is derived
- * in `ChatStream` and passed down).
+ * in `ChatStream` and passed down). The one exception is a WRITE, not a read:
+ * both branches DRAIN the Attention-alert focus request they have consumed
+ * (`setAttentionFocusRequest(null)`), because a consumer that cannot clear the
+ * value it acted on leaves the next mount scrolling again. Nothing here ever
+ * reads the signal module's state or subscribes to it — `ChatStream` does that
+ * and hands the value down as the `focusRequest` prop.
  */
 export default function MessageList({
   units,
@@ -730,6 +798,7 @@ export default function MessageList({
   generation,
   onStartReached,
   emptyStateAnimation = "off",
+  focusRequest = null,
 }: MessageListProps) {
   const emptyRef = useRef<HTMLDivElement>(null);
   const inlineGateCount = childGates.filter(isInlineChildGate).length;
@@ -738,7 +807,29 @@ export default function MessageList({
     if (units.length === 0 && emptyRef.current) {
       emptyRef.current.scrollTop = emptyRef.current.scrollHeight;
     }
-  }, [units.length, prompts.length, stackedAskRequests.length, inlineGateCount]);
+    // The EMPTY transcript has no Virtuoso and no `handleScrollToBottom` — and
+    // this is the ordinary shape of a click on a STORED session's alert, because
+    // the listener runs outside React: `openSession`'s history page has not
+    // landed yet, so the first frame this Session renders is the empty branch.
+    // Nothing is scrollable there (the gate card is already on screen), so the
+    // branch CONSUMES-AND-CLEARS a matching request instead of scrolling: a
+    // request that survived this frame would be consumed by a later, unrelated
+    // mount and scroll a transcript nobody asked it to.
+    if (
+      units.length === 0 &&
+      focusRequest &&
+      focusRequest.sessionId === activeSessionId
+    ) {
+      setAttentionFocusRequest(null);
+    }
+  }, [
+    units.length,
+    prompts.length,
+    stackedAskRequests.length,
+    inlineGateCount,
+    focusRequest,
+    activeSessionId,
+  ]);
 
   if (units.length === 0) {
     return (
@@ -779,6 +870,7 @@ export default function MessageList({
       hasMore={hasMore}
       loadingMore={loadingMore}
       onStartReached={onStartReached}
+      focusRequest={focusRequest}
     />
   );
 }

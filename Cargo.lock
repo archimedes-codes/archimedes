@@ -213,6 +213,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "wiremock",
+ "zbus",
 ]
 
 [[package]]

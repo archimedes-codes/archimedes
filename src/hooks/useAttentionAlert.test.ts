@@ -54,6 +54,13 @@ vi.mock("../lib/tauri", async () => {
 const arm = vi.mocked(attentionArm);
 const disarm = vi.mocked(attentionDisarm);
 
+/** Every arm assertion below is 4-ARG: `(delaySecs, title, body, clickToken)`.
+ * The 4th argument is the id a body click navigates to, and it is the SAME id
+ * the body's sentence names — for a CHILD's gate that is the PARENT (`main1`
+ * here, never `sub1`), because the snapshot re-keys a child's gate onto its
+ * parent. Pinning it at the hook boundary is what makes "click a child's
+ * question → land on the parent" a tested guarantee rather than a comment. */
+
 // ------------------------------------------------------------- fixtures
 
 const settingsFixture = (over: Partial<AppSettings> = {}): AppSettings => ({
@@ -258,7 +265,7 @@ describe("useAttentionAlert — arming", () => {
     mountRunning("s1");
     act(() => useSessions.getState().turnCompleted("s1", "end_turn"));
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(1));
-    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "s1 finished — waiting for you");
+    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "s1 finished — waiting for you", "s1");
     expect(disarmsAfterBoot()).toBe(0);
   });
 
@@ -267,7 +274,7 @@ describe("useAttentionAlert — arming", () => {
     renderHook(() => useAttentionAlert());
     act(() => addGate("s1", "g1"));
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(1));
-    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "Refactor auth needs your answer");
+    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "Refactor auth needs your answer", "s1");
   });
 
   it("passes the configured delay through to Rust unchanged", async () => {
@@ -275,7 +282,7 @@ describe("useAttentionAlert — arming", () => {
     mountRunning("s1");
     act(() => useSessions.getState().turnCompleted("s1", "end_turn"));
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(1));
-    expect(arm).toHaveBeenCalledWith(60, "Archimedes", "s1 finished — waiting for you");
+    expect(arm).toHaveBeenCalledWith(60, "Archimedes", "s1 finished — waiting for you", "s1");
   });
 
   it("prefers waiting over settled when both land in one pass", async () => {
@@ -285,7 +292,7 @@ describe("useAttentionAlert — arming", () => {
       useSessions.getState().turnCompleted("s1", "end_turn");
     });
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(1));
-    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "s1 needs your answer");
+    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "s1 needs your answer", "s1");
   });
 
   it("never arms for a stalled session's fall (a crash did not finish)", async () => {
@@ -357,6 +364,9 @@ describe("useAttentionAlert — arming", () => {
       15,
       "Archimedes",
       "Investigate flaky test needs your answer",
+      // The CHILD's gate carries the PARENT's token — the click lands on the
+      // Session the user knows, not on the child id they have never seen.
+      "main1",
     );
   });
 });
@@ -401,7 +411,7 @@ describe("useAttentionAlert — a child's gate IS its parent's pause (the snapsh
     // which `spent` has never seen — arms on the same pass.
     act(() => answer("sub1", "call_0"));
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(2));
-    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "main1 needs your answer");
+    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "main1 needs your answer", "main1");
   });
 
   it("orders a parent's own gates fully ahead of its children's, whichever store key was inserted first", async () => {
@@ -460,6 +470,9 @@ describe("useAttentionAlert — a child's gate IS its parent's pause (the snapsh
       15,
       "Archimedes",
       "Investigate flaky test needs your answer",
+      // The CHILD's gate carries the PARENT's token — the click lands on the
+      // Session the user knows, not on the child id they have never seen.
+      "main1",
     );
     // And the armed trigger really is a live candidate of that parent: closing
     // the gate retires the countdown exactly once.
@@ -510,12 +523,12 @@ describe("useAttentionAlert — a child's gate IS its parent's pause (the snapsh
       addGate("B", "gB");
     });
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(1));
-    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "main1 needs your answer");
+    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "main1 needs your answer", "main1");
     // The ladder underneath still holds: answering the winner hands the slot to
     // B's question (one command — `arm` subsumes the owed `disarm`).
     act(() => answer("sub1", "gS"));
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(2));
-    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "B needs your answer");
+    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "B needs your answer", "B");
     expect(disarmsAfterBoot()).toBe(0);
   });
 
@@ -532,12 +545,12 @@ describe("useAttentionAlert — a child's gate IS its parent's pause (the snapsh
       addGate("B", "call_0");
     });
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(1));
-    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "main1 needs your answer");
+    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "main1 needs your answer", "main1");
     // Answering the child's gate must not count as answering B's identically
     // named one: B's question arms next.
     act(() => answer("sub1", "call_0"));
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(2));
-    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "B needs your answer");
+    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "B needs your answer", "B");
   });
 });
 
@@ -597,7 +610,7 @@ describe("useAttentionAlert — an armed countdown survives unrelated writes", (
     renderHook(() => useAttentionAlert());
     act(() => addGate("s1", "g1"));
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(1));
-    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "s1 needs your answer");
+    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "s1 needs your answer", "s1");
     // The evidence is untouched — the gate is still open — only the setting moved.
     act(() =>
       useSettings.setState({ settings: settingsFixture({ attentionAlertDelaySecs: 60 }) }),
@@ -683,7 +696,7 @@ describe("useAttentionAlert — activity signals", () => {
       addGate("other", "g9");
     });
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(2));
-    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "other needs your answer");
+    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "other needs your answer", "other");
   });
 
   it("ignores a pointerdown inside the window controls (the chrome exemption)", async () => {
@@ -736,7 +749,7 @@ describe("useAttentionAlert — a spent pause must not mute the pause underneath
     renderHook(() => useAttentionAlert());
     act(() => addGate("B", "g1"));
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(1));
-    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "B needs your answer");
+    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "B needs your answer", "B");
 
     // The user comes back and types: the countdown is disarmed and that pause is
     // SPENT. The gate itself stays open — that is the steady state.
@@ -747,7 +760,7 @@ describe("useAttentionAlert — a spent pause must not mute the pause underneath
     // gate vetoes the snapshot, A's alert is lost permanently.
     act(() => useSessions.getState().turnCompleted("A", "end_turn"));
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(2));
-    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "A finished — waiting for you");
+    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "A finished — waiting for you", "A");
   });
 });
 
@@ -793,7 +806,7 @@ describe("useAttentionAlert — the announced pauses are a SET, not a slot", () 
     // 3. B's run finishes: a NEW pause, so it arms (notification #2 — correct).
     act(() => useSessions.getState().turnCompleted("B", "end_turn"));
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(2));
-    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "B finished — waiting for you");
+    expect(arm).toHaveBeenLastCalledWith(15, "Archimedes", "B finished — waiting for you", "B");
 
     // 4. B's countdown elapses. Announcing B must ADD to the record, not replace
     //    A's — and A's gate is still open, so A must stay muted.
@@ -822,7 +835,7 @@ describe("useAttentionAlert — the snapshot reaches the rule", () => {
       }),
     );
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(1));
-    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "s1 needs your answer");
+    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "s1 needs your answer", "s1");
   });
 
   it("labels the alert from the title when there is one, else the folder name", async () => {
@@ -834,7 +847,11 @@ describe("useAttentionAlert — the snapshot reaches the rule", () => {
     renderHook(() => useAttentionAlert());
     act(() => useSessions.getState().turnCompleted("s1", "end_turn"));
     await waitFor(() => expect(arm).toHaveBeenCalledTimes(1));
-    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "widgets finished — waiting for you");
+    // The token is the session ID even though the BODY says the folder name:
+    // the click navigates by id, never by the text the user read. (The plan
+    // named `"widgets"` here — a label, not an id; `attentionAlertText` derives
+    // the token from `trigger.sessionId`, so `"s1"` is the only correct value.)
+    expect(arm).toHaveBeenCalledWith(15, "Archimedes", "widgets finished — waiting for you", "s1");
   });
 });
 
@@ -896,7 +913,14 @@ describe("useAttentionAlert — a stalled PARENT re-times its children's countdo
     // no disarm at all), only pushed back — it fires after `delaySecs` of quiet
     // over every store the snapshot reads.
     expect(arm.mock.calls).toEqual(
-      Array.from({ length: 5 }, () => [15, "Archimedes", "main1 needs your answer"]),
+      Array.from({ length: 5 }, () => [
+        15,
+        "Archimedes",
+        "main1 needs your answer",
+        // The parked child re-arms with the PARENT's token every time — the
+        // re-timing is a delay problem, never a wrong-destination one.
+        "main1",
+      ]),
     );
     expect(disarmsAfterBoot()).toBe(0);
   });

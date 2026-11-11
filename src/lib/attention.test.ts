@@ -1173,4 +1173,50 @@ describe("attentionAlertText", () => {
       ).body,
     ).toBe("Live finished — waiting for you");
   });
+
+  // ------------------------------------------------------ the click token
+  //
+  // The alert carries a THIRD field: the session id a body click navigates to.
+  // It is NOT a second resolution — it is the SAME `id` the label is built from
+  // (`ctx.parents[trigger.sessionId] ?? trigger.sessionId`), which is the whole
+  // point: "click a child's question → land on the parent" cannot drift from
+  // "the alert NAMES the parent", because both read one variable.
+
+  it("click token for a main-session trigger is its own sessionId", () => {
+    expect(
+      attentionAlertText(settled("A"), ctx([{ sessionId: "A", cwd: "/w/proj" }])).click_token,
+    ).toBe("A");
+  });
+
+  it("click token for a CHILD's gate is the PARENT id (byte-identical to the field that names the session)", () => {
+    // Honest scope: with `parents = { sub1: "P" }` the LABEL already resolves to
+    // `P` today (the case above pins that), so this adds no NEW discriminating
+    // power on its own. What it pins is the equivalence — the token is
+    // byte-identical to the id the body names the session by, so the click can
+    // never land somewhere other than the Session the sentence is about.
+    expect(
+      attentionAlertText(
+        waiting("sub1", "g"),
+        ctx([{ sessionId: "P", cwd: "/w/app" }], { sub1: "P" }),
+      ).click_token,
+    ).toBe("P");
+  });
+
+  it("click token falls through to the trigger's own id when parents has NO entry for it", () => {
+    // The `?? trigger.sessionId` leg. `ctx([], {})` — no parent row at all — so
+    // the lookup MISSES and the token is the trigger's own id. (A `parents` map
+    // that DOES hold `sub1: "P"` would take the other leg and yield `"P"`; that
+    // is the next case, not this one.)
+    expect(attentionAlertText(waiting("sub1", "g"), ctx([], {})).click_token).toBe("sub1");
+  });
+
+  it("click token still resolves to the parent when the session ROW is absent", () => {
+    // The label degrades to the generic "A session" (no row to name), but the
+    // token is derived from the `parents` map alone and stays the parent id — a
+    // click on a generically-labelled alert still lands on a real Session.
+    expect(attentionAlertText(waiting("sub1", "g"), ctx([], { sub1: "P" })).body).toBe(
+      "A session needs your answer",
+    );
+    expect(attentionAlertText(waiting("sub1", "g"), ctx([], { sub1: "P" })).click_token).toBe("P");
+  });
 });

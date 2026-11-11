@@ -34,6 +34,7 @@ import TasksBoard from "./components/TasksBoard";
 import { SpaceCwdProvider } from "./components/SpaceCwd";
 import { cn } from "./components/lib/utils";
 import { useAttentionAlert } from "./hooks/useAttentionAlert";
+import { useAttentionAlertClick } from "./hooks/useAttentionAlertClick";
 import { useAppShortcuts } from "./hooks/useAppShortcuts";
 import {
   getNewSpaceDialogOpen,
@@ -333,6 +334,19 @@ function App() {
   // smoke test, and no board. The `"board"` arm is therefore spelled out, not
   // fallen into.
   const [view, setView] = useState<"workspace" | "settings" | "board">("workspace");
+  // The Attention-alert CLICK listener (ADR 0038/0039's client half): click an
+  // alert → land on the Session that raised it. APP-SCOPED for the same reason
+  // as the three hooks at the top of this component — the Settings and Board
+  // arms of the ternary below UNMOUNT the workspace, and an alert legitimately
+  // fires while either is open, so a listener mounted with the workspace would
+  // not exist at the moment of the click.
+  //
+  // Mounted HERE rather than beside `useAttentionAlert()` above because it needs
+  // ONE thing that is App-local and not store state: `setView`. The call is
+  // unconditional (hook order is stable), and the registration + its cleanup
+  // live in the hook's own effect — nothing is added to the big
+  // `unlistenPromises` list below, because this hook owns its own registration.
+  useAttentionAlertClick(setView);
   // The Subagent sheet needs to know about this transition, and it is told — it
   // is not rewritten. `SubagentDetailHost` lives in the ternary's else-branch, so
   // opening Settings UNMOUNTS the sheet while `useSubagentSelection` keeps its

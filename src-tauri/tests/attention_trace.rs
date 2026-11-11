@@ -31,6 +31,14 @@ use archimedes_lib::attention::{AlertText, AttentionTimer, Delivery, FocusProbe}
 /// The alert text, chosen so a leak into the log is unmistakable.
 const SECRET_TITLE: &str = "Archimedes";
 const SECRET_BODY: &str = "api-server needs your answer — TRACE-MUST-NOT-LEAK";
+/// The click token every `arm` in this test passes. Deliberately the same shape
+/// as the secret text above, because the token must not change this timeline at
+/// all: it is an `arm` argument the countdown carries inside the `AlertText` and
+/// never narrates, so the nine-line count pinned at the bottom is also the pin
+/// that the token added no line. (That it never reaches a log LINE is pinned
+/// where the line is built — `no_trace_line_carries_the_token` in
+/// `tests/attention_alert_click.rs` and the `body_chars=` claim in section 5.)
+const TRACE_TOKEN: &str = "ses-TRACE-TOKEN-MUST-NOT-LEAK";
 
 /// Let the spawned countdown task reach its next await point (the paused clock
 /// never advances on its own here — the same helper `attention.rs`'s tests use).
@@ -84,6 +92,7 @@ async fn the_countdown_logs_every_decision_it_makes() {
             Duration::from_millis(5_000),
             SECRET_TITLE.into(),
             SECRET_BODY.into(),
+            TRACE_TOKEN.into(),
         )
         .expect("a runtime exists under #[tokio::test]");
     settle().await;
@@ -92,6 +101,7 @@ async fn the_countdown_logs_every_decision_it_makes() {
             Duration::from_millis(5_000),
             SECRET_TITLE.into(),
             SECRET_BODY.into(),
+            TRACE_TOKEN.into(),
         )
         .expect("a runtime exists under #[tokio::test]");
     settle().await;
@@ -114,6 +124,7 @@ async fn the_countdown_logs_every_decision_it_makes() {
             Duration::from_millis(5_000),
             SECRET_TITLE.into(),
             SECRET_BODY.into(),
+            TRACE_TOKEN.into(),
         )
         .expect("a runtime exists under #[tokio::test]");
     settle().await;
@@ -128,6 +139,7 @@ async fn the_countdown_logs_every_decision_it_makes() {
             Duration::from_millis(5_000),
             SECRET_TITLE.into(),
             SECRET_BODY.into(),
+            TRACE_TOKEN.into(),
         )
         .expect("a runtime exists under #[tokio::test]");
     settle().await;
@@ -150,6 +162,7 @@ async fn the_countdown_logs_every_decision_it_makes() {
                 Duration::from_millis(5_000),
                 SECRET_TITLE.into(),
                 SECRET_BODY.into(),
+                TRACE_TOKEN.into(),
             )
             .expect_err("a caller with no runtime is refused, not panicked")
     })

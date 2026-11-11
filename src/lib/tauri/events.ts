@@ -14,6 +14,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { IPC_EVENTS } from "../ipc/events";
 import type {
+  AttentionAlertClickedPayload,
   InteractiveEventPayload,
   InteractiveRequestClosePayload,
   InteractiveRequestPayload,
@@ -137,5 +138,21 @@ export async function listenWindowState(
 ): Promise<() => void> {
   return listen<WindowFrameState>(IPC_EVENTS.windowStateChanged, (event) =>
     handler(event.payload),
+  );
+}
+
+
+/**
+ * The user clicked the BODY of an Attention alert (the notification side emits
+ * it with the token `attention_arm` handed it). The PULL form for the same
+ * route is `raiseAttentionWindow` in `./commands/window.ts` — the click lands
+ * the Session, the raise lands the window, and the listener owns the order.
+ */
+export async function listenAttentionAlertClicked(
+  callback: (payload: AttentionAlertClickedPayload) => void,
+): Promise<() => void> {
+  return listen<AttentionAlertClickedPayload>(
+    IPC_EVENTS.attentionAlertClicked,
+    (event) => callback(event.payload),
   );
 }

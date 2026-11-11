@@ -24,16 +24,19 @@ import {
   compactSession,
   externalOpen,
   getWindowState,
+  listenAttentionAlertClicked,
   listenWindowState,
   listAgentDefinitionReports,
   listCompletionEntries,
   listSpaceListing,
   loadHistory,
+  raiseAttentionWindow,
   reorderSessions,
   reorderSpaces,
   reorderTasks,
   sessionRecency,
   type AgentDefinitionReportDto,
+  type AttentionAlertClickedPayload,
   type WindowFrameState,
 } from "./tauri";
 
@@ -185,17 +188,19 @@ describe("attention arm/disarm (the ADR 0039 IPC boundary)", () => {
     mockedInvoke.mockReset();
   });
 
-  it("invokes `attention_arm` with the `delaySecs`/`title`/`body` argument keys", async () => {
+  it("invokes `attention_arm` with the `delaySecs`/`title`/`body`/`clickToken` argument keys", async () => {
     mockedInvoke.mockResolvedValue(undefined);
-    await attentionArm(15, "Archimedes", "b");
+    await attentionArm(15, "Archimedes", "b", "tok");
     // Same trap as `list_space_listing` above: Tauri maps the camelCase arg KEY
-    // to the snake_case Rust parameter (`delaySecs` here → `delay_secs` in
+    // to the snake_case Rust parameter (`delaySecs` here → `delay_secs`,
+    // `clickToken` → `click_token`, both in
     // `commands::attention::attention_arm`), and a typo in the command NAME or
     // in any KEY is a runtime-only failure the hook tests cannot see.
     expect(mockedInvoke).toHaveBeenCalledWith("attention_arm", {
       delaySecs: 15,
       title: "Archimedes",
       body: "b",
+      clickToken: "tok",
     });
   });
 
@@ -204,11 +209,12 @@ describe("attention arm/disarm (the ADR 0039 IPC boundary)", () => {
     // `min`-capped, never defaulted — so a falsy-guarded wrapper (`delaySecs ||
     // undefined`) would turn the shortest possible alert into no alert.
     mockedInvoke.mockResolvedValue(undefined);
-    await attentionArm(0, "Archimedes", "b");
+    await attentionArm(0, "Archimedes", "b", "tok");
     expect(mockedInvoke).toHaveBeenCalledWith("attention_arm", {
       delaySecs: 0,
       title: "Archimedes",
       body: "b",
+      clickToken: "tok",
     });
   });
 
@@ -349,6 +355,52 @@ describe("getWindowState / listenWindowState (the Linux window tiling IPC bounda
     };
     eventCallback?.({
       event: "window-state-changed",
+      id: 1,
+      payload,
+    });
+    expect(handler).toHaveBeenCalledWith(payload);
+  });
+});
+
+describe("raiseAttentionWindow / listenAttentionAlertClicked (the alert-click IPC boundary)", () => {
+  beforeEach(() => {
+    mockedInvoke.mockReset();
+    mockedListen.mockReset();
+  });
+
+  it("invokes `raise_attention_window` with NO payload (the exact no-args form)", async () => {
+    mockedInvoke.mockResolvedValue(undefined);
+    await raiseAttentionWindow();
+    // Pinned to the ZERO-arg call like `attention_disarm` above: the Rust
+    // command takes only its window state, so `{}` would be a DIFFERENT call to
+    // `invoke` and this is the one place that drift could be caught.
+    expect(mockedInvoke).toHaveBeenCalledWith("raise_attention_window");
+    expect(mockedInvoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("registers `listenAttentionAlertClicked` on the `attention-alert-clicked` event and forwards payload", async () => {
+    const unlisten = vi.fn();
+    let eventCallback: EventCallback<AttentionAlertClickedPayload> | undefined;
+    mockedListen.mockImplementation((_event, cb) => {
+      eventCallback = cb as EventCallback<AttentionAlertClickedPayload>;
+      return Promise.resolve(unlisten);
+    });
+
+    const handler = vi.fn();
+    const resultUnlisten = await listenAttentionAlertClicked(handler);
+
+    // The wire NAME, spelled literally here: `IPC_EVENTS` is the owner, but a
+    // key rename inside that const is exactly the drift this file exists to
+    // catch (the component tests mock this wrapper wholesale).
+    expect(mockedListen).toHaveBeenCalledWith(
+      "attention-alert-clicked",
+      expect.any(Function),
+    );
+    expect(resultUnlisten).toBe(unlisten);
+
+    const payload: AttentionAlertClickedPayload = { token: "main1" };
+    eventCallback?.({
+      event: "attention-alert-clicked",
       id: 1,
       payload,
     });

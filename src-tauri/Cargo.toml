@@ -252,8 +252,19 @@ gtk = "0.18"
 # graph — the target list is the plugin's own notify-rust gate verbatim:
 # android/ios are `unix` but are exactly what it excludes, and so are we
 # (`cfg(unix)` alone would ask notify-rust to build there).
+#
+# `zbus` joins it because the alert is now SENT on a connection this app owns
+# for the whole process (`attention::delivery::bus`), and the one signal thread
+# that watches for the body click is a `zbus` subscription — `notify_rust`'s
+# `show()` opens a connection per alert and hands no way to watch the bus.
+# Version AND default features are again the plugin's own (`zbus = "5"`, under
+# the SAME target gate in `tauri-plugin-notification` 2.6.0's manifest), and
+# 5.19.0 is already resolved in `Cargo.lock` from that edge — so this line adds
+# a direct edge to a crate already in the graph and compiles nothing new
+# (`blocking-api`, which the `bus` code needs, is in zbus's DEFAULT features).
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies]
 notify-rust = "4.18"
+zbus = "5"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 # The auto-updater behind `check_update` / `install_update` / `relaunch_app`
