@@ -41,7 +41,7 @@ import {
  *    sides derive from, not a grep.
  */
 
-/** The 12 Tauri event names, in the order the wrappers appear in `src/lib/`. */
+/** The 13 Tauri event names, in the order the wrappers appear in `src/lib/`. */
 const TAURI_EVENT_NAMES = [
   "session-update",
   "session-closed",
@@ -54,6 +54,9 @@ const TAURI_EVENT_NAMES = [
   "subagent-session-started",
   "subagent-closed",
   "window-state-changed",
+  // The alert's body click (the notification side emits it; the renderer's
+  // listener consumes it). Kebab-case like the eleven above it.
+  "attention-alert-clicked",
   "update://progress",
 ] as const;
 
@@ -70,6 +73,7 @@ describe("IPC_EVENTS — the Tauri event names (wire values, exact)", () => {
     ["subagentSessionStarted", "subagent-session-started"],
     ["subagentClosed", "subagent-closed"],
     ["windowStateChanged", "window-state-changed"],
+    ["attentionAlertClicked", "attention-alert-clicked"],
   ] as const)(
     "%s is the wire string %s",
     (key, wire) => {
@@ -77,8 +81,8 @@ describe("IPC_EVENTS — the Tauri event names (wire values, exact)", () => {
     },
   );
 
-  it("the 12th wrapper, in lib/update.ts, is `update://progress`", () => {
-    // NOT kebab-case like the other eleven — the updater plugin's own scheme,
+  it("the 13th wrapper, in lib/update.ts, is `update://progress`", () => {
+    // NOT kebab-case like the other twelve — the updater plugin's own scheme,
     // so it is the one name a "consistency" rename would break.
     expect(IPC_EVENTS.updateProgress).toBe("update://progress");
   });
@@ -138,7 +142,7 @@ describe("the exported types describe the wire names", () => {
     const interactive: InteractiveEventName[] = Object.values(
       INTERACTIVE_EVENTS,
     );
-    expect(names).toHaveLength(13);
+    expect(names).toHaveLength(14);
     expect(interactive).toHaveLength(5);
   });
 });

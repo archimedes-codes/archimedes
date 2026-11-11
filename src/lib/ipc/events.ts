@@ -2,8 +2,8 @@
  * The ONE owner of every IPC event-name string, and of the `interactive-event`
  * payload's `event` discriminants.
  *
- * Before this module, each of the twelve `listen*` wrappers carried its own
- * bare string (`lib/tauri.ts` held eleven, `lib/update.ts` the twelfth), and
+ * Before this module, each of the thirteen `listen*` wrappers carried its own
+ * bare string (`lib/tauri.ts` held twelve, `lib/update.ts` the thirteenth), and
  * the five `interactive-event` names were string literals inside `App.tsx`'s
  * handler with a comment apologising that the wire name is `cost_update` and
  * not `cost`. That is the shape in which a rename goes half-done: the invoke
@@ -34,7 +34,7 @@
  * Every event name the renderer subscribes to (or dispatches, in
  * [`IPC_EVENTS.insertSkill`]'s case), keyed by the wrapper that consumes it.
  *
- * The eleven from `lib/tauri.ts` in file order, then the twelfth from
+ * The twelve from `lib/tauri.ts` in file order, then the thirteenth from
  * `lib/update.ts`, then the one non-Tauri name.
  */
 export const IPC_EVENTS = {
@@ -49,9 +49,13 @@ export const IPC_EVENTS = {
   subagentSessionStarted: "subagent-session-started",
   subagentClosed: "subagent-closed",
   windowStateChanged: "window-state-changed",
+  /** The body of an Attention alert was clicked (`attention_arm`'s
+   *  `clickToken` comes back in the payload): the renderer's listener navigates
+   *  to the Session that raised it. Kebab-case like the ones above it. */
+  attentionAlertClicked: "attention-alert-clicked",
   /**
    * The updater plugin's install-progress event (`lib/update.ts`). Deliberately
-   * NOT kebab-case like the eleven above — it is the plugin's own
+   * NOT kebab-case like the twelve above — it is the plugin's own
    * scheme-prefixed name, not one of ours.
    */
   updateProgress: "update://progress",

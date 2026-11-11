@@ -1426,6 +1426,16 @@ export interface WindowFrameState {
 }
 
 
+/** The `attention-alert-clicked` payload: the session the alert names — the
+ *  already-resolved PARENT id the click token carries, so a click on a child's
+ *  question lands on the parent. Lives beside `WindowFrameState` because the
+ *  click route is the PUSH half of a window interaction (the notification's
+ *  click raises the window, then names the Session to open). */
+export interface AttentionAlertClickedPayload {
+  token: string;
+}
+
+
 // ---------------------------------------------------------------------------
 // Provider auth + budget (the LiteLLM connection suite, #126 / #127 / #132)
 // ---------------------------------------------------------------------------

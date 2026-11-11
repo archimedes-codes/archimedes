@@ -218,6 +218,12 @@ const TAURI_PUBLIC_API = [
   "AppSettings",
   "AskQuestionDto",
   "AskResponsePayload",
+  // (attention-alert click route, T2) The `attention-alert-clicked` payload —
+  // the session id an alert's body click navigates to. TYPE-ONLY: it vanishes at
+  // runtime, so `TAURI_RUNTIME_API` does NOT gain it (the
+  // `AccessRule`/`AccessDirection` precedent); its wrapper
+  // `listenAttentionAlertClicked` DOES, among the `listen*` entries below.
+  "AttentionAlertClickedPayload",
   // (issue #180 D1, spec §1, ADR 0100) The two Task-artifact wire shapes, added ON
   // PURPOSE per the header above. TYPE-ONLY — they vanish at runtime, so
   // `TAURI_RUNTIME_API` does NOT gain them (the `AccessRule`/`AccessDirection`
@@ -280,6 +286,10 @@ const TAURI_PUBLIC_API = [
   "getSettings",
   "getTask",
   "getWindowState",
+  // (attention-alert click route, T2) The window raise the alert's body click
+  // asks for. A RUNTIME value (a command wrapper, no payload), so it enters BOTH
+  // lists; no TYPE name enters with it.
+  "raiseAttentionWindow",
   "HistoryPage",
   "InteractiveEventPayload",
   "InteractiveRequestClosePayload",
@@ -289,6 +299,11 @@ const TAURI_PUBLIC_API = [
   "listAgentDefinitionReports",
   "listAgentDefinitionsForSpace",
   "listCompletionEntries",
+  // (attention-alert click route, T2) The `attention-alert-clicked` listener —
+  // a RUNTIME value (a function), so it enters BOTH lists; the payload type it
+  // traffics in, `AttentionAlertClickedPayload`, is TYPE-ONLY and lives in
+  // `TAURI_PUBLIC_API` only (the `AccessRule`/`AccessDirection` precedent).
+  "listenAttentionAlertClicked",
   "listenInteractiveEvent",
   "listenInteractiveRequest",
   "listenInteractiveRequestClose",
@@ -448,10 +463,19 @@ const TAURI_RUNTIME_API = [
   "getSettings",
   "getTask",
   "getWindowState",
+  // (attention-alert click route, T2) The window raise the alert's body click
+  // asks for. A RUNTIME value (a command wrapper, no payload), so it enters BOTH
+  // lists; no TYPE name enters with it.
+  "raiseAttentionWindow",
   "linkSession",
   "listAgentDefinitionReports",
   "listAgentDefinitionsForSpace",
   "listCompletionEntries",
+  // (attention-alert click route, T2) The `attention-alert-clicked` listener —
+  // a RUNTIME value (a function), so it enters BOTH lists; the payload type it
+  // traffics in, `AttentionAlertClickedPayload`, is TYPE-ONLY and lives in
+  // `TAURI_PUBLIC_API` only (the `AccessRule`/`AccessDirection` precedent).
+  "listenAttentionAlertClicked",
   "listenInteractiveEvent",
   "listenInteractiveRequest",
   "listenInteractiveRequestClose",
@@ -671,6 +695,13 @@ describe("the scanner actually reads the tree", () => {
     // wrappers), so both pinned API lists below are untouched — this is the census
     // moving for the one reason the pin allows, a TS test file added, in a commit
     // that says so.
+    //
+    // (attention-alert click route, T2) This census did NOT move — 55 stays 55 and
+    // the `importActual` half stays 54. The census counts test FILES that
+    // `vi.mock` the barrel by path, and T2 adds none: its new wrapper lives in an
+    // existing module (`tauri/events.ts`) and the `attention_arm` change only adds
+    // an argument. A later reader must not "fix" this number — the census may only
+    // move when a test file is added or removed, in a commit that says so.
     expect(mockers).toHaveLength(55);
     // 54 of the 55 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. Both new mockers spread

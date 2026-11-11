@@ -74,10 +74,14 @@ function runPass(
     void attentionDisarm().catch(logFailure);
     return;
   }
-  const { title, body } = attentionAlertText(effect.trigger, ctx);
+  const { title, body, click_token } = attentionAlertText(effect.trigger, ctx);
   // The delay travels with the arm and is then FORGOTTEN here: Rust owns the
   // clock, so a later settings change must not re-time a running countdown.
-  void attentionArm(delaySecs, title, body).catch(logFailure);
+  // The token travels too and is likewise forgotten — Rust carries it through
+  // the notification and hands it back on a body click, which is the only way
+  // the renderer learns which Session the click named (ADR 0039: no renderer
+  // state survives the countdown).
+  void attentionArm(delaySecs, title, body, click_token).catch(logFailure);
 }
 
 /**
