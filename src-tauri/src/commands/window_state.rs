@@ -52,11 +52,36 @@ pub fn should_emit(last: Option<WindowFrameState>, new_state: WindowFrameState) 
 /// of every refusal are testable with no window and no desktop, in the same
 /// shape [`crate::focus_probe_trace`] and [`crate::webview_focus_trace`] use for
 /// the focus probe. The argument order IS the call order: `unminimize` → `show`
-/// → `set_focus`, and that order is load-bearing rather than stylistic. tao's
-/// Linux `set_focus()` is guarded by `!minimized && visible` and otherwise
-/// **silently no-ops**, so a focus-first raise on a minimized window reports
-/// success while doing nothing at all; `show()` has to precede it for the same
-/// reason on a hidden window. Never reorder.
+/// → `set_focus`.
+///
+/// That order is load-bearing rather than stylistic, and it is ALSO not
+/// sufficient — both halves of which you have to hold at once to read what a
+/// raise's three lines mean.
+///
+/// **Why never reorder:** tao's Linux `set_focus()` is guarded by
+/// `!minimized && visible` and otherwise **silently no-ops**, so a focus-first
+/// raise on a minimized window reports success while doing nothing at all;
+/// `show()` has to precede it for the same reason on a hidden window. Focus-first
+/// is strictly worse in every case. Never reorder.
+///
+/// **Why it is not sufficient for a minimized window, on Linux** (tao 0.37.1,
+/// `platform_impl/linux/`): `set_minimized` (`window.rs:623`) only ENQUEUES
+/// `WindowRequest::Minimized(false)` onto a `glib::MainContext` channel
+/// (`event_loop.rs:244`) — the `deiconify()` happens later, when the GLib main
+/// loop drains that channel. `set_focus` (`window.rs:582`) meanwhile reads
+/// `self.minimized.load(Acquire) && self.window.get_visible()` SYNCHRONOUSLY, and
+/// that `AtomicBool` is written only by the GTK `window-state-event` handler
+/// (`window.rs:372`), which itself needs a drain. And [`raise_attention_window`]
+/// is a SYNC `#[tauri::command]`, which Tauri runs inline on the main thread
+/// inside the IPC callback — so the channel cannot drain between step 1 and step
+/// 3. Consequence: for a **visible-but-unfocused** window (the common case)
+/// `minimized` is already `false` and `get_visible()` is true, `Focus` is
+/// enqueued, and the order does its job. For a **minimized** window `minimized`
+/// is still `true` at step 3, so `set_focus()` takes its silent no-op branch and
+/// the third line this function narrates says `focused` for a call that enqueued
+/// nothing. The trace is therefore truthful about the CALLS and cannot say
+/// anything about the RESULT — which is the whole reason the raise is
+/// best-effort and navigation is the guaranteed half (ADR 0103).
 ///
 /// Exactly ONE line per step — success narrated, refusal named with the
 /// platform's own `Display` — and a refusal of step N does NOT suppress step
@@ -122,6 +147,26 @@ pub fn raise_trace(
 /// because of it. Each step's outcome reaches the `ARCHIMEDES_DEBUG` log as the
 /// one line `raise_trace` forms for it, so a report of "the alert was clicked and
 /// nothing happened" is readable without attaching a debugger.
+///
+/// ⚠ **The order is necessary, not sufficient — for a minimized window, on
+/// Linux.** Documented here because the log lines read as if all three steps
+/// worked, and a reader who does not know this hunts for the wrong bug.
+/// `set_minimized` only ENQUEUES its request onto a `glib::MainContext` channel
+/// (tao 0.37.1 `platform_impl/linux/window.rs:623`, `event_loop.rs:244`), so the
+/// `deiconify()` runs on a later GLib drain; `set_focus` reads the `minimized`
+/// `AtomicBool` SYNCHRONOUSLY (`window.rs:582`) and that flag is written only by
+/// the GTK `window-state-event` handler (`window.rs:372`), which also needs a
+/// drain. This command is a **sync** `#[tauri::command]`, which Tauri runs inline
+/// on the main thread inside the IPC callback, so nothing drains between step 1
+/// and step 3: for a MINIMIZED window `set_focus()` sees `minimized == true` and
+/// takes its silent no-op branch. For a **visible-but-unfocused** window — the
+/// common case, and the reachable one after a click, since closing the window
+/// quits the app — the flag is already `false`, `Focus` IS enqueued, and the
+/// order does its job. The known candidate fix is a follow-up turn (defer the
+/// `set_focus()` to a later GLib turn so the drain has landed); deliberately NOT
+/// implemented here — this feature scoped the raise as best-effort and the
+/// navigation as the guaranteed half, and chasing the minimized case needs
+/// machinery this spec excluded.
 ///
 /// Best-effort by contract: the wire shape is `Ok(())` and there is no refusal to
 /// surface to a user who has already clicked — including the no-window path. The
@@ -292,7 +337,12 @@ mod tests {
     // The three lines below pin the PURE trace: the ORDER, and the exact wording
     // of every arm. They are the whole headless proof the raise can have — no
     // window, no `AppHandle`, no compositor. What they do NOT prove is that the
-    // raise WORKS on any platform (see `raise_trace`'s doc comment).
+    // raise WORKS on any platform (see `raise_trace`'s doc comment), and one
+    // reading they actively invite is wrong: a clean three-line narration means
+    // three CALLS were made, NOT that the window came forward — for a minimized
+    // window on Linux the third line (`focused`) narrates a `set_focus()` that
+    // read a stale `minimized` flag and enqueued nothing. See
+    // `raise_attention_window`'s doc comment for the mechanism.
 
     /// Every step of a clean raise gets its OWN narrated line, in the order the
     /// calls happen: `unminimize` → `show` → `set_focus`.

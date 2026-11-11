@@ -111,16 +111,32 @@ The command answers `Ok(())` on every path including the no-window path — the 
 the click already happened, and the renderer has nothing it could do with a refusal; the log is where
 the failure lands.
 
+**That order is necessary and NOT sufficient, for a minimized window on Linux** — recorded because
+three narrated `attention: raise: ` lines otherwise read as proof the window came forward. tao 0.37.1
+enqueues rather than acts: `set_minimized` (`platform_impl/linux/window.rs:623`) pushes
+`WindowRequest::Minimized(false)` onto a `glib::MainContext` channel (`event_loop.rs:244`) and the
+`deiconify()` only runs when the GLib main loop drains it, while `set_focus` (`window.rs:582`) reads
+the `minimized` `AtomicBool` **synchronously** — and that flag is written only by the GTK
+`window-state-event` handler (`window.rs:372`), which needs a drain of its own.
+`raise_attention_window` is a **sync** `#[tauri::command]`, which Tauri runs inline on the main
+thread inside the IPC callback, so the channel cannot drain between step 1 and step 3. Hence: for a
+**visible-but-unfocused** window (the common case) `minimized` is already `false`, `get_visible()` is
+true, `Focus` is enqueued and the order does its job; for a **minimized** window `minimized` is still
+`true` at step 3 and `set_focus()` takes its silent no-op branch. The candidate fix is a follow-up
+turn — defer the `set_focus()` to a later GLib turn, after the drain — and it is deliberately NOT
+implemented: this ADR scopes the raise as best-effort and the navigation as the guaranteed half, so
+machinery to chase one window state is out of scope.
+
 **What that makes true, and what it does not.** The order and the wording are now implemented and
 pinned by `raise_trace`'s unit tests plus the raise group in `tests/attention_alert_click.rs` —
 three narrated lines in order, a refused `unminimize` getting its own line while the later two still
 produce theirs (the no-early-return claim), and one line for a missing window that names the label it
-looked for. That is the whole of what a headless checkout can prove. **The raise is NOT behaviourally
-verified on Windows or under Wayland.** `cargo check --target x86_64-pc-windows-gnu --all-targets`
-TYPE-CHECKS that target (the msvc target needs `lib.exe`, and there is no wine here), there is no
-macOS host, and no check in this repository drives a real compositor or window manager. Whether an
-alert click actually surfaces a window on those platforms is a measurement someone has to make on
-one.
+looked for. That is the whole of what a headless checkout can prove, and it pins the CALLS, never the
+RESULT. **The raise is NOT behaviourally verified on Windows or under Wayland.**
+`cargo check --target x86_64-pc-windows-gnu --all-targets` TYPE-CHECKS that target (the msvc target
+needs `lib.exe`, and there is no wine here), there is no macOS host, and no check in this repository
+drives a real compositor or window manager. Whether an alert click actually surfaces a window on those
+platforms is a measurement someone has to make on one.
 
 ## Considered Options
 

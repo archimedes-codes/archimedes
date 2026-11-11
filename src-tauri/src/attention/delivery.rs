@@ -367,6 +367,16 @@ pub mod bus {
     ///
     /// `None` only when there is no session bus to reach (a headless box, ssh
     /// without a bus address) — which is a refusal the caller logs, not a panic.
+    ///
+    /// `unwrap_or_else(into_inner)` DESPITE the single-shared-resource shape
+    /// (AGENTS.md's discriminator points at "panic" for that shape, which is why
+    /// the reason goes here): the guarded value is an `Option<Connection>`, and
+    /// every state a panic can leave it in — still `None`, or holding a half-
+    /// installed connection — is a state the code already treats as "no
+    /// connection yet", so the NEXT alert retries the handshake. Panicking would
+    /// abort the delivery task and cost the user an alert, the one outcome this
+    /// module exists to avoid. Do NOT copy this line to a lock whose poisoned
+    /// value is genuinely unusable — that is what the discriminator is for.
     fn connection() -> Option<zbus::blocking::Connection> {
         let mut slot = CONNECTION
             .lock()
@@ -410,6 +420,12 @@ pub mod bus {
         app: tauri::AppHandle<R>,
         connection: &zbus::blocking::Connection,
     ) {
+        // `unwrap_or_else(into_inner)` DESPITE the single-shared-resource shape,
+        // for the same reason as `connection()`: the guarded value is a `bool`,
+        // which a panic cannot corrupt — the worst poison can leave is a `false`
+        // that costs one extra subscribe-and-spawn attempt, while panicking here
+        // would abort the delivery task and cost the user an alert. Not a licence
+        // to recover everywhere: see AGENTS.md's discriminator.
         let mut started = SIGNAL_THREAD_STARTED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -436,6 +452,28 @@ pub mod bus {
         }
     }
 
+    /// How many unread signals the one subscription may buffer before the bus
+    /// starts dropping them — `zbus::blocking::MessageIterator::for_match_rule`'s
+    /// `max_queued`, where `None` would mean zbus's `DEFAULT_MAX_QUEUED` of 64
+    /// (`zbus` 5.19.0 `connection/mod.rs:47`).
+    ///
+    /// 64 is sized for a subscriber that drains promptly. This thread does not:
+    /// it is the ONE place that both drains the notification bus and frees the
+    /// token map, and per signal it does synchronous file I/O
+    /// (`debuglog::log` — an append, plus a rename when the log rotates), so its
+    /// read side can stall while the queue fills. And the rule matches the
+    /// server's object path for the WHOLE session, so the queue carries every
+    /// other app's `ActionInvoked`/`NotificationClosed` too, not just ours.
+    ///
+    /// 256 — four times the default — because the failure mode of a full queue
+    /// is not a slowed log, it is a DROPPED `ActionInvoked`, i.e. a user's click
+    /// on an alert that silently navigates nowhere (and a dropped
+    /// `NotificationClosed` stops the token map being pruned). The cost of the
+    /// headroom is bounded and small: an entry is one owned `Message` (a header
+    /// plus body bytes — these signals carry a `u32` and a short string), so the
+    /// worst case is a few hundred KB on a process that runs for weeks.
+    const SIGNAL_QUEUE_DEPTH: usize = 256;
+
     /// Subscribe to the notification server's signals on `connection`, or `None`
     /// when the rule or the subscription could not be set up.
     ///
@@ -459,7 +497,32 @@ pub mod bus {
             .interface(interface)
             .ok()?
             .build();
-        zbus::blocking::MessageIterator::for_match_rule(rule, connection, None).ok()
+        zbus::blocking::MessageIterator::for_match_rule(rule, connection, Some(SIGNAL_QUEUE_DEPTH))
+            .ok()
+    }
+
+    /// The debug line for ONE signal this thread could not read.
+    ///
+    /// PURE (it takes the error, nothing else) so the WORDING is testable with no
+    /// bus and no `AppHandle` — the same `delivery_trace` / `focus_probe_trace`
+    /// shape, and for the same reason: building a fake `MessageIterator` is not
+    /// possible and building a real `App` is forbidden (a second
+    /// `generate_context!()` duplicates `embed_plist`'s `_EMBED_INFO_PLIST` and
+    /// reddens macOS `cargo test` while clippy stays green).
+    ///
+    /// `pub` ONLY for that test.
+    ///
+    /// Three things the line must say, and one it must not: that a signal was
+    /// DROPPED (the token map stops being pruned and a click is lost — the reader
+    /// needs to know a signal went missing, not that one arrived), that it was a
+    /// READ failure rather than an uninteresting member, the error's own
+    /// `Display`, and that the listener is still up. It must NOT read as a
+    /// shutdown: the thread keeps looping, and a real end has its own line.
+    pub fn dropped_signal_trace(error: &zbus::Error) -> String {
+        format!(
+            "attention: a notification signal was DROPPED on read ({error}) — the signal \
+             thread is still listening and this alert's click may be lost"
+        )
     }
 
     /// The signal thread's loop: every signal the server emits, narrowed to a
@@ -470,10 +533,21 @@ pub mod bus {
         signals: zbus::blocking::MessageIterator,
         app: tauri::AppHandle<R>,
     ) {
-        // `flatten` drops a read error and keeps listening: one bad message (or
-        // one interrupted read) must not be able to make the app permanently
-        // deaf, and there is no one to retry against.
-        for signal in signals.flatten() {
+        // A read error is LOGGED and the loop continues: one bad message (or one
+        // interrupted read) must not be able to make the app permanently deaf,
+        // and there is no one to retry against. It is NOT silently dropped the
+        // way `flatten()` did — a dropped signal is the one event that both loses
+        // a user's click and stops the token map being pruned, so it has to leave
+        // a trace under this module's prefix or "no navigation happened" is
+        // undiagnosable, which is the question this module exists to answer.
+        for signal in signals {
+            let signal = match signal {
+                Ok(signal) => signal,
+                Err(e) => {
+                    debuglog::log(&dropped_signal_trace(&e));
+                    continue;
+                }
+            };
             let Some(signal) = signal_of(&signal) else {
                 continue;
             };
@@ -745,6 +819,15 @@ pub fn delivery_trace(outcome: &Outcome) -> String {
 mod tests {
     use super::{delivery_trace, Outcome};
 
+    // The dropped-signal line belongs to the bus transport, which exists on no
+    // other target — so both the import and its test carry the SAME gate as the
+    // module (and as the `zbus` dependency in `Cargo.toml`).
+    #[cfg(all(
+        unix,
+        not(any(target_os = "macos", target_os = "android", target_os = "ios"))
+    ))]
+    use super::bus::dropped_signal_trace;
+
     // ---- the log line (what the delivery is allowed to claim) --------------
 
     /// The session-bus success line carries the id the SERVER assigned: that
@@ -837,5 +920,49 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    // ---- the dropped-signal line (a read error the thread survives) --------
+
+    /// A failed signal READ names itself as a DROPPED SIGNAL, quotes the error,
+    /// and does not claim the listener went away.
+    ///
+    /// `watch` deliberately keeps looping when a read fails — one bad message
+    /// must not make the app permanently deaf — but it must not be INVISIBLE
+    /// either: if signals are being dropped the token map stops being pruned and
+    /// a click is lost, and "no navigation happened" is exactly the support
+    /// question this module exists to make answerable. Hence the line has to say
+    /// (a) a signal was dropped, (b) why, and (c) that the loop went on.
+    ///
+    /// The seam is pure, so this needs no `MessageIterator` and no `AppHandle`:
+    /// `zbus::Error` has public constructible variants, and a test builds one
+    /// from thin air — the same reason `delivery_trace` exists. Building a fake
+    /// iterator or a real `App` is forbidden here for the `_EMBED_INFO_PLIST`
+    /// reason `webview_focus_trace`'s doc records.
+    #[cfg(all(
+        unix,
+        not(any(target_os = "macos", target_os = "android", target_os = "ios"))
+    ))]
+    #[test]
+    fn a_dropped_signal_names_itself_as_dropped_and_keeps_the_listener_up() {
+        let error = zbus::Error::Failure("the socket reader task went away".into());
+        let line = dropped_signal_trace(&error);
+
+        assert!(line.starts_with("attention: "), "{line}");
+        let lowered = line.to_lowercase();
+        assert!(lowered.contains("dropped"), "a drop says so: {line}");
+        assert!(lowered.contains("signal"), "it names what was lost: {line}");
+        assert!(
+            line.contains("the socket reader task went away"),
+            "the error's own Display survives verbatim, the standing rule: {line}"
+        );
+        // The anti-claim: the thread CONTINUES, so a line that read as a
+        // shutdown would send a reader to the wrong diagnosis (and a real
+        // shutdown has its own line, `the notification signal thread ended`).
+        assert!(
+            !lowered.contains("ended"),
+            "a drop is not a shutdown: {line}"
+        );
+        assert!(!lowered.contains("deaf"), "the listener stays up: {line}");
     }
 }
