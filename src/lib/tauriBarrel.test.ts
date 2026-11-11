@@ -696,16 +696,29 @@ describe("the scanner actually reads the tree", () => {
     // moving for the one reason the pin allows, a TS test file added, in a commit
     // that says so.
     //
-    // (attention-alert click route, T2) This census did NOT move — 55 stays 55 and
-    // the `importActual` half stays 54. The census counts test FILES that
+    // (attention-alert click route, T2) This census did NOT move — 55 stayed 55 and
+    // the `importActual` half stayed 54. The census counts test FILES that
     // `vi.mock` the barrel by path, and T2 adds none: its new wrapper lives in an
     // existing module (`tauri/events.ts`) and the `attention_arm` change only adds
     // an argument. A later reader must not "fix" this number — the census may only
     // move when a test file is added or removed, in a commit that says so.
-    expect(mockers).toHaveLength(55);
-    // 54 of the 55 SPREAD `vi.importActual`, which is the shape that makes the
-    // seam forgiving: an unlisted export still resolves. Both new mockers spread
-    // too (each lists the arms its own tests drive and leaves every other barrel
+    //
+    // And 55 -> 56 for the SAME feature's other half (attention-alert click
+    // NAVIGATION, T3), which is the addition this pin exists to record: ONE new
+    // test file, `src/hooks/useAttentionAlertClick.ts`'s own, which mocks the
+    // barrel the documented way because the listener's whole job is calling four
+    // barrel exports in a fixed order and asserting an ORDER needs a spy rather
+    // than a real `invoke`. It spreads `importActual` too, so the spread half moved
+    // 54 -> 55 and the one wholesale replacement is STILL
+    // `hooks/useWindowMaximized.test.ts`. The feature's other new test file,
+    // `src/lib/attentionFocusSignal.test.ts`, is NOT a mocker — the signal module
+    // holds no IPC, so that file imports it directly, which is the shape the seam
+    // prefers. T2's paragraph above stays as written: it describes the commit that
+    // left this number alone, and it was correct then.
+    expect(mockers).toHaveLength(56);
+    // 55 of the 56 SPREAD `vi.importActual`, which is the shape that makes the
+    // seam forgiving: an unlisted export still resolves. The new mocker spreads
+    // too (it lists the arms its own tests drive and leaves every other barrel
     // export — `invoke` included — to the real module), so the remaining one
     // is still `hooks/useWindowMaximized.test.ts`, which replaces the module
     // wholesale — so a name it forgets is `undefined`, the case the pinned-surface
@@ -714,7 +727,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(readFileSync(f, "utf8")),
       ).length,
-).toBe(54);
+).toBe(55);
   });
 });
 
