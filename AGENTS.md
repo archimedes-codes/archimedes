@@ -88,7 +88,11 @@ leaf-unique (cited by PR number, not the head SHA, per the squash-orphan rule be
   exactly when a full-path diff reads "everything churned".
 
 **Use leaf-unique to prove loss, and expect the full-path set to churn by 2× the number of tests
-moved.** The assertion is **loss = 0**, never the total.
+moved.** The assertion is **loss = 0**, never the total. **And a `comm`/`diff` census is only valid if
+BOTH inputs are normalised identically** — `--list` prints `name: test`, so stripping the `: test`
+suffix from one file and not the other makes every name read as BOTH deleted and added, which is a
+confident, well-formed, meaningless result (observed live on this run's `Retained` deletion proof; the
+correct diff showed exactly 3 deletions and 2 additions). Normalise both sides or neither.
 
 **Split a test region by SUBJECT, not by line ratio — one `describe` / one `#[cfg(test)]` module =
 one subject, and >~25 tests in one block is a tripwire to go find that boundary, not a number to
@@ -654,6 +658,15 @@ These are properties of the repo, not of any branch:
   export trades a green frontend for four red Rust tests. The honest fix if this ever bites
   CI (whose `/tmp` does not churn) is `pool: 'vmThreads'` / `isolate: false`, which the
   vitest perf hint already names.
+- **A second cold Rust build in a sibling worktree is not affordable on this machine, so
+  a wave's Rust child belongs in the PRIMARY checkout.** Measured here: `target/` is **152 G** and
+  `/home` had **13 G free** — the run that measured it saw 131 G against 19 G, so the ratio is the
+  point, not the figures. And isolating the Rust child buys nothing anyway: two `cargo` runs against
+  one shared `target/` serialize on cargo's build lock regardless. So for a width-2 wave, put the
+  Rust task in the primary tree and isolate the TypeScript one (`node_modules` is ~417 M from a warm
+  pnpm store). The invariant `trees-and-branches` protects — siblings must not share a working tree —
+  is still held: they share the object store, never the index. Check `df -h` before widening a Rust
+  wave, and re-measure rather than trusting these numbers.
 - **Component rule: locate by content string, not by path.** When adding or verifying a
   component (e.g. a Rust module, a TS component, a test file), find it by its content
   signature — the `impl`, the trait name, the string literal — rather than by a
@@ -783,6 +796,11 @@ These are properties of the repo, not of any branch:
   the shipped ADR is `0089`. Do not derive the number from a plan or from `max+1` alone: the directory
   has gaps (0001–0089 holds 80 distinct numbers, so 9 are missing), so `max+1` avoids collisions but a
   gap-filler will not, and the check that matters is the `uniq -d` above run AFTER you pick, not before.
+  **And verify against the DIRECTORY, not against `git ls-files`:** at `e0f3811e` a plan checked `0101`
+  free against the tracked set and was right at that moment, while two UNTRACKED neighbours (`0101`,
+  `0102`, from a concurrent in-flight design) already held those numbers on disk. The collision lives
+  on disk, so a tracked-only check cannot see it; the shipped ADR became `0103`. `ls docs/decisions/`
+  reads both sets, `git ls-files docs/decisions/` reads one.
 - **Run cargo from the repository root — the workspace. A stray `cd src-tauri` no longer fails loudly;
   it silently builds one member.** Before T4 this repo had no root `Cargo.toml`, so a backgrounded
   `cargo` with no `cd` died with `could not find Cargo.toml` and, at exit 101, masqueraded as a real
