@@ -432,15 +432,22 @@ export interface AttentionLabelContext {
 }
 
 /**
- * The alert's text. Rust owns no session vocabulary (ADR 0039), so the renderer
- * composes the sentence here — which also means the notification names the
- * SESSION, and a subagent's gate names the parent the user is actually waiting
- * on, not a child id they have never seen.
+ * The alert's text, plus the id a body click navigates to. Rust owns no session
+ * vocabulary (ADR 0039), so the renderer composes the sentence here — which also
+ * means the notification names the SESSION, and a subagent's gate names the
+ * parent the user is actually waiting on, not a child id they have never seen.
+ *
+ * `click_token` is that SAME resolved id, returned rather than recomputed by the
+ * click route: one derivation, so the alert's sentence and the destination its
+ * click lands on cannot disagree. The Rust side carries the string through the
+ * notification untouched and hands it back on a body click
+ * (`attention-alert-clicked`), which is what lets a child's question route to
+ * its parent with no second resolution rule anywhere.
  */
 export function attentionAlertText(
   trigger: AttentionTrigger,
   ctx: AttentionLabelContext,
-): { title: string; body: string } {
+): { title: string; body: string; click_token: string } {
   const id = ctx.parents[trigger.sessionId] ?? trigger.sessionId;
   const row = ctx.sessions.find((s) => s.sessionId === id);
   // `||`, not `??`: `basenameOfPath` returns an empty string for empty input or
@@ -453,5 +460,8 @@ export function attentionAlertText(
       trigger.kind === "waiting"
         ? `${label} needs your answer`
         : `${label} finished — waiting for you`,
+    // The label above is built from this same `id`, so the token names exactly
+    // the Session the sentence names.
+    click_token: id,
   };
 }

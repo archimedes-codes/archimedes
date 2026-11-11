@@ -125,6 +125,11 @@ export type {
   SessionTitledPayload,
   InteractiveRequestClosePayload,
   WindowFrameState,
+  // (attention-alert click route, T2) The `attention-alert-clicked` payload.
+  // TYPE-ONLY — it vanishes at runtime, so `TAURI_RUNTIME_API` does NOT gain it
+  // (the `AccessRule`/`AccessDirection` precedent); its wrapper
+  // `listenAttentionAlertClicked` below DOES.
+  AttentionAlertClickedPayload,
   // (issue #126 / #127 / #132) The provider-auth wire types. TYPE-ONLY — they
   // vanish at runtime, so `TAURI_RUNTIME_API` does NOT gain them (the
   // `AccessRule`/`AccessDirection` precedent); they enter `TAURI_PUBLIC_API`
@@ -276,6 +281,10 @@ export {
 
 export {
   getWindowState,
+  // (attention-alert click route, T2) The window raise the alert's body click
+  // asks for. No payload, so no arg-key contract to pin beyond the command NAME
+  // — which `src/lib/tauri.test.ts` pins to the zero-arg `invoke` form.
+  raiseAttentionWindow,
 } from "./tauri/commands/window";
 
 export {
@@ -290,4 +299,8 @@ export {
   listenSubagentSessionStarted,
   listenSubagentClosed,
   listenWindowState,
+  // (attention-alert click route, T2) The alert's body click — the twelfth
+  // wrapper in this file, and the reason `ipc/events.ts` now counts twelve
+  // Tauri names from here rather than eleven.
+  listenAttentionAlertClicked,
 } from "./tauri/events";
