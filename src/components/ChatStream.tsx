@@ -2,6 +2,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 // The dispatch-path imports (`sendPrompt`, `compactSession`, `type StopReason`,
 // `describeIpcError`, `parseComposerCommand`, `expandMentions`,
@@ -33,6 +34,10 @@ import { useMentionPicker, type MentionPickerState } from "../hooks/useMentionPi
 import { useAutoGrowComposer } from "../hooks/useAutoGrowComposer";
 import { useWindowDropBackstop } from "../hooks/useWindowDropBackstop";
 import { normalizeVariant } from "../lib/braille-loader";
+import {
+  getAttentionFocusRequest,
+  subscribeAttentionFocus,
+} from "../lib/attentionFocusSignal";
 import SessionStalledBanner from "./SessionStalledBanner";
 import MessageList from "./chat/MessageList";
 import ComposerRow from "./chat/ComposerRow";
@@ -136,6 +141,21 @@ export default function ChatStream() {
   // document must not be reported as an explicit "the user turned it off".
   const emptyStateAnimation = useSettings(
     (s) => s.settings?.emptyStateAnimation ?? null,
+  );
+  // The Attention-alert click's "focus this transcript" request, read from the
+  // shared module with the same two-arg `useSyncExternalStore` shape `App` uses
+  // for the Open Space dialog flag. READ HERE and threaded down as a prop
+  // because `MessageList` is props-only and subscribes to nothing — it cannot
+  // see the signal for itself.
+  //
+  // In the UNCONDITIONAL block, before the `!activeSessionId` early return
+  // below: every hook in this component is there (a hook after the return makes
+  // the hook count depend on whether a Session is open, which React rejects),
+  // and `getAttentionFocusRequest` returns the SAME `null` reference while
+  // nothing is pending, so an idle app never re-renders from it.
+  const attentionFocusRequest = useSyncExternalStore(
+    subscribeAttentionFocus,
+    getAttentionFocusRequest,
   );
   /**
    * (ADR 0031's follow-up) Whether the `#` trigger names an MCP server. The
@@ -660,6 +680,7 @@ export default function ChatStream() {
         loadingMore={loadingMore}
         generation={generation}
         emptyStateAnimation={emptyStateAnimation}
+        focusRequest={attentionFocusRequest}
         onStartReached={() => {
           if (activeSessionId) void loadOlder(activeSessionId);
         }}
