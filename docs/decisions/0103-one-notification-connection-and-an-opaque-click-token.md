@@ -97,10 +97,30 @@ appends to a handler list.
 
 **The raise order is `unminimize() → show() → set_focus()`, and never focus-first.** tao's Linux
 `set_focus()` is guarded by `!minimized && visible` and otherwise silently no-ops, so focusing a
-minimized window does nothing at all and reports success doing it. Recorded here as the decision
-this feature depends on; **the command that performs it is not in this commit** — it is the follow-up
-half of the same task, whose file set (`commands/window_state.rs`, `lib.rs`) is disjoint from this
-one's. Nothing here should be read as that order being implemented or verified.
+minimized window does nothing at all and reports success doing it — the worst failure this feature
+can have, because it is silent. `show()` precedes the focus for the same reason on a hidden window.
+The order is therefore load-bearing, and it lives in one pure function,
+`commands::window_state::raise_trace`, in the `focus_probe_trace` / `webview_focus_trace` shape: the
+three raw outcomes come in as data and it returns (was there a window at all, the lines for the
+debug log). The thin `raise_attention_window` command resolves `get_webview_window("main")`, makes
+all three calls, and writes exactly one `debuglog` line per step — success narrated, refusal named
+with its own `Display` — under the `attention: raise: ` prefix. A refusal of step N does **not** skip
+step N+1: `unminimize()` on a window that is already un-minimized is a no-op or an error depending on
+the platform, and the two calls that could still bring the window forward must not be lost for it.
+The command answers `Ok(())` on every path including the no-window path — the raise is best-effort,
+the click already happened, and the renderer has nothing it could do with a refusal; the log is where
+the failure lands.
+
+**What that makes true, and what it does not.** The order and the wording are now implemented and
+pinned by `raise_trace`'s unit tests plus the raise group in `tests/attention_alert_click.rs` —
+three narrated lines in order, a refused `unminimize` getting its own line while the later two still
+produce theirs (the no-early-return claim), and one line for a missing window that names the label it
+looked for. That is the whole of what a headless checkout can prove. **The raise is NOT behaviourally
+verified on Windows or under Wayland.** `cargo check --target x86_64-pc-windows-gnu --all-targets`
+TYPE-CHECKS that target (the msvc target needs `lib.exe`, and there is no wine here), there is no
+macOS host, and no check in this repository drives a real compositor or window manager. Whether an
+alert click actually surfaces a window on those platforms is a measurement someone has to make on
+one.
 
 ## Considered Options
 

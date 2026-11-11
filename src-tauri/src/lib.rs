@@ -248,9 +248,11 @@ fn init_dir_deps<R: tauri::Runtime>(
     // "we never tried".
     //
     // Which transport runs is the seam's own business (`attention::delivery`):
-    // the session-bus desktops send it themselves because the connection that
-    // sent an alert is what keeps it on screen there, and macOS/Windows go
-    // through the plugin.
+    // the session-bus desktops send it themselves over ONE process-lifetime
+    // session-bus connection that carries every alert — opened with the first
+    // alert and held, so there is no per-alert bus name for a desktop to watch
+    // vanish (ADR 0103, superseding the per-alert retention ADR 0038 measured) —
+    // and macOS/Windows go through the plugin.
     let deliver = attention::delivery::production(app.handle());
     app.manage(std::sync::Arc::new(attention::AttentionTimer::new(
         focus, deliver,
@@ -688,6 +690,7 @@ pub fn run() {
             commands::attention::attention_disarm,
             commands::open::external_open,
             commands::window_state::get_window_state,
+            commands::window_state::raise_attention_window,
             commands::update::check_update,
             commands::update::install_update,
             commands::update::relaunch_app,

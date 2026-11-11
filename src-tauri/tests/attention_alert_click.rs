@@ -1,6 +1,6 @@
 //! The click half of an Attention alert, pinned with NO bus, NO window and NO
-//! desktop: the id→token map, what each server signal does to it, and the exact
-//! actions list the alert is sent with.
+//! desktop: the id→token map, what each server signal does to it, the exact
+//! actions list the alert is sent with, and the order of the raise a click calls.
 //!
 //! Clicking an alert's body must select the Session that raised it, and the only
 //! thing Rust holds to make that happen is the string the renderer sent — the
@@ -21,6 +21,11 @@
 //! round trip through a real server — that the id the server answers with is the
 //! id it later names in `ActionInvoked` — which is the `#[ignore]`d manual check
 //! in `attention_alert_survives.rs`, not a claim made here.
+//!
+//! The file also holds the **raise** group: the `unminimize → show → set_focus`
+//! order the click route depends on, pinned through the pure `raise_trace` seam
+//! for the same reason — no window, no desktop, no compositor — and for the same
+//! limited claim: ORDER and WORDING, never the behaviour on a real platform.
 //!
 //! # Why the map is a process global and these tests still hold
 //!
@@ -44,6 +49,12 @@ use archimedes_lib::attention::delivery::bus::{
 };
 use archimedes_lib::attention::delivery::{delivery_trace, Outcome};
 use archimedes_lib::attention::AlertText;
+use archimedes_lib::commands::window_state::raise_trace;
+
+/// Every line the raise writes sits under this prefix (the same greppable-prefix
+/// convention `attention: focus probe: ` uses). Pinned here rather than repeated
+/// per assertion so the three raise tests cannot drift apart on a typo.
+const RAISE_PREFIX: &str = "attention: raise: ";
 
 /// An alert with an unmistakable token, so a swap or a truncation is visible.
 fn alert(title: &str, body: &str, token: &str) -> AlertText {
@@ -347,6 +358,134 @@ fn a_reused_id_carries_the_newest_token_only() {
         "one id is one entry"
     );
     untrack_alert(id);
+}
+
+// ---- the raise: the ORDER, and one line per step --------------------------
+
+/// The raise that follows a click runs `unminimize()` → `show()` → `set_focus()`
+/// IN THAT ORDER, and every step gets its own log line.
+///
+/// The order is the load-bearing claim, and it is a platform fact rather than a
+/// taste: tao's Linux `set_focus()` is guarded by `!minimized && visible` and
+/// otherwise **silently no-ops** — a focus-first raise on a minimized window
+/// would report success and do nothing, which is the worst failure this feature
+/// can have (silent). So the assertion is on the SEQUENCE of lines.
+///
+/// What this proves is ORDER and WORDING, and nothing more. No window is
+/// constructed here (a second `generate_context!()` in one test binary duplicates
+/// `embed_plist`'s `_EMBED_INFO_PLIST` and reddens macOS `cargo test` while
+/// clippy stays green), and nothing on this machine runs a raise: the
+/// `x86_64-pc-windows-gnu` check type-checks, and there is no wine and no macOS
+/// host. The behaviour on Windows and under Wayland stays unverified.
+#[test]
+fn the_raise_runs_unminimize_then_show_then_set_focus() {
+    let (attempted, lines) = raise_trace(Some(Ok(())), Some(Ok(())), Some(Ok(())));
+
+    assert!(attempted, "a resolved window means a raise was attempted");
+    assert_eq!(
+        lines.len(),
+        3,
+        "three steps, one line each — a missing line means a step was skipped"
+    );
+    assert!(
+        lines[0].starts_with("attention: raise: unminimize"),
+        "step 1 is unminimize (a minimized window cannot be focused): {:?}",
+        lines[0]
+    );
+    assert!(
+        lines[1].starts_with("attention: raise: show"),
+        "step 2 is show (an invisible window cannot be focused): {:?}",
+        lines[1]
+    );
+    assert!(
+        lines[2].starts_with("attention: raise: focused"),
+        "step 3 is set_focus, LAST, because it is the step that silently no-ops \
+         unless the first two ran: {:?}",
+        lines[2]
+    );
+    for line in &lines {
+        assert!(
+            line.starts_with(RAISE_PREFIX),
+            "every raise line is greppable under {RAISE_PREFIX:?}: {line}"
+        );
+    }
+}
+
+/// A refused step gets its OWN line AND the later steps still get theirs.
+///
+/// Two claims in one, both from the spec: "each step's refusal gets its own
+/// debuglog line", and the one that decides whether the raise ever works — a
+/// refusal of step N must NOT skip step N+1. `unminimize()` on a window that is
+/// already un-minimized is a no-op or an error depending on the platform, and
+/// `show()` + `set_focus()` can still bring it forward; an early return on the
+/// first refusal would leave the window buried on exactly the desktops this
+/// feature was asked for.
+#[test]
+fn a_refused_step_gets_its_own_line_and_does_not_skip_the_rest() {
+    let (attempted, lines) = raise_trace(
+        Some(Err("window is not minimized".into())),
+        Some(Ok(())),
+        Some(Ok(())),
+    );
+
+    assert!(attempted, "a refusal is not an absence of window");
+    assert_eq!(
+        lines.len(),
+        3,
+        "still three lines — a refusal cannot shorten the sequence (that is the \
+         no-early-return claim): {lines:?}"
+    );
+    assert!(
+        lines[0].starts_with("attention: raise: unminimize refused: "),
+        "the refusal names the step that refused and quotes its Display: {:?}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("window is not minimized"),
+        "the platform's own message survives verbatim: {:?}",
+        lines[0]
+    );
+    assert!(
+        lines[1].starts_with("attention: raise: shown"),
+        "show() still ran and is still narrated: {:?}",
+        lines[1]
+    );
+    assert!(
+        lines[2].starts_with("attention: raise: focused"),
+        "set_focus() still ran and is still narrated: {:?}",
+        lines[2]
+    );
+}
+
+/// No window labelled `main` is narrated ONCE, as the absence of a window — not
+/// as three refusals of calls that were never made.
+///
+/// This is the case the raise is best-effort about: the command still answers
+/// `Ok(())` (the wire contract), so the log line is the ONLY evidence the click
+/// reached Rust and nothing moved. Hence it names the label it looked for, the
+/// same convention the focus probe uses for the same reason.
+#[test]
+fn a_raise_with_no_window_is_one_line_naming_the_label() {
+    let (attempted, lines) = raise_trace(None, None, None);
+
+    assert!(!attempted, "with no window there was nothing to attempt");
+    assert_eq!(
+        lines.len(),
+        1,
+        "one line for one absence — three identical refusals of calls that were \
+         never made would read as three platform failures: {lines:?}"
+    );
+    assert!(
+        lines[0].starts_with(RAISE_PREFIX),
+        "the absence is under the same prefix as the steps: {:?}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("no window labelled \"main\""),
+        "the line names the LABEL it resolved, so a label mismatch is not \
+         mistaken for a window that refused: {:?}",
+        lines[0]
+    );
 }
 
 // ---- the log line (the token must never reach it) -------------------------
