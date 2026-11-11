@@ -302,7 +302,7 @@ export default function TaskDetailDialog({
       }}
     >
       <DialogContent className="flex max-h-[80vh] w-full flex-col gap-3 sm:max-w-2xl">
-        <DialogHeader>
+        <DialogHeader className="shrink-0">
           {/* `T{n}` in the heading, because a person says the number out loud and two
               open dialogs must be distinguishable. The `tsk_` id never appears as
               visible text anywhere in this app (ADR 0090: the number is the label,
@@ -327,6 +327,31 @@ export default function TaskDetailDialog({
           </DialogDescription>
         </DialogHeader>
 
+        {/* THE SCROLLER. Everything between the header and the footer sits inside it.
+
+            The shell is capped at `max-h-[80vh]` and every child carried `shrink-0`,
+            so a long body did not compress the dialog — it CLIPPED it, and the element
+            that fell off the bottom was the footer: the launch buttons, i.e. the only
+            reason to open the modal. A modal whose whole job is to show the card the
+            card view truncates cannot be allowed to truncate it in turn.
+
+            `min-h-0` is load-bearing and easy to drop: a flex item's initial
+            `min-height` is `auto`, which refuses to shrink below its content, so
+            `flex-1` + `overflow-y-auto` alone still grows the box past the cap and
+            clips exactly as before. `flex-1` takes the leftover height, `overflow-y-auto`
+            turns the overflow into scrolling instead of a cut-off edge.
+
+            The header and the footer stay OUTSIDE on purpose: a squeezed header
+            ellipsises the title, and a footer inside the scroller means the buttons are
+            only reachable by scrolling past a 5000-character body — the same loss with a
+            scrollbar attached.
+
+            `gap-3` repeats the shell's own gap because these nodes are no longer direct
+            children of `DialogContent`. */}
+        <div
+          data-testid="detail-scroll"
+          className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto"
+        >
         {/* The body, UNCLAMPED. This is the field the card clips, so clipping it here
             would put the card's limitation in the surface that exists to remove it. */}
         {task.body !== null && (
@@ -460,8 +485,10 @@ export default function TaskDetailDialog({
         {sessions.length === 0 && task.body === null && artifactKeys.length === 0 && (
           <EmptyListLine>This task has no detail yet.</EmptyListLine>
         )}
+        </div>
+        {/* /detail-scroll — everything below this line (the footer) stays pinned. */}
 
-        <DialogFooter className="gap-2">
+        <DialogFooter className="shrink-0 gap-2">
           {/* ONE BUTTON PER OUTGOING EDGE (issue #179, spec §7.2). The pair that used
               to sit here — `discussReady` / `researchReady` and two hardcoded buttons —
               was the component asserting what the Stage rows assert, which is the split
