@@ -57,6 +57,11 @@ fn cap_chars(s: &str, n: usize) -> String {
 /// An empty BODY is refused, because an empty body means the renderer composed
 /// nothing — a renderer bug worth surfacing, not a blank toast to blame on the
 /// app.
+///
+/// The `click_token` it returns is always EMPTY and that is deliberate: this
+/// function is the TEXT boundary — trim, cap, refuse — and it has no parameter
+/// for a token on purpose, so no part of the text path can shorten, pad or
+/// refuse one. `attention_arm` fills the field in afterwards, verbatim.
 fn alert_text(title: &str, body: &str) -> Result<AlertText, String> {
     // Trim BEFORE the cap, so padding cannot consume a char of the budget.
     let title = cap_chars(title.trim(), MAX_TITLE_CHARS);
@@ -64,7 +69,12 @@ fn alert_text(title: &str, body: &str) -> Result<AlertText, String> {
     if body.is_empty() {
         return Err("attention_arm: empty alert body (the renderer composed nothing)".to_string());
     }
-    Ok(AlertText { title, body })
+    Ok(AlertText {
+        title,
+        body,
+        // No token here, and no way to give this function one: see the doc.
+        click_token: String::new(),
+    })
 }
 
 /// The countdown a `delay_secs` value turns into — 24 h is a SANITY CEILING,
@@ -91,21 +101,41 @@ fn countdown(delay_secs: u64) -> std::time::Duration {
 /// more damaging commands available (`send_prompt` runs arbitrary agent turns);
 /// refusing `0` here would cost the tested "fire immediately" semantic and buy
 /// nothing against that threat model.
+///
+/// `click_token` (the renderer sends `clickToken`) is the value a click on the
+/// alert will be echoed back with, so the renderer can route the click to
+/// whatever raised it. It is deliberately NOT run through [`alert_text`]: that
+/// function trims, caps and refuses, and a token is none of those things'
+/// business — it is opaque to Rust (ADR 0039), must reach the OS and come back
+/// byte for byte, and must never be able to trip the empty-body refusal. The
+/// token therefore goes straight to `arm`, beside the capped text.
 #[tauri::command]
 pub async fn attention_arm(
     timer: tauri::State<'_, Arc<AttentionTimer>>,
     delay_secs: u64,
     title: String,
     body: String,
+    click_token: String,
 ) -> Result<(), AttentionError> {
     // `alert_text` stays a non-command `String` helper (its inline tests pin its
     // sentence); the command is the boundary that chooses the wire type, and the
     // only reason it can refuse here is the empty body — so the `String` maps
     // onto `EmptyBody`, whose `#[error(…)]` carries that sentence VERBATIM
     // (task14's frozen pair), keeping the wire `message` byte-identical.
-    let text = alert_text(&title, &body).map_err(|_| AttentionError::EmptyBody)?;
+    let mut text = alert_text(&title, &body).map_err(|_| AttentionError::EmptyBody)?;
+    // The token joins AFTER that boundary, and `alert_text` has no parameter for
+    // it — which is the shape the design asks for: the function that trims, caps
+    // and refuses an empty body never sees a token, so an empty, padded or
+    // absurd-length token cannot trip the empty-body refusal, and nothing the
+    // text path does can alter the bytes a click has to echo back.
+    text.click_token = click_token;
     timer
-        .arm(countdown(delay_secs), text.title, text.body)
+        .arm(
+            countdown(delay_secs),
+            text.title,
+            text.body,
+            text.click_token,
+        )
         // A refusal, not a crash: the renderer logs this through `logFailure`
         // and the chat carries on (a notification failure must never break it).
         .map_err(|_| AttentionError::NoRuntime)
@@ -226,6 +256,34 @@ mod tests {
                 "a body that trims to nothing ({body:?}) must be refused, not shown"
             );
         }
+    }
+
+    /// The click token is not this function's business, and the shape proves it:
+    /// there is no parameter to pass one through, and the `AlertText` it returns
+    /// carries an EMPTY token for the command to overwrite.
+    ///
+    /// This is the boundary the design requires. `alert_text` is the function that
+    /// trims, caps and refuses an empty body, so if a token could reach it the
+    /// token would inherit three defects: it could be truncated by the body's char
+    /// cap, padded away by the trim, and — the one that would kill the feature
+    /// silently — REFUSED outright when it was empty, since an empty token is legal
+    /// and an empty body is a renderer bug. Pinned here rather than only at the
+    /// map because this is where a future edit would reintroduce the coupling.
+    #[test]
+    fn the_text_boundary_never_sees_or_invents_a_click_token() {
+        let text = alert_text("Archimedes", "api-server needs your answer")
+            .expect("a real body is accepted");
+        assert!(
+            text.click_token.is_empty(),
+            "`alert_text` composes text and nothing else: {:?}",
+            text.click_token
+        );
+        // And a body that WOULD be refused stays refused for its own reason — the
+        // token is not a second input that could rescue it or sink it.
+        assert!(
+            alert_text("Archimedes", "   ").is_err(),
+            "the empty-BODY refusal is about the body"
+        );
     }
 
     /// An empty body means the renderer composed nothing at all — a bug worth

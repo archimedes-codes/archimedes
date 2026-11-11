@@ -13,9 +13,10 @@
 //!
 //! Both external facts are injected seams ([`FocusProbe`], [`Delivery`]), so
 //! the countdown is testable with no window and no OS notification. What the
-//! seams DO in production — the session-bus send, the handle that has to be
-//! kept alive, and the log line each delivery is allowed to write — is the
-//! [`delivery`] submodule's business; this file stays the pure countdown.
+//! seams DO in production — the one long-lived session-bus connection every
+//! alert is sent on, the click thread that watches it, and the log line each
+//! delivery is allowed to write — is the [`delivery`] submodule's business; this
+//! file stays the pure countdown.
 //!
 //! Every decision this countdown can take is narrated into the
 //! `ARCHIMEDES_DEBUG` log with the `attention:` prefix — the timeline is pinned
@@ -31,21 +32,32 @@ use crate::agent::debuglog;
 
 pub mod delivery;
 
-/// The text of one attention alert — composed by the renderer, which owns
-/// every scrap of session vocabulary (ADR 0039). Rust never interprets it.
+/// One attention alert: the text the OS renders, and the token that makes a
+/// click on it identifiable — both composed by the renderer, which owns every
+/// scrap of session vocabulary (ADR 0039). Rust never interprets either.
+///
+/// `click_token` is the value the renderer sent so a click can be routed back to
+/// whatever raised the alert (today: the already-resolved parent Session id). It
+/// is OPAQUE to the countdown — Rust stores it and echoes it back VERBATIM, and
+/// never parses, trims, caps, validates or logs it, so ADR 0039's "Rust knows no
+/// Session vocabulary" survives the feature that hands Rust a Session id. It is
+/// also NOT text: it goes nowhere near the title/body caps or the empty-body
+/// refusal (`commands::attention::alert_text` never sees it), and an empty token
+/// is a legal token, not a refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlertText {
     pub title: String,
     pub body: String,
+    pub click_token: String,
 }
 
 /// The seam answering "is the main window the focused window?" — a real one
 /// reads the `WebviewWindow`, a test answers from a cell.
 pub type FocusProbe = std::sync::Arc<dyn Fn() -> bool + Send + Sync + 'static>;
 /// The seam that shows the alert. The real one is `attention::delivery::production`
-/// — the session bus on Linux/BSD (where keeping the handle it gets back is what
-/// keeps the alert on screen), `tauri-plugin-notification` elsewhere — and a test
-/// answers from a cell.
+/// — the session bus on Linux/BSD (one connection for the whole process, which
+/// is what keeps the alert on screen there), `tauri-plugin-notification`
+/// elsewhere — and a test answers from a cell.
 ///
 /// The shape is deliberately still "take the text, return nothing": the timer must
 /// not branch on what delivery learned, and what each transport learns about its
@@ -97,6 +109,11 @@ impl AttentionTimer {
     /// which case the alert is DROPPED (ADR 0038: one-shot, never retried,
     /// never held for a later blur).
     ///
+    /// `click_token` rides inside the delivered [`AlertText`] and is never read
+    /// here — see its field doc. It is an `arm` argument and not a field of the
+    /// timer, because it belongs to the arming: a countdown that loses the slot
+    /// takes its token down with it.
+    ///
     /// `Err(`[`NoRuntime`]`)` when the current thread has no tokio runtime to
     /// hold the countdown; see the guard inside.
     pub fn arm(
@@ -104,6 +121,7 @@ impl AttentionTimer {
         delay: std::time::Duration,
         title: String,
         body: String,
+        click_token: String,
     ) -> Result<(), NoRuntime> {
         // A spawn needs a runtime, and `arm` is sync so it cannot build one: the
         // ONLY caller today is the `async` command, which always runs inside
@@ -155,7 +173,11 @@ impl AttentionTimer {
                 return;
             }
             debuglog::log("attention: expired focused=false — delivering the alert");
-            deliver(&AlertText { title, body });
+            deliver(&AlertText {
+                title,
+                body,
+                click_token,
+            });
         });
         let old = self
             .pending
@@ -237,6 +259,7 @@ mod tests {
                 Duration::from_secs(15),
                 "Archimedes".into(),
                 "api-server finished — waiting for you".into(),
+                "tok-1".into(),
             )
             // These tests are `#[tokio::test]`, so a runtime exists and every
             // one of them arms exactly as it did before the guard was added.
@@ -251,7 +274,8 @@ mod tests {
             "nothing fires before the armed delay elapses"
         );
 
-        // Past expiry: exactly the armed text.
+        // Past expiry: exactly the armed text, and the token THIS arming sent —
+        // the click token rides with its own alert, not with the timer.
         tokio::time::advance(Duration::from_millis(200)).await;
         settle().await;
         assert_eq!(
@@ -259,6 +283,7 @@ mod tests {
             vec![AlertText {
                 title: "Archimedes".into(),
                 body: "api-server finished — waiting for you".into(),
+                click_token: "tok-1".into(),
             }]
         );
 
@@ -280,6 +305,7 @@ mod tests {
                 Duration::from_secs(15),
                 "Archimedes".into(),
                 "api-server needs your answer".into(),
+                "tok-1".into(),
             )
             .expect("a runtime exists under #[tokio::test]");
         settle().await;
@@ -305,6 +331,7 @@ mod tests {
                 Duration::from_secs(15),
                 "Archimedes".into(),
                 "api-server needs your answer".into(),
+                "tok-1".into(),
             )
             .expect("a runtime exists under #[tokio::test]");
         settle().await;
@@ -328,11 +355,21 @@ mod tests {
         let (timer, got) = timer(false);
 
         timer
-            .arm(Duration::from_secs(15), "A".into(), "first".into())
+            .arm(
+                Duration::from_secs(15),
+                "A".into(),
+                "first".into(),
+                "tok-A".into(),
+            )
             .expect("a runtime exists under #[tokio::test]");
         settle().await;
         timer
-            .arm(Duration::from_secs(15), "B".into(), "second".into())
+            .arm(
+                Duration::from_secs(15),
+                "B".into(),
+                "second".into(),
+                "tok-B".into(),
+            )
             .expect("a runtime exists under #[tokio::test]");
         settle().await;
 
@@ -343,6 +380,11 @@ mod tests {
             vec![AlertText {
                 title: "B".into(),
                 body: "second".into(),
+                // The token travels with its OWN arming: the countdown that got
+                // the slot taken from it cannot deliver its token either, so an
+                // alert never echoes a Session id that belonged to the pause it
+                // replaced.
+                click_token: "tok-B".into(),
             }],
             "only the last armed countdown survives"
         );
@@ -367,6 +409,7 @@ mod tests {
                 Duration::from_secs(1),
                 "Archimedes".into(),
                 "api-server finished — waiting for you".into(),
+                "tok-1".into(),
             ),
             Err(NoRuntime),
             "a caller with no runtime gets a refusal it can report, not a panic"

@@ -109,16 +109,26 @@ _onNameVanished(connection, name) {
 
 So an alert whose sending connection has already closed is destroyed with reason
 `DISMISSED` (2) — neither the user nor a timeout — 22–25 ms after the server answered
-`Notify` (measured three times; reproduced on demand by the `#[ignore]`d
-`src-tauri/tests/attention_alert_survives.rs`). Nothing is logged on the sender's
-side: no banner anyone can read, no entry in the message list, no error. **Hence: the
-handle the server answers with is part of the alert, and this app keeps it** —
-`attention::delivery`'s `Retained` store holds every returned handle for the process
-lifetime, bounded at `RETAINED_ALERT_CAP = 8` and evicting the OLDEST. Bounded
-because unbounded retention is a connection leak in a process that runs for weeks;
-oldest-first because the alert released is the one announced 8 alerts ago, long past
-any banner's life. Eviction is a deliberate re-exposure to the teardown above, which
-is why the release is named in the same log line as the success that caused it.
+`Notify` (measured three times). Nothing is logged on the sender's side: no banner anyone
+can read, no entry in the message list, no error. **Hence: whatever owns the connection
+the alert was sent on is part of the alert.** This app's first answer was to keep the
+handle the server answers with — `attention::delivery`'s `Retained` store held every
+returned handle for the process lifetime, bounded at `RETAINED_ALERT_CAP = 8` and
+evicting the OLDEST, bounded because unbounded retention is a connection leak in a
+process that runs for weeks. **That store is gone, and the reason it is worth keeping
+this paragraph to say so is that the rule above still holds.** `notify_rust`'s `show()`
+opened one connection per alert, so eight alerts meant eight connections to count and
+one to release; the release was therefore a deliberate re-exposure to the teardown,
+which is why the old log line named it. The alert is now sent on **one session-bus
+connection the process holds for its whole life** (`attention::delivery::bus`,
+ADR 0103), so there is no per-alert bus name for the daemon to watch vanish, nothing to
+count, and nothing to evict — the teardown is not mitigated here, it is structurally
+impossible, and the same connection carries the one signal subscription that reports a
+body click. The `#[ignore]`d `src-tauri/tests/attention_alert_survives.rs` no longer
+reproduces the destruction (its dropped-handle half no longer has a shape to be dropped
+into); its two checks now prove the halves of the new design — that an alert on the
+long-lived connection is still tracked after three seconds, and that a click on it
+arrives.
 
 **The rule bites only senders the desktop resolves to an app, and it resolves us.**
 The destroy sits behind `if (this.app)`, so a sender GNOME cannot attribute is exempt:
