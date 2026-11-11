@@ -2,6 +2,7 @@ import { MutedCaption } from "./MutedCaption";
 import { RowButton } from "./RowButton";
 import { moneyOf } from "./SessionCostLine";
 import type { DragCardHandlers } from "../hooks/useDragCard";
+import type { TaskLaunchDestination } from "../lib/taskPrompt";
 import type { TaskRow, TaskSessionRow } from "../lib/tauri";
 import { relativeTimeFromInstant } from "../lib/sessionTime";
 import { cn } from "./lib/utils";
@@ -81,6 +82,24 @@ export interface TaskCardProps {
    *  the rule — `moneyOf` does, imported rather than copied, so this surface and
    *  the Session line cannot drift apart. */
   costUsd: number | null;
+  /** The artifact KEYS on this card (issue #180, spec §3) — T4's
+   *  `TaskCardView.artifactKeys`, threaded by the board.
+   *
+   *  REQUIRED, and for the identical reason `sessions` and `costUsd` above are: an
+   *  optional prop compiles against every fixture in the repo and then renders
+   *  NOTHING when real data arrives — a card with artifacts and no chips is silent,
+   *  green and wrong. The board always holds the field (it is REQUIRED on
+   *  `TaskCardView`, because `Vec<String>` has no `None`), so a caller that omits it
+   *  is a caller that forgot, and that is a type error rather than a runtime case.
+   *
+   *  It is NOT read off `task`: `TaskRow` has no such field by design (ADR 0100 —
+   *  the keys ride the `TaskCardView` WRAPPER so `get_task` / `create_task` /
+   *  `edit_task` keep returning an honest 10-field row). The prop IS the value.
+   *
+   *  NAMES ONLY, never the markdown. The board read runs for every card on every
+   *  mount, so a document on that payload would put every Task's every artifact on
+   *  the wire to render a label; the detail dialog fetches content on request. */
+  artifactKeys: string[];
   /** Opens a Session. The board hands this down as
    *  `useSessions.getState().openSession`; the card deliberately does NOT read the
    *  sessions store itself — that would give a presentational component a second
@@ -107,16 +126,45 @@ export interface TaskCardProps {
   drag?: DragCardHandlers;
   /** This card is the one under drag. */
   active?: boolean;
+  /** The card's PRIMARY NEXT STEP (issue #179 §7.1) — the one launch affordance a
+   *  card carries, derived by the BOARD and not here.
+   *
+   *  OPTIONAL, and unlike every other prop on this component that is a decision
+   *  rather than an oversight. `sessions` / `costUsd` / the two callbacks are REQUIRED
+   *  because an omitted one of those paints a control wired to nothing — this repo's
+   *  silent-green shape. A card with no next step is not that: a LAST Stage has no
+   *  outgoing edge, and `next_slugs: []` is "configured, leads nowhere". `undefined`
+   *  is a value a correct production board produces for a real column, and the pill is
+   *  then simply not painted (pinned by two cases in this file's own test).
+   *
+   *  The card stays PRESENTATIONAL with this prop: it reads three fields off a
+   *  destination it was handed and calls a callback it was handed. The derivation
+   *  (`next_slugs`, else the Stage at `sortOrder + 1`), the catalog read, and the
+   *  route through `store/taskLaunch` all belong to `TasksBoard`, for the same reason
+   *  the sessions chip's callback does — a card that read a store would be a second
+   *  owner of "which board is showing". */
+  launchStep?: {
+    destination: TaskLaunchDestination;
+    /** The destination's Skill is in the Space's catalog. `true` for a destination
+     *  with NO Skill, which is never gated and so never waits. The board computes
+     *  this; the card cannot, because it holds no catalog. */
+    launchReady: boolean;
+    /** Opens a Session on this card via
+     *  `launchTaskSession(spacePath, task, destination.slug, catalogs)`. */
+    onLaunch: (destination: TaskLaunchDestination) => void;
+  };
 }
 
 export default function TaskCard({
   task,
   sessions,
   costUsd,
+  artifactKeys,
   onOpenSession,
   onOpenTask,
   drag,
   active,
+  launchStep,
 }: TaskCardProps) {
   // The chip's money, resolved through the ONE rule (ADR 0082). `null` is
   // "never reported" and prints NOTHING; `0` is "a real zero" and prints
@@ -246,6 +294,42 @@ export default function TaskCard({
           spec
         </span>
       )}
+      {/* THE ARTIFACT KEY CHIPS (issue #180, spec §3): the KEYS, and nothing else.
+          The board read carries `artifactKeys` alone — names, never the markdown —
+          because that read runs for every card on every mount, and the card is a
+          two-line summary by construction; the detail modal is the surface built to
+          unclip, and it is where a document gets read.
+
+          Spans and not buttons, exactly like the spec chip above: these are LABELS,
+          so they contribute ZERO `[role="button"]` matches and cannot disturb
+          `RowButton`'s one-per-row rule that this file's own test re-pins (and that
+          `SpacesList.test.tsx` reads through `.closest('[role="button"]')` at eight
+          sites). A click on one therefore belongs to the row, which opens the modal
+          — the path from a key to its content, with no second control added.
+
+          Gated on `artifactKeys.length > 0` so an artifact-less card — the common
+          case — renders NO artifact row at all: no placeholder, no empty pill, no
+          header line that would then have nothing under it. Same rule the spec chip
+          above follows for an absent `specPath`. (`.map` over the empty set already
+          renders nothing; the guard is spelled because "no artifacts, no chips" is
+          the contract and should read like one rather than like a property of
+          `Array.prototype.map`.)
+
+          The fill and geometry are the card's ONE pill recipe (see the `T{n}` pill):
+          `bg-background` because a pill has to differ from BOTH surfaces it can sit
+          on (`bg-panel` column, `bg-card` card) in EVERY palette, and `bg-chat` is
+          exactly `bg-card` in zai-dark (contrast 1.00). ONE literal serves every key
+          in the list, so the `slabFloatSeparation.test.ts` census moves by exactly
+          ONE, not by the number of chips a card happens to render. */}
+      {artifactKeys.length > 0 &&
+        artifactKeys.map((key) => (
+          <span
+            key={key}
+            className="inline-flex items-center gap-1 rounded-full bg-background px-2 py-0.5 text-ui-xs text-foreground-subtle"
+          >
+            {key}
+          </span>
+        ))}
       {/* The Sessions chip (issue #174): one clickable mark saying how many
           Sessions this card owns and what they cost in total — NOT a session list.
           The card is small, it is already a drag surface, and a per-session row is
@@ -318,6 +402,56 @@ export default function TaskCard({
               `moneyOf` and imported, never re-spelled here. */}
           {sessions.length} {sessions.length === 1 ? "session" : "sessions"}
           {money !== null && ` · ${money}`}
+        </button>
+      )}
+      {/* THE PRIMARY-NEXT-STEP PILL (issue #179 §7.1) — the card's one launch
+          affordance, and it follows the sessions chip's precedent EXACTLY because that
+          precedent is the one place in the app where a nested control sits inside a
+          `RowButton` this file owns.
+
+          A plain `<button type="button">` with NO `role`. `RowButton`'s constraint is
+          ONE `role="button"` per row — `SpacesList.test.tsx` resolves rows through
+          `.closest('[role="button"]')` at eight sites — and a `<button>` needs no role
+          spelled, so this node contributes zero selector matches. Spelling one here
+          would put a second match in the tree the sidebar reads, and no test outside
+          this file could see it (that file never mounts a card), which is why the card
+         's own test carries that pin.
+
+          `e.stopPropagation()` is LOAD-BEARING, not the dead code the chip's original
+          comment once called its own: the card IS a `RowButton` now, so an unstopped
+          pill click opens the detail modal ON TOP of the Session the click asked to
+          start — and the modal covers the very board the launch is meant to leave.
+
+          Gated on `launchReady` for a Skill-bearing destination, and the board has
+          already answered "is that Skill in the catalog". The catalog is an async fetch
+          that starts EMPTY, so an ungated pill is clickable before it lands and fails
+          with a sentence that is false two frames later; the card paints NOTHING in
+          that frame rather than a disabled pill, because a greyed control on every card
+          during a fetch is the loud-on-quiet-surface pass this file's own chips avoid.
+          A destination with NO Skill is never in that state — nothing is waiting — so
+          the pill shows immediately and starts a Session with no `$token`.
+
+          The fill and geometry are the card's own pill recipe (see the `T{n}` pill
+          above): `self-start` because the card is a `flex-col` and without it the
+          button stretches to full width, and `bg-background` because the fill has to
+          differ from BOTH surfaces it can sit on (`bg-panel` column, `bg-card` card) in
+          EVERY palette — `bg-chat` is exactly `bg-card` in zai-dark. Ink-only hover, no
+          `transition-*`, the `FileChip` idiom. */}
+      {launchStep !== undefined && launchStep.launchReady && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            launchStep.onLaunch(launchStep.destination);
+          }}
+          className={cn(
+            "self-start cursor-pointer rounded-full bg-background px-2 py-0.5 text-ui-xs text-foreground-subtle hover:text-foreground",
+          )}
+        >
+          {/* The destination's LABEL, never the card's own — the click acts on where
+              the card goes next. The arrow is the "this moves" half of the sentence and
+              is part of the button's accessible name. */}
+          {launchStep.destination.label} →
         </button>
       )}
       {task.body && (

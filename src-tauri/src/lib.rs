@@ -630,7 +630,7 @@ pub fn run() {
             commands::spaces::space_for_path,
             commands::spaces::set_space_trusted,
             commands::spaces::reorder_spaces,
-            // The per-Space Task board (spec §2, ADR 0090). Eight entries, no
+            // The per-Space Task board (spec §2, ADR 0090). Sixteen entries, no
             // capability change: `default.json` lists plugin permissions only and
             // never enumerates `#[tauri::command]`s (the `get_provider_budget`
             // comment above states the rule), so the webview reaches these through
@@ -638,7 +638,9 @@ pub fn run() {
             // entries that need a second managed type — `Arc<SessionManager>`,
             // managed above for the session commands already — because a
             // `compact` stage's boost is delivered through it and a Task's Session
-            // is started through it.
+            // is started through it. The eight issue #179 entries below it are the
+            // six Stage verbs plus the Strict-workflow pair, and every one of them
+            // takes `Arc<Db>` alone: none starts or compacts a Session.
             commands::tasks::get_board,
             commands::tasks::create_task,
             commands::tasks::get_task,
@@ -646,6 +648,29 @@ pub fn run() {
             commands::tasks::move_task,
             commands::tasks::reorder_tasks,
             commands::tasks::link_session,
+            // issue #179 (spec §4, ADRs 0098 + 0099): the Stage row becomes
+            // editable data. Six verbs edit one column, and the flag pair decides
+            // whether the graph those columns describe binds a drag or merely
+            // describes one.
+            commands::tasks::create_stage,
+            commands::tasks::rename_stage,
+            commands::tasks::set_stage_skill,
+            commands::tasks::set_stage_next,
+            commands::tasks::reorder_stages,
+            commands::tasks::delete_stage,
+            // The Strict-workflow toggle and its read twin. Both write/read the
+            // `spaces` table but live here because they gate `move_task` and
+            // co-terminate with the six Stage commands (spec §4 spells the
+            // signature in the board's list); the read exists so the editor's
+            // Switch can be SEEDED from the flag the gate actually enforces.
+            commands::tasks::set_board_strict,
+            commands::tasks::get_board_strict,
+            // issue #180 D1 (spec §1/§2, ADR 0100): a Task's named markdown
+            // artifacts. Both take `Arc<Db>` alone — pure database writes, no
+            // Session, no sink. D1 ships these as the HUMAN surface only; the
+            // model-facing verbs are D2's step and nothing here advertises one.
+            commands::tasks::write_artifact,
+            commands::tasks::get_artifact,
             // A4 (spec §3): the ONE command in this block that also takes the
             // `Arc<dyn EventSink>` managed state — the same trait-object type
             // `start_session` takes above (`lib.rs`'s sink comment records why it

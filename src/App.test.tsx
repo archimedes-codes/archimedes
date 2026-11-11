@@ -2132,6 +2132,8 @@ describe("App (the Task board view)", () => {
           label: "Backlog",
           sortOrder: 0,
           onEnter: "none",
+          onEnterSkill: null,
+          nextSlugs: null,
         },
         tasks: [
           {
@@ -2151,6 +2153,11 @@ describe("App (the Task board view)", () => {
               { taskId: "tsk_x", sessionId: "s1", stageSlug: "backlog" },
             ],
             costUsd: 0.25,
+            // REQUIRED wire field (issue #180): the board carries artifact KEYS,
+            // never content. This card has none, and `[]` is the honest value —
+            // omitting it would not typecheck, which is exactly why the field is
+            // not optional.
+            artifactKeys: [],
           },
         ],
       },
@@ -2190,6 +2197,8 @@ describe("App (the Task board view)", () => {
           label: "Backlog",
           sortOrder: 0,
           onEnter: "none",
+          onEnterSkill: null,
+          nextSlugs: null,
         },
         tasks: [],
       },

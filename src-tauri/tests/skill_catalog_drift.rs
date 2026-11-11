@@ -96,6 +96,10 @@ fn ctx(cwd: &Path) -> ToolCtx {
         home: None,
         web: Default::default(),
         render_requester: None,
+        // No task store: the drift test drives no task tool (issue #180 F1's
+        // `ToolCtx` field — `Some(..)` would name a crate-internal `TaskCaller`
+        // the desktop never constructs; only the Worker does).
+        task_store: None,
         // No event sink: emitting is a silent no-op here.
         event_sink: None,
     }

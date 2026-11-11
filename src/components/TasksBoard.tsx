@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { PlusIcon, XIcon } from "lucide-react";
+import { PlusIcon, Settings2Icon, XIcon } from "lucide-react";
 import NewTaskDialog from "./NewTaskDialog";
-import TaskCard from "./TaskCard";
+import StageEditor from "./StageEditor";
+import TaskCard, { type TaskCardProps } from "./TaskCard";
 import TaskDetailDialog from "./TaskDetailDialog";
 import { EmptyListLine } from "./EmptyListLine";
 import { IpcErrorLine } from "./IpcErrorLine";
@@ -17,6 +18,10 @@ import {
 } from "../hooks/useDragCard";
 import { useTasks } from "../store/tasks";
 import { useSessions } from "../store/sessions";
+import { launchTaskSession } from "../store/taskLaunch";
+import { useMentionCatalogs } from "../hooks/useMentionCatalogs";
+import { describeIpcError } from "../lib/ipcError";
+import type { TaskLaunchDestination } from "../lib/taskPrompt";
 import type { StageWithTasks, TaskRow } from "../lib/tauri";
 
 /**
@@ -144,6 +149,101 @@ export default function TasksBoard({
     onReturnToWorkspace?.();
   };
 
+  // THE CATALOGS, read ONCE for the whole board and shared with both modals.
+  //
+  // `useMentionCatalogs` is module-cached per Space, so this is not a fourth fetch —
+  // `NewTaskDialog` and `TaskDetailDialog` already mount it and share the promise. It
+  // is read HERE because the card cannot be the one to read it: `TaskCard` is
+  // presentational and subscribes to no store (its header argues why), and the pill's
+  // gate needs a catalog the card has no business owning.
+  //
+  // The gate is not decoration. The catalog is an async fetch that starts EMPTY, so a
+  // pill painted from the first paint is clickable before it lands and its click fails
+  // with "This Space has no `x` skill" — a sentence that is FALSE two frames later.
+  // Gating on the same predicate `store/taskLaunch` refuses on removes the race rather
+  // than narrowing it, exactly as the detail modal's footer does.
+  const { skills, agents } = useMentionCatalogs(activeSpacePath);
+  const catalogs = useMemo(() => ({ skills, agents }), [skills, agents]);
+
+  /** The board's ONE launch route, shared by the card's pill and (through
+   *  `store/taskLaunch`) the detail modal's own buttons.
+   *
+   *  It exists so a launch from a card is not a second implementation of the ordering
+   *  rules: `store/taskLaunch` owns move-before-start, the Skill gate and the
+   *  in-flight guard, and this is only the call. A refusal is written into the store's
+   *  `error` cell rather than thrown, because the board already renders that cell as an
+   *  `IpcErrorLine` with `role="alert"` — a second error surface would be two answers
+   *  to "what went wrong", and an uncaught rejection here would report nothing at all.
+   *
+   *  The DROP never reaches this function, and that is deliberate (spec §6.4): a drop
+   *  that started a Session would render the board over the transcript its own `ask`
+   *  gate needs, and `ask_flow` blocks with no timeout. */
+  const launchFromCard = async (
+    task: TaskRow,
+    destination: TaskLaunchDestination,
+  ): Promise<void> => {
+    if (activeSpacePath === null) return;
+    try {
+      await launchTaskSession(activeSpacePath, task, destination.slug, catalogs);
+    } catch (err) {
+      useTasks.setState({ error: describeIpcError(err) });
+    }
+  };
+
+  /** The card's PRIMARY NEXT STEP, derived from the graph rather than hardcoded.
+   *
+   *  The FIRST `next_slugs` entry (spec §7.1) — the row's author put that one first —
+   *  and with `next_slugs` NULL the fallback is the Stage at `sortOrder + 1`, so an
+   *  unconfigured board keeps a launch pill instead of silently losing it on upgrade.
+   *  `nextSlugs: []` is the OTHER answer (configured, leads nowhere) and yields no
+   *  pill; the two must not collapse (ADR 0099).
+   *
+   *  Deliberately the same derivation `TaskDetailDialog` runs, spelled twice rather
+   *  than hoisted into `lib/`: the two surfaces read the same store slice, and a shared
+   *  helper would have to live in `lib/` (no store) and take the columns as an
+   *  argument, which is the shape both already have locally. If a third surface grows
+   *  the same need, that helper is the extraction to make. */
+  const nextStepOf = (
+    column: StageWithTasks,
+  ): TaskLaunchDestination | undefined => {
+    const slugs =
+      column.stage.nextSlugs ??
+      (columns ?? [])
+        .filter((c) => c.stage.sortOrder === column.stage.sortOrder + 1)
+        .map((c) => c.stage.slug);
+    const slug = slugs[0];
+    if (slug === undefined) return undefined;
+    const stage = columns?.find((c) => c.stage.slug === slug)?.stage;
+    // An edge the slice cannot resolve yields NO pill: unlike the detail modal (which
+    // keeps it, because there the skipped-column NOTE is the surface that explains the
+    // stale read), a pill has no note to fall back on — it would be a control whose
+    // click moves nothing, with the sentence appearing somewhere else entirely.
+    return stage === undefined
+      ? undefined
+      : { slug: stage.slug, label: stage.label, onEnterSkill: stage.onEnterSkill };
+  };
+
+  /** The `launchStep` prop for one card, or `undefined` for "no pill".
+   *
+   *  The gate lives HERE rather than inside the card because the card holds no
+   *  catalog — and the gate is the one fact about the pill a card cannot work out for
+   *  itself. A destination with NO Skill is `launchReady: true` outright: nothing is
+   *  waiting, so it renders on the first paint. */
+  const launchStepFor = (
+    column: StageWithTasks,
+    task: TaskRow,
+  ): TaskCardProps["launchStep"] => {
+    const destination = nextStepOf(column);
+    if (destination === undefined) return undefined;
+    return {
+      destination,
+      launchReady:
+        destination.onEnterSkill === null ||
+        skills.some((s) => s.name === destination.onEnterSkill),
+      onLaunch: (d) => void launchFromCard(task, d),
+    };
+  };
+
   // The New Task modal's open flag, in THIS component's state. It lives here
   // because this is where the board's columns already are — the modal needs the
   // first stage to file a Task under, and mounting it at `App` level would mean
@@ -152,6 +252,12 @@ export default function TasksBoard({
   // board's affordance, and a Task already created survives because the store
   // and the sessions list own it, not this flag.
   const [newTaskOpen, setNewTaskOpen] = useState(false);
+  // The **Stage editor**'s open flag, in the same place and for the same reasons as
+  // the flag above it: the dialog needs the board's column set, the board is where
+  // that set already lives, and neither survives leaving the view — which is right,
+  // because both are the board's affordances while the STAGES themselves are owned
+  // by the store and by the database, so closing this dialog loses nothing.
+  const [stageEditorOpen, setStageEditorOpen] = useState(false);
   // The **detail modal** names a CARD by id rather than holding an open flag.
   //
   // The id is the state and not a `boolean` plus a separately-stored row, for two
@@ -271,6 +377,32 @@ export default function TasksBoard({
           <PlusIcon className="size-4" />
           <span>New task</span>
         </Button>
+        {/* The **Stage editor**'s door (issue #179 §8), beside `New task` and AFTER
+            it: create first, configure second. Same ghost/idle-ink recipe as its
+            neighbour so the two read as one pair of quiet header affordances rather
+            than one primary action and one loud one, and the SAME disabled rule —
+            with no active Space there is no column set to edit, and a button that
+            opens a dialog whose every write has no target is worse than one that
+            says nothing is open.
+
+            WHY THE EDITING LIVES HERE AND NOT ON THE COLUMN HEADER. A column header
+            is a flex row of spans INSIDE the drop-target `<div>` that carries
+            `useDragCard.columnProps()`, and `draggable` inherits to children — the
+            hazard `TaskCard.tsx` records for the card itself. Clicking a label to
+            rename it inside a drop zone is how "the rename starts a drag" gets
+            written, so every Stage edit happens behind this button instead. */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="default"
+          aria-label="Configure"
+          className="h-8 shrink-0 gap-2 rounded-lg px-2 text-foreground-subtle hover:bg-surface-hover hover:text-foreground"
+          disabled={activeSpacePath === null}
+          onClick={() => setStageEditorOpen(true)}
+        >
+          <Settings2Icon className="size-4" />
+          <span>Configure</span>
+        </Button>
       </header>
 
       {/* The two things a board render needs that are NOT board rows, and both are
@@ -360,6 +492,7 @@ export default function TasksBoard({
                 columnDrop={columnDrop}
                 onOpenSession={openSessionAndLeave}
                 onOpenTask={setDetailTaskId}
+                launchStepFor={launchStepFor}
                 onReorder={(ids) =>
                   reorderInStage(activeSpacePath, column.stage.slug, ids)
                 }
@@ -380,10 +513,29 @@ export default function TasksBoard({
           task={detailCard.task}
           sessions={detailCard.sessions}
           costUsd={detailCard.costUsd}
+          artifactKeys={detailCard.artifactKeys}
           spacePath={activeSpacePath}
           onClose={() => setDetailTaskId(null)}
           onOpenSession={openSessionAndLeave}
           onLaunched={() => onReturnToWorkspace?.()}
+        />
+      )}
+
+      {/* The Stage editor (issue #179 §8), mounted from this component's flag for
+          the same reason and in the same shape as the two modals above it: it reads
+          the board's own store slice, `DialogContent` portals to `body`, and it is
+          mounted ONLY while open — a closed editor would keep a form, a catalog
+          read and a `get_board_strict` round trip alive behind the board. Its
+          `onClose` flips the flag here and nowhere else, so the flag has one owner.
+
+          The editor renders its own `IpcErrorLine` for a refused Stage write, and
+          the board's line above stays as the drag-refusal surface. Both can be live
+          at once while the dialog is up, which is why the editor's own test scopes
+          its `role="alert"` reads to the dialog. */}
+      {stageEditorOpen && (
+        <StageEditor
+          spacePath={activeSpacePath}
+          onClose={() => setStageEditorOpen(false)}
         />
       )}
 
@@ -416,6 +568,7 @@ function TaskColumn({
   columnDrop,
   onOpenSession,
   onOpenTask,
+  launchStepFor,
   onReorder,
 }: {
   column: StageWithTasks;
@@ -434,6 +587,18 @@ function TaskColumn({
   onOpenSession: (sessionId: string) => void;
   /** Opens this card's detail modal — the board's `detailTaskId` setter. */
   onOpenTask: (taskId: string) => void;
+  /** Builds this card's primary-next-step pill (issue #179 §7.1), or `undefined` for
+   *  "this Stage leads nowhere".
+   *
+   *  A FACTORY taking `(column, task)` rather than a pre-computed value, because the
+   *  column renders N cards and each pill's `onLaunch` must close over ITS OWN card —
+   *  a single pre-built prop would point every card's pill at one row. The board owns
+   *  the derivation and the catalog gate; this column forwards, exactly as it forwards
+   *  `onOpenSession`, so no store read appears here. */
+  launchStepFor: (
+    column: StageWithTasks,
+    task: TaskRow,
+  ) => TaskCardProps["launchStep"];
   onReorder: (ids: string[]) => void;
 }) {
   const ids = useMemo(
@@ -549,8 +714,10 @@ function TaskColumn({
                   task={card.task}
                   sessions={card.sessions}
                   costUsd={card.costUsd}
+                  artifactKeys={card.artifactKeys}
                   onOpenSession={onOpenSession}
                   onOpenTask={onOpenTask}
+                  launchStep={launchStepFor(column, card.task)}
                   drag={cardDrag(card.task.id)}
                   active={draggingTaskId === card.task.id}
                 />

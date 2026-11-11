@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import TaskCard, { type TaskCardProps } from "./TaskCard";
 import type { DragCardHandlers } from "../hooks/useDragCard";
+import type { TaskLaunchDestination } from "../lib/taskPrompt";
 import type { TaskRow, TaskSessionRow } from "../lib/tauri";
 
 // Node's `fs` through a COMPUTED specifier — this app ships no `@types/node`, so a
@@ -79,21 +80,61 @@ const noopOpenSession = (): void => {};
  *  one prop later. */
 const noopOpenTask = (): void => {};
 
-/** The three props every render must pass, spelled out at every call site that has
+/** The props every render must pass, spelled out at every call site that has
  *  nothing to say about Sessions. They are REQUIRED props rather than optional ones
  *  for the same reason `TaskCardView`'s fields are required in `types.ts`: an
  *  optional prop compiles against a caller that forgot it, and a card that forgot
  *  them renders a linked card with no chip — or a chip that opens nothing. A case
- *  that cares about links overrides them; the anatomy cases below do not. */
+ *  that cares about links overrides them; the anatomy cases below do not.
+ *
+ *  `launchStep` is in here as `undefined` on purpose, and it is the ONLY optional
+ *  prop on the card. The pill it drives is absent for a real reason on most cards —
+ *  a last Stage has no next step at all — so `undefined` is a value the production
+ *  board produces, not a caller forgetting to pass something. That distinguishes it
+ *  from `onOpenSession`, where an absent callback means a painted button wired to
+ *  nothing; the pill simply is not painted here, which the "no CONTROLS" case below
+ *  pins.
+ *
+ *  `artifactKeys` is `[]` because a card with NO artifacts is the common case (issue
+ *  #180), and because it is a REQUIRED prop: the fixture default is what makes every
+ *  existing case compile, and the cases that care about chips pass the prop beside
+ *  this spread. It is NOT a field of the `task()` helper — `TaskRow` has no such
+ *  field; the keys ride `TaskCardView` and arrive as their own prop. */
 const NO_LINKS: Pick<
   TaskCardProps,
-  "sessions" | "costUsd" | "onOpenSession" | "onOpenTask"
+  | "sessions"
+  | "costUsd"
+  | "artifactKeys"
+  | "onOpenSession"
+  | "onOpenTask"
+  | "launchStep"
 > = {
   sessions: [],
   costUsd: null,
+  artifactKeys: [],
   onOpenSession: noopOpenSession,
   onOpenTask: noopOpenTask,
+  launchStep: undefined,
 };
+
+/** A card's primary next step (issue #179 §7.1), derived by the BOARD.
+ *
+ *  Defaults to a Skill-less destination, because that is the state that needs no
+ *  catalog to be clickable and so lets a case assert the pill's SHAPE without first
+ *  waiting on an async fetch. A case about the catalog gate overrides `launchReady`
+ *  or gives the destination a Skill. */
+const launchStep = (
+  over: Partial<{
+    destination: TaskLaunchDestination;
+    launchReady: boolean;
+    onLaunch: (destination: TaskLaunchDestination) => void;
+  }> = {},
+): NonNullable<TaskCardProps["launchStep"]> => ({
+  destination: { slug: "approved", label: "Approved", onEnterSkill: null },
+  launchReady: true,
+  onLaunch: vi.fn(),
+  ...over,
+});
 
 /**
  * The class STRING via the ATTRIBUTE, not `el.className` — the property is an
@@ -109,6 +150,33 @@ function classOf(el: Element): string {
 /** Whole class TOKENS, so a substring of a longer utility cannot satisfy a
  *  `toContain` the way it would on the raw class string. */
 const classTokens = (el: Element): string[] => classOf(el).split(/\s+/);
+
+/** A nested CONTROL inside the card, resolved by its label AND by being a real
+ *  `<button>`.
+ *
+ *  The `tagName` filter is not a nicety, it is the discriminator: `getAllByRole("button")`
+ *  also matches the CARD, because `RowButton` is a `div[role=button]` whose accessible
+ *  NAME is computed recursively and therefore CONTAINS the pill's own text. So
+ *  `getByRole("button", { name: /Approved/ })` is a multiple-match throw on a correct
+ *  card — and the two candidates are exactly the two things the pill's pins are about
+ *  (a real control, nested in a row), so separating them by element type is the honest
+ *  instrument rather than a workaround. */
+const controlsNamed = (label: string): HTMLElement[] =>
+  screen
+    .getAllByRole("button")
+    .filter(
+      (el) => el.tagName === "BUTTON" && (el.textContent ?? "").includes(label),
+    );
+
+const controlNamed = (label: string): HTMLElement => {
+  const hits = controlsNamed(label);
+  if (hits.length !== 1) {
+    throw new Error(
+      `expected exactly one <button> carrying "${label}", found ${hits.length}`,
+    );
+  }
+  return hits[0]!;
+};
 
 /** A spread surface that records which handler ran, so the spread can be asserted
  *  as BEHAVIOUR and not only as an attribute list. */
@@ -198,6 +266,127 @@ describe("TaskCard — what it renders", () => {
     expect(screen.getByTestId("task-card").getAttribute("data-task-id")).toBe(
       "tsk_1",
     );
+  });
+});
+
+describe("TaskCard — the artifact key chips (issue #180)", () => {
+  /** Every `rounded-full` node the card renders, in document order. The census in
+   *  `slabFloatSeparation.test.ts` counts the class LITERALS in the source; this is
+   *  its rendered twin, and it is what lets an absent-chip case say "no EXTRA node"
+   *  instead of merely "no text". */
+  const pillNodes = (): Element[] =>
+    Array.from(
+      screen.getByTestId("task-card").querySelectorAll('[class*="rounded-full"]'),
+    );
+
+  it("a card with artifact keys renders one chip per key, beside the spec chip", () => {
+    // The keys are NAMES and nothing else — the board read carries `artifactKeys`
+    // alone (spec §1: one `markdown` column on that payload would put every Task's
+    // every document on the wire just to render a chip), and reading a document is
+    // the detail modal's job. So the card's whole artifact surface is this label
+    // row, and it must not grow one.
+    render(
+      <TaskCard
+        task={task({ specPath: "/tmp/spec.md" })}
+        {...NO_LINKS}
+        artifactKeys={["plan", "research"]}
+      />,
+    );
+    for (const key of ["plan", "research"]) {
+      const chip = screen.getByText(key);
+      // A LABEL, not the document: the chip's whole text is the key.
+      expect(chip.textContent).toBe(key);
+      const tokens = classTokens(chip);
+      expect(tokens).toContain("rounded-full");
+      // The fill is the card's ONE pill recipe — the page step, because a chip has
+      // to differ from both surfaces it can land on (`bg-panel` column, `bg-card`
+      // card) in every palette, and `bg-chat` is exactly `bg-card` in zai-dark.
+      expect(tokens).toContain("bg-background");
+      expect(tokens).not.toContain("bg-chat");
+      expect(chip.tagName).toBe("SPAN");
+    }
+    // BESIDE the spec chip: the same sibling flow inside the card, and the spec chip
+    // is still the spec chip — an artifact key never replaces it or borrows its
+    // label.
+    const spec = screen.getByText("spec");
+    expect(spec.tagName).toBe("SPAN");
+    expect(spec.parentElement).toBe(screen.getByTestId("task-card"));
+    expect(screen.getByText("plan").parentElement).toBe(spec.parentElement);
+    // Two keys, TWO pills, and the spec chip is untouched: `T{n}` + spec + 2 keys.
+    expect(pillNodes()).toHaveLength(4);
+  });
+
+  it("a card with NO artifact keys renders NO artifact chip at all", () => {
+    // The empty set is not a state to announce. The gate is `artifactKeys.length >
+    // 0`, so an artifact-less card — the common case, and what the `NO_LINKS`
+    // fixture default spells — renders no header line, no placeholder, no empty
+    // pill. The same rule the spec chip already follows for an absent `specPath`.
+    // `artifactKeys={[]}` spelled explicitly AFTER the spread (the spread would
+    // overwrite a prop written before it) so the case states its own subject rather
+    // than inheriting the fixture default silently.
+    const { unmount } = render(
+      <TaskCard
+        task={task({ specPath: "/tmp/spec.md" })}
+        {...NO_LINKS}
+        artifactKeys={[]}
+      />,
+    );
+    expect(pillNodes()).toHaveLength(2);
+    unmount();
+    render(
+      <TaskCard task={task({ specPath: null })} {...NO_LINKS} artifactKeys={[]} />,
+    );
+    // Just the `T{n}` pill: no spec chip, no artifact chip.
+    expect(pillNodes()).toHaveLength(1);
+  });
+
+  it("the artifact chips add NO [role=button] match (the one-per-row rule holds)", () => {
+    // `RowButton`'s load-bearing constraint, and the reason these chips are
+    // `<span>`s: `SpacesList.test.tsx` resolves rows through
+    // `.closest('[role="button"]')` at eight sites, so a second match inside a card
+    // would move the ancestor those reads land on. A `<button>` would not be
+    // matched by the ATTRIBUTE selector, but a spelled `role` would — and a chip is
+    // not a control, so the span shape is the one with nothing to get wrong.
+    render(
+      <TaskCard
+        task={task()}
+        {...NO_LINKS}
+        artifactKeys={["plan", "research"]}
+        drag={dragSurface()}
+      />,
+    );
+    expect(document.querySelectorAll('[role="button"]')).toHaveLength(1);
+    const chip = screen.getByText("research");
+    expect(chip.getAttribute("role")).toBeNull();
+    expect(chip.closest('[role="button"]')).toBe(screen.getByTestId("task-card"));
+  });
+
+  it("the artifact key chip carries no handler of its own (the row answers its click, once)", () => {
+    // The chip is a LABEL: no `onClick`, no `role`, nothing wired. A click on it is
+    // answered by the CARD's own row `onClick` — which is the intended path, since
+    // spec §3 puts reading the document in the detail modal and the modal is what
+    // the row opens. So the honest claim is not "a click on a key does nothing" (it
+    // cannot be nothing; the chip sits INSIDE a `RowButton`) but "the chip neither
+    // swallows the click nor fires a second one".
+    //
+    // Exactly ONE call is the mutation-sensitive form: a chip that grew its own
+    // `onOpenTask` would answer TWICE, and a chip that grew `stopPropagation` —
+    // right for a control, wrong for a label — would answer ZERO and make the word
+    // `plan` a dead patch on a card that is otherwise clickable.
+    const onOpenTask = vi.fn();
+    render(
+      <TaskCard
+        task={task()}
+        {...NO_LINKS}
+        artifactKeys={["plan"]}
+        onOpenTask={onOpenTask}
+      />,
+    );
+    const chip = screen.getByText("plan");
+    expect(chip.tagName).toBe("SPAN");
+    fireEvent.click(chip);
+    expect(onOpenTask).toHaveBeenCalledTimes(1);
+    expect(onOpenTask).toHaveBeenCalledWith("tsk_1");
   });
 });
 
@@ -364,6 +553,8 @@ describe("TaskCard — the card is a control (PR #178 inverts this)", () => {
         task={task()}
         sessions={[link("sess_1")]}
         costUsd={null}
+        // REQUIRED prop (issue #180); this case is about the Sessions chip.
+        artifactKeys={[]}
         onOpenSession={vi.fn()}
         onOpenTask={vi.fn()}
       />,
@@ -390,6 +581,8 @@ describe("TaskCard — the card is a control (PR #178 inverts this)", () => {
         task={task()}
         sessions={[link("sess_1")]}
         costUsd={null}
+        // REQUIRED prop (issue #180); this case is about the Sessions chip.
+        artifactKeys={[]}
         onOpenSession={onOpenSession}
         onOpenTask={onOpenTask}
       />,
@@ -407,6 +600,174 @@ describe("TaskCard — the card is a control (PR #178 inverts this)", () => {
     expect(screen.queryByRole("button", { name: /session/ })).toBeNull();
     fireEvent.click(screen.getByTestId("task-card"));
     expect(onOpenTask).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("TaskCard — the primary-next-step pill (issue #179 §7.1)", () => {
+  it("renders the destination label as a real control with the card's pill recipe", () => {
+    // The pill is the card's ONE launch affordance: the primary next step, labelled
+    // with the DESTINATION Stage's label (not the card's, not the current column's)
+    // because the destination is what the click acts on.
+    //
+    // The class tokens are asserted because the recipe is a measured decision, not a
+    // taste one: `bg-background` is the only fill that differs from BOTH the column's
+    // `bg-panel` and the card's `bg-card` in every palette (`bg-chat` is EXACTLY
+    // `bg-card` in zai-dark — contrast 1.00, an invisible pill), and
+    // `slabFloatSeparation.test.ts` censuses this literal. `transition-*` is absent on
+    // the `FileChip` reasoning that file records.
+    render(<TaskCard task={task()} {...NO_LINKS} launchStep={launchStep()} />);
+    const pill = controlNamed("Approved");
+    expect(pill.tagName).toBe("BUTTON");
+    expect(pill.getAttribute("type")).toBe("button");
+    const tokens = classTokens(pill);
+    expect(tokens).toContain("self-start");
+    expect(tokens).toContain("rounded-full");
+    expect(tokens).toContain("bg-background");
+    expect(tokens).not.toContain("bg-chat");
+    expect(tokens).not.toContain("bg-card");
+    expect(tokens.filter((t) => /^bg-/.test(t))).toEqual(["bg-background"]);
+    expect(tokens.some((t) => t.startsWith("transition-"))).toBe(false);
+  });
+
+  it("carries NO role, so the card keeps its row's ONE role=button", () => {
+    // THE CONSTRAINT `SpacesList.test.tsx` CANNOT PIN, which is why it lives here.
+    // `RowButton`'s one-`role="button"`-per-row rule is enforced by eight
+    // `.closest('[role="button"]')` sites in `SpacesList.test.tsx`, and that file never
+    // MOUNTS a `TaskCard` — so without this case, a pill that spelled `role="button"`
+    // would pass every existing pin while breaking the selector the sidebar resolves
+    // rows through. The card is the only place the pill exists, so the only place the
+    // rule can be proved is the card's own file.
+    //
+    // Asserted with the pill PRESENT and with a sessions chip also present, because
+    // those are the two nested controls; a count taken with neither would pass on an
+    // empty card and prove nothing about them.
+    render(
+      <TaskCard
+        task={task()}
+        sessions={[link("sess_1")]}
+        costUsd={null}
+        // REQUIRED prop (issue #180); this case is about the Sessions chip.
+        artifactKeys={[]}
+        onOpenSession={noopOpenSession}
+        onOpenTask={noopOpenTask}
+        launchStep={launchStep()}
+        drag={dragSurface()}
+      />,
+    );
+    expect(document.querySelectorAll('[role="button"]')).toHaveLength(1);
+    // And the ONE match is the CARD: the pill resolves to it rather than being its own
+    // row, which is what a sidebar `.closest()` read from a pill would return.
+    expect(screen.getByText(/Approved/).closest('[role="button"]')).toBe(
+      screen.getByTestId("task-card"),
+    );
+    expect(controlNamed("Approved").getAttribute("role")).toBeNull();
+  });
+
+  it("a pill click launches AND does NOT open the detail modal", () => {
+    // THE `stopPropagation` PIN, and it is the same defect the sessions chip carries a
+    // case for: the card is a `RowButton`, so an unstopped click on anything inside it
+    // bubbles into the row's `onClick` and paints the detail modal ON TOP of the
+    // Session the click just asked to see. Here it is worse than a double-open — the
+    // modal would cover the board the launched Session is meant to leave.
+    const onLaunch = vi.fn();
+    const onOpenTask = vi.fn();
+    render(
+      <TaskCard
+        task={task()}
+        {...NO_LINKS}
+        onOpenTask={onOpenTask}
+        launchStep={launchStep({ destination: { slug: "approved", label: "Approved", onEnterSkill: null }, onLaunch })}
+      />,
+    );
+    fireEvent.click(controlNamed("Approved"));
+    expect(onLaunch).toHaveBeenCalledTimes(1);
+    // The callback receives the DESTINATION it was handed, not a value the card
+    // re-derived: the card is presentational and owns no opinion about where a card
+    // goes next.
+    expect(onLaunch).toHaveBeenCalledWith({
+      slug: "approved",
+      label: "Approved",
+      onEnterSkill: null,
+    });
+    expect(onOpenTask).not.toHaveBeenCalled();
+  });
+
+  it("paints NO pill for a Skill the catalog has not landed", () => {
+    // The catalog is an async fetch that starts EMPTY, so an ungated pill is clickable
+    // before it lands and fails with "This Space has no `research` skill" — a sentence
+    // that is false two frames later. The board therefore passes `launchReady: false`
+    // and the card paints NOTHING rather than a disabled pill: a card is a compact
+    // surface, and a permanently-greyed control on every card during the fetch is the
+    // "second button on the card" visual pass warns about. A destination with NO Skill
+    // is never in this state — nothing is waiting.
+    const onLaunch = vi.fn();
+    render(
+      <TaskCard
+        task={task()}
+        {...NO_LINKS}
+        launchStep={launchStep({
+          destination: { slug: "research", label: "Research", onEnterSkill: "research" },
+          launchReady: false,
+          onLaunch,
+        })}
+      />,
+    );
+    expect(controlsNamed("Research")).toHaveLength(0);
+    // Nothing clickable at all, not even a disabled affordance.
+    expect(screen.getByTestId("task-card").querySelectorAll("button")).toHaveLength(
+      0,
+    );
+    fireEvent.click(screen.getByTestId("task-card"));
+    expect(onLaunch).not.toHaveBeenCalled();
+  });
+
+  it("the drag surface still lands on the ROW with the pill present", () => {
+    // THE RISK THE PILL ACTUALLY INTRODUCES, and the honest version of a "the drop
+    // must not launch" pin. Two spreads share this element's gesture space now: the
+    // card's five-key `drag` surface and a nested control that stops its own click. The
+    // failure to guard against is the pill displacing `drag` (or the board answering a
+    // drop from the pill's subtree), because a drop that started a Session would render
+    // the board over the transcript its own `ask` gate needs — `ask_flow` blocks on a
+    // oneshot with NO timeout, so the board would hang on its own launch.
+    //
+    // What THIS file can prove is the half at its own boundary: a drop bubbling up from
+    // the pill's subtree reaches the ROW's drag handler and nothing else happens. The
+    // other half — that the board's drop route never calls `launchTaskSession` — is a
+    // `TasksBoard` claim and cannot be observed from a card render; it is reported as a
+    // gap for `TasksBoard.test.tsx`, which this task does not own.
+    const onLaunch = vi.fn();
+    const onOpenTask = vi.fn();
+    const drag = dragSurface();
+    render(
+      <TaskCard
+        task={task()}
+        {...NO_LINKS}
+        drag={drag}
+        onOpenTask={onOpenTask}
+        launchStep={launchStep({ onLaunch })}
+      />,
+    );
+    const row = screen.getByTestId("task-card");
+    expect(row.getAttribute("draggable")).toBe("true");
+    // A drop that BUBBLES from the pill's own subtree still resolves to the row's
+    // handler — the pill neither swallows the gesture nor becomes one.
+    fireEvent.drop(controlNamed("Approved"));
+    expect(drag.onDrop).toHaveBeenCalledTimes(1);
+    expect(onLaunch).not.toHaveBeenCalled();
+    expect(onOpenTask).not.toHaveBeenCalled();
+    fireEvent.dragStart(row, { dataTransfer: { setData: vi.fn() } });
+    expect(drag.onDragStart).toHaveBeenCalledTimes(1);
+    expect(onLaunch).not.toHaveBeenCalled();
+  });
+
+  it("renders no pill when the card's Stage has no next step", () => {
+    // A last Stage (or a `next_slugs: []` that leads nowhere) means the board hands
+    // down `undefined`, and the card shows nothing — the same "an absent field renders
+    // nothing" rule the spec chip and the sessions chip follow.
+    render(<TaskCard task={task()} {...NO_LINKS} launchStep={undefined} />);
+    expect(screen.getByTestId("task-card").querySelectorAll("button")).toHaveLength(
+      0,
+    );
   });
 });
 
@@ -475,6 +836,8 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         task={task()}
         sessions={[link("sess_old"), link("sess_new")]}
         costUsd={1.75}
+        // REQUIRED prop (issue #180); this case is about the Sessions chip.
+        artifactKeys={[]}
         onOpenSession={noopOpenSession}
         onOpenTask={noopOpenTask}
       />,
@@ -497,6 +860,8 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         task={task()}
         sessions={[link("sess_1")]}
         costUsd={null}
+        // REQUIRED prop (issue #180); this case is about the Sessions chip.
+        artifactKeys={[]}
         onOpenSession={noopOpenSession}
         onOpenTask={noopOpenTask}
       />,
@@ -518,6 +883,8 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         task={task()}
         sessions={[link("sess_1")]}
         costUsd={0}
+        // REQUIRED prop (issue #180); this case is about the Sessions chip.
+        artifactKeys={[]}
         onOpenSession={noopOpenSession}
         onOpenTask={noopOpenTask}
       />,
@@ -538,6 +905,8 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         task={task()}
         sessions={[link("sess_first"), link("sess_second"), link("sess_last")]}
         costUsd={0.5}
+        // REQUIRED prop (issue #180); this case is about the Sessions chip.
+        artifactKeys={[]}
         onOpenSession={onOpenSession}
         onOpenTask={noopOpenTask}
       />,
@@ -594,18 +963,23 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
   });
 
   it("a card with no sessions renders no chip", () => {
-    // The common case: the seeded board is five columns of cards with no links.
+    // The common case: the seeded board is columns of cards with no links.
     // No chip at all — not an empty pill, not `0 sessions`, not a disabled
     // affordance that opens nothing. `specPath`'s chip above set the precedent:
     // an absent field renders nothing rather than a placeholder for its absence.
     render(<TaskCard task={task()} {...NO_LINKS} />);
     expect(screen.queryByText(/session/)).toBeNull();
-    // And no stray control inside the card — the card is DRAGGED and not clicked,
-    // so a second affordance that appears on every card is the one thing this
-    // component's whole "not a RowButton" argument says it will not add.
+    // RE-PINNED, and the reason it had to move: this used to read
+    // `querySelector("button")` is `null`, which asserted "the chip is the card's only
+    // nested control". Issue #179 adds a SECOND nested control — the primary-next-step
+    // pill — so a bare `querySelector` would now convict a correct card. What the case
+    // actually owns is unchanged and stronger: with BOTH affordances absent (no links,
+    // no `launchStep`) the card carries NO control at all. Counting every control is
+    // what keeps that claim honest as the card grows more, and it still fails the
+    // moment either affordance paints when it should not.
     expect(
-      screen.getByTestId("task-card").querySelector("button"),
-    ).toBeNull();
+      screen.getByTestId("task-card").querySelectorAll("button"),
+    ).toHaveLength(0);
   });
 
   it("the sessions chip is a real control that opens the newest link when clicked", () => {
@@ -624,6 +998,8 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         task={task()}
         sessions={[link("sess_alpha"), link("sess_beta")]}
         costUsd={2.5}
+        // REQUIRED prop (issue #180); this case is about the Sessions chip.
+        artifactKeys={[]}
         onOpenSession={onOpenSession}
         onOpenTask={noopOpenTask}
       />,
@@ -694,6 +1070,8 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         task={task()}
         sessions={[link("sess_1")]}
         costUsd={0.25}
+        // REQUIRED prop (issue #180); this case is about the Sessions chip.
+        artifactKeys={[]}
         onOpenSession={vi.fn()}
         onOpenTask={vi.fn()}
       />,

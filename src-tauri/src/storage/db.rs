@@ -25,7 +25,11 @@ use serde::{Deserialize, Serialize};
 // resolves unchanged.
 pub use fulcrum_harness::store_rows::{MessageRow, SessionRow};
 
-use fulcrum_harness::seams::{FulcrumPersistence, StoreError};
+use fulcrum_harness::seams::{
+    Artifact as CrateArtifact, ArtifactMeta as CrateArtifactMeta, BoardRow, FulcrumPersistence,
+    MoveOutcome as CrateMoveOutcome, StoreError, TaskDetail, TaskRow as CrateTaskRow, TaskStore,
+    TaskStoreError,
+};
 // (T5/S4, Step B-bis) The clock moved to `fulcrum_harness::clock` — this file's
 // private copy and `agent/normalize.rs`'s `pub(crate)` copy were byte-identical
 // duplicates, and the trait's `now_ms` would have been a third. Importing the
@@ -89,6 +93,40 @@ impl From<DbError> for StoreError {
     }
 }
 
+/// The `DbError → TaskStoreError` map the D2 TaskStore seam runs through
+/// (issue #180; the crate trait is `fulcrum_harness::seams::TaskStore`).
+///
+/// Lossy like the `StoreError` map beside it, and licensed by the same
+/// measurement: `DbError` stays three-variant and DESKTOP-only (`Sqlite` is never
+/// constructible crate-side), so the crate seam only ever sees the three arms its
+/// own error type can express. `TaskStoreError` has no `Sqlite` arm for the same
+/// reason `StoreError` has none — no `rusqlite` crosses into the crate — and it
+/// must be serde-serializable because its value rides the wire inside
+/// `Inbound::TaskResponse`, which is why it is a separate type and not `StoreError`
+/// reused.
+///
+/// `Sqlite → Io` with the sentence preserved through `Display` (the
+/// `io error: sqlite error: …` degradation the map above documents — the model
+/// reads this `message` as its tool result, so WHICH layer failed has to survive);
+/// `Io → Io`; `Json → Invalid`, because a JSON failure is a malformed row rather
+/// than an I/O failure, and folding it into `Io` would tell a model to retry a
+/// write that will fail identically every time.
+impl From<DbError> for TaskStoreError {
+    fn from(e: DbError) -> Self {
+        match e {
+            DbError::Sqlite(inner) => TaskStoreError::Io {
+                message: format!("sqlite error: {inner}"),
+            },
+            DbError::Io(e) => TaskStoreError::Io {
+                message: e.to_string(),
+            },
+            DbError::Json(e) => TaskStoreError::Invalid {
+                message: e.to_string(),
+            },
+        }
+    }
+}
+
 /// Why a Task-board write was refused.
 ///
 /// A SEPARATE error type from [`DbError`], and not an accident of taste:
@@ -126,6 +164,163 @@ pub enum BoardError {
         /// `Display` sentence is the whole answer.
         available: String,
     },
+
+    /// `delete_stage` refuses while the Stage holds cards. A Task whose
+    /// `stage_slug` names no row is INVISIBLE to `get_board` — which groups by
+    /// Stage — yet keeps costing money through its Sessions, so the cards would
+    /// survive a delete unreachable rather than die with it. That is ADR 0090's
+    /// no-foreign-key consequence, and it is why SQLite cannot catch this for us.
+    /// The sentence names the count AND the slugs they could move to, so the
+    /// caller has the whole answer in one round trip.
+    #[error(
+        "stage {slug} has {count} card(s) — delete or move them first (valid stages: {available})"
+    )]
+    StageNotEmpty {
+        slug: String,
+        count: i64,
+        available: String,
+    },
+
+    /// `delete_stage` refuses while another Stage's `next_slugs` names this one
+    /// (ADR 0099's Consequence). The alternative — drop the dangling slug at read
+    /// time — is rejected there by name: a silently-shrunk workflow is the
+    /// failure this repo keeps documenting. The sentence names the pointing
+    /// Stages, so the user knows which graph to edit rather than guessing.
+    #[error(
+        "stage {slug} cannot be deleted — another stage's transitions lead here ({referrers})"
+    )]
+    StageReferenced { slug: String, referrers: String },
+
+    /// `delete_stage` refuses the last column. `create_task`'s "no explicit stage
+    /// lands in the first stage" fallback and `get_board`'s payload shape both
+    /// assume at least one row exists, so a board with zero columns is a board
+    /// that cannot accept a card.
+    #[error("stage {slug} is this space's last column and cannot be deleted")]
+    LastStage { slug: String },
+
+    /// `create_stage` refuses a slug collision rather than suffixing it. A silent
+    /// `spike-2` is a slug nobody typed, and a slug is the thing a card's
+    /// `<task stage="…">` block and `move_task`'s error both report (spec §5), so
+    /// inventing one is inventing a name the user never chose.
+    #[error("a stage with slug {slug} already exists in this space (valid slugs: {available})")]
+    StageSlugTaken { slug: String, available: String },
+
+    /// `create_stage` refuses a label that derives no slug at all (spec §5). The
+    /// command layer refuses this earlier with a friendlier sentence; the storage
+    /// layer refuses it too, because it is the last writer and cannot trust its
+    /// caller to have mangled the text first.
+    #[error("cannot create a stage with an empty slug")]
+    EmptyStageSlug,
+
+    /// ADR 0099's Strict-workflow gate: the move is not an edge of the FROM
+    /// Stage's `next_slugs`. Only reachable when `spaces.board_strict = 1`. The
+    /// sentence names the legal destinations, which is the whole UI this needs —
+    /// `store/tasks.ts` already reverts an optimistic drag on rejection and
+    /// renders this message.
+    #[error("cannot move to {to} from {from} — allowed: {allowed}")]
+    StrictMoveRefused {
+        from: String,
+        to: String,
+        allowed: String,
+    },
+
+    /// `set_stage_next` refuses a slug equal to its own origin. A self-loop is a
+    /// button that moves a card to the column it is already in — a control that
+    /// appears to do something and does nothing.
+    #[error("stage {slug} cannot lead to itself")]
+    SelfLoop { slug: String },
+
+    /// `write_artifact` refuses a key outside `[a-z0-9][a-z0-9-]{0,39}`.
+    ///
+    /// The payload is the offending key VERBATIM (never cleaned), because a
+    /// caller that invented the key is the only party that can fix it and it must
+    /// see exactly what it sent. The sentence below is byte-identical to
+    /// `TasksError::BadArtifactKey`'s in `agent/errors.rs`, and that is a
+    /// requirement rather than tidiness: the command layer maps this arm onto that
+    /// variant FIELD-FOR-FIELD, so a person who breaks the rule gets one sentence
+    /// whichever layer caught it (ADR 0063 — the message is what the user reads).
+    ///
+    /// The grammar's `{0,39}` is escaped `{{0,39}}` for the same reason
+    /// `TasksError`'s is: unescaped, the `Display` derive reads it as a format
+    /// argument and prints a width instead of the rule.
+    #[error("artifact key `{key}` is not [a-z0-9][a-z0-9-]{{0,39}}")]
+    BadArtifactKey { key: String },
+
+    /// `write_artifact` refuses a markdown over [`MAX_ARTIFACT_MARKDOWN_BYTES`].
+    ///
+    /// Refused, NEVER truncated. Both numbers ride the variant (and the command
+    /// layer re-emits them as `size`/`max` envelope keys, ADR 0063) so a caller
+    /// learns how far over it went without parsing prose. The sentence matches
+    /// `TasksError::ArtifactTooLarge`'s byte-for-byte, for the same reason as
+    /// [`BoardError::BadArtifactKey`]'s does.
+    #[error("artifact is {size} bytes, which exceeds the {max} bytes (256 KB) limit")]
+    ArtifactTooLarge { size: usize, max: usize },
+}
+
+/// The `BoardError → TaskStoreError` map the D2 TaskStore seam runs through
+/// (issue #180).
+///
+/// Four arms carry the refusals a board VERB can reach through the crate trait,
+/// and the fifth is the honest catch-all for the variants the seam cannot produce
+/// — see below.
+///
+/// - `MissingTask` → `NotFound`: a WRITE against a card that is not there. This is
+///   the variant `write_artifact`'s dangling-id gate raises, and the crate's
+///   `TaskStoreError::NotFound` exists for exactly that question.
+/// - `MissingStage` → `Invalid`: a bad slug is a malformed ARGUMENT, not an
+///   absence — the destination column may well exist in another Space. The
+///   sentence keeps `available`, because ADR 0090's first Consequence is that a bad
+///   slug must name the valid ones so a model self-corrects without a
+///   discovery round trip, and that sentence is what the model reads.
+/// - `StrictMoveRefused` → `Invalid`, likewise: the call was well-formed and the
+///   Space's own workflow gate refused it. `allowed` rides for the same reason.
+/// - `Sqlite` → `Io`, with the same sentence preservation as the `DbError` map
+///   above.
+///
+/// The catch-all exists because `move_task` is not the only verb-shaped method on
+/// this type and the match has to be exhaustive over an enum the command layer
+/// grows. `StageNotEmpty`, `StageReferenced`, `LastStage`, `StageSlugTaken`,
+/// `EmptyStageSlug` and `SelfLoop` are all STAGE-management refusals, and the crate
+/// trait has no stage verb at all — no path through `TaskStore` reaches them.
+/// Folding them into `Invalid` rather than panicking is deliberate: a future verb
+/// that starts raising one gets a correct-if-generic sentence, where a `unreachable!`
+/// would panic inside a `spawn_blocking` and turn a storage refusal into the
+/// `JoinError` the router reports as `Io`.
+///
+/// `BadArtifactKey` and `ArtifactTooLarge` sit in the SAME arm but for the opposite
+/// reason: they ARE reachable, because `write_artifact` is a `TaskStore` verb and
+/// storage now enforces both rules for every door to `task_artifacts`. The crate's
+/// `Invalid` doc names exactly those two failures, so the mapping is the one F1
+/// anticipated rather than a coincidence.
+impl From<BoardError> for TaskStoreError {
+    fn from(e: BoardError) -> Self {
+        // `Display` IS the sentence the model reads, so it is rendered ONCE from
+        // the variant that arrived and then dispatched on — never re-spelled per
+        // arm, which is how a `#[error(...)]` edit and a mapping table drift apart.
+        // (`Sqlite` needs no `format!` here for the same reason: the variant's own
+        // `Display` already carries the `sqlite error: ` prefix.)
+        let sentence = e.to_string();
+        match e {
+            BoardError::MissingTask(_) => TaskStoreError::NotFound { message: sentence },
+            BoardError::Sqlite(_) => TaskStoreError::Io { message: sentence },
+            // The two artifact refusals are MALFORMED ARGUMENTS, not absences, and
+            // the crate's own `TaskStoreError::Invalid` doc names them ("a key
+            // outside the artifact grammar, a markdown over the size cap") — this
+            // arm is why that sentence is now true on the desktop side too. The
+            // grammar and the numbers ride in `Display`, which is what the model
+            // reads as the tool result.
+            BoardError::BadArtifactKey { .. }
+            | BoardError::ArtifactTooLarge { .. }
+            | BoardError::MissingStage { .. }
+            | BoardError::StrictMoveRefused { .. }
+            | BoardError::StageNotEmpty { .. }
+            | BoardError::StageReferenced { .. }
+            | BoardError::LastStage { .. }
+            | BoardError::StageSlugTaken { .. }
+            | BoardError::EmptyStageSlug
+            | BoardError::SelfLoop { .. } => TaskStoreError::Invalid { message: sentence },
+        }
+    }
 }
 
 /// The ONE `sessions` SELECT list every `SessionRow` read uses, as a const
@@ -292,13 +487,37 @@ pub struct StageRow {
     /// an enum on purpose: the value is DATA a user can change per Space, and
     /// the DDL's default is what a seeded stage carries.
     pub on_enter: String,
+    /// ADR 0098: the Skill a Session started from this column loads
+    /// (`NULL` = no Skill). A second column rather than a widened `on_enter`,
+    /// because `on_enter`'s value is rendered RAW as the column-header chip — a
+    /// composite `'fresh:discuss'` would print as a label — and the two are
+    /// orthogonal (a Stage can be `compact` AND carry a Skill).
+    pub on_enter_skill: Option<String>,
+    /// ADR 0099: the outgoing transition-graph edges as this column's LEGAL
+    /// destinations, in button-render order, JSON-at-rest (`NULL` =
+    /// UNCONFIGURED, which means unconstrained — deliberately NOT "no edges").
+    /// Leniently parsed: any value that is not a JSON array reads as `None`,
+    /// never as an error (spec §3).
+    pub next_slugs: Option<Vec<String>>,
 }
 
 /// The ONE `stages` SELECT list every read uses, as a const array of column
 /// names — same reason and same honest scope as [`SESSION_COLUMNS`].
-const STAGE_COLUMNS: [&str; 5] = ["space_path", "slug", "label", "sort_order", "on_enter"];
+///
+/// The two #179 columns go at the END, not in the middle: [`stage_row_from`]
+/// reads by POSITION, so appending keeps every existing index stable and a
+/// reorder cannot silently swap two fields' meanings.
+const STAGE_COLUMNS: [&str; 7] = [
+    "space_path",
+    "slug",
+    "label",
+    "sort_order",
+    "on_enter",
+    "on_enter_skill",
+    "next_slugs",
+];
 
-const STAGE_ROW_FIELDS: usize = 5;
+const STAGE_ROW_FIELDS: usize = 7;
 // Compile-time arity tie ONLY — see SESSION_ROW_FIELDS for the honest scope;
 // the drift-guard TEST is the guard.
 const _: [(); STAGE_COLUMNS.len()] = [(); STAGE_ROW_FIELDS];
@@ -311,7 +530,23 @@ fn stage_row_from(row: &Row<'_>) -> rusqlite::Result<StageRow> {
         label: row.get(2)?,
         sort_order: row.get(3)?,
         on_enter: row.get(4)?,
+        on_enter_skill: row.get::<_, Option<String>>(5)?,
+        next_slugs: lenient_next_slugs(row.get::<_, Option<String>>(6)?),
     })
+}
+
+/// Parse a `next_slugs` cell, never failing: a value that is NULL, malformed, or
+/// simply not a JSON array reads as "unconfigured" (`None`).
+///
+/// The board must never blank because ONE cell holds something a foreign writer
+/// left behind (spec §3), and a `StageRow` mapper cannot return anything but a
+/// row-reading error. The strictness lives in the WRITER — `set_stage_next`
+/// validates every slug and serialises with `serde_json` — so the reader only
+/// has to survive data older or foreigner than itself. Note `None` is
+/// "unconfigured, unconstrained" (ADR 0099), so this fallback is the SAFE
+/// reading: a corrupt cell loosens nothing the user configured correctly.
+fn lenient_next_slugs(raw: Option<String>) -> Option<Vec<String>> {
+    raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
 }
 
 /// A row from the `tasks` table — one board card.
@@ -440,8 +675,8 @@ pub struct StageWithTasks {
 ///
 /// `#[serde(flatten)]` is deliberately NOT used on `task`: keeping the nested
 /// `task` key makes the two shapes distinguishable in the JSON, and the repo has
-/// no `serde(flatten)` precedent to follow. The three wire keys
-/// (`task`/`sessions`/`costUsd`) are frozen by
+/// no `serde(flatten)` precedent to follow. The four wire keys
+/// (`task`/`sessions`/`costUsd`/`artifactKeys`) are frozen by
 /// `the_task_card_view_wire_keys_are_frozen`, whose TS mirror lives in
 /// `src/lib/tauri/types.ts`.
 ///
@@ -458,6 +693,62 @@ pub struct TaskCardView {
     pub sessions: Vec<TaskSessionRow>,
     /// Summed cost; ADR 0082: `None` = never reported, `Some(0.0)` = a real zero.
     pub cost_usd: Option<f64>,
+    /// The artifact KEYS alone — names only, never the markdown. The board read
+    /// never carries a document (spec §1): the detail dialog fetches content with
+    /// the `get_artifact` command when a key is selected. REQUIRED, never
+    /// optional, for the reason `sessions` is: an optional field compiles against
+    /// every fixture in the repo and then renders nothing when real data arrives.
+    /// A card with no artifacts has `artifact_keys: []`.
+    pub artifact_keys: Vec<String>,
+}
+
+/// One named **Task artifact** (issue #180, spec §1, ADR 0100): a markdown
+/// document owned by a Task, stored as a row of `task_artifacts`.
+///
+/// The content lives IN the database because the alternative dies on ship —
+/// `docs/roadmap/` is gitignored, its untracked files are unrecoverable, and the
+/// `finish` skill deletes the plan family when the work succeeds. It is NOT a
+/// JSON column on `tasks`: `sessions.todos_json` is the in-repo precedent and it
+/// is write-mostly, which is exactly what a document that must be read back
+/// cannot be, and a column here would put the blob on `TaskRow` — the shape the
+/// [`TaskCardView`] wrapper exists to prevent.
+///
+/// `key` is a free-form slug, NOT an enum: `tool_specs()` returns a static `Vec`
+/// and cannot carry one, so the grammar is validated in the command layer (the
+/// `require_title` split) rather than closed here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Artifact {
+    /// The owning card — one half of the composite primary key.
+    pub task_id: String,
+    /// The other half: `PRIMARY KEY (task_id, key)` means one row per key, ever.
+    pub key: String,
+    /// The document. This struct is the ONLY place artifact content crosses the
+    /// wire, and it is a single-artifact read — never the board payload.
+    pub markdown: String,
+    /// Set by the FIRST write and never touched again (see `write_artifact`).
+    pub created_at: i64,
+    /// Set by every write.
+    pub updated_at: i64,
+}
+
+/// What `write_artifact` answers with: identity, the fresh stamp, and the size.
+///
+/// It deliberately does NOT echo the `markdown` back. The caller just sent it, so
+/// returning it doubles a frame that can be 256 KB for no information, and a
+/// write path that hands back documents is how a board payload eventually
+/// acquires one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactMeta {
+    /// The key that was written (the grammar was validated before this ran).
+    pub key: String,
+    /// The stamp the row now carries — the caller learns WHEN it landed without
+    /// a second read.
+    pub updated_at: i64,
+    /// The UTF-8 BYTE length stored, so a caller near the 256 KB cap can see how
+    /// close it is. `markdown.len()`, not a character count.
+    pub bytes: usize,
 }
 
 /// What a `move_task` reports: the destination stage's `on_enter`.
@@ -758,6 +1049,98 @@ impl Db {
             // and not overwritten by an unexpected stage-2 re-title.
             tx.execute(
                 "UPDATE sessions SET title_stage = 2 WHERE title IS NOT NULL",
+                [],
+            )?;
+            Ok(())
+        })?;
+        // ADR 0098 + ADR 0099 (issue #179): three additive columns on the TWO
+        // tables a pre-#179 database already holds. A fresh database gets all
+        // three from `SCHEMA` and every gate below stays silent — there is no
+        // code path in which a fresh open runs one of these ALTERs.
+        //
+        // `on_enter_skill` carries the whole #179 backfill, because the column
+        // and the data are one atomic unit: spec §3.1's two Skill UPDATEs and the
+        // `discuss` INSERT all write columns this ALTER creates. Splitting them
+        // across gates would let a crash commit the column without the rows, and
+        // a board with no `discuss` column is exactly the silent-green shape
+        // ADR 0098's Consequence warns about (both shipped launch buttons gone,
+        // no error, a plausible-looking board).
+        gate(&mut conn, "stages", "on_enter_skill", |tx| {
+            tx.execute("ALTER TABLE stages ADD COLUMN on_enter_skill TEXT", [])?;
+            // spec §3.1 steps 1–2: the two launch Skills. `IS NULL` keeps the
+            // statement a backfill rather than an overwrite, and it is what makes
+            // the whole gate safe to re-run after a crash.
+            tx.execute(
+                "UPDATE stages SET on_enter_skill = 'research' \
+                 WHERE slug = 'research' AND on_enter_skill IS NULL",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE stages SET on_enter_skill = 'discuss' \
+                 WHERE slug = 'discuss' AND on_enter_skill IS NULL",
+                [],
+            )?;
+            // spec §3.1 step 3: give every Space that has a `research` column and
+            // no `discuss` column a `discuss` column immediately BEFORE `research`.
+            // The `NOT IN` pre-check is the idempotence (the PRIMARY KEY is
+            // `(space_path, slug)`, so re-running without it would fail the INSERT
+            // and brick `Db::open`) AND the respect-a-rename rule: a Space whose
+            // owner renamed `research` to `spike` has no `research` row, so the
+            // migration gives it nothing rather than inventing a column beside a
+            // workflow the owner already changed.
+            // The `let … ; found` shape is the borrow checker, not tidiness: the
+            // `MappedRows` temporary borrows `stmt`, so a block-ending expression
+            // would drop `stmt` first.
+            let mut probe = tx.prepare(
+                "SELECT DISTINCT space_path FROM stages \
+                 WHERE slug = 'research' \
+                   AND space_path NOT IN \
+                   (SELECT space_path FROM stages WHERE slug = 'discuss')",
+            )?;
+            let spaces_without_discuss = probe
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            for space in spaces_without_discuss {
+                let research_sort: i64 = tx.query_row(
+                    "SELECT sort_order FROM stages WHERE space_path = ?1 AND slug = 'research'",
+                    params![space],
+                    |r| r.get(0),
+                )?;
+                // The shift runs BEFORE the insert: `sort_order` carries NO UNIQUE
+                // constraint, so an insert-then-shift would leave `discuss` and
+                // `research` sharing an index and the board's ordering would be
+                // decided by the `slug` tiebreak instead of the user's layout.
+                tx.execute(
+                    "UPDATE stages SET sort_order = sort_order + 1 \
+                     WHERE space_path = ?1 AND sort_order >= ?2",
+                    params![space, research_sort],
+                )?;
+                tx.execute(
+                    "INSERT INTO stages (space_path, slug, label, sort_order, on_enter_skill) \
+                     VALUES (?1, 'discuss', 'Discuss', ?2, 'discuss')",
+                    params![space, research_sort],
+                )?;
+            }
+            Ok(())
+        })?;
+        // ADR 0099's column, deliberately NOT backfilled: NULL means
+        // "unconfigured", and the renderer's fallback (the Stage at
+        // `sort_order + 1`) reproduces today's single-forward-button behaviour
+        // until a person configures a graph. Backfilling it would have given every
+        // existing board a graph it never asked for — and under Strict, one that
+        // refuses drags.
+        gate(&mut conn, "stages", "next_slugs", |tx| {
+            tx.execute("ALTER TABLE stages ADD COLUMN next_slugs TEXT", [])?;
+            Ok(())
+        })?;
+        // The Strict-workflow opt-in (ADR 0099). Rides the `spaces` row;
+        // `SpaceRow` does NOT gain a field — `board_strict` is read and written by
+        // SQL only, so the `Vec<SpaceRow>` wire type is untouched. The `0` default
+        // is the whole compatibility story: upgrading cannot change how an
+        // existing board answers a drag.
+        gate(&mut conn, "spaces", "board_strict", |tx| {
+            tx.execute(
+                "ALTER TABLE spaces ADD COLUMN board_strict INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
             Ok(())
@@ -1525,7 +1908,7 @@ impl Db {
     /// own cards.
     ///
     /// LAZY SEEDING happens here (spec §2): a Space with no `stages` rows gets
-    /// the five defaults on the first board read, so a Space that never opens
+    /// the six defaults on the first board read, so a Space that never opens
     /// the board pays nothing and no migration writes for every existing Space.
     /// The count-check and the five inserts share ONE lock with the board read
     /// that follows, so two first-reads of the same Space cannot both seed.
@@ -1596,6 +1979,27 @@ impl Db {
                 .collect::<Result<Vec<_>, _>>()?;
             rows
         };
+        // Each card's artifact KEYS, names only — the split's whole point is that
+        // the BOARD never carries a document (spec §1, ADR 0100). FOURTH statement
+        // under the SAME lock, still AFTER `seed_default_stages`'s write, and
+        // Space-scoped exactly the way the links read above is: the question is
+        // "whose card is this", only `task_id` answers it, and `?1` is bound ONCE
+        // for the whole statement. No JOIN — `task_artifacts` has no FK and needs
+        // none to answer this, and the `IN (SELECT …)` is what keeps another
+        // Space's keys out of this payload.
+        let artifact_keys = {
+            let mut stmt = guard.prepare(
+                "SELECT task_id, key FROM task_artifacts \
+                 WHERE task_id IN (SELECT id FROM tasks WHERE space_path = ?1) \
+                 ORDER BY task_id ASC, rowid ASC",
+            )?;
+            let rows = stmt
+                .query_map(params![space_path], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
         // Group per stage in one pass. A card whose `stage_slug` matches no
         // stage row is DROPPED from this payload rather than given an invented
         // column: the board renders columns, and a column that does not exist
@@ -1625,10 +2029,20 @@ impl Db {
                                 cost = Some(cost.unwrap_or(0.0) + value);
                             }
                         }
+                        // Same trick as `mine` above: the artifact rows arrived
+                        // `(task_id, key)` ordered by `rowid ASC`, so a stable
+                        // filter keeps each card's keys oldest-write-first with no
+                        // second sort and no second query.
+                        let mine_keys: Vec<String> = artifact_keys
+                            .iter()
+                            .filter(|(owner, _)| owner == &task.id)
+                            .map(|(_, key)| key.clone())
+                            .collect();
                         TaskCardView {
                             task: task.clone(),
                             sessions: mine.into_iter().map(|(link, _)| link.clone()).collect(),
                             cost_usd: cost,
+                            artifact_keys: mine_keys,
                         }
                     })
                     .collect(),
@@ -1837,6 +2251,13 @@ impl Db {
     /// The storage layer does NOT run the boost. `on_enter = 'compact'` needs
     /// `compact_session`, which needs the `SessionManager` — a command-layer
     /// object. Returning the value IS the seam (spec §5).
+    ///
+    /// Under `spaces.board_strict = 1` it ALSO refuses a move that is not an edge
+    /// of the FROM stage's `next_slugs`, before writing (ADR 0099, spec §4.2).
+    /// That check lives HERE rather than in the command layer for one structural
+    /// reason: `delete_stage`'s bulk relocation must bypass it, `delete_stage` is a
+    /// storage method, and a gate in the command layer would be out of its reach —
+    /// the bypass is only free when the gate sits where the write is.
     pub fn move_task(
         &self,
         space_path: &str,
@@ -1854,6 +2275,69 @@ impl Db {
         }
         if !stage_slug_exists(&guard, space_path, to_stage)? {
             return Err(missing_stage(&guard, space_path, to_stage));
+        }
+        // ADR 0099: the Strict-workflow gate, checked BEFORE the write so a
+        // refused move writes nothing (the same refuse-before-write rule the
+        // `stage_slug_exists` check above follows, under the same lock).
+        //
+        // Flag 0 — or no `spaces` row at all — means the check does not happen,
+        // which is the entire compatibility story: an upgrade cannot change how an
+        // existing board answers a drag.
+        //
+        // THE KEY IS `space_key(path)`, NOT the raw string, and that is not
+        // cosmetic. `set_board_strict` (and `upsert_space`/`set_space_trusted`)
+        // key `spaces` by the CANONICAL path with a raw fallback; `Db::board_strict`
+        // reads with the same normalization. Read the flag by the raw string here
+        // and the two disagree for any caller whose raw path is not its canonical
+        // form (a symlink, a `..`, a trailing `/.`): the editor's Strict Switch
+        // would show ON while drags are accepted, which is a workflow that binds
+        // nothing while claiming to bind everything. Pinned by
+        // `the_board_strict_read_and_the_move_gate_agree_on_a_non_canonical_path`.
+        let strict_key = space_key(space_path).unwrap_or_else(|| space_path.to_string());
+        let strict: i64 = guard
+            .query_row(
+                "SELECT board_strict FROM spaces WHERE path = ?1",
+                params![strict_key],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if strict == 1 {
+            // The FROM stage, read under THIS lock. The command layer also reads
+            // it (to feed the `compact` boost's handoff sentence) and that read is
+            // a separate, earlier lock — fine for the same reason `create_task`'s
+            // numbering invariant is unaffected by a read beside it: this one
+            // decides a WRITE, so it must be inside it.
+            let from_stage: String = guard.query_row(
+                "SELECT stage_slug FROM tasks WHERE id = ?1",
+                params![task_id],
+                |row| row.get(0),
+            )?;
+            let allowed: Option<String> = guard.query_row(
+                "SELECT next_slugs FROM stages WHERE space_path = ?1 AND slug = ?2",
+                params![space_path, from_stage],
+                |row| row.get(0),
+            )?;
+            // NULL passes unconditionally: unconfigured is NOT forbidden
+            // (ADR 0099 — the opposite reading would make every existing board
+            // that opts in refuse every drag). A cell that is not a JSON array
+            // leniently reads as NULL and therefore also passes.
+            if let Some(json) = allowed {
+                let edges: Vec<String> = lenient_next_slugs(Some(json)).unwrap_or_default();
+                if !edges.iter().any(|edge| edge == to_stage) {
+                    return Err(BoardError::StrictMoveRefused {
+                        from: from_stage,
+                        to: to_stage.to_string(),
+                        // An explicit `[]` is a configured graph with no edges, so
+                        // the sentence must say that rather than print nothing —
+                        // an empty list reads like a bug, not like an answer.
+                        allowed: if edges.is_empty() {
+                            "(no outgoing transitions)".to_string()
+                        } else {
+                            edges.join(", ")
+                        },
+                    });
+                }
+            }
         }
         let touched = guard.execute(
             "UPDATE tasks SET stage_slug = ?3, updated_at = ?4 WHERE id = ?1 AND space_path = ?2",
@@ -2008,9 +2492,648 @@ impl Db {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
+
+    // ── Task artifacts (issue #180, spec §1, ADR 0100) ───────────────────────
+    //
+    // D1 ships the STORAGE half only: no model-facing verb, no `trait TaskStore`,
+    // no tool registration, no `<artifacts>` launch block. A human reaches these
+    // through the two IPC commands in `commands/tasks.rs`, and the crate seam D2
+    // builds later will be implemented on these exact methods — which is why the
+    // shapes (`Artifact`, `ArtifactMeta`) live here rather than in the command
+    // layer. Nothing in this region advertises anything to a model.
+
+    /// THE ONE OWNER of the artifact key grammar and of the markdown byte cap.
+    ///
+    /// Both rules used to live in `commands/tasks.rs` and be enforced NOWHERE
+    /// ELSE, which was true when the IPC command was the only door. D2 added a
+    /// second door — `impl TaskStore for Db` below, which the `write_artifact`
+    /// TOOL reaches through — and a rule with two doors belongs on the single
+    /// path both doors pass through, not duplicated beside each one. That is why
+    /// the constant and the predicate are HERE and `commands/tasks.rs` now imports
+    /// them: the direction is command → storage, never the reverse.
+    ///
+    /// The `require_title` precedent does NOT argue the other way. `require_title`
+    /// refuses a title that `clean_title` cleans to nothing, and the cleaning is
+    /// genuinely a wire concern — it is what a person typed and what the session
+    /// namer will re-clean. Neither rule here cleans anything: a key either matches
+    /// a grammar or it does not, and a document either fits or it does not. Both are
+    /// pure data validation on the row about to be written, which is exactly what a
+    /// storage layer may own.
+    ///
+    /// The cap is load-bearing for a reason that a reader must not lose: the
+    /// markdown crosses a JSONL pipe on the way to the Worker (the Worker has no
+    /// `Db`; the Supervisor is the sole SQLite writer, ADR 0025), and F1's grounding
+    /// measured that the crate's stdio JSONL readers carry NO line cap — the 1 MiB
+    /// guard is the daemon socket, a different transport. So on the seam path an
+    /// uncapped artifact is an UNCAPPED FRAME, and the alternative to refusing is
+    /// truncating, which produces a spec that ends mid-sentence and reads as a
+    /// complete spec. Modelled on `MAX_IMAGE_BYTES` in `agent/session/mod.rs`.
+    pub const MAX_ARTIFACT_MARKDOWN_BYTES: usize = 256 * 1024;
+
+    /// Does `raw` match the artifact key grammar `[a-z0-9][a-z0-9-]{0,39}`?
+    ///
+    /// A lowercase alphanumeric first character, then lowercase alphanumerics or
+    /// hyphens, 1..=40 characters total. It mirrors the Mention token grammar
+    /// `[a-z0-9-]` that `taskPrompt.ts` already relies on, which ADR 0100 chose
+    /// deliberately so a key survives the launch block's tokenizer.
+    ///
+    /// A PREDICATE, not a validator: it refuses and never cleans, because a mangled
+    /// key is a DIFFERENT key and silently renaming a document the caller asked for
+    /// is the same class of lie as writing a title nobody typed. The `first()`
+    /// clause refuses `""` on its own (an empty key has no first character to match
+    /// `[a-z0-9]`), so there is no separate emptiness check to keep honest.
+    ///
+    /// Why the grammar is load-bearing and not cosmetic: a key is interpolated into
+    /// the `<task>` launch block (ADR 0100). The honest state of that today is that
+    /// `src/lib/taskPrompt.ts` runs every key through `escapeAttr`, so an ill-formed
+    /// key is NOT an injection hole in the block as it stands — what it breaks is
+    /// the INVARIANT the ADR states, and any future surface that interpolates a key
+    /// without escaping inherits the bug from a row this grammar was supposed to
+    /// make impossible.
+    pub fn artifact_key_is_well_formed(raw: &str) -> bool {
+        let shape_ok = match raw.as_bytes().first() {
+            Some(b'a'..=b'z' | b'0'..=b'9') => raw
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+            // No first character at all (the empty key), so the "first is [a-z0-9]"
+            // clause cannot be satisfied.
+            _ => false,
+        };
+        shape_ok && raw.len() <= 40
+    }
+
+    /// Write (UPSERT) one artifact of one card, returning identity + stamp + size
+    /// and NEVER the markdown back.
+    ///
+    /// THE LOAD-BEARING REFUSAL. A `task_id` with no `tasks` row is
+    /// `MissingTask`, checked under the SAME lock as the write and BEFORE it.
+    /// This is not redundant belt-and-braces: `task_artifacts.task_id` carries NO
+    /// foreign key (ADR 0100, for ADR 0090's reason — a Space tab close must not
+    /// take a card's documents with it, and the only cascade an FK here could
+    /// fire on IS that tab close), so SQLite will NOT catch a dangling Task id.
+    /// `write_artifact_refuses_a_dangling_task_id_there_is_no_fk_to_catch_it`
+    /// inserts such a row directly to prove the hole. A dangling artifact would
+    /// be invisible forever — nothing lists it, nothing reads it, and it is a
+    /// document nobody can reach — so the refusal belongs HERE, at the layer that
+    /// knows the difference. `write_task_session_link`'s `get_task` gate in
+    /// `commands/tasks.rs` is the same rule at the wire layer and BOTH refuse:
+    /// the command refusal is what a caller sees, this one is what makes it
+    /// impossible to bypass through any future caller that skips the command.
+    ///
+    /// What this method checks FIRST, before the lock and before any statement:
+    /// the key grammar ([`Db::artifact_key_is_well_formed`]) and the byte cap
+    /// ([`Db::MAX_ARTIFACT_MARKDOWN_BYTES`]), as `BadArtifactKey` /
+    /// `ArtifactTooLarge`.
+    ///
+    /// THOSE TWO USED TO live in `commands/tasks.rs` alone, on the theory that they
+    /// are wire rules and storage has no business owning them. That theory was true
+    /// with one door and false with two: D2's `impl TaskStore for Db` (below) is a
+    /// second door to this table, the `write_artifact` TOOL reaches the table
+    /// through it, and it called neither rule — so a model could persist a key
+    /// outside the grammar and a markdown over the cap that a human could not. A
+    /// rule with two entry points belongs on the one path both pass through, and
+    /// both of these are pure data checks on the row about to be written, not
+    /// concerns about how it arrived. See
+    /// [`Db::MAX_ARTIFACT_MARKDOWN_BYTES`] for why the cap in particular cannot be
+    /// left to the caller's good intentions.
+    ///
+    /// The command layer KEEPS its own two pre-flight checks. Not for defence —
+    /// this is the backstop — but because it answers `TasksError` and produces the
+    /// nicer envelope (the `artifact_too_large` `size`/`max` keys, ADR 0063) without
+    /// spending a DB round trip; `From<BoardError> for TasksError` maps these two
+    /// arms field-for-field onto the same variants, so a person who never came
+    /// through the command's pre-flight still reads the same sentence. That is the
+    /// same belt-and-suspenders shape as the `MissingTask` gate one paragraph up,
+    /// and for the same reason: the command refusal is what a caller sees, this one
+    /// is what makes it impossible to bypass through any caller that skips the
+    /// command.
+    ///
+    /// The UPSERT is what `PRIMARY KEY (task_id, key)` buys: `created_at` is NOT
+    /// in the `DO UPDATE SET` list on purpose, so an overwrite rewrites the
+    /// document and its stamp but not the artifact's age.
+    pub fn write_artifact(
+        &self,
+        task_id: &str,
+        key: &str,
+        markdown: &str,
+    ) -> Result<ArtifactMeta, BoardError> {
+        // BOTH pure refusals run BEFORE the lock and before the existence check,
+        // so a rejection touches no connection at all and the "a rejection writes
+        // NOTHING" rule holds for every door, not just the command's.
+        if !Self::artifact_key_is_well_formed(key) {
+            return Err(BoardError::BadArtifactKey {
+                key: key.to_string(),
+            });
+        }
+        if markdown.len() > Self::MAX_ARTIFACT_MARKDOWN_BYTES {
+            return Err(BoardError::ArtifactTooLarge {
+                size: markdown.len(),
+                max: Self::MAX_ARTIFACT_MARKDOWN_BYTES,
+            });
+        }
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        // The existence check, one lock with the write below (the `create_task`
+        // two-statements-one-guard rule: split them and a delete could slip
+        // between, and there is no delete verb to blame when it does).
+        let exists: Option<i64> = match guard.query_row(
+            "SELECT 1 FROM tasks WHERE id = ?1",
+            params![task_id],
+            |row| row.get::<_, i64>(0),
+        ) {
+            Ok(one) => Some(one),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
+        if exists.is_none() {
+            return Err(BoardError::MissingTask(task_id.to_string()));
+        }
+        let now = now_ms();
+        guard.execute(
+            "INSERT INTO task_artifacts (task_id, key, markdown, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?4) \
+             ON CONFLICT(task_id, key) DO UPDATE SET \
+             markdown = excluded.markdown, updated_at = excluded.updated_at",
+            params![task_id, key, markdown, now],
+        )?;
+        Ok(ArtifactMeta {
+            key: key.to_string(),
+            updated_at: now,
+            bytes: markdown.len(),
+        })
+    }
+
+    /// Read one whole artifact; `Ok(None)` when it is not there — asking for
+    /// something that is not there is an answer, not an error (the `get_task`
+    /// shape, carried over verbatim).
+    ///
+    /// BOTH absences answer `Ok(None)`: a key the card never wrote, and a Task
+    /// that does not exist. The WRITE path refuses a missing Task because a write
+    /// the caller believes succeeded is a lie; a READ path reporting "nothing
+    /// here" is the truth either way, and the detail dialog asks this question
+    /// routinely. That is why no new `BoardError` variant was needed.
+    ///
+    /// This is the ONE place artifact content crosses the wire, and it is a
+    /// single-artifact read by `(task_id, key)` — never a list, never the board.
+    pub fn get_artifact(&self, task_id: &str, key: &str) -> Result<Option<Artifact>, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = guard.prepare(
+            "SELECT task_id, key, markdown, created_at, updated_at FROM task_artifacts \
+             WHERE task_id = ?1 AND key = ?2",
+        )?;
+        let found = match stmt.query_row(params![task_id, key], |row| {
+            Ok(Artifact {
+                task_id: row.get::<_, String>(0)?,
+                key: row.get::<_, String>(1)?,
+                markdown: row.get::<_, String>(2)?,
+                created_at: row.get::<_, i64>(3)?,
+                updated_at: row.get::<_, i64>(4)?,
+            })
+        }) {
+            Ok(artifact) => Some(artifact),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
+        Ok(found)
+    }
+
+    /// One card's artifact KEYS, oldest write first (the `Db::task_sessions`
+    /// order). Keys ONLY, never content: a payload carrying the markdown would
+    /// make the spec §1 split a lie, which is what
+    /// `the_board_payload_carries_keys_only_never_the_markdown` exists to catch.
+    ///
+    /// A card with no artifacts is an empty `Vec` — never an error, never a
+    /// `None`. Returning `Option` here would let "no artifacts" and "could not
+    /// tell" look identical to the caller.
+    pub fn artifact_keys(&self, task_id: &str) -> Result<Vec<String>, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = guard
+            .prepare("SELECT key FROM task_artifacts WHERE task_id = ?1 ORDER BY rowid ASC")?;
+        let rows = stmt
+            .query_map(params![task_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Every `(task_id, keys)` pair for one Space, in ONE statement — the board
+    /// read's aggregate, so a card never issues a query per row.
+    ///
+    /// Space-scoped by `task_id IN (SELECT id FROM tasks WHERE space_path = ?1)`,
+    /// copying the #174 links read's reasoning because it is the same question:
+    /// the scoping question is "whose card is this", and only `task_id` answers
+    /// it. A `cwd`-shaped filter would be wrong twice over — `tasks` rows are
+    /// keyed by the raw `space_path` string, so a filter through the filesystem
+    /// would drop a **Detached task** and pull in a neighbour's keys — and `?1`
+    /// is ONE parameter, bound once for the whole statement.
+    ///
+    /// Keys only, by SHAPE: the return type is `(String, Vec<String>)` and has
+    /// nowhere to put a document. Ordering is `task_id ASC, rowid ASC`, so
+    /// grouping consecutive rows in Rust preserves the per-card oldest-write-first
+    /// order without a second sort. An empty Space is `vec![]`.
+    pub fn artifact_keys_for_space(
+        &self,
+        space_path: &str,
+    ) -> Result<Vec<(String, Vec<String>)>, BoardError> {
+        let rows = {
+            let guard = self.conn.lock().expect("db mutex poisoned");
+            let mut stmt = guard.prepare(
+                "SELECT task_id, key FROM task_artifacts \
+                 WHERE task_id IN (SELECT id FROM tasks WHERE space_path = ?1) \
+                 ORDER BY task_id ASC, rowid ASC",
+            )?;
+            let rows = stmt
+                .query_map(params![space_path], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        // Group in Rust, on rows that arrive sorted by `task_id`, so a
+        // push-and-group (no HashMap, no second sort) is enough. Done after the
+        // guard is released: this is pure memory work and the lock is the board's
+        // single writer (ADR 0090), so it stays held only as long as SQL runs.
+        let mut grouped: Vec<(String, Vec<String>)> = Vec::new();
+        for (task_id, key) in rows {
+            match grouped.last_mut() {
+                Some((previous, keys)) if *previous == task_id => keys.push(key),
+                _ => grouped.push((task_id, vec![key])),
+            }
+        }
+        Ok(grouped)
+    }
+
+    // ── The configurable Stage (issue #179, spec §4/§4.1/§5, ADRs 0098 + 0099) ──
+    //
+    // Six Stage verbs plus the Strict-workflow pair. Every WRITE here refuses
+    // BEFORE it writes and names what it refused (ADR 0090), and every one that
+    // returns a `StageRow` reads it back through the SAME
+    // [`stage_row_by_slug`]/`stage_row_from` path the board read uses — so a
+    // command's reply can never disagree with what a later `get_board` shows.
+
+    /// Add a column to one Space's board.
+    ///
+    /// The slug arrives PRE-DERIVED from the command layer (spec §5 makes the
+    /// label→slug mangling a WIRE rule, the `require_title` precedent — storage
+    /// has no business importing the agent layer to munge text), but the rules are
+    /// enforced HERE too because this is the last writer: an empty slug is refused,
+    /// and a `(space_path, slug)` collision is refused rather than suffixed (a
+    /// silent `spike-2` is a slug nobody typed).
+    ///
+    /// A new column joins at the BOTTOM (`MAX + 1`), the same `+1` join
+    /// `upsert_space` uses — a new thing a person created goes where they can see
+    /// it last, and never renumbers anything they already arranged.
+    ///
+    /// Does NOT seed. `create_stage` is reachable only from the board's editor,
+    /// which is reading a board (`get_board`, which seeds) at the time; matching
+    /// `list_stages`'s deliberate no-seed contract, a Stage verb never writes
+    /// columns for a Space nobody has opened.
+    pub fn create_stage(
+        &self,
+        space_path: &str,
+        slug: &str,
+        label: &str,
+        skill: Option<&str>,
+    ) -> Result<StageRow, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        if slug.trim().is_empty() {
+            return Err(BoardError::EmptyStageSlug);
+        }
+        if stage_slug_exists(&guard, space_path, slug)? {
+            return Err(BoardError::StageSlugTaken {
+                slug: slug.to_string(),
+                available: available_slugs(&guard, space_path)?,
+            });
+        }
+        let next: i64 = guard.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM stages WHERE space_path = ?1",
+            params![space_path],
+            |row| row.get(0),
+        )?;
+        guard.execute(
+            "INSERT INTO stages (space_path, slug, label, sort_order, on_enter_skill) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![space_path, slug, label, next, skill],
+        )?;
+        stage_row_by_slug(&guard, space_path, slug)
+    }
+
+    /// Rename a column's LABEL. The slug is FROZEN (spec §5): `stages` is keyed
+    /// `(space_path, slug)` and `tasks.stage_slug` references that key by STRING
+    /// with no foreign key, so writing the slug would orphan every card in the
+    /// column exactly the way deleting it would — and a card's
+    /// `<task stage="…">` block and `move_task`'s error both report the slug, so a
+    /// renamed Stage keeps reporting its original one. That is why the editor shows
+    /// the slug instead of hiding it.
+    pub fn rename_stage(
+        &self,
+        space_path: &str,
+        slug: &str,
+        label: &str,
+    ) -> Result<StageRow, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        if !stage_slug_exists(&guard, space_path, slug)? {
+            return Err(missing_stage(&guard, space_path, slug));
+        }
+        guard.execute(
+            "UPDATE stages SET label = ?3 WHERE space_path = ?1 AND slug = ?2",
+            params![space_path, slug, label],
+        )?;
+        stage_row_by_slug(&guard, space_path, slug)
+    }
+
+    /// Set or clear the Skill a Session started from this column loads
+    /// (`None` → NULL, ADR 0098). Orthogonal to `on_enter`, which is untouched:
+    /// a column can compact AND carry a Skill.
+    pub fn set_stage_skill(
+        &self,
+        space_path: &str,
+        slug: &str,
+        skill: Option<&str>,
+    ) -> Result<StageRow, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        // Refuse before the write: an `UPDATE` matching zero rows is a silent 0,
+        // and "which slug did I mistype" is the question the caller is asking.
+        if !stage_slug_exists(&guard, space_path, slug)? {
+            return Err(missing_stage(&guard, space_path, slug));
+        }
+        guard.execute(
+            "UPDATE stages SET on_enter_skill = ?3 WHERE space_path = ?1 AND slug = ?2",
+            params![space_path, slug, skill],
+        )?;
+        stage_row_by_slug(&guard, space_path, slug)
+    }
+
+    /// Set one column's outgoing transitions (ADR 0099), JSON-at-rest after the
+    /// `sessions.todos_json` precedent.
+    ///
+    /// Every element is validated against THIS Space's own stages and an unknown
+    /// one is a REJECTION naming the valid slugs — a silently dropped destination
+    /// is a workflow that shrank, which is the failure mode ADR 0099 refuses twice.
+    /// A slug equal to `slug` is refused too (a self-loop is a button that moves a
+    /// card to the column it is already in).
+    ///
+    /// `[]` is a legal, meaningful configuration: it round-trips as
+    /// `Some(vec![])`, NOT as NULL, because NULL means "unconfigured,
+    /// unconstrained" and an explicit empty graph means "nothing may follow this
+    /// column". Collapsing the two is the silent-green shape ADR 0099 rejects.
+    pub fn set_stage_next(
+        &self,
+        space_path: &str,
+        slug: &str,
+        slugs: &[String],
+    ) -> Result<StageRow, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        if !stage_slug_exists(&guard, space_path, slug)? {
+            return Err(missing_stage(&guard, space_path, slug));
+        }
+        for wanted in slugs {
+            if wanted == slug {
+                return Err(BoardError::SelfLoop {
+                    slug: slug.to_string(),
+                });
+            }
+            if !stage_slug_exists(&guard, space_path, wanted)? {
+                return Err(missing_stage(&guard, space_path, wanted));
+            }
+        }
+        // Serialising a `&[String]` to JSON cannot fail: serde_json's failure modes
+        // are a NaN/inf float, a map key that is not a string, or a `Serialize` impl
+        // that errors, and none of the three is reachable from a list of `String`s.
+        // `expect` states that rather than inventing an error arm `BoardError` has no
+        // business carrying — and the worst case is a panic inside `spawn_blocking`,
+        // which the command layer already flattens to `TasksError::Other`.
+        let encoded = serde_json::to_string(slugs)
+            .expect("a list of strings always serialises to a JSON array");
+        guard.execute(
+            "UPDATE stages SET next_slugs = ?3 WHERE space_path = ?1 AND slug = ?2",
+            params![space_path, slug, encoded],
+        )?;
+        stage_row_by_slug(&guard, space_path, slug)
+    }
+
+    /// Rewrite the manual order of one Space's columns in ONE transaction.
+    ///
+    /// The FOURTH instance of this verb — `reorder_spaces`, `reorder_sessions`,
+    /// `reorder_tasks`, and this — and it deliberately follows `reorder_spaces`,
+    /// NOT `reorder_tasks`: the WHOLE slice the caller passes becomes the order,
+    /// the index becomes `sort_order`, the numbers are dense from 0, and an id that
+    /// matches no row is a SILENT NO-OP. `reorder_tasks` refuses an id outside its
+    /// scope because a card id is global and a caller can hand back one from another
+    /// column; a Stage slug cannot be "from another Space" in the same way, and the
+    /// board's editor passes every Stage it shows, so refusing here would fail a
+    /// legitimate drag over a row that raced it.
+    pub fn reorder_stages(&self, space_path: &str, slugs: &[String]) -> Result<(), BoardError> {
+        let mut guard = self.conn.lock().expect("db mutex poisoned");
+        let tx = guard.transaction()?;
+        for (index, slug) in slugs.iter().enumerate() {
+            tx.execute(
+                "UPDATE stages SET sort_order = ?3 WHERE space_path = ?1 AND slug = ?2",
+                params![space_path, slug, index as i64],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Delete a column: THREE refusals, then one relocation and one `DELETE`.
+    ///
+    /// 1. **It holds cards and the caller named nowhere to put them.** A Task whose
+    ///    `stage_slug` names no row is invisible to `get_board` (which groups by
+    ///    Stage) yet keeps costing money through its Sessions — so the cards would
+    ///    survive the delete unreachable. `tasks.stage_slug` is `NOT NULL` with NO
+    ///    foreign key (ADR 0090, by design), so SQLite will not catch it; the
+    ///    refusal names the count and the slugs they could go to. Supply
+    ///    `relocate_to` and the refusal becomes the relocation below — which is the
+    ///    whole point of the parameter, and why the count check reads it first.
+    /// 2. **Another column's graph points here.** Deleting it would silently shrink
+    ///    someone's workflow — the alternative (filter dangling slugs at read time)
+    ///    is rejected in ADR 0099 precisely because the shrink is invisible.
+    /// 3. **It is the last column.** `create_task`'s "no explicit stage lands in the
+    ///    first stage" fallback and `get_board`'s payload both assume ≥ 1 row.
+    ///
+    /// The relocation, when a destination is supplied, is ONE bulk `UPDATE` and
+    /// never a `move_task` call — see the comment at the statement.
+    pub fn delete_stage(
+        &self,
+        space_path: &str,
+        slug: &str,
+        relocate_to: Option<&str>,
+    ) -> Result<(), BoardError> {
+        let mut guard = self.conn.lock().expect("db mutex poisoned");
+        if !stage_slug_exists(&guard, space_path, slug)? {
+            return Err(missing_stage(&guard, space_path, slug));
+        }
+        // A destination must be a column of THIS Space — checked FIRST among the
+        // writes' preconditions, so a refused delete neither deletes nor
+        // relocates anything. It also comes before the cards refusal on purpose: a
+        // caller who supplied a destination clearly intends to relocate the cards,
+        // so "that destination is not one of this Space's columns" is the answer
+        // they need, not "you have cards in here".
+        if let Some(destination) = relocate_to {
+            if !stage_slug_exists(&guard, space_path, destination)? {
+                return Err(missing_stage(&guard, space_path, destination));
+            }
+        }
+        // Refusal 1, before any other work: the count is the evidence. Supplied a
+        // destination, the caller has said where the cards go and the relocation
+        // below is exactly the answer; supplied none, the cards would be stranded,
+        // so this is where the refusal lives.
+        let cards: i64 = guard.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE space_path = ?1 AND stage_slug = ?2",
+            params![space_path, slug],
+            |row| row.get(0),
+        )?;
+        if cards > 0 && relocate_to.is_none() {
+            return Err(BoardError::StageNotEmpty {
+                slug: slug.to_string(),
+                count: cards,
+                available: available_slugs(&guard, space_path)?,
+            });
+        }
+        // Refusal 2. The candidates come back as raw JSON and the match happens in
+        // Rust through the SAME lenient parser the reader uses, rather than via
+        // `json_each`: a cell SQLite cannot parse would error inside the SQL, and a
+        // cell this file reads as "unconfigured" must not be able to BLOCK a delete
+        // — it cannot be pointing anywhere, because nothing reads it as an edge.
+        let referrers: Vec<String> = {
+            let mut stmt = guard.prepare(
+                "SELECT slug, next_slugs FROM stages \
+                 WHERE space_path = ?1 AND slug != ?2 AND next_slugs IS NOT NULL",
+            )?;
+            let rows = stmt
+                .query_map(params![space_path, slug], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.into_iter()
+                .filter(|(_, raw)| {
+                    lenient_next_slugs(raw.clone())
+                        .is_some_and(|edges| edges.iter().any(|e| e == slug))
+                })
+                .map(|(pointing, _)| pointing)
+                .collect()
+        };
+        if !referrers.is_empty() {
+            return Err(BoardError::StageReferenced {
+                slug: slug.to_string(),
+                referrers: referrers.join(", "),
+            });
+        }
+        // Refusal 3.
+        let columns: i64 = guard.query_row(
+            "SELECT COUNT(*) FROM stages WHERE space_path = ?1",
+            params![space_path],
+            |row| row.get(0),
+        )?;
+        if columns <= 1 {
+            return Err(BoardError::LastStage {
+                slug: slug.to_string(),
+            });
+        }
+
+        let tx = guard.transaction()?;
+        if let Some(destination) = relocate_to {
+            // MUST NOT become a `move_task` call per card. `move_task` reads the
+            // destination's `on_enter` and the COMMAND layer fires its boost, so
+            // "empty this column first" would attempt one compaction per card as a
+            // side effect of bookkeeping (spec §4.1, ADR 0099's Consequence). It
+            // reads like good deduplication; it is the five-compactions bug.
+            //
+            // `updated_at` is deliberately UNTOUCHED for the reason `reorder_tasks`
+            // gives: a relocation a delete forced is not an edit, and recency that
+            // a person did not cause should not reorder their card list.
+            tx.execute(
+                "UPDATE tasks SET stage_slug = ?3 WHERE space_path = ?1 AND stage_slug = ?2",
+                params![space_path, slug, destination],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM stages WHERE space_path = ?1 AND slug = ?2",
+            params![space_path, slug],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The Strict-workflow toggle (ADR 0099), keyed by `space_key` exactly as
+    /// `set_space_trusted` keys `trusted` — canonical with a raw fallback, so the
+    /// toggle lands on the row the board's own reads look for.
+    ///
+    /// `Ok(n > 0)`: a missing `spaces` row is a SILENT NO-OP rather than an error,
+    /// mirroring `set_space_trusted` — the toggle lives on the board, and the board
+    /// is reachable for a Space with no `spaces` row (a Detached Space, and every
+    /// board test in this file). Returns whether a row matched, so the caller can
+    /// tell the two apart.
+    ///
+    /// NOT a board-table write despite living in the board family: it writes
+    /// `spaces.board_strict`, hence `DbError` and not `BoardError` (the same split
+    /// `set_space_trusted` draws).
+    pub fn set_board_strict(&self, space_path: &str, strict: bool) -> Result<bool, DbError> {
+        let key = space_key(space_path).unwrap_or_else(|| space_path.to_string());
+        let n = self.conn.lock().expect("db mutex poisoned").execute(
+            "UPDATE spaces SET board_strict = ?2 WHERE path = ?1",
+            params![key, strict],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Read the Strict-workflow flag back (ADR 0099).
+    ///
+    /// The WRITE alone would leave the flag unwritable-to-the-eye: the editor's
+    /// `Strict workflow` Switch has to be SEEDED from the stored value, and a board
+    /// header's Strict marker needs the same read. So this is the read twin of
+    /// `set_board_strict`, and the two MUST keep one key rule — `space_key` with the
+    /// raw fallback, "no row" meaning `false` — because a Switch that reads one way
+    /// and a `move_task` gate that reads another is the exact disagreement this pair
+    /// exists to prevent: a Strict label on a board that accepts any drag. The
+    /// enforcement in `move_task` uses the same normalization, and
+    /// `the_board_strict_read_and_the_move_gate_agree_on_a_non_canonical_path` pins
+    /// the agreement on a path whose raw spelling differs from its canonical one.
+    ///
+    /// A `bool`, not a row type, and `DbError` rather than `BoardError`: the flag is
+    /// per-Space data on `spaces`, and the row may legitimately be absent.
+    pub fn board_strict(&self, space_path: &str) -> Result<bool, DbError> {
+        let key = space_key(space_path).unwrap_or_else(|| space_path.to_string());
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        // `unwrap_or(0)` folds "no such row" and "the row holds NULL" into the same
+        // answer the DDL's DEFAULT gives, which is exactly what `move_task` computes
+        // for the same Space.
+        let flag: i64 = guard
+            .query_row(
+                "SELECT board_strict FROM spaces WHERE path = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok(flag == 1)
+    }
 }
 
-/// Insert the five default stages when this Space has none.
+/// The ONE place a single `stages` row is read back after a write, through the
+/// same [`STAGE_COLUMNS`] list and [`stage_row_from`] mapper the board read uses.
+///
+/// A Stage command returns the row it just wrote so the frontend can update that
+/// column without a second round trip — which is only honest if the reply is built
+/// by the same mapper the next `get_board` will use. A missing row is
+/// `missing_stage` (with the valid slugs), not `Ok(None)`: every caller refused a
+/// missing slug before writing, so reaching here means the row went away under us.
+fn stage_row_by_slug(
+    conn: &Connection,
+    space_path: &str,
+    slug: &str,
+) -> Result<StageRow, BoardError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM stages WHERE space_path = ?1 AND slug = ?2",
+        STAGE_COLUMNS.join(", ")
+    ))?;
+    match stmt.query_row(params![space_path, slug], stage_row_from) {
+        Ok(row) => Ok(row),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Err(missing_stage(conn, space_path, slug)),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Insert the six default stages when this Space has none.
 ///
 /// Idempotence is NOT the property being claimed here — being called under the
 /// CALLER's lock is. Every caller already holds `self.conn.lock()` and passes
@@ -2033,26 +3156,36 @@ fn seed_default_stages(conn: &mut Connection, space_path: &str) -> Result<(), Bo
     if count > 0 {
         return Ok(());
     }
-    // The five defaults, spec §2. `label` is the slug capitalised and
+    // The six defaults, spec §2 + §3.1. `label` is the slug capitalised and
     // `sort_order` is the index; `on_enter` is left OUT of the column list so
     // the DDL's `DEFAULT 'none'` stays the single source of that value instead
-    // of a second copy of it spelled here.
-    for (index, (slug, label)) in DEFAULT_STAGES.iter().enumerate() {
+    // of a second copy of it spelled here. `on_enter_skill` IS spelled here,
+    // because a fresh Space must launch the same two buttons an upgraded one
+    // gets from the migration (ADR 0098) — and `next_slugs` is deliberately
+    // absent, so a seeded graph stays NULL = unconfigured (ADR 0099).
+    for (index, (slug, label, skill)) in DEFAULT_STAGES.iter().enumerate() {
         conn.execute(
-            "INSERT INTO stages (space_path, slug, label, sort_order) VALUES (?1, ?2, ?3, ?4)",
-            params![space_path, slug, label, index as i64],
+            "INSERT INTO stages (space_path, slug, label, sort_order, on_enter_skill) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![space_path, slug, label, index as i64, skill],
         )?;
     }
     Ok(())
 }
 
-/// The five default stages, in order: `(slug, label)`.
-const DEFAULT_STAGES: [(&str, &str); 5] = [
-    ("backlog", "Backlog"),
-    ("research", "Research"),
-    ("approved", "Approved"),
-    ("doing", "Doing"),
-    ("done", "Done"),
+/// The six default stages, in order: `(slug, label, on_enter_skill)`.
+///
+/// `discuss` sits BEFORE `research` (discuss it, then research it) and `approved`
+/// stays in the seed — deleting a column is the editor's job, not the seed's
+/// (spec §3.1). `on_enter` stays out of the tuple so the DDL's `DEFAULT 'none'`
+/// remains the single source of that value.
+const DEFAULT_STAGES: [(&str, &str, Option<&str>); 6] = [
+    ("backlog", "Backlog", None),
+    ("discuss", "Discuss", Some("discuss")),
+    ("research", "Research", Some("research")),
+    ("approved", "Approved", None),
+    ("doing", "Doing", None),
+    ("done", "Done", None),
 ];
 
 /// Does this Space have a stage with this slug?
@@ -2207,6 +3340,187 @@ impl FulcrumPersistence for Db {
     /// its own; a `Db` carries no time of its own to read.
     fn now_ms(&self) -> i64 {
         now_ms()
+    }
+}
+
+// ── The crate's Task-board seam (ADR 0092, issue #180 D2) ────────────────────
+//
+// The SYNC crate seam implemented SUPERVISOR-side, beside the persistence seam
+// above and for the same reason: the Worker has no `Db` and cannot have one —
+// ADR 0025 makes this process the sole SQLite writer, so a model's board verb has
+// to be answered here and shipped back over the wire (`Outbound::TaskRequest` →
+// `Inbound::TaskResponse`, routed in `agent/session/router.rs`).
+//
+// Every method delegates to the INHERENT `Db` method with the same qualified-call
+// rule `FulcrumPersistence` uses — Rust prefers inherent methods, so
+// `Db::method(self, …)` reaches the SQL and cannot recurse into the trait being
+// defined — and every error crosses through the two `From` impls above
+// (`DbError → TaskStoreError`, `BoardError → TaskStoreError`) rather than a
+// per-method `map_err`, which is the same "one place owns the mapping" split the
+// `StoreError` map documents.
+//
+// THE DTO MAPPING is the substance of this block, and four facts about it are
+// worth stating because they are where a careless impl would go quietly wrong:
+//
+//   * `number` is `i64` on the desktop's `TaskRow` and `u32` on the crate's DTOs.
+//     `number` is `MAX(number) + 1` per Space (ADR 0090), so it is positive and
+//     small by construction; the `as u32` is a widening-free narrowing of a value
+//     this file hands out itself. A Space with four billion cards would wrap, and
+//     no board renders that — the cast is stated here rather than left to a reader
+//     to invent a justification for.
+//   * `artifact_keys` is REQUIRED on `BoardRow` and `TaskDetail` (never `Option`),
+//     so it is filled from `artifact_keys` per row. That is one extra statement per
+//     card on `list_board`; the aggregate `artifact_keys_for_space` exists for the
+//     board's OWN read (`get_board`) and is not used here because the trait returns
+//     rows already filtered by the caller's verb, and re-deriving that filter here
+//     would be a second owner of "which cards belong to this Space".
+//   * The crate's `TaskRow` (the write answer) carries NO `artifact_keys` field — a
+//     write touched no artifact, so its answer says nothing about them. The desktop
+//     `TaskRow` has no such field either, so `create_task` / `edit_task` map
+//     field-for-field.
+//   * `MoveOutcome` is where the two types genuinely differ: the crate's has
+//     `to_stage` / `on_enter: Option` / `note: Option`, the desktop's has only
+//     `on_enter: String`. `to_stage` is the caller's own argument (the desktop's
+//     `move_task` refuses before it writes, so a successful move always lands where
+//     it was told), `on_enter` becomes `Some` of the desktop's value, and `note` is
+//     `None` because the desktop's `move_task` returns no note today — the boost
+//     warning it would describe is computed in the COMMAND layer
+//     (`commands/tasks.rs`'s `boost_note`), one layer above this seam and invisible
+//     to it. Reporting it here would mean reaching past the storage layer for a
+//     fact storage does not hold.
+impl TaskStore for Db {
+    fn list_board(&self, space_path: &str) -> Result<Vec<BoardRow>, TaskStoreError> {
+        Db::list_tasks(self, space_path)?
+            .into_iter()
+            .map(|row| {
+                let id = row.id.clone();
+                Ok(BoardRow {
+                    id: row.id,
+                    space_path: row.space_path,
+                    number: row.number as u32,
+                    title: row.title,
+                    body: row.body,
+                    spec_path: row.spec_path,
+                    stage_slug: row.stage_slug,
+                    sort_order: row.sort_order,
+                    created_at: row.created_at,
+                    updated_at: row.updated_at,
+                    artifact_keys: Db::artifact_keys(self, &id)?,
+                })
+            })
+            .collect()
+    }
+
+    fn get_task(&self, task_id: &str) -> Result<Option<TaskDetail>, TaskStoreError> {
+        // The desktop's read already answers `Ok(None)` for an absent card, which is
+        // the crate's contract too ("asking for what is not there is an answer").
+        Db::get_task(self, task_id)?
+            .map(|row| {
+                let id = row.id.clone();
+                Ok(TaskDetail {
+                    id: row.id,
+                    space_path: row.space_path,
+                    number: row.number as u32,
+                    title: row.title,
+                    body: row.body,
+                    spec_path: row.spec_path,
+                    stage_slug: row.stage_slug,
+                    sort_order: row.sort_order,
+                    created_at: row.created_at,
+                    updated_at: row.updated_at,
+                    artifact_keys: Db::artifact_keys(self, &id)?,
+                })
+            })
+            .transpose()
+    }
+
+    fn create_task(
+        &self,
+        space_path: &str,
+        title: &str,
+        body: Option<&str>,
+        stage_slug: Option<&str>,
+    ) -> Result<CrateTaskRow, TaskStoreError> {
+        let row = Db::create_task(self, space_path, title, body, stage_slug)?;
+        Ok(desktop_row_to_crate_row(row))
+    }
+
+    fn edit_task(
+        &self,
+        task_id: &str,
+        title: Option<&str>,
+        body: Option<&str>,
+        spec_path: Option<&str>,
+    ) -> Result<CrateTaskRow, TaskStoreError> {
+        let row = Db::edit_task(self, task_id, title, body, spec_path)?;
+        Ok(desktop_row_to_crate_row(row))
+    }
+
+    fn move_task(
+        &self,
+        space_path: &str,
+        task_id: &str,
+        to_stage: &str,
+    ) -> Result<CrateMoveOutcome, TaskStoreError> {
+        let out = Db::move_task(self, space_path, task_id, to_stage)?;
+        Ok(CrateMoveOutcome {
+            to_stage: to_stage.to_string(),
+            on_enter: Some(out.on_enter),
+            note: None,
+        })
+    }
+
+    fn get_artifact(
+        &self,
+        task_id: &str,
+        key: &str,
+    ) -> Result<Option<CrateArtifact>, TaskStoreError> {
+        // Field-for-field: T4's `Artifact` was shaped to the crate's DTO on purpose
+        // (the five names are identical), so this maps nothing and renames nothing.
+        Ok(
+            Db::get_artifact(self, task_id, key)?.map(|a| CrateArtifact {
+                task_id: a.task_id,
+                key: a.key,
+                markdown: a.markdown,
+                created_at: a.created_at,
+                updated_at: a.updated_at,
+            }),
+        )
+    }
+
+    fn write_artifact(
+        &self,
+        task_id: &str,
+        key: &str,
+        markdown: &str,
+    ) -> Result<CrateArtifactMeta, TaskStoreError> {
+        let meta = Db::write_artifact(self, task_id, key, markdown)?;
+        Ok(CrateArtifactMeta {
+            key: meta.key,
+            updated_at: meta.updated_at,
+            bytes: meta.bytes,
+        })
+    }
+}
+
+/// The desktop's `TaskRow` → the crate's write-answer `TaskRow`.
+///
+/// The ONE place that mapping is spelled, shared by `create_task` and
+/// `edit_task` — the two verbs whose answer is the row WITHOUT artifact keys.
+/// A helper rather than an inline literal twice, so a field added to either
+/// struct breaks ONE site and the break names the mapping.
+fn desktop_row_to_crate_row(row: TaskRow) -> CrateTaskRow {
+    CrateTaskRow {
+        id: row.id,
+        space_path: row.space_path,
+        number: row.number as u32,
+        title: row.title,
+        body: row.body,
+        spec_path: row.spec_path,
+        stage_slug: row.stage_slug,
+        sort_order: row.sort_order,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
     }
 }
 
@@ -2440,7 +3754,8 @@ CREATE TABLE IF NOT EXISTS spaces (
     created_at INTEGER NOT NULL,
     last_opened_at INTEGER NOT NULL,
     trusted INTEGER NOT NULL DEFAULT 0,
-    sort_order INTEGER NOT NULL DEFAULT 0
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    board_strict INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS stages (
     space_path TEXT NOT NULL,
@@ -2448,6 +3763,8 @@ CREATE TABLE IF NOT EXISTS stages (
     label TEXT NOT NULL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     on_enter TEXT NOT NULL DEFAULT 'none',
+    on_enter_skill TEXT,
+    next_slugs TEXT,
     PRIMARY KEY (space_path, slug)
 );
 CREATE TABLE IF NOT EXISTS tasks (
@@ -2468,15 +3785,31 @@ CREATE TABLE IF NOT EXISTS task_sessions (
     stage_slug TEXT,
     PRIMARY KEY (task_id, session_id)
 );
+CREATE TABLE IF NOT EXISTS task_artifacts (
+    task_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    markdown TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (task_id, key)
+);
 "#;
 
 // ── The Task board tables (spec §2, ADR 0090) — notes on the batch above ───
 //
-// THREE new tables and ZERO migration entries. `gate` above is a transaction
-// factory for adding a COLUMN to an EXISTING table (it probes
-// `pragma_table_info`); a new table needs no gate because the
-// `CREATE TABLE IF NOT EXISTS` batch above is already idempotent on re-open.
-// `the_three_task_tables_are_in_schema_and_have_no_gate_entry` pins both halves.
+// FOUR tables. They ride the idempotent `CREATE TABLE IF NOT EXISTS` batch and
+// get NO migration entry of their own: `gate` above is a transaction factory for
+// adding a COLUMN to an EXISTING table (it probes `pragma_table_info`), so a new
+// TABLE needs no gate because the batch is already idempotent on re-open.
+// `the_three_task_tables_are_in_schema_and_have_no_gate_entry` pins both halves
+// (the name kept its #176 number when `task_artifacts` joined the batch in #180;
+// the list is what is authoritative).
+//
+// The #179 Stage-config work DID add three gated COLUMNS — `stages.on_enter_skill`,
+// `stages.next_slugs` and `spaces.board_strict` — and those are gates, because
+// `stages` and `spaces` are tables a pre-#179 database already holds in an older
+// shape. That is the distinction the pin draws: a new column on an existing table
+// is gate territory, a new table never is.
 //
 // NO foreign key on `space_path`, on either board table (ADR 0090). Closing a
 // Space tab runs `delete_space` (`DELETE FROM spaces WHERE path = ?1`), so a
@@ -2487,6 +3820,15 @@ CREATE TABLE IF NOT EXISTS task_sessions (
 // is re-opened. `task_sessions.session_id` DOES carry the cascade clause the
 // `messages`/`native_messages` tables already use — a deleted Session really
 // should drop its link row, and the Task card survives it.
+//
+// `task_artifacts` carries NO foreign key either, and the asymmetry with
+// `task_sessions` is the point (ADR 0100). A Session is a row that can actually
+// be deleted, so its link row must cascade; a **Task has no delete verb at all**
+// (`DELETE FROM tasks` has exactly one site in the tree and it is a test), so an
+// FK here could only ever fire on a `delete_space` — which is precisely the
+// cascade ADR 0090 forbids, one level down: an artifact dying because a tab
+// closed. The cost of the choice is that SQLite will NOT reject a dangling
+// `task_id`, so `write_artifact` refuses a missing Task itself (see that method).
 //
 // `on_enter` is `'none' | 'compact' | 'fresh'` (spec §5). It is a COLUMN rather
 // than a constant so both boost strategies can be tried and compared without

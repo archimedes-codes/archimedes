@@ -218,6 +218,15 @@ const TAURI_PUBLIC_API = [
   "AppSettings",
   "AskQuestionDto",
   "AskResponsePayload",
+  // (issue #180 D1, spec §1, ADR 0100) The two Task-artifact wire shapes, added ON
+  // PURPOSE per the header above. TYPE-ONLY — they vanish at runtime, so
+  // `TAURI_RUNTIME_API` does NOT gain them (the `AccessRule`/`AccessDirection`
+  // precedent). `Artifact` is the ONLY shape that carries artifact CONTENT and it
+  // arrives from the single-artifact read alone; `ArtifactMeta` is what a write
+  // answers with, deliberately without the content. The two command wrappers
+  // (`writeArtifact`, `getArtifact`) are runtime values and enter BOTH lists, below.
+  "Artifact",
+  "ArtifactMeta",
   "attentionArm",
   "attentionDisarm",
   "authMcpServer",
@@ -242,14 +251,31 @@ const TAURI_PUBLIC_API = [
   // may only enter on purpose, in a commit that says so — `reorderTasks` entered
   // both in the commit that added its wrapper, and `startTaskSession` (A4, spec
   // §3) entered both in the commit that added its wrapper and its re-export.
+  //
+  // (issue #179, ADRs 0098 + 0099) The eight Stage/board-strict wrappers join it
+  // here: six Stage verbs returning the already-pinned `StageRow`, plus the
+  // Strict-workflow pair returning `void`/`boolean`. NO new TYPE name enters —
+  // `StageRow` gains two FIELDS in the same commit, and widening an existing
+  // interface moves neither list.
+  "createStage",
   "createTask",
   "deleteSession",
   "deleteSpace",
+  // (issue #179) Deletes a column; `deleteStage` refuses rather than stranding
+  // cards, and the refusal sentence is the UI (see the wrapper's doc).
+  "deleteStage",
   "editTask",
   "externalOpen",
   "FilePolicy",
   "FontSettings",
+  // (issue #180 D1, spec §1) The artifact READ — the one call that brings artifact
+  // content over the wire. Returns `Artifact | null`: a missing artifact and a
+  // missing Task both answer `null` (absence is an answer, not an error).
+  "getArtifact",
   "getBoard",
+  // (issue #179) The Strict-workflow READ — the Switch seed that must agree with
+  // the flag `move_task` enforces. Returns a primitive `boolean`, so no type name.
+  "getBoardStrict",
   "getProviderBudget",
   "getSettings",
   "getTask",
@@ -319,8 +345,14 @@ const TAURI_PUBLIC_API = [
   "providerLoginSsoPoll",
   "readClipboardImage",
   "readFileBytes",
+  // (issue #179) The remaining five Stage/strict wrappers; `createStage`,
+  // `deleteStage` and `getBoardStrict` entered above among their board siblings.
+  "renameStage",
   "reorderSessions",
   "reorderSpaces",
+  // (issue #179) The fourth instance of the reorder verb — column ORDER only,
+  // never the transition graph (ADR 0099 keeps the two questions separate).
+  "reorderStages",
   "reorderTasks",
   "respondInteractiveRequest",
   "respondPermission",
@@ -336,8 +368,14 @@ const TAURI_PUBLIC_API = [
   "SessionTitledPayload",
   "SessionUpdatePayload",
   "sessionRecency",
+  // (issue #179) The Strict-workflow WRITE (ADR 0099's per-Space opt-in).
+  "setBoardStrict",
   "setSessionArchived",
   "setSessionConfigOption",
+  // (issue #179) The two Stage writes: the launch Skill (ADR 0098) and the
+  // outgoing transition graph (ADR 0099). Both return the pinned `StageRow`.
+  "setStageNext",
+  "setStageSkill",
   "setSpaceTrusted",
   "ShadowedAgent",
   "ShadowedSkill",
@@ -362,6 +400,10 @@ const TAURI_PUBLIC_API = [
   "TeamDto",
   "testMcpServer",
   "testSearchProvider",
+  // (issue #180 D1, spec §1, ADR 0100) The artifact WRITE wrapper — a RUNTIME
+  // value (the two TYPE names it traffics in, `Artifact`/`ArtifactMeta`, are
+  // declared above and stay out of the runtime list).
+  "writeArtifact",
   "ToolCallContent",
   "WebSettings",
   "WindowFrameState",
@@ -388,12 +430,21 @@ const TAURI_RUNTIME_API = [
   // in `TAURI_PUBLIC_API` ONLY — they vanish at runtime, so they never enter this
   // list (the `AccessRule`/`AccessDirection` precedent). No count stated here on
   // purpose: this file's own header says the ARRAY is the expectation.
+  //
+  // (issue #179, ADRs 0098 + 0099) The eight Stage/strict wrappers enter HERE too
+  // — all eight are runtime values. `StageRow` gains two FIELDS in the same commit
+  // and no TYPE name moves, for the reason spelled on `TAURI_PUBLIC_API`.
+  "createStage",
   "createTask",
   "deleteSession",
   "deleteSpace",
+  "deleteStage",
   "editTask",
   "externalOpen",
+  // (issue #180 D1, spec §1) The artifact READ wrapper (see `TAURI_PUBLIC_API`).
+  "getArtifact",
   "getBoard",
+  "getBoardStrict",
   "getSettings",
   "getTask",
   "getWindowState",
@@ -438,8 +489,12 @@ const TAURI_RUNTIME_API = [
   "moveTask",
   "readClipboardImage",
   "readFileBytes",
+  // (issue #179) The remaining five Stage/strict runtime wrappers; `createStage`,
+  // `deleteStage` and `getBoardStrict` entered above among their board siblings.
+  "renameStage",
   "reorderSessions",
   "reorderSpaces",
+  "reorderStages",
   "reorderTasks",
   "respondInteractiveRequest",
   "respondPermission",
@@ -447,8 +502,11 @@ const TAURI_RUNTIME_API = [
   "saveSettings",
   "sendPrompt",
   "sessionRecency",
+  "setBoardStrict",
   "setSessionArchived",
   "setSessionConfigOption",
+  "setStageNext",
+  "setStageSkill",
   "setSpaceTrusted",
   "shellSandboxAvailable",
   "spaceForPath",
@@ -458,6 +516,13 @@ const TAURI_RUNTIME_API = [
   "startTaskSession",
   "testMcpServer",
   "testSearchProvider",
+  // (issue #180 D1, spec §1, ADR 0100) The two Task-artifact command wrappers.
+  // Both are RUNTIME values, so both enter this list AND `TAURI_PUBLIC_API`; the
+  // two TYPE names they traffic in (`Artifact`, `ArtifactMeta`) are in
+  // `TAURI_PUBLIC_API` ONLY, the `AccessRule`/`AccessDirection` precedent. Neither
+  // wrapper is a model-facing tool — D1 is the human surface (see
+  // `commands::tasks::tests::artifacts::d1_ships_no_model_facing_artifact_verb`).
+  "writeArtifact",
 ];
 
 describe("the scanner actually reads the tree", () => {
@@ -592,8 +657,22 @@ describe("the scanner actually reads the tree", () => {
     // Neither re-spells an existing mock, and `src/lib/taskPrompt.test.ts` is NOT a
     // mocker — it asserts on a returned string and touches no IPC, which is the shape
     // the seam prefers.
-    expect(mockers).toHaveLength(54);
-    // 53 of the 54 SPREAD `vi.importActual`, which is the shape that makes the
+    // And 54 -> 55 when T3 (issue #179 §8) landed ONE new mocker:
+    // `src/components/StageEditor.tsx`'s own test file, which mocks the barrel the
+    // documented way (it drives the seven Stage verbs, the Strict pair and the
+    // artifact pair through the store, and it counts `listSkills` calls to pin the
+    // "the Skill Select shares the board's one catalog fetch" rule — an assertion
+    // about a call count needs a spy rather than a real `invoke`). It spreads
+    // `importActual` too, so the spread half moved 53 -> 54 and the one wholesale
+    // replacement is still `hooks/useWindowMaximized.test.ts`.
+    //
+    // T3 touches NO other file of this one's: the barrel's OWN surface was already
+    // widened by T1 (the eight Stage/Strict wrappers) and T4 (the two artifact
+    // wrappers), so both pinned API lists below are untouched — this is the census
+    // moving for the one reason the pin allows, a TS test file added, in a commit
+    // that says so.
+    expect(mockers).toHaveLength(55);
+    // 54 of the 55 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. Both new mockers spread
     // too (each lists the arms its own tests drive and leaves every other barrel
     // export — `invoke` included — to the real module), so the remaining one
@@ -604,7 +683,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(readFileSync(f, "utf8")),
       ).length,
-).toBe(53);
+).toBe(54);
   });
 });
 

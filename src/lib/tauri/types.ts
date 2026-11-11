@@ -133,6 +133,29 @@ export interface StageRow {
    * so a Space can be retuned without a schema change.
    */
   onEnter: "none" | "compact" | "fresh";
+  /**
+   * The Skill a Session started from this column loads — the `$name` the launch
+   * prompt carries (ADR 0098). `null` means the column launches nothing, which is
+   * the state every pre-#179 column is in.
+   *
+   * A SECOND column beside `onEnter`, deliberately: `onEnter`'s value is rendered
+   * RAW as this column's header chip, so a composite `"fresh:discuss"` would print
+   * as a label — and the two are orthogonal, since a column can compact AND carry
+   * a Skill. Note `onEnter: "fresh"` stays inert (ADR 0098's Consequence): this is
+   * the mechanism that actually starts a Session.
+   */
+  onEnterSkill: string | null;
+  /**
+   * The destinations a Task in this column may go to, in button-render order
+   * (ADR 0099). `null` means UNCONFIGURED — unconstrained, so the renderer falls
+   * back to the column at `sortOrder + 1`. An empty array is a DIFFERENT answer:
+   * configured, and leading nowhere. Do not collapse the two.
+   *
+   * `null` is also what a value that is not a JSON array reads as: the reader is
+   * lenient on purpose, so one foreign cell can never blank the board (spec §3).
+   * Only `setStageNext` writes this, and it validates every slug first.
+   */
+  nextSlugs: string[] | null;
 }
 
 
@@ -169,12 +192,57 @@ export interface TaskSessionRow {
 }
 
 
+/** One named **Task artifact** (spec §1, ADR 0100): a markdown document owned by
+ *  a Task, stored as a row of `task_artifacts`. The TS mirror of Rust's
+ *  `Artifact` (`src-tauri/src/storage/db.rs`).
+ *
+ *  `PRIMARY KEY (task_id, key)` — ONE row per key, ever, so a Task can never hold
+ *  two `spec`s and there is no "find and replace" path. The content lives IN the
+ *  database because the alternative dies on ship: `docs/roadmap/` is gitignored,
+ *  its untracked files are unrecoverable, and the `finish` skill deletes the plan
+ *  family when the work succeeds (ADR 0100).
+ *
+ *  This is the ONLY shape that carries artifact content across the wire, and it
+ *  arrives from a single-artifact read (`getArtifact`) — never from the board,
+ *  which carries [`TaskCardView.artifactKeys`] alone. */
+export interface Artifact {
+  /** The owning card — one half of the composite primary key. */
+  taskId: string;
+  /** The other half. A free-form slug, `[a-z0-9][a-z0-9-]{0,39}`, validated in
+   *  the command layer (the `require_title` split) and never in the schema. */
+  key: string;
+  /** The document. */
+  markdown: string;
+  /** Unix ms. Set by the FIRST write and never touched again. */
+  createdAt: number;
+  /** Unix ms. Set by EVERY write — the artifact's last touch. */
+  updatedAt: number;
+}
+
+
+/** What `writeArtifact` answers with: identity + the fresh stamp + the byte size,
+ *  and NEVER the markdown (the caller just sent it). The TS mirror of Rust's
+ *  `ArtifactMeta`.
+ *
+ *  Refusals write NOTHING and carry their own wire kinds: `bad_artifact_key`
+ *  (a key outside the grammar, naming the key and the rule), `artifact_too_large`
+ *  (over 256 KB, naming the limit AND the size, plus `size`/`max` envelope keys)
+ *  and `not_found` (a Task that does not exist — there is no FK to catch a
+ *  dangling id, so this layer refuses it). */
+export interface ArtifactMeta {
+  key: string;
+  updatedAt: number;
+  /** The UTF-8 BYTE length stored, so a caller near the cap can see how close. */
+  bytes: number;
+}
+
+
 /** One board card plus what the board read knows about its Sessions (issue #174).
  *
  * The TS mirror of Rust's `TaskCardView` (`src-tauri/src/storage/db.rs`), which is
- * what `get_board` puts in `StageWithTasks.tasks`. The three keys
- * (`task`/`sessions`/`costUsd`) and the ten inside `task` are frozen TWICE: by
- * `the_task_card_view_wire_keys_are_frozen` in
+ * what `get_board` puts in `StageWithTasks.tasks`. The four keys
+ * (`task`/`sessions`/`costUsd`/`artifactKeys`) and the ten inside `task` are frozen
+ * TWICE: by `the_task_card_view_wire_keys_are_frozen` in
  * `src-tauri/src/storage/db/tests/mod.rs`, and by its mirror
  * `the task card view wire keys are frozen (mirror of the Rust pin)` in
  * `src/store/tasks.test.ts`. Both spell the same list, so a rename in either
@@ -206,6 +274,19 @@ export interface TaskCardView {
    *  phantom `$0.00` for the never-reported case. A card with NO links gets
    *  `sessions: []` and `costUsd: null`, never `0`. */
   costUsd: number | null;
+  /** The artifact KEYS ALONE — names only, never the markdown (issue #180, spec
+   *  §1). The split's whole point is that the board never holds a document: the
+   *  board read runs for EVERY card on EVERY mount, so one `markdown` column on
+   *  this payload would put every Task's every document on the wire just to render
+   *  a chip. The detail dialog fetches content with `getArtifact` when a key is
+   *  selected.
+   *
+   *  REQUIRED, never optional, for the same reason `sessions` is: an optional
+   *  field compiles against every fixture in the repo and then renders nothing
+   *  when real data arrives. A card with NO artifacts is `[]` — present and empty,
+   *  never absent (`Vec<String>` has no `None`, and no `skip_serializing_if` runs,
+   *  which `the_task_card_view_wire_keys_are_frozen` pins). */
+  artifactKeys: string[];
 }
 
 

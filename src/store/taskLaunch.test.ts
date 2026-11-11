@@ -4,8 +4,10 @@ import {
   createTaskFromDraft,
   launchTaskSession,
   resetTaskLaunchInFlight,
+  SAVE_ONLY,
   type TaskLaunchCatalogs,
 } from "./taskLaunch";
+import type { TaskLaunchDestination } from "../lib/taskPrompt";
 import { useSessions } from "./sessions";
 import { useTasks } from "./tasks";
 import { resetStores } from "../test/resetStores";
@@ -117,18 +119,58 @@ function skill(name: string): SkillInfo {
   };
 }
 
-/** A column with no cards — the board shape `get_board` publishes. */
-function column(slug: string, tasks: TaskRow[] = []): StageWithTasks {
+/** A column with no cards — the board shape `get_board` publishes.
+ *
+ *  `onEnterSkill` / `nextSlugs` are REQUIRED on `StageRow` (the Rust reader always
+ *  emits both), so every fixture spells them. Both default to `null` = the state a
+ *  pre-#179 column is in; a case that launches from a Skill-bearing column passes
+ *  `skill`, because that field is now the ONLY thing that decides which Skill a
+ *  launch loads (ADR 0098 — the mode table that used to decide it is deleted). */
+function column(
+  slug: string,
+  tasks: TaskRow[] = [],
+  over: {
+    label?: string;
+    sortOrder?: number;
+    skill?: string | null;
+    nextSlugs?: string[] | null;
+    artifactKeys?: string[];
+  } = {},
+): StageWithTasks {
   return {
     stage: {
       spacePath: SPACE,
       slug,
-      label: slug,
-      sortOrder: 0,
+      label: over.label ?? slug,
+      sortOrder: over.sortOrder ?? 0,
       onEnter: "none",
+      onEnterSkill: over.skill ?? null,
+      nextSlugs: over.nextSlugs ?? null,
     },
-    tasks: tasks.map((task) => ({ task, sessions: [], costUsd: null })),
+    // `artifactKeys: []` is the "card has no artifacts" answer, and it is REQUIRED
+    // on the wire type (issue #180) — an optional field would compile against every
+    // fixture here and render nothing when real data arrives. The `over.artifactKeys`
+    // arm exists for D2's `<artifacts>` threading case, which needs a card the board
+    // says HAS documents.
+    tasks: tasks.map((task) => ({
+      task,
+      sessions: [],
+      costUsd: null,
+      artifactKeys: over.artifactKeys ?? [],
+    })),
   };
+}
+
+/** The destination Stage a launch is aimed at (issue #179).
+ *
+ *  Defaults to the seeded `discuss` Stage. A case that means a DIFFERENT column
+ *  spells the slug — and the point of the destination shape is that the Skill comes
+ *  along with the column rather than from a `switch` on a mode literal, so a case
+ *  that cares about the Skill overrides `onEnterSkill`. */
+function destination(
+  over: Partial<TaskLaunchDestination> = {},
+): TaskLaunchDestination {
+  return { slug: "discuss", label: "Discuss", onEnterSkill: "discuss", ...over };
 }
 
 const CATALOGS = (): TaskLaunchCatalogs => ({
@@ -155,6 +197,66 @@ beforeEach(() => {
 });
 
 describe("taskLaunch — the discuss launch", () => {
+  // The destination Stage has to EXIST in the board slice for its Skill to be
+  // readable, because since ADR 0098 the Stage row IS where the Skill comes from —
+  // the mode table that used to answer "which skill for `discuss`" is deleted. So
+  // every case here seeds a `discuss` column carrying `on_enter_skill: "discuss"`;
+  // without it the destination resolves Skill-less and the case would be pinning a
+  // launch that sends no token at all.
+  beforeEach(() => {
+    // The card starts in `backlog`, so these cases DO move it into `discuss` — that
+    // is the new behaviour, not an accident of the fixture: a Stage-backed launch's
+    // destination is a real row the caller chose, so `resolveStage` no longer has a
+    // "do not move it" arm for `discuss`. The move is inert here (the mock resolves);
+    // the ordering of the move against the start is pinned in the research describe.
+    seedBoard(
+      column("backlog", [taskRow()]),
+      column("discuss", [], { label: "Discuss", skill: "discuss" }),
+    );
+  });
+
+  it("tells the Session which artifact keys the card has", async () => {
+    // D2's `<artifacts>` threading. `taskBlock` can render the list, but the keys
+    // live on `TaskCardView.artifactKeys` (the board payload) and NOT on the bare
+    // `TaskRow` the dialog hands over — so `taskLaunch` has to resolve them from
+    // the same `boardsBySpace` slice it already reads for the destination Stage.
+    // Without this, the element ships invisible: a card with three documents
+    // launches a Session that cannot know any of them exist.
+    seedBoard(
+      column("backlog", [taskRow()], { artifactKeys: ["research", "spec"] }),
+      column("discuss", [], { label: "Discuss", skill: "discuss" }),
+    );
+    await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
+    const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
+    expect(sent).toContain("<artifacts>research, spec</artifacts>");
+    // Inside the `<task>` block, before its body — not floating in the head.
+    expect(sent.indexOf("<artifacts>")).toBeGreaterThan(
+      sent.indexOf("<task "),
+    );
+    expect(sent.indexOf("<artifacts>")).toBeLessThan(
+      sent.indexOf("A card needs a detail modal."),
+    );
+  });
+
+  it("sends no <artifacts> element for a card the board says has none", async () => {
+    // The other half: the store read must not INVENT an empty list into an element.
+    // The seeded board's card carries `artifactKeys: []`, and spec §5 is explicit
+    // that an empty element asserts something the truth does not support.
+    await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
+    const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
+    expect(sent).not.toContain("<artifacts");
+  });
+
+  it("sends no <artifacts> element when the board slice was never loaded", async () => {
+    // The fresh-draft path reaches `sendLaunchMessage` with a row `create_task`
+    // just returned, and an unloaded slice is "never read" — which must NOT become
+    // a guess. An absent card in the slice resolves to no keys, i.e. no element.
+    useTasks.setState({ boardsBySpace: {} });
+    await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
+    const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
+    expect(sent).not.toContain("<artifacts");
+  });
+
   it("starts a linked Session, selects it, and sends ONE first message", async () => {
     await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
 
@@ -184,7 +286,7 @@ describe("taskLaunch — the discuss launch", () => {
     });
   });
 
-  /// A model-VISIBLE skill is sent as the bare `$discuss` token, NOT inlined.
+  /// The model-VISIBLE skill is sent as the bare `$discuss` token, NOT inlined.
   ///
   /// The token was always there; what used to ride alongside it was the whole
   /// SKILL.md — 18 KB for `discuss`, 12 KB for `research` — appended by
@@ -196,10 +298,9 @@ describe("taskLaunch — the discuss launch", () => {
   /// characters rendered raw, in the user's own bubble.
   ///
   /// The model loads it itself instead: the system prompt's `<available_skills>`
-  /// section already tells it to `read_skill` BY NAME, and the instruction line
-  /// "Let's discuss this task." is a trigger phrase `discuss`'s own description
-  /// advertises. Verified end to end — the launched session followed the skill and
-  /// reached its `ask`-tool gate.
+  /// section already tells it to `read_skill` BY NAME. The instruction sentence is
+  /// now built from the destination Stage's LABEL (spec §6.1), so the trigger phrase
+  /// is whatever that Stage's description advertises rather than a hardcoded line.
   it("sends a visible skill as the bare token and inlines no body", async () => {
     await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
     const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
@@ -208,9 +309,9 @@ describe("taskLaunch — the discuss launch", () => {
     expect(sent).not.toContain("DISCUSS BODY");
     expect(sent.trimEnd().endsWith("</task>")).toBe(true);
     expect(sent).toContain('id="tsk_1"');
-    // The instruction line survives, and it is what makes the token organic rather
-    // than an unexplained string: it is the phrase the skill's description matches.
-    expect(sent).toContain("Let's discuss this task.");
+    // The instruction line survives, and it names the DESTINATION Stage rather than
+    // a per-mode constant: the sentence is `Let's work on <label>.`.
+    expect(sent).toContain("Let's work on Discuss.");
   });
 
   /// The exception, and it is a documented behaviour rather than a leftover:
@@ -307,7 +408,10 @@ describe("taskLaunch — the discuss launch", () => {
 
 describe("taskLaunch — the research launch (the column transition)", () => {
   it("moves the card to research BEFORE the Session starts", async () => {
-    seedBoard(column("backlog", [taskRow()]), column("research"));
+    seedBoard(
+      column("backlog", [taskRow()]),
+      column("research", [], { label: "Research", skill: "research" }),
+    );
     await launchTaskSession(SPACE, taskRow(), "research", CATALOGS());
     expect(moveTask).toHaveBeenCalledWith(SPACE, "tsk_1", "research");
     // ORDER IS LOAD-BEARING, not stylistic. The link records the stage the card is
@@ -320,7 +424,10 @@ describe("taskLaunch — the research launch (the column transition)", () => {
   });
 
   it("sends the skill block for research, not for discuss", async () => {
-    seedBoard(column("backlog", [taskRow()]), column("research"));
+    seedBoard(
+      column("backlog", [taskRow()]),
+      column("research", [], { label: "Research", skill: "research" }),
+    );
     await launchTaskSession(SPACE, taskRow(), "research", CATALOGS());
     const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
     expect(sent).toContain("$research");
@@ -328,11 +435,42 @@ describe("taskLaunch — the research launch (the column transition)", () => {
     expect(sent).not.toContain("<skill");
   });
 
+  it("refuses with the name the DESTINATION row carries, not a hardcoded one", async () => {
+    // THE ADR 0098 PIN for `missingSkill`. The refusal used to be able to name the
+    // skill from a `switch`, because there were exactly three answers. Now a Space
+    // can configure ANY Skill on a column, so the sentence must name the row's own
+    // `on_enter_skill` — both halves matter, and each catches a different regression:
+    //  - a refusal that names the WRONG skill sends the operator to install something
+    //    that is already installed;
+    //  - a refusal that fires for a skill the catalog DOES have is a launch that
+    //    cannot be made to work at all on a Space that renamed nothing but its skills.
+    seedBoard(
+      column("backlog", [taskRow()]),
+      column("research", [], { label: "Research", skill: "ml-research" }),
+    );
+    // The row asks for `ml-research`, the catalog has `discuss` and `research` only.
+    await expect(
+      launchTaskSession(SPACE, taskRow(), "research", CATALOGS()),
+    ).rejects.toThrow(/ml-research/);
+    expect(startTaskSession).not.toHaveBeenCalled();
+    // The other half: the SAME column against a catalog that DOES carry its own
+    // skill launches — and does not refuse because `discuss` is missing from it.
+    await launchTaskSession(SPACE, taskRow(), "research", {
+      skills: [skill("ml-research")],
+      agents: [],
+    });
+    expect(startTaskSession).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendPrompt).mock.calls[0]![1]).toContain("$ml-research");
+  });
+
   it("does NOT move the card when the Space has no research column", async () => {
     // A slug the Space does not own is REFUSED by Rust and names the valid slugs
     // back (ADR 0090). Firing it anyway would land an error line under a click
     // whose job was to open a Session — so the board is consulted first and the
     // launch proceeds WITHOUT the move, reporting the skip.
+    //
+    // The `absent` arm survives ADR 0098 for exactly this shape: the destination
+    // slug was asked for and the loaded slice has no such row.
     seedBoard(column("backlog", [taskRow()]), column("doing"));
     const outcome = await launchTaskSession(
       SPACE,
@@ -349,7 +487,12 @@ describe("taskLaunch — the research launch (the column transition)", () => {
   it("does NOT move a card that is already in research", async () => {
     // `moveTask` is optimistic and its own guard drops a same-column move silently,
     // so a call here would be an IPC that provably does nothing.
-    seedBoard(column("research", [taskRow({ stageSlug: "research" })]));
+    seedBoard(
+      column("research", [taskRow({ stageSlug: "research" })], {
+        label: "Research",
+        skill: "research",
+      }),
+    );
     const outcome = await launchTaskSession(
       SPACE,
       taskRow({ stageSlug: "research" }),
@@ -361,7 +504,10 @@ describe("taskLaunch — the research launch (the column transition)", () => {
   });
 
   it("says nothing when the move was performed", async () => {
-    seedBoard(column("backlog", [taskRow()]), column("research"));
+    seedBoard(
+      column("backlog", [taskRow()]),
+      column("research", [], { label: "Research", skill: "research" }),
+    );
     const outcome = await launchTaskSession(
       SPACE,
       taskRow(),
@@ -388,13 +534,24 @@ describe("taskLaunch — the research launch (the column transition)", () => {
 });
 
 describe("taskLaunch — the draft create (the New Task modal)", () => {
+  // The draft board the shipped buttons file into: `backlog` saves, `discuss` and
+  // `research` save AND launch, and each carries the Skill its own row names
+  // (ADR 0098). A case that means a DIFFERENT board overrides `seedBoard` itself.
+  const seedCreateBoard = (): void => {
+    seedBoard(
+      column("backlog", [], { label: "Backlog" }),
+      column("discuss", [], { label: "Discuss", skill: "discuss" }),
+      column("research", [], { label: "Research", skill: "research" }),
+    );
+  };
+
   it("files the card in backlog and starts NOTHING for the backlog button", async () => {
-    seedBoard(column("backlog"), column("research"));
+    seedCreateBoard();
     const created = await createTaskFromDraft(
       SPACE,
       "Wire the board",
       "It needs a detail modal.",
-      "backlog",
+      SAVE_ONLY,
       CATALOGS(),
     );
     expect(createTask).toHaveBeenCalledWith(
@@ -412,8 +569,8 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
   });
 
   it("lands the new card in the board the human is looking at", async () => {
-    seedBoard(column("backlog"), column("research"));
-    await createTaskFromDraft(SPACE, "Wire the board", null, "backlog", CATALOGS());
+    seedCreateBoard();
+    await createTaskFromDraft(SPACE, "Wire the board", null, SAVE_ONLY, CATALOGS());
     expect(
       useTasks.getState().boardsBySpace[SPACE]?.find((c) => c.stage.slug === "backlog")
         ?.tasks.map((t) => t.task.id),
@@ -421,8 +578,8 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
   });
 
   it("creates the card BEFORE the Session is started for discuss", async () => {
-    seedBoard(column("backlog"), column("research"));
-    await createTaskFromDraft(SPACE, "Wire the board", null, "discuss", CATALOGS());
+    seedCreateBoard();
+    await createTaskFromDraft(SPACE, "Wire the board", null, destination(), CATALOGS());
     expect(createTask).toHaveBeenCalledTimes(1);
     expect(startTaskSession).toHaveBeenCalledTimes(1);
     // `task_sessions.task_id` carries NO foreign key (ADR 0090), so the Rust
@@ -434,8 +591,14 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
   });
 
   it("files a research create in the research column, in one write", async () => {
-    seedBoard(column("backlog"), column("research"));
-    await createTaskFromDraft(SPACE, "Wire the board", null, "research", CATALOGS());
+    seedCreateBoard();
+    await createTaskFromDraft(
+      SPACE,
+      "Wire the board",
+      null,
+      destination({ slug: "research", label: "Research", onEnterSkill: "research" }),
+      CATALOGS(),
+    );
     // `create_task` takes the stage directly, so a create-then-move would be two
     // writes for one fact — and the move's `on_enter` would fire for a card that
     // was never anywhere else.
@@ -454,7 +617,13 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
     // `createTask` store action surfaces the refusal as an error, so falling back
     // is the only path that does not lose the user's text.
     seedBoard(column("inbox"), column("doing"));
-    await createTaskFromDraft(SPACE, "Wire the board", null, "research", CATALOGS());
+    await createTaskFromDraft(
+      SPACE,
+      "Wire the board",
+      null,
+      destination({ slug: "research", label: "Research", onEnterSkill: "research" }),
+      CATALOGS(),
+    );
     expect(createTask).toHaveBeenCalledWith(
       SPACE,
       "Wire the board",
@@ -463,12 +632,38 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
     );
   });
 
+  it("a destination with no Skill launches and sends no token", async () => {
+    // The `onEnterSkill: null` arm of the destination, on the CREATE path. A Stage
+    // that loads nothing is a legal destination (spec §7.1: moving a card is still
+    // useful with nothing to load), so the launch must start a Session and must NOT
+    // put a bare `$` — or any token — in its first message. A `switch`-shaped
+    // implementation could only reach this by giving every mode a skill.
+    seedBoard(
+      column("backlog"),
+      column("review", [], { label: "Review", skill: null }),
+    );
+    await createTaskFromDraft(
+      SPACE,
+      "Wire the board",
+      null,
+      destination({ slug: "review", label: "Review", onEnterSkill: null }),
+      CATALOGS(),
+    );
+    expect(startTaskSession).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
+    expect(sent).toContain("<task ");
+    expect(sent).not.toContain("$");
+    // And the sentence still names the destination, so the message is not just a
+    // bare XML block.
+    expect(sent).toContain("Let's work on Review.");
+  });
+
   it("refuses a blank TITLE without calling the IPC", async () => {
     seedBoard(column("backlog"));
     // The title field is what gates the create. A blank title is refused HERE rather
     // than paid for with an IPC round trip whose sentence says the same thing.
     await expect(
-      createTaskFromDraft(SPACE, "   ", null, "backlog", CATALOGS()),
+      createTaskFromDraft(SPACE, "   ", null, SAVE_ONLY, CATALOGS()),
     ).rejects.toThrow(/title/i);
     expect(createTask).not.toHaveBeenCalled();
   });
@@ -479,7 +674,7 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
       SPACE,
       "Default action for notifications",
       "Clicking one should focus the window\nand open the session that raised it.",
-      "backlog",
+      SAVE_ONLY,
       CATALOGS(),
     );
     expect(createTask).toHaveBeenCalledWith(
@@ -495,7 +690,7 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
     // Whitespace-only is ABSENT, not a body of spaces: `tasks.body` is nullable and a
     // card whose body is three spaces renders as an empty paragraph in the detail
     // dialog, which reads as a broken card rather than a body-less one.
-    await createTaskFromDraft(SPACE, "Just a title", "   \n  ", "backlog", CATALOGS());
+    await createTaskFromDraft(SPACE, "Just a title", "   \n  ", SAVE_ONLY, CATALOGS());
     expect(createTask).toHaveBeenCalledWith(SPACE, "Just a title", null, "backlog");
   });
 
@@ -506,7 +701,7 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
     // fallback, because guessing at a heading is exactly what the user objected to.
     seedBoard(column("backlog"));
     await expect(
-      createTaskFromDraft(SPACE, "", "A long explanation with\nseveral lines.", "backlog", CATALOGS()),
+      createTaskFromDraft(SPACE, "", "A long explanation with\nseveral lines.", SAVE_ONLY, CATALOGS()),
     ).rejects.toThrow(/title/i);
     expect(createTask).not.toHaveBeenCalled();
   });
@@ -519,12 +714,12 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
     vi.mocked(createTask).mockResolvedValue(
       taskRow({ title: "Cleaned title", stageSlug: "backlog" }),
     );
-    seedBoard(column("backlog"), column("research"));
+    seedCreateBoard();
     await createTaskFromDraft(
       SPACE,
       '"Cleaned title with quotes"',
       null,
-      "discuss",
+      destination(),
       CATALOGS(),
     );
     const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
@@ -538,7 +733,7 @@ describe("taskLaunch — the draft create (the New Task modal)", () => {
       Object.assign(new Error("empty"), { kind: "empty_title" }),
     );
     await expect(
-      createTaskFromDraft(SPACE, "Whatever", null, "discuss", CATALOGS()),
+      createTaskFromDraft(SPACE, "Whatever", null, destination(), CATALOGS()),
     ).rejects.toThrow();
     expect(startTaskSession).not.toHaveBeenCalled();
   });

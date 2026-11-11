@@ -41,7 +41,7 @@ import { normalizeToolOutput } from "./toolOutput";
  * THE ONE AGREED PRODUCER LIST — FROZEN, NOT RE-DERIVED
  * ---------------------------------------------------------------------------
  *
- * `PRODUCER_KEYS` (Part 1) is the FROZEN copy of the 35-key producer union that
+ * `PRODUCER_KEYS` (Part 1) is the FROZEN copy of the 39-key producer union that
  * the plan re-derived from the tree ONCE
  * (`docs/roadmap/improvement-correctness-seams-task07b-details-registry.md`,
  * §"The frozen producer list", re-derived at HEAD `29b16df` by enumerating every
@@ -67,6 +67,18 @@ import { normalizeToolOutput } from "./toolOutput";
  * `ToolResult` (`details.calls`) and `src/components/CodemodeCard.tsx` reads. The
  * list is therefore the frozen 34 PLUS `calls` = 35, and the Part-2b reader union
  * and the Part-2c spanning set both gained it (the card is a named reader of it).
+ *
+ * FOUR MORE have entered since, and they are the same kind of event — recorded,
+ * never silently edited in: the issue #180 D2 task seam's four `details` keys
+ * (`board`, `task`, `moveOutcome`, `artifactMeta`), read off the MERGED crate's
+ * `tools/exec/task_tools.rs` rather than from a plan. The list is therefore the
+ * frozen 34 PLUS `calls` PLUS the four D2 task keys = 39. Unlike `calls` these are
+ * producer keys NO TS reader names, so all four went to Part 2c's exception table
+ * with a reason and to Part 3 with a fixture group, and the Part-2b reader union is
+ * UNCHANGED at 25. `task` needed a decision worth stating: the reader union already
+ * carries that spelling, but as a subagent ENTRY field (`results[i].task`), a
+ * different frame — so it is unread-by-name on the envelope and NOT spanning. See
+ * `ENVELOPE_READER_FIELDS`.
  *
  * ONE number in the plan's census TEXT has since drifted, and it is a SITE count,
  * not a key: the plan counts 39 emission sites (28 `details: Some` + 11
@@ -104,7 +116,7 @@ import { normalizeToolOutput } from "./toolOutput";
  *     silently contributing zero keys;
  *  2. the collected key sets must be NON-EMPTY: the envelope-frame reader set, and
  *     `PRODUCER_KEYS`;
- *  3. `PRODUCER_KEYS`' `as const` TYPE must stay exactly the frozen 35-name tuple
+ *  3. `PRODUCER_KEYS`' `as const` TYPE must stay exactly the frozen 39-name tuple
  *     (`FROZEN_TUPLE_PIN`) — a dropped, added or reordered key, or a collapse to
  *     `string[]`, fails `pnpm build` (tsc typechecks test files) rather than
  *     shrinking the contract silently;
@@ -142,8 +154,9 @@ const stripJsComments = (source: string): string =>
 // no producer emits (it must appear in Part 2b's legacy envelope, likewise with a
 // reason). Copy byte-for-byte.
 
-// THE details wire vocabulary — producer side. 35 keys (the frozen 34 below,
-// plus `calls`, the codemode nested-call list). Re-derived from
+// THE details wire vocabulary — producer side. 39 keys (the frozen 34 below,
+// plus `calls`, the codemode nested-call list, plus the FOUR keys issue #180's D2
+// task seam adds: `board`, `task`, `moveOutcome`, `artifactMeta`). Re-derived from
 // the tree ONCE at plan time (vet round 2, HEAD 29b16df) by enumerating
 // EVERY production `details: Some(json!({...}))` / `ok_text(.., Some(json!))`
 // site (39 sites, 7 files — see the grep in §The frozen producer list);
@@ -151,29 +164,35 @@ const stripJsComments = (source: string): string =>
 // copies THIS literal verbatim. Any edit must move a key between Live and
 // legacy-envelope, never silently add it.
 const PRODUCER_KEYS = [
-  "bytes", "calls", "cancelled", "command", "customInput", "description",
-  "diff", "dir", "entries", "error", "exitCode", "extractor", "lines",
-  "matches", "occurrences", "operation", "path", "provider", "reason",
+  "artifactMeta", "board", "bytes", "calls", "cancelled", "command", "customInput",
+  "description", "diff", "dir", "entries", "error", "exitCode", "extractor", "lines",
+  "matches", "moveOutcome", "occurrences", "operation", "path", "provider", "reason",
   "renderer", "rendererNote", "responseId", "resultCount", "results", "scope",
-  "skill", "skills", "status", "stderr", "stdout", "title", "todos",
+  "skill", "skills", "status", "stderr", "stdout", "task", "title", "todos",
   "truncated", "url", "wordCount",
 ] as const;
 
 type ProducerKey = (typeof PRODUCER_KEYS)[number];
 
-/** The compile-time half of vacuity guard 3. `PRODUCER_KEYS` is a 35-element
- *  `as const` tuple and must STAY one: this alias spells the frozen 35 names in
+/** The compile-time half of vacuity guard 3. `PRODUCER_KEYS` is a 39-element
+ *  `as const` tuple and must STAY one: this alias spells the frozen 39 names in
  *  the frozen order, and `FROZEN_TUPLE_PIN` is only assignable to `true` while the
  *  two types are mutually assignable. Drop a key, add a key, reorder, or widen the
  *  const to `string[]` and `pnpm build` fails HERE — the contract cannot shrink
- *  silently. (The 35 names are spelled a second time on purpose: this is the
- *  tamper seal on the copy above, not a second consumer of it.) */
+ *  silently. (The 39 names are spelled a second time on purpose: this is the
+ *  tamper seal on the copy above, not a second consumer of it.)
+ *
+ *  Issue #180 D2 grew this tuple from 35 to 39 — `artifactMeta`, `board`,
+ *  `moveOutcome` and `task`, the four keys the merged crate's seven task arms
+ *  emit (`task_tools.rs:164,168,213,229,370,460`). That is a live wire change
+ *  RECORDED here, not a silent edit: each key also gained a Part-2c reason and a
+ *  Part-3 fixture group, which is the sanctioned shape (the `calls` precedent). */
 type FrozenProducerTuple = readonly [
-  "bytes", "calls", "cancelled", "command", "customInput", "description",
-  "diff", "dir", "entries", "error", "exitCode", "extractor", "lines",
-  "matches", "occurrences", "operation", "path", "provider", "reason",
+  "artifactMeta", "board", "bytes", "calls", "cancelled", "command", "customInput",
+  "description", "diff", "dir", "entries", "error", "exitCode", "extractor", "lines",
+  "matches", "moveOutcome", "occurrences", "operation", "path", "provider", "reason",
   "renderer", "rendererNote", "responseId", "resultCount", "results", "scope",
-  "skill", "skills", "status", "stderr", "stdout", "title", "todos",
+  "skill", "skills", "status", "stderr", "stdout", "task", "title", "todos",
   "truncated", "url", "wordCount",
 ];
 
@@ -542,6 +561,51 @@ const READER_UNION_FIELDS = [
   "durationMs", "toolCount",
 ] as const;
 
+/** The entry-field spellings, as a literal tuple.
+ *
+ *  `ENVELOPE_ENTRY_FIELDS` is annotated `{ key: string; … }`, so reading its keys
+ *  back gives `string` and would widen the type-level guard below to `never` — a
+ *  guard that can never fail is worse than no guard. This tuple is the literal
+ *  spelling; the Part-2 assertion checks it against the annotated table on every
+ *  run, so the two cannot drift. */
+const ENVELOPE_ENTRY_KEYS = [
+  "agent", "task", "model", "currentTool", "currentToolArgs",
+  "currentToolStartedAt", "toolCalls", "recentOutput", "output", "tokens",
+  "percent", "contextPercent", "cost", "durationMs", "toolCount",
+] as const;
+
+/** The reader union MINUS the entry fields, as a literal union — the fields read
+ *  off the DETAILS ENVELOPE itself, at the depth a producer emits it.
+ *
+ *  This exists because "spanning" is a claim about a FRAME, not about a NAME. The
+ *  file's three-frame rule says a read counts against the frame it is made on,
+ *  and its nesting rule says a read off a `progress` / `results` ENTRY counts
+ *  against the CONTAINER and never as a key of its own. So an entry field is not
+ *  an envelope-level read, and a producer key that happens to share an entry
+ *  field's spelling does NOT span: it is emitted on the envelope and consumed
+ *  inside an entry, which is two different places on the wire.
+ *
+ *  `task` (issue #180 D2) is exactly that case, and the reason this is derived
+ *  rather than hand-partitioned. The task tools emit `details.task` — a Task-board
+ *  ROW (`task_tools.rs`'s `json!({ "task": t })` in `exec_get_task` and in
+ *  `row_result`) — while the subagent card reads `task` off a `results[i]` /
+ *  `progress[i]` ENTRY as that subagent's task description. Same spelling, two
+ *  frames, two meanings: the collision `title`, `reason` and `path` already
+ *  document for the RAW-INPUT frame, one level deeper. Counting it as spanning
+ *  would claim that a card rendering a subagent's task line consumes the task
+ *  tools' row payload — false — and would let a producer-side deletion of
+ *  `details.task` look safe to a reader of this table. */
+type EnvelopeReaderField = Exclude<
+  (typeof READER_UNION_FIELDS)[number],
+  (typeof ENVELOPE_ENTRY_KEYS)[number]
+>;
+
+const ENVELOPE_READER_FIELDS: readonly EnvelopeReaderField[] =
+  READER_UNION_FIELDS.filter(
+    (f): f is EnvelopeReaderField =>
+      !(ENVELOPE_ENTRY_KEYS as readonly string[]).includes(f),
+  );
+
 /** Part 2c — the exception list: producer keys the TS side never addresses BY NAME
  *  on the details frame. Its CONTENTS are not hand-enumerated: the assertion
  *  computes `PRODUCER_KEYS` minus the live reader keys at runtime and demands this
@@ -564,10 +628,12 @@ const READER_UNION_FIELDS = [
  *  key that no longer exists and it names the extra one. The runtime assertion below
  *  remains the authority — this alias just means a missing reason cannot be
  *  postponed past the build. */
-type UnreadProducerKey = Exclude<ProducerKey, Extract<ProducerKey, (typeof READER_UNION_FIELDS)[number]>>;
+type UnreadProducerKey = Exclude<ProducerKey, Extract<ProducerKey, (typeof ENVELOPE_READER_FIELDS)[number]>>;
 
 const UNREAD_BY_NAME_REASONS: Readonly<Record<UnreadProducerKey, string>> = {
   bytes: "write (fs_tools.rs:121) — shown only inside normalizeToolOutput's JSON dump; the header reads rawInput.path, not details.bytes",
+  artifactMeta: "write_artifact (task_tools.rs:460) — the D2 task seam's write answer {key,updatedAt,bytes}; no TS card names it, so it rides normalizeToolOutput's JSON dump. D2 deliberately ships NO reader: the artifact chip list comes from the board's `artifactKeys`, not from a tool result",
+  board: "list_board (task_tools.rs:164,168) — the D2 task seam's row payload `[{spacePath,number,title,stageSlug,artifactKeys,…}]`; the board UI renders `get_board`, never a tool result, so the rows are dumped as opaque text",
   cancelled: "bash (bash.rs:427) — the cancelled fact is carried to the UI by the tool-call status, not by a details read",
   command: "bash/sudo (bash.rs, interactive/mod.rs sudo arms) — the header's `command` comes from RAW INPUT (summarizeToolCall), a different frame; details.command is dumped, never named",
   customInput: "ask (harness/ask.rs:336-340) — always serialised null; the answer card reads the ask REQUEST payload, not the result details",
@@ -578,6 +644,7 @@ const UNREAD_BY_NAME_REASONS: Readonly<Record<UnreadProducerKey, string>> = {
   extractor: "fetch_content (web/tools.rs:304-311) — provenance, dumped with the rest of the envelope",
   lines: "read (fs_tools.rs:49,67) — the line range the header shows comes from RAW INPUT offset/limit (readLineRange), not from details.lines",
   matches: "find/grep (search.rs:130,182,403) and get_search_content (web/tools.rs:408,421) — the matches are the content text; the count is dumped",
+  moveOutcome: "move_task (task_tools.rs:370) — the D2 task seam's move answer {toStage,onEnter,note}; `onEnter` is opaque to the crate and the desktop's boost note rides the separate `moveTask` COMMAND return (store/tasks.ts's boostNotes), never a tool result, so this copy is dumped",
   occurrences: "edit (fs_tools.rs:183) — dumped; the editChangeStat chip is computed from RAW INPUT edits",
   operation: "manage_todo_list (interactive/mod.rs:227,243,310,349) — the header's `operation` comes from RAW INPUT; the Checklist reads the separate todos_update push",
   path: "read/write/edit/ls/read_skill (fs_tools.rs, skills.rs:196) — the header's `path` comes from RAW INPUT (summarizeToolCall/fileSummaries); details.path is dumped",
@@ -590,6 +657,7 @@ const UNREAD_BY_NAME_REASONS: Readonly<Record<UnreadProducerKey, string>> = {
   scope: "read_skill (skills.rs:162) — provenance, dumped",
   skill: "read_skill (skills.rs:162,196) — the header's skill name comes from RAW INPUT `name`",
   skills: "list_skills (skills.rs:54,65) — a count; the catalog is the content text",
+  task: "get_task / create_task / edit_task (task_tools.rs:213,229) — the D2 task seam's ROW payload on the details ENVELOPE, dumped. NOTE the frame collision this row exists to name: the reader union's `task` is read off a subagent `results[i]` / `progress[i]` ENTRY (the subagent's task description) — a nested frame, which the file's nesting rule charges to its CONTAINER, not to a key. Same spelling, different frame, different meaning, so this producer key is unread and NOT spanning; see `ENVELOPE_READER_FIELDS`",
   stderr: "sudo_exec (interactive/mod.rs sudo arms) — the failure text comes from details.error (failureText) or the content text, never from details.stderr",
   stdout: "sudo_exec (interactive/mod.rs sudo arms) — success puts the scrubbed stdout in content[0].text; the details copy is dumped",
   title: "fetch_content (web/tools.rs:304-311) — dumped (and NOT the tool-call `title`, which is the tool name: a different frame and a different meaning)",
@@ -610,7 +678,7 @@ const UNREAD_BY_NAME_REASONS: Readonly<Record<UnreadProducerKey, string>> = {
  *  result, not the element type. */
 const asStringKeys = (values: readonly string[]): readonly string[] => values;
 const SPANNING_KEYS = PRODUCER_KEYS.filter(
-  (k) => asStringKeys(READER_UNION_FIELDS).includes(k),
+  (k) => asStringKeys(ENVELOPE_READER_FIELDS).includes(k),
 ).sort();
 
 /** Look a reason up by an arbitrary string (the runtime assertion walks
@@ -626,14 +694,14 @@ describe("Part 1 — the frozen producer list (the contract task08 copies)", () 
     expect(new Set(PRODUCER_KEYS).size).toBe(PRODUCER_KEYS.length);
   });
 
-  it("PRODUCER_KEYS' as-const TYPE is exactly the frozen 35-name tuple (vacuity guard 3)", () => {
+  it("PRODUCER_KEYS' as-const TYPE is exactly the frozen 39-name tuple (vacuity guard 3)", () => {
     // `FROZEN_TUPLE_PIN` is typed `true` only while the const's type matches the
     // frozen tuple — a deleted/added/reordered key or a collapse to `string[]`
     // fails `pnpm build` before this line ever runs. The runtime reads below pin the
     // LENGTH, so a list that shrank to something the tuple alias does not describe
     // cannot pass by being merely non-empty.
     expect(FROZEN_TUPLE_PIN).toBe(true);
-    expect(PRODUCER_KEYS.length).toBe(35);
+    expect(PRODUCER_KEYS.length).toBe(39);
     expect([...PRODUCER_KEYS].sort()).toEqual([...PRODUCER_KEYS]);
   });
 });
@@ -767,6 +835,25 @@ describe("Part 2 — the reader side, in two annotated columns", () => {
       (f) => !f.container.split(" + ").every((c) => containers.includes(c)),
     ).map((f) => f.key);
     expect(badContainer).toEqual([]);
+
+    // `ENVELOPE_ENTRY_KEYS` is the LITERAL spelling the type-level
+    // `UnreadProducerKey` derivation subtracts, and it exists only because
+    // `ENVELOPE_ENTRY_FIELDS` is annotated `key: string` (a `string` subtraction
+    // would widen that guard to `never`, i.e. a guard that can never fail). Two
+    // spellings of one list is a drift risk this line closes: the literal must be
+    // exactly the annotated table's keys, so the type-level half and the runtime
+    // half subtract the SAME set.
+    expect([...ENVELOPE_ENTRY_KEYS].sort()).toEqual(
+      ENVELOPE_ENTRY_FIELDS.map((f) => f.key).sort(),
+    );
+    // And the envelope-level reader list is the union minus exactly those — the
+    // statement `task` is not spanning rests on it, so it is measured and not
+    // asserted by prose.
+    expect([...ENVELOPE_READER_FIELDS].sort()).toEqual(
+      READER_UNION_FIELDS.filter((f) => !ENVELOPE_ENTRY_KEYS.includes(f as never)).slice().sort(),
+    );
+    expect(ENVELOPE_READER_FIELDS).not.toContain("task");
+    expect(READER_UNION_FIELDS).toContain("task");
   });
 
   it("Part 2c: every producer key is either a live reader field or an explicitly-annotated wire-for-UI key", () => {
@@ -1077,6 +1164,88 @@ const DETAILS_FIXTURES: readonly DetailsFixture[] = [
       ],
       customInput: null,
       description: null,
+    },
+  },
+  // ── The D2 task seam (issue #180) ──────────────────────────────────────────
+  //
+  // Four keys the seven task tools add, shaped off the MERGED crate's DTOs (each
+  // `#[serde(rename_all = "camelCase")]`), not off the plan's prose. `get_artifact`
+  // is deliberately absent: it emits NO `details` on either arm, because the
+  // markdown would then exist twice in one result (`task_tools.rs`'s own comment
+  // at :407) — so there is no group to register for it, and inventing one would be
+  // the ghost key the vacuity guards exist to catch.
+  {
+    group: "{board} — list_board (the row payload, keys-only artifacts)",
+    emittedBy: [
+      "task_tools.rs:164 (the empty-board arm — `details` still rides)",
+      "task_tools.rs:168 (the populated arm)",
+    ],
+    registerKeys: ["board"],
+    payload: {
+      board: [
+        {
+          id: "tsk_1a2b",
+          spacePath: "/w/alpha",
+          number: 3,
+          title: "Wire up the board",
+          body: "Cards need a detail modal.",
+          specPath: null,
+          stageSlug: "doing",
+          sortOrder: 0,
+          createdAt: 1,
+          updatedAt: 2,
+          artifactKeys: ["research", "spec"],
+        },
+      ],
+    },
+  },
+  {
+    group: "{task} — get_task / create_task / edit_task (the row payload)",
+    emittedBy: [
+      "task_tools.rs:213 (get_task's Some arm — the TaskDetail shape, with artifactKeys)",
+      "task_tools.rs:229 (row_result, shared by create_task and edit_task — the TaskRow shape, WITHOUT artifactKeys)",
+    ],
+    registerKeys: ["task"],
+    payload: {
+      // The `get_task` shape, because it is the wider of the two: the write verbs'
+      // `TaskRow` is this DTO minus `artifactKeys` (a write touched no artifact, so
+      // its answer says nothing about them). A `null` here would be the wrong
+      // fixture — `artifactKeys` is `Vec<String>`, so an artifact-less card is `[]`.
+      task: {
+        id: "tsk_1a2b",
+        spacePath: "/w/alpha",
+        number: 3,
+        title: "Wire up the board",
+        body: null,
+        specPath: "docs/roadmap/x.md",
+        stageSlug: "doing",
+        sortOrder: 0,
+        createdAt: 1,
+        updatedAt: 2,
+        artifactKeys: [],
+      },
+    },
+  },
+  {
+    group: "{moveOutcome} — move_task (the opaque onEnter, all three arms present)",
+    emittedBy: ["task_tools.rs:370"],
+    registerKeys: ["moveOutcome"],
+    payload: {
+      // `onEnter` is OPAQUE to the crate (the boost it names needs the desktop's
+      // `SessionManager`), and `note` is optional — the crate's `MoveOutcome`
+      // serialises an absent note as `null`, so the fixture spells both keys.
+      moveOutcome: { toStage: "doing", onEnter: "compact", note: "reordered to the end" },
+    },
+  },
+  {
+    group: "{artifactMeta} — write_artifact (meta only, never the markdown back)",
+    emittedBy: ["task_tools.rs:460"],
+    registerKeys: ["artifactMeta"],
+    payload: {
+      // `bytes` here is NESTED inside `artifactMeta` and counts against that whole
+      // key, never as the top-level `bytes` the fs `write` arm emits — the same
+      // nesting rule that charges `usage.input` to `usage`.
+      artifactMeta: { key: "spec", updatedAt: 1700000000000, bytes: 2048 },
     },
   },
 ];

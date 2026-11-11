@@ -674,7 +674,7 @@ impl From<SpacesError> for tauri::ipc::InvokeError {
 
 /// Errors surfaced by the Task-board commands (spec §2, ADR 0090).
 ///
-/// Modelled on [`SpacesError`] above: same four-shape family, same hand-written
+/// Modelled on [`SpacesError`] above: same shape family, same hand-written
 /// `InvokeError` impl, no serde derive (ADR 0063 — the only route to the wire is
 /// the `From` below, so a payload the envelope cannot express is a compile error
 /// in THIS file rather than a wrong sentence on the user's screen).
@@ -685,6 +685,12 @@ impl From<SpacesError> for tauri::ipc::InvokeError {
 /// would write a whitespace-only or quote-only title that the SESSION path
 /// refuses, and a card is exactly the thing you cannot quietly mis-name — its
 /// label is what people say out loud.
+///
+/// The two artifact arms (#180) extend that same idea to the two things a caller
+/// can get wrong about a document: what it is CALLED (`BadArtifactKey`) and how
+/// BIG it is (`ArtifactTooLarge`). Both refuse rather than repair, for the same
+/// reason `EmptyTitle` does — a silently-mangled artifact is a document the caller
+/// believes it wrote.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TasksError {
     /// SQLite itself refused the statement.
@@ -702,6 +708,24 @@ pub enum TasksError {
     #[error("task title is empty after trimming")]
     EmptyTitle,
 
+    /// The artifact key is not `[a-z0-9][a-z0-9-]{0,39}`. Names the offending key
+    /// and the grammar, because a caller that invented the key is the only party
+    /// that can fix it, and it should not have to guess which rule it broke.
+    ///
+    /// The grammar's `{0,39}` is escaped `{{0,39}}` on purpose: unescaped, the
+    /// `Display` derive would read it as a format argument and the sentence would
+    /// either fail to compile or print a width instead of the rule.
+    #[error("artifact key `{0}` is not [a-z0-9][a-z0-9-]{{0,39}}")]
+    BadArtifactKey(String),
+
+    /// The artifact markdown exceeds the 256 KB cap. Refused, NEVER truncated — a
+    /// spec that silently ends mid-sentence reads as a complete spec, which is the
+    /// confident-well-formed-lie shape. Names the limit AND the size, and carries
+    /// both again as `size`/`max` envelope keys in the `From` impl below (the
+    /// `FilesError::ImageTooLarge` precedent) so a frontend need not parse prose.
+    #[error("artifact is {size} bytes, which exceeds the {max} bytes (256 KB) limit")]
+    ArtifactTooLarge { size: usize, max: usize },
+
     /// Anything the command layer cannot classify: a `spawn_blocking` join
     /// failure, or a stage boost that had no live Session to boost.
     #[error("{0}")]
@@ -717,6 +741,8 @@ impl TasksError {
             TasksError::Database(_) => "database",
             TasksError::NotFound(_) => "not_found",
             TasksError::EmptyTitle => "empty_title",
+            TasksError::BadArtifactKey(_) => "bad_artifact_key",
+            TasksError::ArtifactTooLarge { .. } => "artifact_too_large",
             TasksError::Other(_) => "other",
         }
     }
@@ -732,6 +758,17 @@ impl From<rusqlite::Error> for TasksError {
 /// cases keep their identity: a missing card and a bad slug must not arrive as a
 /// generic database failure, because the frontend's message and the model's next
 /// move both depend on which of the two it was.
+///
+/// The seven #179 Stage refusals all ride `NotFound`, and that is a decision
+/// rather than a default. Each of them composes its own complete sentence in
+/// `BoardError`'s `Display` — the card count, the pointing Stages, the legal
+/// destinations — and that sentence IS the answer: `TasksBoard.tsx` renders it
+/// through `IpcErrorLine` with `role="alert"`, and `store/tasks.ts`'s optimistic
+/// write reverts on ANY rejection kind. A distinct wire `kind` for each would add
+/// eight strings to the wire contract that no reader branches on, and `kind()`
+/// exists to be branched on. `NotFound` is the arm that already means "what you
+/// named is not what is here, and here is what is" — ADR 0090's rule, which every
+/// one of these refusals is an instance of.
 impl From<crate::storage::BoardError> for TasksError {
     fn from(e: crate::storage::BoardError) -> Self {
         use crate::storage::BoardError;
@@ -745,6 +782,57 @@ impl From<crate::storage::BoardError> for TasksError {
                     format!("no stage {wanted} in this space (valid stages: {available})")
                 })
             }
+            // Each arm spells its own `Display` sentence rather than calling
+            // `e.to_string()`, matching the two arms above: the wire message is
+            // written HERE, in one place, so a `BoardError` comment change cannot
+            // silently change what a user reads.
+            BoardError::StageNotEmpty {
+                slug,
+                count,
+                available,
+            } => TasksError::NotFound(format!(
+                "stage {slug} has {count} card(s) — delete or move them first \
+                 (valid stages: {available})"
+            )),
+            BoardError::StageReferenced { slug, referrers } => TasksError::NotFound(format!(
+                "stage {slug} cannot be deleted — another stage's transitions lead here \
+                 ({referrers})"
+            )),
+            BoardError::LastStage { slug } => TasksError::NotFound(format!(
+                "stage {slug} is this space's last column and cannot be deleted"
+            )),
+            BoardError::StageSlugTaken { slug, available } => TasksError::NotFound(format!(
+                "a stage with slug {slug} already exists in this space \
+                 (valid slugs: {available})"
+            )),
+            BoardError::EmptyStageSlug => {
+                TasksError::NotFound("cannot create a stage with an empty slug".to_string())
+            }
+            BoardError::StrictMoveRefused { from, to, allowed } => TasksError::NotFound(format!(
+                "cannot move to {to} from {from} — allowed: {allowed}"
+            )),
+            BoardError::SelfLoop { slug } => {
+                TasksError::NotFound(format!("stage {slug} cannot lead to itself"))
+            }
+            // The two artifact refusals keep their OWN kinds and their own payload
+            // fields, and that is not a style choice. Unlike the seven Stage
+            // refusals above, which ride `NotFound` because nothing branches on
+            // them, `bad_artifact_key` and `artifact_too_large` are strings the
+            // frontend already branches on (`store/tasks.test.ts` asserts on the
+            // first), and `artifact_too_large` carries `size`/`max` as envelope
+            // numbers. So these two map VARIANT TO VARIANT and re-spell nothing:
+            // unlike every arm above, no sentence is written here, which is why the
+            // wire message cannot drift from the storage layer's `Display` — there
+            // is only one `Display`, and both doors reach it. That is what lets
+            // storage own these rules as the `TaskStore` backstop without changing
+            // one character of what a person who came through the command's own
+            // pre-flight reads. `tasks_error_kinds_are_the_wire_strings` pins the
+            // kinds; `the_storage_artifact_refusals_keep_the_command_envelope_exactly`
+            // pins the whole envelope, both doors against each other.
+            BoardError::BadArtifactKey { key } => TasksError::BadArtifactKey(key),
+            BoardError::ArtifactTooLarge { size, max } => {
+                TasksError::ArtifactTooLarge { size, max }
+            }
         }
     }
 }
@@ -752,10 +840,20 @@ impl From<crate::storage::BoardError> for TasksError {
 /// The IPC envelope: `{"kind", "message"}` — hand-built, no derive (ADR 0063).
 impl From<TasksError> for tauri::ipc::InvokeError {
     fn from(err: TasksError) -> Self {
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "kind": err.kind(),
             "message": err.to_string(),
         });
+        // `ArtifactTooLarge` carries its numbers a second time as envelope keys,
+        // the `FilesError::ImageTooLarge` precedent: `kind`/`message` stay for
+        // every arm, and a size refusal ALSO gives the frontend the integers so it
+        // can render "1.2 MB of a 256 KB limit" without parsing its own error
+        // sentence. `BadArtifactKey` needs no extra key — the key is already in the
+        // message it names.
+        if let TasksError::ArtifactTooLarge { size, max } = &err {
+            payload["size"] = serde_json::Value::from(*size as u64);
+            payload["max"] = serde_json::Value::from(*max as u64);
+        }
         Self::from_value(payload)
     }
 }

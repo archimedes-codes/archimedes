@@ -7,11 +7,22 @@ import { useSessions } from "../store/sessions";
 import { resetStores } from "../test/resetStores";
 import { clearSkillCatalogCache } from "../hooks/useSkillCatalog";
 import {
+  createStage,
   createTask,
+  deleteStage,
+  getArtifact,
   getBoard,
+  getBoardStrict,
   listSkills,
   moveTask,
+  renameStage,
+  reorderStages,
   reorderTasks,
+  setBoardStrict,
+  setStageNext,
+  setStageSkill,
+  startTaskSession,
+  writeArtifact,
   type StageRow,
   type StageWithTasks,
   type TaskCardView,
@@ -42,6 +53,22 @@ vi.mock("../lib/tauri", async () => {
     moveTask: vi.fn(),
     reorderTasks: vi.fn(),
     linkSession: vi.fn(),
+    // T3's ten: the seven Stage verbs, the Strict pair (issue #179) and the
+    // artifact pair (issue #180 D1). The board's `Configure` control mounts the
+    // Stage editor, which drives the store's actions, which call these — so an
+    // un-mocked one reaches the real `invoke` and rejects in jsdom, and a case
+    // below would then be asserting on a rejection instead of on a write. Mocked
+    // under the WRAPPER names for the same reason as the seven above.
+    createStage: vi.fn(),
+    renameStage: vi.fn(),
+    setStageSkill: vi.fn(),
+    setStageNext: vi.fn(),
+    reorderStages: vi.fn(),
+    deleteStage: vi.fn(),
+    setBoardStrict: vi.fn(),
+    getBoardStrict: vi.fn(),
+    writeArtifact: vi.fn(),
+    getArtifact: vi.fn(),
     // The New Task modal's surface (A5). Its composer mounts the four mention
     // catalogs, so an un-mocked export reaches the REAL `invoke` and rejects in
     // jsdom — green-but-noisy tests that hide a real fetch failure. They are
@@ -73,12 +100,20 @@ const SPACE = "/w/alpha";
  * `Cannot access 'SPACE' before initialization` and the whole file fails to load
  * with zero tests run. (Measured: this exact shape, on this exact file.) */
 
+/* `onEnterSkill`/`nextSlugs` are REQUIRED on the wire type (the Rust side always
+ * emits both), so they default here rather than becoming optional. Both default to
+ * `null` = UNCONFIGURED, which is what every pre-#179 column is; `nextSlugs: []` is a
+ * DIFFERENT answer (configured, leading nowhere — ADR 0099), so a test that means the
+ * empty case must pass it explicitly through `over`. Defaults sit BEFORE the spread so
+ * `over` can still override either field. */
 const stage = (slug: string, over: Partial<StageRow> = {}): StageRow => ({
   spacePath: SPACE,
   slug,
   label: slug[0]!.toUpperCase() + slug.slice(1),
   sortOrder: 0,
   onEnter: "none",
+  onEnterSkill: null,
+  nextSlugs: null,
   ...over,
 });
 
@@ -102,6 +137,10 @@ const card = (id: string, number: number, stageSlug: string): TaskCardView => ({
   task: task(id, number, stageSlug),
   sessions: [],
   costUsd: null,
+  // REQUIRED on the wire type (issue #180): the board carries artifact KEYS only,
+  // never the markdown. `[]` means "this card has no artifacts" — an optional field
+  // would compile here and render nothing when real data arrives.
+  artifactKeys: [],
 });
 
 /** The NESTED wire shape. A board built flat (`{ slug, label, tasks }`) is the
@@ -204,6 +243,35 @@ beforeEach(() => {
   // thing a test is actually checking.
   vi.mocked(createTask).mockReset();
   vi.mocked(createTask).mockResolvedValue(task("tsk_new", 9, "backlog"));
+  // T3's ten, reset and defaulted. The defaults matter for the two the Stage
+  // editor AWAITS on mount: `getBoardStrict` seeds the footer Switch, and a bare
+  // `vi.fn()` resolves `undefined` there, which the editor reads as a FAILED read
+  // and renders the Switch disabled — so every editor case would silently be
+  // testing the failure arm.
+  for (const fn of [
+    createStage,
+    renameStage,
+    setStageSkill,
+    setStageNext,
+    reorderStages,
+    deleteStage,
+    setBoardStrict,
+    getBoardStrict,
+    writeArtifact,
+    getArtifact,
+  ]) {
+    vi.mocked(fn).mockReset();
+  }
+  vi.mocked(getBoardStrict).mockResolvedValue(false);
+  vi.mocked(setBoardStrict).mockResolvedValue(undefined);
+  vi.mocked(createStage).mockResolvedValue(stage("spike", { sortOrder: 3 }));
+  vi.mocked(renameStage).mockResolvedValue(stage("backlog"));
+  vi.mocked(setStageSkill).mockResolvedValue(stage("backlog"));
+  vi.mocked(setStageNext).mockResolvedValue(stage("backlog"));
+  vi.mocked(reorderStages).mockResolvedValue(undefined);
+  vi.mocked(deleteStage).mockResolvedValue(undefined);
+  vi.mocked(writeArtifact).mockResolvedValue({ key: "spec", updatedAt: 1, bytes: 0 });
+  vi.mocked(getArtifact).mockResolvedValue(null);
 });
 
 describe("TasksBoard — the header (and the absence of a way back)", () => {
@@ -342,6 +410,55 @@ describe("TasksBoard — the cross-column drag", () => {
     // The cross-column verb, and NOT the within-column one: `moveTask` writes
     // `stage_slug` and runs the destination's `on_enter`.
     await Promise.resolve();
+    expect(moveTask).toHaveBeenCalledTimes(1);
+    expect(moveTask).toHaveBeenCalledWith(SPACE, "t1", "done");
+    expect(reorderTasks).not.toHaveBeenCalled();
+  });
+
+  it("a card dropped in another column starts NO Session (spec §6.4)", async () => {
+    // THE INVARIANT NOTHING ELSE PINNED AT THE BOARD. A drop that started a Session
+    // would strand its own `ask` gate: `App`'s view ternary renders THIS board in
+    // place of `ChatStream`, so the gate's transcript is not on screen to be answered,
+    // and `ask_flow` blocks on a oneshot with no timeout — the board would hang on its
+    // own drag. `TaskCard.test.tsx` pins the half at the card boundary (a drop from the
+    // pill's subtree reaches the row and launches nothing); that file explicitly reports
+    // the board's drop route as a gap it cannot observe from a card render. This is the
+    // other half.
+    //
+    // THE PIN IS NOT VACUOUS, and the reason matters. `store/taskLaunch` refuses a
+    // launch whose skill the catalog lacks, and this file's `listSkills` resolves `[]`,
+    // so a destination WITH a skill would never reach `startTaskSession` — the case
+    // would pass on a refusal rather than on the absence of a call. The column dropped
+    // into here is `done`, whose `onEnterSkill` is `null`: a destination with NO Skill
+    // is launchable outright (`missingSkill` answers `null`), so if the drop route ever
+    // reached `launchFromCard`, `startTaskSession` WOULD be called. Its silence is
+    // therefore evidence about the route and not about the catalog.
+    //
+    // `mockClear` scopes the claim to THIS gesture. Unlike `moveTask`/`reorderTasks`,
+    // `startTaskSession` is not reset in the file's `beforeEach` — the mock factory
+    // gives it a resolved value there and every case in the file shares that one
+    // `vi.fn` — so without the clear a launch from an EARLIER case would redden a
+    // board that never launched on its own drop.
+    vi.mocked(startTaskSession).mockClear();
+    useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
+    render(<TasksBoard activeSpacePath={SPACE} />);
+    layOutColumns();
+    const card = within(screen.getByTestId("task-column-backlog")).getByTestId(
+      "task-card",
+    );
+    fireEvent.dragStart(card, { dataTransfer: { setData: vi.fn() } });
+    const done = screen.getByTestId("task-column-done");
+    dragOverAt(done, 450);
+    fireEvent(done, dropAt(450));
+    // A macrotask, not one microtask tick: a launch is a CHAINED async sequence
+    // (move → start → send), so draining a single `Promise.resolve` would let a
+    // regressed route still look silent at assertion time. This flushes every
+    // pending microtask, so `startTaskSession` would have been reached if it were
+    // going to be.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(startTaskSession).not.toHaveBeenCalled();
+    // And the board is not merely INERT: the drop still performs the one write it
+    // owns — the cross-column move, and not the within-column reorder.
     expect(moveTask).toHaveBeenCalledTimes(1);
     expect(moveTask).toHaveBeenCalledWith(SPACE, "t1", "done");
     expect(reorderTasks).not.toHaveBeenCalled();
@@ -785,6 +902,7 @@ describe("TasksBoard — the sessions chip's wiring (issue #174)", () => {
               { taskId: "t1", sessionId: "sess_new", stageSlug: "doing" },
             ],
             costUsd: 1.25,
+            artifactKeys: [],
           },
         ],
       },
@@ -826,9 +944,19 @@ describe("TasksBoard — opening a card (PR #178)", () => {
             task: task("t1", 1, "backlog"),
             sessions: [{ taskId: "t1", sessionId: "sess_1", stageSlug: "backlog" }],
             costUsd: 0.5,
+            artifactKeys: [],
           },
         ],
       },
+      // The column the launch cases below ASSUME. `TaskDetailDialog` derives its
+      // buttons from the Stage graph (issue #179): `next_slugs` first, and with that
+      // NULL the Stage at `sortOrder + 1`. `backlog` here is unconfigured, so the
+      // fallback is the ONLY thing that can produce a button — and with no column at
+      // `sortOrder 1` the modal correctly renders NO button at all. A fixture that
+      // seeded only `backlog` (0) and `doing` (also 0, the `stage()` default) therefore
+      // made "click Discuss" click a control that never existed. The column is what was
+      // missing, not the assertion.
+      { stage: stage("discuss", { sortOrder: 1, onEnterSkill: "discuss" }), tasks: [] },
       { stage: stage("doing"), tasks: [] },
     ];
     vi.mocked(getBoard).mockResolvedValue(board);
@@ -856,8 +984,8 @@ describe("TasksBoard — opening a card (PR #178)", () => {
       {
         stage: stage("backlog"),
         tasks: [
-          { task: task("t1", 1, "backlog"), sessions: [], costUsd: null },
-          { task: task("t2", 2, "backlog"), sessions: [], costUsd: null },
+          { task: task("t1", 1, "backlog"), sessions: [], costUsd: null, artifactKeys: [] },
+          { task: task("t2", 2, "backlog"), sessions: [], costUsd: null, artifactKeys: [] },
         ],
       },
     ];
@@ -985,5 +1113,87 @@ describe("TasksBoard — opening a card (PR #178)", () => {
     fireEvent.click(cardIn("backlog", 0));
     fireEvent.click(within(screen.getByRole("dialog")).getByTestId("task-session-row"));
     expect(onReturnToWorkspace).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("TasksBoard — the Stage editor's render site (T3)", () => {
+  // The claim is the RENDER SITE and nothing else — the same shape the New Task
+  // modal's describe above makes. `Configure` is the board's affordance and the
+  // board owns the open flag; what the editor does inside its rows is
+  // `StageEditor.test.tsx`'s subject, and nothing here re-pins it.
+  it("the header carries a Configure affordance beside New task", () => {
+    render(<TasksBoard activeSpacePath={SPACE} />);
+    expect(screen.getByRole("button", { name: "Configure" })).toBeTruthy();
+    // Beside, and AFTER. The header band is one flex row (`<header>` inside the
+    // board's `<section>` — note it carries NO `banner` role, because a `<header>`
+    // scoped to sectioning content is not a banner, so this walks the element), and
+    // the affordances read safe-first: create, then configure.
+    const header = screen.getByTestId("tasks-board").querySelector("header")!;
+    expect(
+      [...header.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["New task", "Configure"]);
+  });
+
+  it("Configure is disabled with no active Space (there is no board to configure)", () => {
+    render(<TasksBoard activeSpacePath={null} />);
+    const button = screen.getByRole("button", {
+      name: "Configure",
+    }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    // The SAME rule `New task` runs, for the same reason: a dead button that opens
+    // a dialog which cannot write is worse than one that says nothing is open.
+    expect(
+      (screen.getByRole("button", { name: "New task" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
+  it("clicking Configure opens the Stage editor over the board", async () => {
+    useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
+    render(<TasksBoard activeSpacePath={SPACE} />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Configure" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: "Configure stages" }),
+    ).toBeTruthy();
+    // One row per column the BOARD is showing — the editor reads the same store
+    // slice, so a board and an editor that disagreed about the columns would be two
+    // answers to "what columns does this Space have".
+    for (const slug of ["backlog", "doing", "done"]) {
+      expect(within(dialog).getByTestId(`stage-row-${slug}`)).toBeTruthy();
+    }
+    // The footer's Space-level Switch, which is the editor's only non-row control.
+    expect(
+      within(dialog).getByRole("switch", { name: "Strict workflow" }),
+    ).toBeTruthy();
+  });
+
+  it("closing the editor leaves the board (the flag has one owner)", async () => {
+    useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
+    render(<TasksBoard activeSpacePath={SPACE} />);
+    fireEvent.click(screen.getByRole("button", { name: "Configure" }));
+    await screen.findByRole("dialog");
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // The board is still there behind it — the editor is a dialog over the same
+    // view, not a route away from it.
+    expect(screen.getByTestId("tasks-board")).toBeTruthy();
+  });
+
+  it("the editor is mounted only while open (a closed editor is an idle catalog read)", async () => {
+    useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
+    render(<TasksBoard activeSpacePath={SPACE} />);
+    // The Strict flag read happens on the editor's mount, so its call count IS the
+    // mount count: a dialog that stayed mounted while closed would keep re-reading
+    // the flag and keep a form alive behind the board, exactly the idle-surface
+    // cost the New Task modal's render site records for its own composer.
+    expect(getBoardStrict).toHaveBeenCalledTimes(0);
+    fireEvent.click(screen.getByRole("button", { name: "Configure" }));
+    await waitFor(() => expect(getBoardStrict).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(getBoardStrict).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
-import { MessageSquareIcon, SearchIcon } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
 import { Button } from "./ui/button";
+import { AgentMarkdown } from "./AgentMarkdown";
 import { EmptyListLine } from "./EmptyListLine";
 import { IpcErrorLine } from "./IpcErrorLine";
 import { MutedCaption } from "./MutedCaption";
@@ -19,7 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
-import type { TaskRow, TaskSessionRow } from "../lib/tauri";
+import type { Artifact, TaskRow, TaskSessionRow } from "../lib/tauri";
 
 /**
  * The **Task detail** modal — what a card opens when it is clicked.
@@ -82,6 +82,20 @@ export interface TaskDetailDialogProps {
    *  renders NOTHING, `0` is "a real zero" and renders `$0.00` — ADR 0082, owned by
    *  `moneyOf` and imported rather than re-spelled. */
   costUsd: number | null;
+  /** The artifact KEYS on the card being read (issue #180, spec §3) — T4's
+   *  `TaskCardView.artifactKeys`, threaded by the board.
+   *
+   *  REQUIRED, on the same argument that made `sessions` and `costUsd` required: an
+   *  optional prop compiles against every fixture and then renders NO artifact
+   *  section when real data arrives — this repo's silent-green shape. The board
+   *  always holds the field (REQUIRED on `TaskCardView`), so omitting it is a caller
+   *  that forgot, which is a type error and not a runtime case.
+   *
+   *  KEYS ONLY, never content. The board read carries names because it runs for
+   *  every card on every mount; the document is fetched for the ONE key the human
+   *  selects (`getArtifact`), which is the split ADR 0100 exists to make cheap.
+   *  NOT read off `task` — `TaskRow` has no such field by design. */
+  artifactKeys: string[];
   /** The Space whose board is showing, and the cwd a launched Session starts in.
    *  `null` disables both buttons: `startTaskSession(null, …)` is not a thing. */
   spacePath: string | null;
@@ -97,6 +111,7 @@ export default function TaskDetailDialog({
   task,
   sessions,
   costUsd,
+  artifactKeys,
   spacePath,
   onClose,
   onOpenSession,
@@ -109,6 +124,58 @@ export default function TaskDetailDialog({
   // precedent — a `role="status"` line beside a `role="alert"` line, so a successful
   // action is never announced as a failure.
   const [note, setNote] = useState<string | null>(null);
+
+  // THE ARTIFACT READER's state (issue #180, spec §3). `selectedKey === null` means
+  // nothing is chosen: a card WITH keys does not auto-open one, because the board
+  // read carries names only and fetching a document nobody asked for is exactly the
+  // wire cost the keys-only payload exists to avoid.
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
+  // Its OWN error cell, not the launch `error` above: the two failures are about
+  // different things (a document that would not load vs. a Session that would not
+  // start) and one cell would let a stale launch sentence sit under an artifact
+  // read, or a reader failure claim the launch failed.
+  const [artifactError, setArtifactError] = useState<string | null>(null);
+
+  // The store's action (T3), read through `useTasks` and never as a bare command
+  // import — ADR 0074, which `tauriBoundary.test.ts` / `tauriBarrel.test.ts` enforce.
+  const getArtifact = useTasks((state) => state.getArtifact);
+
+  // WHICH key the one in-flight read belongs to. A ref and not state: nothing
+  // renders it, and it has to be readable by a resolution that lands AFTER the
+  // reader has moved on to another key — a `useState` value read inside the `await`
+  // below is the value this closure captured, which is exactly the stale answer.
+  const requestKey = useRef<string | null>(null);
+
+  const selectArtifact = async (key: string): Promise<void> => {
+    requestKey.current = key;
+    setSelectedKey(key);
+    // CLEARED BEFORE the fetch, so a previous document cannot paint under a new key
+    // while the new read is still in flight. This is one of TWO locks: it covers the
+    // in-flight gap, and the identity check after the `await` covers the answer that
+    // arrives after the reader moved on (which no clear can catch).
+    setSelectedArtifact(null);
+    setArtifactError(null);
+    try {
+      const artifact = await getArtifact(task.id, key);
+      // DROPPED, not rendered, when the reader has moved on: two reads can be in
+      // flight and the older one can answer LAST (a big spec over a slow IPC beats a
+      // small one), and painting it would show one key's document under another —
+      // a document lying about which key it is. Blanking the reader would be the
+      // other wrong answer, so the late resolution changes NOTHING.
+      if (requestKey.current !== key) return;
+      // `null` is an ANSWER (no such artifact, or no such Task — the `getTask`
+      // shape) and renders no document rather than an error sentence.
+      setSelectedArtifact(artifact);
+    } catch (err) {
+      // Same rule for the failure: a read the reader no longer asked for must not
+      // write an error sentence into the current view.
+      if (requestKey.current !== key) return;
+      // A rejection is the store RETHROWING (it captures to `error` AND rethrows, so
+      // a caller can tell "failed" from "answered `null`").
+      setArtifactError(describeIpcError(err));
+    }
+  };
 
   // `mcpServers` is dropped here and `store/taskLaunch` passes an EMPTY list: this
   // message carries no `[image #3]` marker, and the `#` prefix is the one the
@@ -136,14 +203,63 @@ export default function TaskDetailDialog({
     task.stageSlug;
   const money = moneyOf(costUsd);
 
-  const launch = async (mode: "discuss" | "research"): Promise<void> => {
+  // THE OUTGOING EDGES, i.e. the buttons. Read from the SAME slice `stageLabel` came
+  // from — one read, one source, for the reason that block already records: a modal
+  // that painted buttons from a prop while the orchestrator read the store would be
+  // two answers to "where can this card go", and the failure it prevents is a button
+  // that the click beneath it refuses.
+  //
+  // `next_slugs` is the graph (ADR 0099) and is rendered IN ITS OWN ORDER — the row's
+  // author decided that order, so it is not re-sorted here.
+  //
+  // NULL means UNCONFIGURED, which is NOT the same answer as the empty array: null
+  // falls back to the column at `sortOrder + 1` so an existing install keeps its
+  // launch button after the upgrade (the migration backfills, but a Space that has
+  // never been read has no rows to backfill), while `[]` is "configured, leads
+  // nowhere" and renders nothing. Collapsing the two would silently remove a working
+  // button from every unconfigured board.
+  //
+  // An edge whose slug is no longer a column is KEPT and labelled with the SLUG, on
+  // the same argument `stageLabel` above carries: "we could not name it" is a
+  // different claim from "it has no column", and a destination the graph names but the
+  // slice cannot resolve is exactly that case. It is also what keeps
+  // `store/taskLaunch`'s skipped-column note REACHABLE from this surface — the click
+  // starts the Session it was asked for, skips the move it could not perform, and the
+  // note says so. Dropping the edge instead would delete a working button on a stale
+  // read and leave the note block below with no path to the user at all.
+  const edges = useMemo(() => {
+    const current = columns?.find((c) => c.stage.slug === task.stageSlug);
+    if (!current) return [];
+    const slugs =
+      current.stage.nextSlugs ??
+      (columns ?? [])
+        .filter((c) => c.stage.sortOrder === current.stage.sortOrder + 1)
+        .map((c) => c.stage.slug);
+    return slugs.map((slug) => {
+      const stage = columns?.find((c) => c.stage.slug === slug)?.stage;
+      return {
+        slug,
+        label: stage?.label ?? slug,
+        // An unresolvable row contributes NO Skill — we never invent one for a row we
+        // cannot read, which also means such a button is not gated and cannot fail.
+        onEnterSkill: stage?.onEnterSkill ?? null,
+      };
+    });
+  }, [columns, task.stageSlug]);
+
+  const launch = async (toStageSlug: string): Promise<void> => {
     if (spacePath === null) return;
     if (busy) return;
     setBusy(true);
     setError(null);
     setNote(null);
     try {
-      const outcome = await launchTaskSession(spacePath, task, mode, catalogs);
+      const outcome = await launchTaskSession(
+        spacePath,
+        task,
+        toStageSlug,
+        catalogs,
+      );
       if (outcome.note !== null) {
         // THE NOTE WINS OVER THE NAVIGATION. The Session did start — this is a
         // warning, not a failure — but the thing the user clicked for (the card
@@ -171,23 +287,12 @@ export default function TaskDetailDialog({
     }
   };
 
-  // EACH BUTTON IS GATED ON THE SKILL IT NEEDS, and not merely on there being a
-  // catalog. The reasoning is a race found while wiring the board: the catalog is an
-  // async fetch that starts EMPTY, so a button enabled from the first paint is
-  // clickable before the catalog lands, and that first click fails with "This Space
-  // has no `discuss` skill" — a sentence that is FALSE two frames later. Gating on the
-  // same predicate `store/taskLaunch` refuses on removes the race rather than
-  // narrowing it: the button is enabled exactly when the launch would succeed, and the
-  // orchestrator's refusal stays as the backstop for a launch started from anywhere
-  // else (a future keyboard chord, a codemode script).
-  //
-  // The cost is one disabled frame on every open, which is the correct trade: the
-  // alternative is a click that lies.
+  // EACH BUTTON IS GATED ON THE SKILL ITS OWN DESTINATION NEEDS — see the footer,
+  // where that gate is spelled once per edge. What used to live here was a
+  // `discussReady` / `researchReady` pair, i.e. two skill names hardcoded in the
+  // component beside the two buttons that consumed them; both are gone, and the
+  // catalog race they existed for is documented at the predicate that replaced them.
   const noSpace = spacePath === null;
-  const discussReady = skills.some((sk) => sk.name === "discuss");
-  const researchReady = skills.some((sk) => sk.name === "research");
-  const discussDisabled = noSpace || busy || !discussReady;
-  const researchDisabled = noSpace || busy || !researchReady;
 
   return (
     <Dialog
@@ -237,6 +342,68 @@ export default function TaskDetailDialog({
             windows is named by its id, not by a per-Space number that repeats. It is
             quiet and it is selectable. */}
         <MetaRow label="id">{task.id}</MetaRow>
+
+        {/* THE ARTIFACT READER (issue #180, spec §3): the key list, and the selected
+            key's markdown rendered as a DOCUMENT.
+
+            A Task artifact is markdown, so it goes through `AgentMarkdown` — the
+            component extracted from the transcript for exactly this. Rendering it as
+            `whitespace-pre-wrap` prose (which `task.body` above wears, correctly: the
+            body is a blurby sentence, not a document) would put the card's limitation
+            in the one surface built to remove it: no headings, no lists, no tables,
+            no links.
+
+            The KEYS came from the board read; the CONTENT is fetched for the ONE key
+            the human selects (spec §1's split — the board read runs for every card on
+            every mount, so a document on that payload would be every Task's every
+            document on the wire). Nothing is fetched on open.
+
+            Gated on `artifactKeys.length > 0`, and the WHOLE section sits behind it —
+            no header, no list, no reader, no placeholder for a Task with no artifacts.
+            A `Vec<String>` answers `[]` for that card, so this is the common shape of
+            real data and it must read as nothing at all.
+
+            A real `<button type="button">` per key and NOT a `RowButton`: this dialog
+            is inside a Radix `Dialog`, so `RowButton`'s one-`role="button"`-per-row
+            rule does not apply here, but the plain-button convention matches the
+            sessions rows directly below and keeps the row resolvable. */}
+        {artifactKeys.length > 0 && (
+          <div className="flex min-h-0 flex-col gap-1">
+            <MutedCaption className="shrink-0">Artifacts</MutedCaption>
+            {artifactKeys.map((key) => (
+              <button
+                key={key}
+                type="button"
+                data-testid="artifact-key"
+                data-artifact-key={key}
+                // Which key the reader is showing — the list gives no other answer to
+                // "which one am I looking at". An attribute, not a second element.
+                aria-current={selectedKey === key || undefined}
+                onClick={() => void selectArtifact(key)}
+                className={cn(
+                  "flex shrink-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-ui-sm text-foreground-subtle hover:bg-surface-hover hover:text-foreground",
+                  selectedKey === key && "bg-surface-hover text-foreground",
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate font-mono text-ui-xs">
+                  {key}
+                </span>
+              </button>
+            ))}
+            {selectedArtifact !== null && (
+              // A READER, not the dialog's own scroll: bounded and independently
+              // scrollable, so a long spec does not push the launch buttons off the
+              // bottom of a modal that is already capped at 80vh.
+              <div
+                data-testid="artifact-body"
+                className="max-h-72 min-h-0 shrink-0 overflow-y-auto rounded-lg border border-border px-3 py-2"
+              >
+                <AgentMarkdown text={selectedArtifact.markdown} />
+              </div>
+            )}
+            <IpcErrorLine error={artifactError} className="shrink-0" />
+          </div>
+        )}
 
         {sessions.length > 0 && (
           <div className="flex min-h-0 flex-col gap-1 overflow-y-auto">
@@ -290,44 +457,60 @@ export default function TaskDetailDialog({
         )}
         <IpcErrorLine error={error} className="shrink-0" />
 
-        {sessions.length === 0 && task.body === null && (
+        {sessions.length === 0 && task.body === null && artifactKeys.length === 0 && (
           <EmptyListLine>This task has no detail yet.</EmptyListLine>
         )}
 
         <DialogFooter className="gap-2">
-          {/* Both are `variant="default"` rather than one primary and one ghost: they
-              are two ways to work the same card and neither is the safe default — the
-              difference (does the card move) is exactly the difference a user should
-              read as deliberate. */}
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => void launch("discuss")}
-            disabled={discussDisabled}
-            aria-label="Discuss"
-            title={
-              discussReady
-                ? "Open a session that discusses this task"
-                : "This Space has no `discuss` skill"
-            }
-          >
-            <MessageSquareIcon />
-            Discuss
-          </Button>
-          <Button
-            type="button"
-            onClick={() => void launch("research")}
-            disabled={researchDisabled}
-            aria-label="Research"
-            title={
-              researchReady
-                ? "Open a session that researches this task, and move it to the Research column"
-                : "This Space has no `research` skill"
-            }
-          >
-            <SearchIcon />
-            Research
-          </Button>
+          {/* ONE BUTTON PER OUTGOING EDGE (issue #179, spec §7.2). The pair that used
+              to sit here — `discussReady` / `researchReady` and two hardcoded buttons —
+              was the component asserting what the Stage rows assert, which is the split
+              ADR 0098 exists to remove. The edges come from the SAME slice the stage
+              label above is read from, so a Space that renames, reorders or rewires its
+              columns changes these buttons with no code touched. With no outgoing edge
+              the footer renders NOTHING: a last column offers no launch, and an empty
+              footer beats a disabled button that can never be made to work.
+
+              `variant="outline"` for all of them, keeping the pre-#179 choice and
+              extending it: none of these is the safe default over the others, so none
+              gets the filled treatment. */}
+          {edges.map((dest) => {
+            // EACH BUTTON IS GATED ON THE SKILL ITS OWN DESTINATION NEEDS, and not
+            // merely on there being a catalog. The reasoning is the race this file
+            // already documented: the catalog is an async fetch that starts EMPTY, so a
+            // button enabled from the first paint is clickable before the catalog lands,
+            // and that first click fails with "This Space has no `x` skill" — a sentence
+            // that is FALSE two frames later. Gating on the same predicate
+            // `store/taskLaunch` refuses on removes the race rather than narrowing it.
+            //
+            // A destination with NO Skill is NOT gated and never disabled: it has
+            // nothing to wait for, so a gate here would disable a launch that cannot
+            // fail. Moving a card is still useful with nothing to load.
+            const disabled =
+              noSpace ||
+              busy ||
+              (dest.onEnterSkill !== null &&
+                !skills.some((sk) => sk.name === dest.onEnterSkill));
+            return (
+              <Button
+                key={dest.slug}
+                type="button"
+                variant="outline"
+                onClick={() => void launch(dest.slug)}
+                disabled={disabled}
+                aria-label={dest.label}
+                title={
+                  disabled
+                    ? dest.onEnterSkill !== null
+                      ? `This Space has no \`${dest.onEnterSkill}\` skill`
+                      : dest.label
+                    : `Open a session that works on ${dest.label}`
+                }
+              >
+                {dest.label}
+              </Button>
+            );
+          })}
         </DialogFooter>
       </DialogContent>
     </Dialog>

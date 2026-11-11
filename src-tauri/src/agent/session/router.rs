@@ -4,12 +4,16 @@
 //! the private `LiveWorkerSession` / `CloseKind`) with no visibility widening.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde_json::json;
 
 use crate::agent::events::RpcEvent;
 use crate::agent::normalize::now_ms;
 use crate::agent::worker::client::WorkerInboundEvent;
+use crate::agent::worker::Inbound;
+use crate::storage::Db;
+use fulcrum_harness::seams::{TaskCall, TaskStore, TaskStoreError};
 
 use super::{CloseKind, ClosedReason, SessionManager, StalledInfo, StopReason};
 
@@ -181,6 +185,46 @@ impl SessionManager {
                     if let Some(wm) = wm {
                         if let Some(handle) = wm.handle_for(&session_id) {
                             let _ = handle.send_fetch_render_response(&id, &reply_value);
+                        }
+                    }
+                });
+            }
+            WorkerInboundEvent::TaskRequest { request_id, call } => {
+                // Internal machine call (ADR 0092, issue #180 D2): do NOT call
+                // track_modal! The `FetchRenderRequest` arm above is the template
+                // and this arm copies its shape for the same reason — the Worker
+                // asked the SUPERVISOR to run a board verb, and the Supervisor is
+                // the sole SQLite writer (ADR 0025), so the answer is computed HERE
+                // and never in the Worker.
+                //
+                // Never leave the Worker parked: F1's
+                // `TaskRequestCleanup` guard empties its own pending map when the
+                // parked future is dropped (turn cancel), and `handle_for` answers
+                // `None` for a session that is already gone — the same miss
+                // `respond_interactive_request` handles by simply not sending. A
+                // frame to a dead Worker is an ordinary miss, not an error.
+                let db = self.driver.db.clone();
+                let wm = self.worker_manager.get().cloned();
+                // Owned, because the spawned future outlives this borrow of the
+                // router's argument (the same reason the `FetchRenderRequest` arm
+                // `to_string()`s the session id it extracts).
+                let session_id = session_id.to_string();
+                tokio::spawn(async move {
+                    let result: Result<serde_json::Value, TaskStoreError> = match db {
+                        Some(db) => run_task_call(&db, call).await,
+                        None => Err(TaskStoreError::Io {
+                            message: "Supervisor database not available".to_string(),
+                        }),
+                    };
+                    if let Some(wm) = wm {
+                        if let Some(handle) = wm.handle_for(&session_id) {
+                            // The one path back to the Worker. An error here means
+                            // the process is already gone (the `exited` watch), and
+                            // F1's Drop guard cleans the pending entry — so the send
+                            // result is deliberately discarded, not logged as a
+                            // failure the caller could act on.
+                            let _ = handle
+                                .send_inbound_frame(Inbound::TaskResponse { request_id, result });
                         }
                     }
                 });
@@ -575,6 +619,160 @@ impl SessionManager {
         }
         delivered
     }
+}
+
+/// Run one Worker task-board call against the Supervisor's `Db` (issue #180 D2).
+///
+/// The body of the `WorkerInboundEvent::TaskRequest` router arm, factored out so
+/// it is testable without a live Worker: the arm needs a `WorkerManager` and a
+/// live session to deliver its answer, this needs only a `Db`.
+///
+/// Every arm runs the SYNC `impl TaskStore for Db` inside `spawn_blocking`. That
+/// is not defensive style — `rusqlite` is a blocking driver and `Db`'s methods
+/// take the connection mutex, so calling one directly from this `async` block
+/// would hold a tokio worker thread for the duration of a SQLite statement. The
+/// crate's trait is sync BY DESIGN (ADR 0092: the desktop implements it on `Db`,
+/// Supervisor-side, because the Supervisor is the sole SQLite writer), so the
+/// async shape lives HERE and never in the trait.
+///
+/// The return is the DTO SERIALIZED, because `Inbound::TaskResponse` carries a
+/// `serde_json::Value` and F1's Worker arm deserializes the shape its verb
+/// expects. `None` serializes to `null`, which is what F1's `get_task` /
+/// `get_artifact` arms decode as "no row" — an answer, not an error.
+async fn run_task_call(db: &Arc<Db>, call: TaskCall) -> Result<serde_json::Value, TaskStoreError> {
+    // Every arm goes through `<Db as TaskStore>::…` and NOT through a method call
+    // on `db`. That is load-bearing, not ceremony. Six of the seven verbs have an
+    // INHERENT `Db` method of the same name (the desktop's own board API), and Rust
+    // prefers inherent methods — so `db.move_task(…)` here would bind to the
+    // DESKTOP's `move_task`, whose `MoveOutcome` is `{ on_enter }` alone. The answer
+    // would serialize without `toStage`/`note`, and F1's Worker arm decodes a
+    // REQUIRED `to_stage`, so the tool would fail with "task response was not a move
+    // outcome" — a desktop-green, CI-green build whose every move is broken. Same
+    // trap for `get_task` (the desktop's row has no `artifactKeys`, which the crate's
+    // `TaskDetail` requires). The qualified path is the only spelling that says
+    // "the seam, not the desktop's twin", and `run_task_call_creates_edits_and_moves_and_shapes_each_answer`
+    // is the pin that reddens if one is spelled back to a method call.
+    //
+    // One `db.clone()` per arm: the `FnOnce` the blocking pool runs has to own what
+    // it closes over, and `Arc<Db>` is the cheap kind of clone.
+    let value = match call {
+        TaskCall::ListBoard { space_path } => {
+            let db = db.clone();
+            let rows = spawn_board("list_board", move || {
+                <Db as TaskStore>::list_board(&db, &space_path)
+            })
+            .await?;
+            serde_json::to_value(rows)
+        }
+        TaskCall::GetTask { task_id } => {
+            let db = db.clone();
+            let row = spawn_board("get_task", move || {
+                <Db as TaskStore>::get_task(&db, &task_id)
+            })
+            .await?;
+            serde_json::to_value(row)
+        }
+        TaskCall::CreateTask {
+            space_path,
+            title,
+            body,
+            stage_slug,
+        } => {
+            let db = db.clone();
+            let row = spawn_board("create_task", move || {
+                <Db as TaskStore>::create_task(
+                    &db,
+                    &space_path,
+                    &title,
+                    body.as_deref(),
+                    stage_slug.as_deref(),
+                )
+            })
+            .await?;
+            serde_json::to_value(row)
+        }
+        TaskCall::EditTask {
+            task_id,
+            title,
+            body,
+            spec_path,
+        } => {
+            let db = db.clone();
+            let row = spawn_board("edit_task", move || {
+                <Db as TaskStore>::edit_task(
+                    &db,
+                    &task_id,
+                    title.as_deref(),
+                    body.as_deref(),
+                    spec_path.as_deref(),
+                )
+            })
+            .await?;
+            serde_json::to_value(row)
+        }
+        TaskCall::MoveTask {
+            space_path,
+            task_id,
+            to_stage,
+        } => {
+            let db = db.clone();
+            let outcome = spawn_board("move_task", move || {
+                <Db as TaskStore>::move_task(&db, &space_path, &task_id, &to_stage)
+            })
+            .await?;
+            serde_json::to_value(outcome)
+        }
+        TaskCall::GetArtifact { task_id, key } => {
+            let db = db.clone();
+            let artifact = spawn_board("get_artifact", move || {
+                <Db as TaskStore>::get_artifact(&db, &task_id, &key)
+            })
+            .await?;
+            serde_json::to_value(artifact)
+        }
+        TaskCall::WriteArtifact {
+            task_id,
+            key,
+            markdown,
+        } => {
+            let db = db.clone();
+            let meta = spawn_board("write_artifact", move || {
+                <Db as TaskStore>::write_artifact(&db, &task_id, &key, &markdown)
+            })
+            .await?;
+            serde_json::to_value(meta)
+        }
+    };
+    value.map_err(|e| TaskStoreError::Invalid {
+        message: format!("task response could not be serialized: {e}"),
+    })
+}
+
+/// One board verb, on the blocking pool, with both error maps applied.
+///
+/// Generic over the error the closure returns, and that is not generality for its
+/// own sake: `list_board` exists ONLY on the `TaskStore` trait (the desktop has no
+/// inherent `list_board` — its flat board read is `list_tasks`), so that arm yields
+/// the crate's `TaskStoreError` while every other arm hits an INHERENT `Db` method
+/// and yields the desktop's `BoardError`. Both belong in this one helper, mapped by
+/// the `From` impls in `storage/db.rs` — the same "one place owns the mapping" split
+/// `From<DbError> for StoreError` uses for the persistence seam.
+///
+/// A `JoinError` — a panicked blocking task, or a runtime shutting down — becomes an
+/// `Io` naming the verb, because the Worker shows that sentence to the model and
+/// "the Supervisor's `move_task` call failed" is the truth.
+async fn spawn_board<T, E, F>(verb: &'static str, f: F) -> Result<T, TaskStoreError>
+where
+    T: Send + 'static,
+    E: Into<TaskStoreError> + Send + 'static,
+    F: FnOnce() -> Result<T, E> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| TaskStoreError::Io {
+            message: format!("Supervisor `{verb}` board call failed: {e}"),
+        })?
+        .map_err(Into::into)
 }
 
 /// Is `name` (a bare file name) a **Worker** crash log — in either of the
@@ -1446,5 +1644,312 @@ mod tests {
             frames[0].1, frame,
             "re-emitted VERBATIM — the frontend contract is unchanged"
         );
+    }
+
+    // ── The D2 task-board router body (issue #180) ───────────────────────────
+    //
+    // `run_task_call` is the router arm's whole computation, factored out so it is
+    // assertable without a live Worker: the arm itself needs a `WorkerManager` and
+    // an attached session to deliver its answer, and the end-to-end proof of THAT
+    // delivery is `worker_e2e.rs`'s `task_artifact_round_trips_through_a_real_worker`.
+    // What these cases own is the VERB-TO-VERB wiring: that a `TaskCall` reaches the
+    // matching `Db` method, that the answer is the serialized DTO the Worker's arm
+    // deserializes, and that a refusal crosses as the crate's error rather than as a
+    // panic or an `Ok`.
+    //
+    // Non-vacuity: swap one arm's `Db` method for another (say `GetArtifact` calling
+    // `write_artifact`) and the case below naming that verb reddens; delete an arm's
+    // `spawn_blocking` and the runtime's own "no reactor" behaviour is not what
+    // catches it — the `serde_json` shape assertions do, because the DTO would not
+    // arrive.
+
+    /// A `Db` with one Space seeded and one card, as the router finds it.
+    fn seeded_board_db(prefix: &str) -> (crate::test_support::ScratchDir, Arc<Db>, String) {
+        let dir = crate::test_support::ScratchDir::in_env_temp(prefix, "db");
+        let db = Arc::new(Db::open(&dir.join("db.sqlite")).expect("a temp db opens"));
+        let space = "/router/task-call";
+        db.get_board(space).expect("get_board seeds the six stages");
+        let task = db
+            .create_task(space, "a card", Some("the body"), None)
+            .expect("create_task");
+        (dir, db, task.id)
+    }
+
+    #[tokio::test]
+    async fn run_task_call_writes_and_reads_an_artifact_through_the_db() {
+        let (_dir, db, task_id) = seeded_board_db("router-task-call-roundtrip-");
+
+        let written = run_task_call(
+            &db,
+            TaskCall::WriteArtifact {
+                task_id: task_id.clone(),
+                key: "spec".to_string(),
+                markdown: "ROUTER-SENTINEL".to_string(),
+            },
+        )
+        .await
+        .expect("write_artifact over the router path");
+        assert_eq!(written["key"], "spec", "the meta names the key");
+        assert_eq!(
+            written["bytes"],
+            serde_json::json!("ROUTER-SENTINEL".len()),
+            "`bytes` is the byte length, and it is camelCase on the wire"
+        );
+        // The meta deliberately carries NO markdown (the caller just sent it).
+        assert!(
+            written.get("markdown").is_none(),
+            "the write answer echoes no document — got {written}"
+        );
+
+        let read = run_task_call(
+            &db,
+            TaskCall::GetArtifact {
+                task_id: task_id.clone(),
+                key: "spec".to_string(),
+            },
+        )
+        .await
+        .expect("get_artifact over the router path");
+        assert_eq!(
+            read["markdown"], "ROUTER-SENTINEL",
+            "the markdown rides back, so the Worker's arm can put it in content"
+        );
+
+        // The row is in the DESKTOP's table — the router answered from real storage,
+        // it did not echo its argument.
+        let direct = db
+            .get_artifact(&task_id, "spec")
+            .expect("direct read")
+            .expect("the row exists");
+        assert_eq!(direct.markdown, "ROUTER-SENTINEL");
+    }
+
+    #[tokio::test]
+    async fn run_task_call_answers_a_missing_row_with_null_not_an_error() {
+        let (_dir, db, _task_id) = seeded_board_db("router-task-call-null-");
+
+        // `get_task` on an absent id: the crate's contract is `Ok(None)`, which
+        // serializes to `null` — and F1's arm decodes `null` as "no task found"
+        // rather than as a failure, so an `Err` here would be a behaviour change
+        // visible to the model.
+        let missing = run_task_call(
+            &db,
+            TaskCall::GetTask {
+                task_id: "tsk_absent".to_string(),
+            },
+        )
+        .await
+        .expect("absence is an answer, not an error");
+        assert!(missing.is_null(), "an absent card is `null`, got {missing}");
+
+        let no_artifact = run_task_call(
+            &db,
+            TaskCall::GetArtifact {
+                task_id: "tsk_absent".to_string(),
+                key: "spec".to_string(),
+            },
+        )
+        .await
+        .expect("an absent artifact is an answer too");
+        assert!(no_artifact.is_null(), "got {no_artifact}");
+    }
+
+    #[tokio::test]
+    async fn run_task_call_reports_a_refusal_as_the_crate_error() {
+        let (_dir, db, task_id) = seeded_board_db("router-task-call-refusal-");
+
+        // A dangling task id on a WRITE is `NotFound` (the storage gate exists
+        // because `task_artifacts` has no FK to catch it).
+        let err = run_task_call(
+            &db,
+            TaskCall::WriteArtifact {
+                task_id: "tsk_dangling".to_string(),
+                key: "spec".to_string(),
+                markdown: "orphan".to_string(),
+            },
+        )
+        .await
+        .expect_err("a dangling id refuses");
+        assert!(
+            matches!(&err, TaskStoreError::NotFound { message } if message.contains("tsk_dangling")),
+            "the refusal is `NotFound` naming the id — got {err:?}"
+        );
+
+        // A bad stage slug is `Invalid` and keeps the valid slugs in its sentence.
+        let bad = run_task_call(
+            &db,
+            TaskCall::MoveTask {
+                space_path: "/router/task-call".to_string(),
+                task_id,
+                to_stage: "not-a-column".to_string(),
+            },
+        )
+        .await
+        .expect_err("an unknown slug refuses");
+        assert!(
+            matches!(&bad, TaskStoreError::Invalid { message } if message.contains("backlog")),
+            "a bad slug names the valid columns — got {bad:?}"
+        );
+    }
+
+    /// (the two artifact rules, ON THE ROUTER ARM) a `TaskCall::WriteArtifact`
+    /// carrying a key outside the grammar, or a markdown over the cap, is refused
+    /// as `TaskStoreError::Invalid` and writes nothing.
+    ///
+    /// This is the same rule `tests/fulcrum_seams.rs` pins one layer down, and it
+    /// earns its place by driving the ARBITRARY the Worker actually sends: the
+    /// `TaskCall::WriteArtifact` literal, through `run_task_call`, which is the body
+    /// of the `WorkerInboundEvent::TaskRequest` arm. The seam test proves storage
+    /// refuses; this proves the refusal survives the router's `spawn_board` wrapper
+    /// and arrives as the crate's error rather than as an `Ok` meta or a panic — the
+    /// three shapes a Worker can misread as success.
+    ///
+    /// Non-vacuity: delete the storage checks and both `matches!`s redden (an `Ok`
+    /// arrives); map `BadArtifactKey`/`ArtifactTooLarge` to `Io` instead of `Invalid`
+    /// and the `matches!` reddens while the row count stays green, which is why the
+    /// row assertion is here too.
+    #[tokio::test]
+    async fn run_task_call_refuses_a_bad_artifact_key_and_an_oversized_markdown() {
+        let (_dir, db, task_id) = seeded_board_db("router-task-call-artifact-rules-");
+
+        let err = run_task_call(
+            &db,
+            TaskCall::WriteArtifact {
+                task_id: task_id.clone(),
+                key: "My Spec".to_string(),
+                markdown: "a document the model believed it saved".to_string(),
+            },
+        )
+        .await
+        .expect_err("the tool path must not be wider than the human's");
+        assert!(
+            matches!(&err, TaskStoreError::Invalid { message }
+                if message.contains("My Spec")
+                && message.contains("[a-z0-9][a-z0-9-]{0,39}")),
+            "`Invalid`, naming the key AND the grammar so the model self-corrects \
+             without a second call — got {err:?}"
+        );
+
+        let err = run_task_call(
+            &db,
+            TaskCall::WriteArtifact {
+                task_id: task_id.clone(),
+                key: "spec".to_string(),
+                markdown: "x".repeat(256 * 1024 + 1),
+            },
+        )
+        .await
+        .expect_err("262145 bytes must be refused, never truncated");
+        assert!(
+            matches!(&err, TaskStoreError::Invalid { message }
+                if message.contains("262144") && message.contains("262145")),
+            "`Invalid`, naming the LIMIT and the ACTUAL size — a model that cannot \
+             tell how far over it went cannot decide what to cut — got {err:?}"
+        );
+
+        assert!(
+            db.artifact_keys(&task_id)
+                .expect("artifact_keys")
+                .is_empty(),
+            "and the router's refusals wrote NOTHING — no truncated spec sits on this \
+             card pretending to be whole"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_task_call_lists_the_board_with_artifact_keys() {
+        let (_dir, db, task_id) = seeded_board_db("router-task-call-board-");
+        db.write_artifact(&task_id, "research", "# notes")
+            .expect("write_artifact direct");
+
+        let board = run_task_call(
+            &db,
+            TaskCall::ListBoard {
+                space_path: "/router/task-call".to_string(),
+            },
+        )
+        .await
+        .expect("list_board over the router path");
+        let rows = board.as_array().expect("a board is a JSON array");
+        assert_eq!(rows.len(), 1, "one card, got {board}");
+        assert_eq!(
+            rows[0]["number"],
+            serde_json::json!(1),
+            "camelCase wire keys"
+        );
+        assert_eq!(
+            rows[0]["artifactKeys"],
+            serde_json::json!(["research"]),
+            "the board row carries the artifact KEY names — the whole point of \
+             splitting `BoardRow` from `Artifact`"
+        );
+        // Keys only, never the document.
+        let text = board.to_string();
+        assert!(
+            !text.contains("# notes"),
+            "a board payload must never carry markdown — got {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_task_call_creates_edits_and_moves_and_shapes_each_answer() {
+        let (_dir, db, task_id) = seeded_board_db("router-task-call-verbs-");
+
+        let created = run_task_call(
+            &db,
+            TaskCall::CreateTask {
+                space_path: "/router/task-call".to_string(),
+                title: "second card".to_string(),
+                body: None,
+                stage_slug: Some("doing".to_string()),
+            },
+        )
+        .await
+        .expect("createTask");
+        assert_eq!(
+            created["number"],
+            serde_json::json!(2),
+            "numbered per Space"
+        );
+        assert_eq!(created["stageSlug"], "doing");
+        // The write answer is the crate's `TaskRow`, which has NO artifact field.
+        assert!(
+            created.get("artifactKeys").is_none(),
+            "a write says nothing about artifacts — got {created}"
+        );
+
+        let edited = run_task_call(
+            &db,
+            TaskCall::EditTask {
+                task_id: task_id.clone(),
+                title: Some("renamed".to_string()),
+                body: None,
+                spec_path: None,
+            },
+        )
+        .await
+        .expect("editTask");
+        assert_eq!(edited["title"], "renamed");
+
+        let moved = run_task_call(
+            &db,
+            TaskCall::MoveTask {
+                space_path: "/router/task-call".to_string(),
+                task_id,
+                to_stage: "done".to_string(),
+            },
+        )
+        .await
+        .expect("moveTask");
+        assert_eq!(moved["toStage"], "done");
+        assert_eq!(
+            moved["onEnter"], "none",
+            "`on_enter` crosses as opaque data for the command layer"
+        );
+        assert!(
+            moved.get("note").is_some(),
+            "`note` is `None` and serializes as null, not dropped — got {moved}"
+        );
+        assert!(moved["note"].is_null());
     }
 }

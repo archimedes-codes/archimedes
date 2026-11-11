@@ -13,9 +13,9 @@ import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 import { describeIpcError } from "../lib/ipcError";
 import { useMentionCatalogs } from "../hooks/useMentionCatalogs";
-import { createTaskFromDraft } from "../store/taskLaunch";
+import { createTaskFromDraft, SAVE_ONLY } from "../store/taskLaunch";
 import type { TaskRow } from "../lib/tauri";
-import type { TaskLaunchMode } from "../lib/taskPrompt";
+import type { TaskLaunchDestination } from "../lib/taskPrompt";
 
 /**
  * The **New Task** modal — one textarea and three buttons.
@@ -32,7 +32,7 @@ import type { TaskLaunchMode } from "../lib/taskPrompt";
  *
  * ## NO `boards` prop, and that is a decision rather than a simplification
  *
- * The columns a mode files into are resolved by `store/taskLaunch`, which reads the
+ * The columns a destination files into are resolved by `store/taskLaunch`, which reads the
  * SAME board slice the orchestrator's other rules read. The first draft took
  * `boards: readonly StageWithTasks[]` because `TasksBoard` already had the columns —
  * and that put two owners on one fact, so a modal rendered from a stale prop could
@@ -44,7 +44,14 @@ import type { TaskLaunchMode } from "../lib/taskPrompt";
  * The old Skill `Select` is GONE, and not for tidiness. A dropdown beside three
  * buttons would be two contradictable answers to "which skill" — the dropdown could
  * say `research` while the click said Backlog. The button IS the choice now, and
- * `lib/taskPrompt`'s mode table is the only place a skill name is spelled.
+ * `lib/taskPrompt`'s destination shape is the only place a launch is described.
+ *
+ * Note what replaced the mode table this file used to point at. `lib/taskPrompt`'s
+ * `TASK_LAUNCH_MODES` / `skillOfMode` table is DELETED (issue #179, ADR 0098): the
+ * Stage row owns the Skill now. That is why the three destinations below name a slug
+ * and a skill the seeded row already carries, and why `store/taskLaunch` resolves
+ * them against the board rather than translating a literal — the button is still the
+ * one choice, it just no longer has to be a hardcoded one to be a single answer.
  *
  * ## Two fields, and nothing inferred between them
  *
@@ -102,20 +109,36 @@ export interface NewTaskDialogProps {
   onCreated: (task: TaskRow, sessionId: string | null) => void;
 }
 
-/** The three buttons, in the order a person reads them: safe first. */
-const BUTTONS: { mode: TaskLaunchMode; label: string; hint: string }[] = [
+/** The three buttons, in the order a person reads them: safe first.
+ *
+ *  Each is a DESTINATION, not a mode (issue #179). The three shipped destinations are
+ *  the three seeded Stages they name, so the slug and the Skill spelled here are the
+ *  seeded row's own `slug` / `on_enter_skill` — and they are hardcoded deliberately,
+ *  on the decision this file already records below ("NO `boards` prop"): a modal that
+ *  built one button per loaded Stage would offer a column the create then refuses,
+ *  which is the same two-owners-on-one-fact defect the detail modal's header records
+ *  for its own label. The store resolves the SAME three slugs against the board it
+ *  reads, so the button set and the write still cannot disagree.
+ *
+ *  `SAVE_ONLY` is Backlog: a real column to file into, and `launches: false` is the
+ *  one thing that makes it not a launch. */
+const BUTTONS: {
+  destination: TaskLaunchDestination;
+  label: string;
+  hint: string;
+}[] = [
   {
-    mode: "backlog",
+    destination: SAVE_ONLY,
     label: "Backlog",
     hint: "Save this to the Backlog column. Nothing is started.",
   },
   {
-    mode: "discuss",
+    destination: { slug: "discuss", label: "Discuss", onEnterSkill: "discuss" },
     label: "Discuss",
     hint: "Save it and open a session that discusses it.",
   },
   {
-    mode: "research",
+    destination: { slug: "research", label: "Research", onEnterSkill: "research" },
     label: "Research",
     hint: "Save it to the Research column and open a session that researches it.",
   },
@@ -137,13 +160,13 @@ export default function NewTaskDialog({
   // a fetch whose rows nothing renders is a fetch nothing keeps honest.
   const { skills } = useMentionCatalogs(spacePath);
 
-  const submit = async (mode: TaskLaunchMode): Promise<void> => {
+  const submit = async (destination: TaskLaunchDestination): Promise<void> => {
     if (spacePath === null) return;
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      const outcome = await createTaskFromDraft(spacePath, title, body, mode, {
+      const outcome = await createTaskFromDraft(spacePath, title, body, destination, {
         skills,
         agents: [],
       });
@@ -171,11 +194,12 @@ export default function NewTaskDialog({
   // case, and requiring neither would ship a title-less card to a server-side
   // `empty_title` rejection this dialog could have avoided.
   const hasTitle = title.trim() !== "";
-  const disabledFor = (mode: TaskLaunchMode): boolean => {
+  const disabledFor = (destination: TaskLaunchDestination): boolean => {
     if (spacePath === null || busy || !hasTitle) return true;
-    if (mode === "backlog") return false;
+    // A save-only destination loads nothing, so it waits on nothing but the title.
+    if (destination.onEnterSkill === null) return false;
     // The same predicate `store/taskLaunch` refuses on — see the module note.
-    return !skills.some((s) => s.name === mode);
+    return !skills.some((s) => s.name === destination.onEnterSkill);
   };
 
   return (
@@ -240,23 +264,25 @@ export default function NewTaskDialog({
         <IpcErrorLine error={error} className="shrink-0" />
 
         <DialogFooter className="gap-2">
-          {BUTTONS.map(({ mode, label, hint }) => (
+          {BUTTONS.map(({ destination, label, hint }) => (
             <Button
-              key={mode}
+              key={destination.slug}
               type="button"
               // Backlog is the safe, no-side-effect action, so it is the OUTLINE and the
               // two launches are the filled ones — the inverse of a destructive-first
-              // footer, matching the reading order (safe first, and visibly safer).
-              variant={mode === "backlog" ? "outline" : "default"}
-              onClick={() => void submit(mode)}
-              disabled={disabledFor(mode)}
+              // footer, matching the reading order (safe first, and visibly safer). The
+              // flag that decides it is the destination's own `launches`, so a fourth
+              // save-only Stage would read as safe without anyone editing this line.
+              variant={destination.launches === false ? "outline" : "default"}
+              onClick={() => void submit(destination)}
+              disabled={disabledFor(destination)}
               aria-label={label}
               title={
                 spacePath === null
                   ? "No Space is open"
-                  : mode !== "backlog" &&
-                      !skills.some((s) => s.name === mode)
-                    ? `This Space has no \`${mode}\` skill`
+                  : destination.onEnterSkill !== null &&
+                      !skills.some((s) => s.name === destination.onEnterSkill)
+                    ? `This Space has no \`${destination.onEnterSkill}\` skill`
                     : hint
               }
             >

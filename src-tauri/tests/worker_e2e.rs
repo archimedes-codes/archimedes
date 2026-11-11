@@ -29,6 +29,10 @@ use archimedes_lib::agent::worker::client::{WorkerError, WorkerHandle, WorkerInb
 use archimedes_lib::agent::worker::manager::{WorkerFactory, WorkerManager};
 use archimedes_lib::agent::worker::protocol::{DesktopConfig, StartEnv};
 use archimedes_lib::agent::{EventSink, PermissionOutcome, TranscriptPersister};
+// The production `SessionManager` ↔ `WorkerManager` wiring (the `lib.rs` builder).
+// Only the D2 task-seam case needs it: every other case here drives `E2e`, whose
+// `WorkerManager` collects events instead of routing them.
+use archimedes_lib::agent::SessionManagerBuilder;
 use archimedes_lib::storage::Db;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -308,14 +312,27 @@ async fn wait_for_rows(db: &Db, session_id: &str, want: usize) -> Vec<String> {
 
 /// Regression guard for this file's read discipline: a `native_messages`
 /// row-COUNT read must go through `wait_for_rows`; a DIRECT call to the
-/// native-messages loader is allowed at exactly three sites:
+/// native-messages loader is allowed at exactly three sites (the count the
+/// assertion below makes), and the enumeration carries a FOURTH entry that is a
+/// direct-DB read of a DIFFERENT table — site 4 does not inflate the count and
+/// must not be "tidied" into the three:
 ///   1. inside `wait_for_rows` itself (it IS the poll),
 ///   2. `crash_path_on_crash_fires_and_rows_stay_intact`'s pre-crash
 ///      inline poller (bounded by its own `for _ in 0..100` loop), and
 ///   3. the same test's POST-crash read — deliberately un-polled, but
 ///      safe: it runs after the child is SIGKILLed (the writer process
 ///      is dead, so no in-flight write can land behind it) and it
-///      asserts presence/role, never a count.
+///      asserts presence/role, never a count, and
+///   4. `task_artifact_round_trips_through_a_real_worker`'s artifact poll
+///      (`wait_for_artifact`) — a DIRECT `Db::get_artifact` read, NOT a
+///      `native_messages` read, so the count below does not see it and stays
+///      three. It is still a DIRECT read of a database a second OS process is
+///      writing, so it keeps the discipline the guard exists to enforce: polled
+///      in a `wait_for_rows`-shaped loop with an explicit loud deadline, never a
+///      single un-polled read. The reason it cannot reuse `wait_for_rows` is the
+///      table — `wait_for_rows` counts `native_messages` ROWS for a session, and
+///      an artifact is one row of `task_artifacts` keyed `(task_id, key)` with no
+///      session and no count to wait against.
 ///
 /// File-local (`wait_for_rows` is private here). The same-shaped un-polled reads
 /// in `tests/ipc.rs` / `tests/session_native.rs` are LEGAL: IN-PROCESS writer (no
@@ -356,6 +373,57 @@ fn event_kinds(evs: &[(String, bool, WorkerInboundEvent)]) -> Vec<Cow<'static, s
             _ => None,
         })
         .collect()
+}
+
+/// The `<tools>` section advertises EXACTLY the case's enabled set, by NAME.
+///
+/// Parameterized BY THE CASE'S OWN ENABLED NAMES, which is the whole point of it
+/// being a function: `full_turn_real_worker_canned_provider` passes `["bash"]` and
+/// `task_artifact_round_trips_through_a_real_worker` passes its two task tools. A
+/// hard-coded `{"bash"}` in both would make the second case assert a prompt it never
+/// built.
+///
+/// The rendered shape is `build_main_prompt`'s — one `- {name}: {description}` line
+/// per advertised spec, verified against `harness/prompt.rs:69` rather than guessed
+/// — so the extractor takes the text before the FIRST `:` of each bullet. Splitting
+/// on the first colon rather than matching a `name: "…"` JSON shape matters: the
+/// section is prose, not JSON, and a matcher written against a shape the renderer
+/// does not produce collects NOTHING, which would make this an always-empty
+/// comparison — the vacuous form of this exact assertion. Hence the non-empty guard
+/// below it, which is what turns "found no lines" from a silent pass into a failure.
+///
+/// Closes both directions of the substring ban it replaces: a DISABLED tool that
+/// leaks into the section reddens (it appears in `advertised` and not in `expected`),
+/// and no description wording can make the assertion pass by accident.
+fn assert_advertised_tools(tools_section: &str, expected: &[&str]) {
+    let advertised: std::collections::BTreeSet<String> = tools_section
+        .lines()
+        .filter(|l| l.trim_start().starts_with("- "))
+        .map(|l| {
+            let line = l.trim_start().trim_start_matches("- ");
+            // A bullet with no colon is not a tool line (the section has no other
+            // bullets today, so treat it as its own name and let the comparison
+            // report it).
+            line.split(':').next().unwrap_or(line).trim().to_string()
+        })
+        .filter(|name| !name.is_empty())
+        .collect();
+    // The vacuity guard, and it is the load-bearing line: an extractor that matched
+    // nothing would produce an empty set, and comparing an empty set against an
+    // empty expectation would pass. Require the SAME cardinality first so "found
+    // nothing" cannot look like "found exactly the enabled tools".
+    assert!(
+        !advertised.is_empty(),
+        "the <tools> section yielded NO tool lines — the extractor no longer matches \
+         the rendered shape, got {tools_section:?}"
+    );
+    let expected: std::collections::BTreeSet<String> =
+        expected.iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        advertised, expected,
+        "the <tools> section is the enabled_tools-filtered set and nothing else, \
+         got {tools_section:?}"
+    );
 }
 
 /// The `tool_execution_end` (name-filtered) among the collected frames:
@@ -687,10 +755,19 @@ async fn full_turn_real_worker_canned_provider() {
         tools_section.contains("bash"),
         "the enabled bash tool is advertised, got {tools_section:?}"
     );
-    assert!(
-        !tools_section.contains("read") && !tools_section.contains("subagent"),
-        "the <tools> section is the enabled_tools-filtered set (NOT all the tools), got {tools_section:?}"
-    );
+    // ENUMERATED NAMES, not a substring ban. The assertion this replaces read
+    // `!tools_section.contains("read") && !tools_section.contains("subagent")`,
+    // and issue #180 F1 made it vacuous rather than wrong: its purpose is proving
+    // the `enabled_tools` FILTER, but a substring test over the whole rendered
+    // section passes for any tool whose DESCRIPTION merely contains the word — and
+    // a Task tool description saying "read a board" would have made it pass while
+    // proving nothing. Enumerating the advertised NAMES and comparing them to this
+    // case's own enabled set closes both directions: a disabled tool that leaks in
+    // reddens, and no description text can rescue the assertion. Names are also
+    // platform-independent, which the description text is not (the crate's
+    // `BASH_DESCRIPTION` differs per `#[cfg]`), so this form cannot be
+    // locally-green and CI-red on the Windows leg.
+    assert_advertised_tools(tools_section, &["bash"]);
     assert_eq!(v[1]["role"], "user");
     assert_eq!(v[1]["content"], "run it", "the user message verbatim");
     assert_eq!(v[2]["role"], "assistant");
@@ -2317,4 +2394,334 @@ async fn config_update_push_reaches_a_live_worker() {
         h.crashes.try_recv().is_err(),
         "no on_crash on a clean close"
     );
+}
+
+// ── (8) The D2 task-board seam, end to end (issue #180) ──────────────────────
+
+/// One canned `chat.completions` body: a single named tool call with the given
+/// arguments. Built the same double-escaping way as [`sse_read_call`] — both JSON
+/// layers through `serde_json` — so a Windows path or a quote inside the markdown
+/// cannot make the `data:` line unparseable (see
+/// [`sse_read_call_survives_a_windows_path`] for the failure that rule exists to stop).
+fn sse_tool_call(id: &str, name: &str, args: &Value) -> String {
+    let args = serde_json::to_string(args).expect("the arguments map serializes");
+    let outer = serde_json::json!({
+        "choices": [{
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": id,
+                    "function": { "name": name, "arguments": args }
+                }]
+            }
+        }]
+    });
+    let outer = serde_json::to_string(&outer).expect("the chunk serializes");
+    let finish = serde_json::json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] });
+    format!(
+        "data: {outer}\n\ndata: {}\n\ndata: [DONE]\n\n",
+        serde_json::to_string(&finish).expect("the finish chunk serializes")
+    )
+}
+
+/// Poll one artifact row until it appears (bounded, loud).
+///
+/// The FOURTH direct-DB read this file allows — see the enumeration on
+/// `direct_native_transcript_reads_are_capped_at_three_sites`, whose count it
+/// deliberately does not join (a different table, and this one polls).
+///
+/// Why a poll is needed at all: the row is written by the Supervisor's router task,
+/// which the event pump `tokio::spawn`s, so the `tool_execution_end` frame and the
+/// `INSERT` are not ordered with respect to one another. The deadline is the
+/// failure — a missing row says so, rather than hanging.
+async fn wait_for_artifact(db: &Db, task_id: &str, key: &str) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(artifact) = db
+            .get_artifact(task_id, key)
+            .expect("the artifact read runs")
+        {
+            return artifact.markdown;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "no `task_artifacts` row for ({task_id}, {key}) within the bound — the \
+                 Supervisor's `TaskRequest` router arm never answered the Worker's frame"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Poll the transcript for one `role: "tool"` row with the given `tool_call_id`.
+///
+/// Goes through `wait_for_rows`' discipline rather than reading the loader
+/// directly: it polls against a COUNT (`want`), so it does not join the guard's
+/// three-site count.
+async fn wait_for_tool_row(db: &Db, session_id: &str, want: usize, call_id: &str) -> Value {
+    let rows = wait_for_rows(db, session_id, want).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(row) = rows
+            .iter()
+            .filter_map(|r| serde_json::from_str::<Value>(r).ok())
+            .find(|r| r["role"] == "tool" && r["tool_call_id"] == call_id)
+        {
+            return row.clone();
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "no `role: tool` row for `{call_id}` — the tool call never resolved. \
+                 Transcript: {rows:?}"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A REAL Worker writes one artifact and reads it back, answered by the SUPERVISOR's
+/// `TaskRequest` router arm (issue #180 D2 — the desktop half of the Task seam).
+///
+/// # What this proves that no other case in this file can
+///
+/// Every other case drives `E2e`, whose `WorkerManager` collects events on a channel
+/// and NOTHING else — so no `E2e` case ever runs `SessionManager::route_event`. This
+/// case builds its pair through `SessionManagerBuilder`, the same wiring `lib.rs`
+/// uses in production, so the Worker's frames reach the REAL router and the
+/// `WorkerInboundEvent::TaskRequest` arm is what answers. That is the difference
+/// between "the impl compiles" and "the feature works":
+///
+///   * the Worker's `write_artifact` arm frames `Outbound::TaskRequest`;
+///   * the Supervisor's arm decodes it, runs the verb on the real `Db` inside a
+///     `spawn_blocking`, and answers `Inbound::TaskResponse` over the real pipe;
+///   * the Worker deserializes the DTO — so a WRONG DTO shape (the desktop's own
+///     `MoveOutcome`, a missing `artifactKeys`) fails HERE, at runtime, in the tool
+///     result, where a compile-time-only test would never see it;
+///   * the row lands in `task_artifacts` and turn 2's `get_artifact` hands the same
+///     markdown to the model as its tool result.
+///
+/// # Non-vacuity
+///
+/// Delete `impl TaskStore for Db` → this file stops compiling (the trait is unresolved).
+/// Delete the router arm → `route_event`'s match stops compiling (no `_` arm). Make
+/// the arm answer `Ok(Value::Null)` → the artifact poll below panics with its loud
+/// "the router arm never answered" message, because no row is ever written. Answer it
+/// with the DESKTOP's `MoveOutcome`/`TaskRow` instead of the crate DTOs → turn 1's tool
+/// result carries the crate's own deserialization error and the poll reddens. Those
+/// four are the failure modes a "fully wired but returns nothing" seam hides.
+///
+/// # Two deliberate fixture choices
+///
+/// - The enabled set is the two verbs this case drives, and `assert_advertised_tools`
+///   is called with THOSE names — not the `["bash"]` the full-turn case passes. The
+///   helper takes them as a parameter precisely so a second case cannot inherit the
+///   first case's expectation.
+/// - `sessionNamingEnabled: false` in the config dir. Naming ships ON, and its hook
+///   fires on `agent_end` — an un-named turn would fire a FIFTH provider request at a
+///   wiremock with exactly four bodies mounted, starving turn 2. Disabling it is not
+///   papering over a race: it removes a model call that has nothing to do with the
+///   seam under test.
+///
+/// `ENV_LOCK` + a scratch `HOME` for the same reason as every other case here (the
+/// Worker child reads `HOME` across these awaits).
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn task_artifact_round_trips_through_a_real_worker() {
+    let _lock = archimedes_lib::test_support::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let home = temp_dir();
+    let original_home = std::env::var_os("HOME");
+    struct RestoreHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            match self.0.take() {
+                // SAFETY: the `ENV_LOCK` is still held — it is declared first, so
+                // it drops last (the `config_update_push_reaches_a_live_worker` rule).
+                Some(v) => unsafe { std::env::set_var("HOME", v) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+    // SAFETY: the `ENV_LOCK` is held for the whole set→assert→restore span.
+    unsafe { std::env::set_var("HOME", home.path()) };
+    let _restore = RestoreHome(original_home);
+
+    let server = MockServer::start().await;
+
+    // The card the artifacts attach to. The Worker's task tools reach the
+    // Supervisor's `Db`, so the card must exist THERE first: `write_artifact`
+    // refuses a dangling `task_id`, and that gate exists because `task_artifacts`
+    // carries no foreign key to catch one (ADR 0100).
+    let dir = temp_dir();
+    let db: Arc<Db> = Arc::new(Db::open(&dir.join("e2e.db")).expect("db opens"));
+    let space = dir.path().to_str().expect("utf-8 path").to_string();
+    db.get_board(&space)
+        .expect("get_board seeds the six stages");
+    let card = db
+        .create_task(&space, "e2e card", Some("the body"), None)
+        .expect("create_task");
+
+    // Four bodies, mounted in request order: write call → settle → read call →
+    // settle (the `mount_request_script` shape).
+    let markdown = "ARTIFACT-SENTINEL";
+    mount_request_script(
+        &server,
+        &[
+            sse_tool_call(
+                "call_write",
+                "write_artifact",
+                &serde_json::json!({ "task_id": card.id, "key": "spec", "markdown": markdown }),
+            ),
+            sse_final("written"),
+            sse_tool_call(
+                "call_read",
+                "get_artifact",
+                &serde_json::json!({ "task_id": card.id, "key": "spec" }),
+            ),
+            sse_final("read back"),
+        ],
+    )
+    .await;
+
+    // The PRODUCTION wiring: `SessionManagerBuilder` is what `lib.rs:183` builds, so
+    // the `WorkerManager`'s `on_event` is `SessionManager::route_event` — the arm
+    // under test — and not a channel.
+    let (sink_tx, mut sink_rx) = mpsc::unbounded_channel::<(String, Value)>();
+    let sink: Arc<dyn EventSink> = Arc::new(RecSink { tx: sink_tx });
+    let persister = Arc::new(TranscriptPersister::new(db.clone()));
+    let (sm, wm) = SessionManagerBuilder::new(
+        dir.path().to_path_buf(),
+        db.clone(),
+        sink,
+        persister.clone(),
+    )
+    .with_worker_factory(Arc::new(RealWorkerFactory))
+    .build();
+
+    // Naming OFF, so turn 1's `agent_end` cannot spend a provider body (see the
+    // doc above). `load_settings` WRITES defaults when the file is absent, so the
+    // file has to exist before the first read.
+    std::fs::write(
+        dir.path().join("settings.json"),
+        r#"{ "sessionNamingEnabled": false }"#,
+    )
+    .expect("the settings file is written");
+
+    let cwd = temp_dir();
+    let (env, _config_dir) = start_env(
+        "e2e-artifacts",
+        cwd.path(),
+        wire_model(&server, "e2e-artifact-model"),
+        ModelCatalog {
+            models: vec![wire_model(&server, "e2e-artifact-model")],
+            ..Default::default()
+        },
+        true,
+        // THIS case's enabled set — the two verbs it drives, and nothing else.
+        Some(vec![
+            "write_artifact".to_string(),
+            "get_artifact".to_string(),
+        ]),
+        false,
+    );
+    // The `TranscriptPersister`'s cwd source (what `E2e::attach` does in every
+    // other case here) — without it the store frames have no `cwd` to stamp.
+    persister.set_cwd(&env.session_id, &env.cwd);
+    sm.attach_worker_manager(wm.clone());
+    wm.attach("e2e-artifacts", &env)
+        .await
+        .expect("the real Worker attaches (ready handshake + start)");
+
+    // ── Turn 1: the model calls `write_artifact`. ──
+    // `WorkerHandle::send_prompt` is the wire-level send; this case never awaits a
+    // turn resolution, because the assertions below read the PERSISTED outcome (the
+    // artifact row and the tool-result row), which is the thing the seam is for.
+    wm.handle_for("e2e-artifacts")
+        .expect("the session is attached")
+        .send_prompt("write the spec", &[])
+        .expect("the prompt is sent");
+
+    // The advertised set is THIS case's two names.
+    let rows = wait_for_rows(&db, "e2e-artifacts", 1).await;
+    let system: Value =
+        serde_json::from_str(rows.first().expect("the system prompt row is persisted"))
+            .expect("the row is JSON");
+    assert_eq!(system["role"], "system", "seq 0 is the system prompt");
+    let tools_section = system["content"]
+        .as_str()
+        .unwrap_or_default()
+        .split_once("<tools>")
+        .and_then(|(_, rest)| rest.split_once("</tools>"))
+        .map(|(s, _)| s)
+        .unwrap_or_default();
+    assert_advertised_tools(tools_section, &["write_artifact", "get_artifact"]);
+
+    // ── THE ROW: written by the SUPERVISOR, read from the desktop's own table. ──
+    // If the router arm never answered, the Worker's tool returned its
+    // deserialization error and this row does not exist.
+    let stored = wait_for_artifact(&db, &card.id, "spec").await;
+    assert_eq!(
+        stored, markdown,
+        "the artifact the MODEL wrote over the wire is the row the DESKTOP stored"
+    );
+
+    // Turn 1's own tool result: the write answers META only (the crate never echoes
+    // the document back), so the sentinel must NOT be in that row.
+    let write_row = wait_for_tool_row(&db, "e2e-artifacts", 4, "call_write").await;
+    let write_text = write_row["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(
+        write_text.contains("spec"),
+        "the write result names the key it wrote — got {write_text}"
+    );
+    assert!(
+        !write_text.contains(markdown),
+        "the write answer echoes NO document (the caller just sent it) — got {write_text}"
+    );
+
+    // ── Turn 2: the model reads it back and the markdown reaches its content. ──
+    wm.handle_for("e2e-artifacts")
+        .expect("the session is still attached")
+        .send_prompt("read the spec", &[])
+        .expect("the second prompt is sent");
+
+    let read_row = wait_for_tool_row(&db, "e2e-artifacts", 100, "call_read").await;
+    assert_eq!(
+        read_row["content"][0]["text"], markdown,
+        "the artifact's markdown reaches the MODEL as the tool result's content — \
+         the whole point of the seam"
+    );
+
+    // No crash DURING the two turns, asserted through the `SessionManager` rather
+    // than a channel: `SessionManagerBuilder` wires `on_crash` to `handle_crash`
+    // internally (that IS the production wiring this case exists to use), so there
+    // is no receiver to poll — but `handle_crash` marks the session STALLED and
+    // `stalled_info` reads exactly that. Checked BEFORE the close, because the
+    // expected-exit path drops the session and a post-close `None` would say
+    // nothing. The `E2e`-based cases above read their own `crashes` channel.
+    assert!(
+        sm.stalled_info("e2e-artifacts").is_none(),
+        "no `on_crash` fired during the two turns (a crash marks the session STALLED)"
+    );
+
+    // ── The clean-exit trio. ──
+    let handle = wm
+        .detach("e2e-artifacts")
+        .expect("the session is attached for the close");
+    // `exited()` resolves to the child's OWN exit code (`Option<i32>` — `None` only
+    // if the read task died without publishing), so one `.expect` unwraps the
+    // timeout and the `assert_eq` compares against the raw code.
+    let code = tokio::time::timeout(Duration::from_secs(15), handle.exited())
+        .await
+        .expect("the Worker exits after the close");
+    assert_eq!(code, Some(0), "a clean close exits 0, got {code:?}");
+    // Nothing left on the UI channel that claims a task frame is a UI frame: the
+    // task pair is machine-to-machine and never re-emitted (mirror of the
+    // `FetchRenderRequest` arm's contract). Drain so a leftover cannot hide.
+    while let Ok((event, _)) = sink_rx.try_recv() {
+        assert_ne!(
+            event, "task-request",
+            "a task frame is never re-emitted to the UI"
+        );
+    }
 }

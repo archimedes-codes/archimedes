@@ -2323,9 +2323,10 @@ fn create_pre_sort_order_db(path: &Path) {
 // `SCHEMA_WITHOUT_*` constants below are its only schema argument.
 //
 // ISOLATION IS THE LOAD-BEARING PROPERTY OF THESE STRINGS. Each is the full
-// 4-table `CREATE` batch with EXACTLY ONE gate's column absent and every OTHER
+// 5-table `CREATE` batch (sessions + stages + spaces + messages +
+// native_messages) with EXACTLY ONE gate's column absent and every OTHER
 // gated column present, so `Db::open`'s other gates find their column and stay
-// SILENT: the test observes its own gate, not nine gates at once. Two of the
+// SILENT: the test observes its own gate, not twelve gates at once. Two of the
 // five fixtures were NOT isolated before this consolidation (the `archived` one
 // also omitted `trusted`, both `sort_order`s, `context_usage_json`,
 // `is_subagent`, `todos_json` and `cost_usd`, and carried `agent_id` — so it
@@ -2352,14 +2353,17 @@ CREATE TABLE spaces (
     created_at INTEGER NOT NULL,
     last_opened_at INTEGER NOT NULL,
     trusted INTEGER NOT NULL DEFAULT 0,
-    sort_order INTEGER NOT NULL DEFAULT 0
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    board_strict INTEGER NOT NULL DEFAULT 0
 );
 "
     };
 }
 
-/// The `spaces` table WITHOUT `sort_order` (`trusted` present, so the trust gate
-/// stays quiet) — only the space sort-order gate can fire on it.
+/// The `spaces` table WITHOUT `sort_order` (`trusted` and `board_strict`
+/// present, so the trust and strict-workflow gates stay quiet) — only the space
+/// sort-order gate can fire on it. `board_strict` MUST be here: a fixture that
+/// dropped it too would omit TWO gated columns and run two gates.
 macro_rules! legacy_spaces_without_sort_order {
     () => {
         "
@@ -2367,7 +2371,124 @@ CREATE TABLE spaces (
     path TEXT PRIMARY KEY,
     created_at INTEGER NOT NULL,
     last_opened_at INTEGER NOT NULL,
-    trusted INTEGER NOT NULL DEFAULT 0
+    trusted INTEGER NOT NULL DEFAULT 0,
+    board_strict INTEGER NOT NULL DEFAULT 0
+);
+"
+    };
+}
+
+/// The `spaces` table WITHOUT `board_strict` (`trusted` and `sort_order`
+/// present) — only the strict-workflow gate can fire on it.
+macro_rules! legacy_spaces_without_board_strict {
+    () => {
+        "
+CREATE TABLE spaces (
+    path TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL,
+    last_opened_at INTEGER NOT NULL,
+    trusted INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+"
+    };
+}
+
+/// The `sessions` table with EVERY gated column present — the spelling every
+/// fixture that is not about a `sessions` gate uses, so those gates stay quiet.
+macro_rules! legacy_sessions_complete {
+    () => {
+        "
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    cwd TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    title TEXT,
+    capabilities_json TEXT NOT NULL,
+    archived INTEGER NOT NULL DEFAULT 0,
+    context_usage_json TEXT,
+    is_subagent INTEGER NOT NULL DEFAULT 0,
+    todos_json TEXT,
+    cost_usd REAL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    title_stage INTEGER NOT NULL DEFAULT 0
+);
+"
+    };
+}
+
+/// The `stages` table as a post-#179 database has it — BOTH new columns present,
+/// so neither `stages` gate fires. EVERY cluster fixture carries this spelling
+/// except the two whose gate owns this table: `Db::open` probes `stages` too
+/// now, so a fixture with NO `stages` table at all would count as omitting both
+/// columns and break the isolation assert on all eight fixtures at once.
+macro_rules! legacy_stages_complete {
+    () => {
+        "
+CREATE TABLE stages (
+    space_path TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    label TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    on_enter TEXT NOT NULL DEFAULT 'none',
+    on_enter_skill TEXT,
+    next_slugs TEXT,
+    PRIMARY KEY (space_path, slug)
+);
+"
+    };
+}
+
+/// The `stages` table WITHOUT `on_enter_skill` (`next_slugs` present) — only the
+/// Stage-Skill gate can fire on it.
+macro_rules! legacy_stages_without_on_enter_skill {
+    () => {
+        "
+CREATE TABLE stages (
+    space_path TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    label TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    on_enter TEXT NOT NULL DEFAULT 'none',
+    next_slugs TEXT,
+    PRIMARY KEY (space_path, slug)
+);
+"
+    };
+}
+
+/// The `stages` table WITHOUT `next_slugs` (`on_enter_skill` present) — only the
+/// transition-graph gate can fire on it.
+macro_rules! legacy_stages_without_next_slugs {
+    () => {
+        "
+CREATE TABLE stages (
+    space_path TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    label TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    on_enter TEXT NOT NULL DEFAULT 'none',
+    on_enter_skill TEXT,
+    PRIMARY KEY (space_path, slug)
+);
+"
+    };
+}
+
+/// The `stages` table as pre-#179 code wrote it — NEITHER new column. For the
+/// migration tests ONLY (a cluster fixture must never use it: it omits two
+/// gated columns at once, which is the isolation collapse the cluster pin
+/// forbids).
+macro_rules! legacy_stages_pre_task_board_config {
+    () => {
+        "
+CREATE TABLE stages (
+    space_path TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    label TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    on_enter TEXT NOT NULL DEFAULT 'none',
+    PRIMARY KEY (space_path, slug)
 );
 "
     };
@@ -2411,20 +2532,56 @@ CREATE TABLE native_messages (
 /// concatenation is not a const operation and `concat!` needs LITERALS — hence
 /// the `sessions` DDL arriving as a literal argument, and the two `spaces`
 /// spellings plus the tail living here once each so no fixture can invent its own.
+///
+/// `stages` defaults to [`legacy_stages_complete!`]: `Db::open` probes `stages`
+/// for two gated columns now, so a fixture that omitted the table entirely would
+/// count as omitting BOTH and run two gates — the isolation collapse the cluster
+/// pin below exists to catch. A fixture whose gate owns `stages` (or `spaces`)
+/// picks that arm instead.
 macro_rules! legacy_batch {
     ($sessions:expr, spaces_with_sort_order) => {
-        concat!($sessions, legacy_spaces_with_sort_order!(), legacy_tail!())
+        concat!(
+            $sessions,
+            legacy_stages_complete!(),
+            legacy_spaces_with_sort_order!(),
+            legacy_tail!()
+        )
     };
     ($sessions:expr, spaces_without_sort_order) => {
         concat!(
             $sessions,
+            legacy_stages_complete!(),
             legacy_spaces_without_sort_order!(),
+            legacy_tail!()
+        )
+    };
+    (complete_sessions, stages_without_on_enter_skill) => {
+        concat!(
+            legacy_sessions_complete!(),
+            legacy_stages_without_on_enter_skill!(),
+            legacy_spaces_with_sort_order!(),
+            legacy_tail!()
+        )
+    };
+    (complete_sessions, stages_without_next_slugs) => {
+        concat!(
+            legacy_sessions_complete!(),
+            legacy_stages_without_next_slugs!(),
+            legacy_spaces_with_sort_order!(),
+            legacy_tail!()
+        )
+    };
+    (complete_sessions, spaces_without_board_strict) => {
+        concat!(
+            legacy_sessions_complete!(),
+            legacy_stages_complete!(),
+            legacy_spaces_without_board_strict!(),
             legacy_tail!()
         )
     };
 }
 
-/// The full 4-table batch with ONLY `sessions.archived` missing. Every other
+/// The full 5-table batch with ONLY `sessions.archived` missing. Every other
 /// gated column is present, so the sibling gates are no-ops on this fixture.
 /// `agent_id` is absent too: the pre-rip-out purge is a DIFFERENT gate with its
 /// own test (`opening_a_pre_rip_out_database_migrates_it`), and a fixture that
@@ -2448,7 +2605,7 @@ CREATE TABLE sessions (
     spaces_with_sort_order
 );
 
-/// The full 4-table batch with ONLY `sessions.context_usage_json` missing.
+/// The full 5-table batch with ONLY `sessions.context_usage_json` missing.
 const SCHEMA_WITHOUT_CONTEXT_USAGE: &str = legacy_batch!(
     "
 CREATE TABLE sessions (
@@ -2468,7 +2625,7 @@ CREATE TABLE sessions (
     spaces_with_sort_order
 );
 
-/// The full 4-table batch with ONLY `sessions.cost_usd` missing — the isolation
+/// The full 5-table batch with ONLY `sessions.cost_usd` missing — the isolation
 /// the `dflt_value` pin depends on.
 const SCHEMA_WITHOUT_COST_USD: &str = legacy_batch!(
     "
@@ -2489,7 +2646,7 @@ CREATE TABLE sessions (
     spaces_with_sort_order
 );
 
-/// The full 4-table batch with ONLY `spaces.sort_order` missing (`sessions` is
+/// The full 5-table batch with ONLY `spaces.sort_order` missing (`sessions` is
 /// complete, so the SESSION seed cannot fire — that is the isolation this
 /// constant exists to provide).
 const SCHEMA_WITHOUT_SPACE_SORT_ORDER: &str = legacy_batch!(
@@ -2512,7 +2669,7 @@ CREATE TABLE sessions (
     spaces_without_sort_order
 );
 
-/// The full 4-table batch with ONLY `sessions.sort_order` missing (`spaces` is
+/// The full 5-table batch with ONLY `sessions.sort_order` missing (`spaces` is
 /// complete, so the SPACE seed cannot fire).
 const SCHEMA_WITHOUT_SESSION_SORT_ORDER: &str = legacy_batch!(
     "
@@ -2533,6 +2690,22 @@ CREATE TABLE sessions (
     spaces_with_sort_order
 );
 
+/// The full 5-table batch with ONLY `stages.on_enter_skill` missing (`sessions`
+/// and `spaces` are complete, so no sibling gate fires — and the `discuss`
+/// backfill inside this gate is what the migration test observes).
+const SCHEMA_WITHOUT_STAGES_ON_ENTER_SKILL: &str =
+    legacy_batch!(complete_sessions, stages_without_on_enter_skill);
+
+/// The full 5-table batch with ONLY `stages.next_slugs` missing — the plain
+/// single-ALTER gate (deliberately NO data step, ADR 0099: NULL = unconfigured).
+const SCHEMA_WITHOUT_STAGES_NEXT_SLUGS: &str =
+    legacy_batch!(complete_sessions, stages_without_next_slugs);
+
+/// The full 5-table batch with ONLY `spaces.board_strict` missing — the plain
+/// single-ALTER gate for the Strict-workflow opt-in.
+const SCHEMA_WITHOUT_SPACES_BOARD_STRICT: &str =
+    legacy_batch!(complete_sessions, spaces_without_board_strict);
+
 /// Isolation is these fixtures' load-bearing property, so it is ASSERTED rather
 /// than commented: each `SCHEMA_WITHOUT_*` must omit EXACTLY ONE gated column
 /// across both tables and carry every other one. If a fixture silently
@@ -2541,7 +2714,7 @@ CREATE TABLE sessions (
 #[test]
 fn each_cluster_schema_omits_exactly_one_gated_column() {
     // (table, column) for every gate `Db::open` probes, in probe order.
-    const GATED: [(&str, &str); 9] = [
+    const GATED: [(&str, &str); 12] = [
         ("spaces", "trusted"),
         ("sessions", "archived"),
         ("sessions", "context_usage_json"),
@@ -2551,8 +2724,11 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
         ("spaces", "sort_order"),
         ("sessions", "sort_order"),
         ("sessions", "title_stage"),
+        ("stages", "on_enter_skill"),
+        ("stages", "next_slugs"),
+        ("spaces", "board_strict"),
     ];
-    let fixtures: [(&str, &str); 5] = [
+    let fixtures: [(&str, &str); 8] = [
         ("SCHEMA_WITHOUT_ARCHIVED", SCHEMA_WITHOUT_ARCHIVED),
         ("SCHEMA_WITHOUT_CONTEXT_USAGE", SCHEMA_WITHOUT_CONTEXT_USAGE),
         ("SCHEMA_WITHOUT_COST_USD", SCHEMA_WITHOUT_COST_USD),
@@ -2563,6 +2739,18 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
         (
             "SCHEMA_WITHOUT_SESSION_SORT_ORDER",
             SCHEMA_WITHOUT_SESSION_SORT_ORDER,
+        ),
+        (
+            "SCHEMA_WITHOUT_STAGES_ON_ENTER_SKILL",
+            SCHEMA_WITHOUT_STAGES_ON_ENTER_SKILL,
+        ),
+        (
+            "SCHEMA_WITHOUT_STAGES_NEXT_SLUGS",
+            SCHEMA_WITHOUT_STAGES_NEXT_SLUGS,
+        ),
+        (
+            "SCHEMA_WITHOUT_SPACES_BOARD_STRICT",
+            SCHEMA_WITHOUT_SPACES_BOARD_STRICT,
         ),
     ];
     for (name, schema) in fixtures {
@@ -2599,7 +2787,7 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
 /// `Db`, and the conn is dropped before returning so `Db::open` gets the file
 /// to itself.
 ///
-/// `legacy_schema` is the full 4-table `CREATE` batch with the ONE gated column
+/// `legacy_schema` is the full 5-table `CREATE` batch with the ONE gated column
 /// under test missing and every OTHER gated column present (see the
 /// `SCHEMA_WITHOUT_*` constants — get this wrong and a sibling gate runs inside
 /// the test); `rows` seeds the pre-existing data.
@@ -3831,10 +4019,10 @@ fn create_task_reads_and_inserts_under_one_lock() {
     );
 }
 
-/// (lazy seeding) `get_board` on a Space with no stage rows inserts the five
+/// (lazy seeding) `get_board` on a Space with no stage rows inserts the SIX
 /// defaults in `sort_order` order, and a SECOND call seeds nothing.
 #[test]
-fn get_board_seeds_the_five_default_stages_once() {
+fn get_board_seeds_the_six_default_stages_once() {
     let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-seed-", "scratch");
     let db = Db::open(&dir.join("t.db")).expect("db should open");
     let space = board_space("fresh");
@@ -3855,13 +4043,40 @@ fn get_board_seeds_the_five_default_stages_once() {
         columns,
         vec![
             ("backlog", "Backlog", 0, "none"),
-            ("research", "Research", 1, "none"),
-            ("approved", "Approved", 2, "none"),
-            ("doing", "Doing", 3, "none"),
-            ("done", "Done", 4, "none"),
+            ("discuss", "Discuss", 1, "none"),
+            ("research", "Research", 2, "none"),
+            ("approved", "Approved", 3, "none"),
+            ("doing", "Doing", 4, "none"),
+            ("done", "Done", 5, "none"),
         ],
-        "the five defaults, in sort_order, label = slug capitalised, on_enter at \
-         the DDL's DEFAULT 'none'"
+        "the six defaults, in sort_order, label = slug capitalised, on_enter at \
+         the DDL's DEFAULT 'none' — and `discuss` sits BEFORE `research` (spec §3.1)"
+    );
+    let skills: Vec<(&str, Option<&str>)> = board
+        .iter()
+        .map(|column| {
+            (
+                column.stage.slug.as_str(),
+                column.stage.on_enter_skill.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        skills,
+        vec![
+            ("backlog", None),
+            ("discuss", Some("discuss")),
+            ("research", Some("research")),
+            ("approved", None),
+            ("doing", None),
+            ("done", None),
+        ],
+        "ADR 0098: exactly the two launch columns carry a Skill, and the seed \
+         spells it (not a second copy of `on_enter`)"
+    );
+    assert!(
+        board.iter().all(|column| column.stage.next_slugs.is_none()),
+        "the seed configures NO graph — NULL is unconfigured (ADR 0099)"
     );
     assert!(
         board.iter().all(|column| column.tasks.is_empty()),
@@ -3871,13 +4086,13 @@ fn get_board_seeds_the_five_default_stages_once() {
     let again = db.get_board(&space).expect("second get_board");
     assert_eq!(
         again.len(),
-        5,
+        6,
         "a second board read must NOT re-seed — the seed is lazy AND idempotent"
     );
     assert_eq!(
         db.list_stages(&space).expect("list_stages").len(),
-        5,
-        "still exactly five stage rows after two reads"
+        6,
+        "still exactly six stage rows after two reads"
     );
 }
 
@@ -4073,7 +4288,7 @@ fn delete_space_leaves_the_board_rows_in_place() {
     let board = db
         .get_board(&space)
         .expect("the board survives the tab close");
-    assert_eq!(board.len(), 5, "the five stage rows are still there");
+    assert_eq!(board.len(), 6, "the six stage rows are still there");
     assert_eq!(
         board
             .iter()
@@ -4153,16 +4368,31 @@ fn get_task_on_a_missing_id_is_ok_none() {
     );
 }
 
-/// (the schema guard, and the `gate()` rule) the three new tables ride the
+/// (the schema guard, and the `gate()` rule) the board tables ride the
 /// idempotent `CREATE TABLE IF NOT EXISTS` batch in `SCHEMA` and get NO
 /// migration entry — `gate` is a TRANSACTION FACTORY for new COLUMNS on
-/// existing tables, so a new table must never appear in one.
+/// existing tables, so a new TABLE must never appear in one. The name says
+/// "three" from the #176 original; the list is FOUR since `task_artifacts`
+/// (#180) arrived, and the count in the last assertion is whatever the tree
+/// measures — this change adds a TABLE, so it moves nothing.
+///
+/// The second loop names `tasks`, `task_sessions` and `task_artifacts`, and
+/// that narrowing is a decision rather than an oversight. `stages` and `spaces`
+/// are the two tables that pre-date the #179 Stage-config work with an OLDER
+/// shape, so gating a new COLUMN onto each of them is exactly what the migration
+/// factory is for — `stages.on_enter_skill`, `stages.next_slugs` and
+/// `spaces.board_strict` are gated on purpose, and a reader who "restores" the
+/// old board-table ban would be banning the migration itself. What stays
+/// forbidden is a gate naming a table that has NO pre-existing shape to repair:
+/// `tasks`, `task_sessions` and `task_artifacts` arrive whole from `SCHEMA`, so
+/// a gate on any of them would be a lie.
 #[test]
 fn the_three_task_tables_are_in_schema_and_have_no_gate_entry() {
     for statement in [
         "CREATE TABLE IF NOT EXISTS stages",
         "CREATE TABLE IF NOT EXISTS tasks",
         "CREATE TABLE IF NOT EXISTS task_sessions",
+        "CREATE TABLE IF NOT EXISTS task_artifacts",
     ] {
         assert_eq!(
             SCHEMA.matches(statement).count(),
@@ -4170,11 +4400,13 @@ fn the_three_task_tables_are_in_schema_and_have_no_gate_entry() {
             "`{statement}` must appear EXACTLY ONCE in SCHEMA"
         );
     }
-    // The source-text half: no `gate(` call names a task-board table. A gated
-    // COLUMN would make `each_cluster_schema_omits_exactly_one_gated_column`'s
-    // fixtures lie, so this is the guard that keeps that test honest.
+    // The source-text half: no `gate(` call names a NEW TABLE. A gated COLUMN on
+    // `tasks`/`task_sessions` would mean a pre-existing database held a `tasks`
+    // table of some other shape, which it never did — and it would make
+    // `each_cluster_schema_omits_exactly_one_gated_column`'s fixtures lie, so
+    // this is the guard that keeps that test honest.
     let source = include_str!("../../db.rs");
-    for table in ["stages", "tasks", "task_sessions"] {
+    for table in ["tasks", "task_sessions", "task_artifacts"] {
         let gated = format!("gate(&mut conn, \"{table}\"");
         assert_eq!(
             source.matches(&gated).count(),
@@ -4183,11 +4415,15 @@ fn the_three_task_tables_are_in_schema_and_have_no_gate_entry() {
              `gate(` call ({gated})"
         );
     }
-    // And no new gated column exists: the gate cluster pin stays at 9.
+    // And the gate surface is still exactly the twelve additive columns: the 9
+    // pre-#179 gates plus `stages.on_enter_skill`, `stages.next_slugs` and
+    // `spaces.board_strict`.
     assert_eq!(
         source.matches("gate(&mut conn, ").count(),
-        9,
-        "the 9 gates are the whole migration surface; a new table must not add a 10th"
+        12,
+        "the 12 gates are the whole migration surface; a NEW TABLE (as opposed to a
+         new column on an existing one) must not add a 13th, and no gate may ever \
+         name `tasks`, `task_sessions` or `task_artifacts`"
     );
 }
 
@@ -4312,8 +4548,15 @@ fn stage_row_from_maps_the_select_const_columns_in_order() {
         STAGE_ROW_FIELDS,
         "the SELECT built from STAGE_COLUMNS must have exactly STAGE_ROW_FIELDS columns"
     );
-    const EXPECTED_STAGE_COLUMNS: [&str; 5] =
-        ["space_path", "slug", "label", "sort_order", "on_enter"];
+    const EXPECTED_STAGE_COLUMNS: [&str; 7] = [
+        "space_path",
+        "slug",
+        "label",
+        "sort_order",
+        "on_enter",
+        "on_enter_skill",
+        "next_slugs",
+    ];
     assert_eq!(
         STAGE_COLUMNS.as_slice(),
         EXPECTED_STAGE_COLUMNS.as_slice(),
@@ -4324,8 +4567,28 @@ fn stage_row_from_maps_the_select_const_columns_in_order() {
         .expect("the self-identifying row maps");
     assert_eq!(got.slug, "doing");
     assert_eq!(got.label, "Doing");
-    assert_eq!(got.sort_order, 3);
+    assert_eq!(
+        got.sort_order, 4,
+        "`doing` moved down one when `discuss` was seeded at index 1"
+    );
     assert_eq!(got.on_enter, "none");
+    assert_eq!(
+        got.on_enter_skill, None,
+        "`doing` launches nothing — and the mapper must read index 5, not skip it"
+    );
+    assert_eq!(
+        got.next_slugs, None,
+        "index 6 maps to the lenient JSON read, NULL on a seeded row"
+    );
+    let discuss = stmt
+        .query_row(params![space, "discuss"], stage_row_from)
+        .expect("the discuss row maps too");
+    assert_eq!(
+        discuss.on_enter_skill.as_deref(),
+        Some("discuss"),
+        "the two new fields map for a row that actually CARRIES a value — a mapper \
+         that read index 5 as `None` for every row would pass the NULL case above"
+    );
 }
 
 /// (the board read is ONE payload) `get_board` groups the cards under the stage
@@ -4355,6 +4618,7 @@ fn get_board_groups_tasks_under_their_stage_in_stage_order() {
         shaped,
         vec![
             ("backlog", vec![]),
+            ("discuss", vec![]),
             ("research", vec![]),
             ("approved", vec![]),
             ("doing", vec![]),
@@ -4701,7 +4965,7 @@ fn deleting_a_linked_session_drops_its_link_row_and_its_share_of_the_cost() {
 /// The DRIFT PIN for the board's card payload (issue #174).
 ///
 /// `types.ts`'s `TaskCardView` is a HAND-WRITTEN mirror — no Rust↔TS shape pin
-/// exists in this repo — so the THREE key lists below (`FROZEN_CARD_KEYS`,
+/// exists in this repo — so the FOUR key lists below (`FROZEN_CARD_KEYS`,
 /// `FROZEN_TASK_KEYS`, `FROZEN_LINK_KEYS`) are spelled a second time in
 /// `src/store/tasks.test.ts` as `the task card view wire keys are frozen (mirror
 /// of the Rust pin)`, byte-identical. A rename on either side reddens one of the
@@ -4710,8 +4974,11 @@ fn deleting_a_linked_session_drops_its_link_row_and_its_share_of_the_cost() {
 fn the_task_card_view_wire_keys_are_frozen() {
     // The TS mirror is `src/lib/tauri/types.ts`'s
     // `export interface TaskCardView { task: TaskRow; sessions: TaskSessionRow[];
-    // costUsd: number | null; }` — these THREE keys, in this order, no more.
-    const FROZEN_CARD_KEYS: [&str; 3] = ["task", "sessions", "costUsd"];
+    // costUsd: number | null; artifactKeys: string[]; }` — these FOUR keys, in
+    // this order, no more. `artifactKeys` joined in #180 and is REQUIRED, never
+    // optional: an optional field compiles against every fixture and renders
+    // nothing when real data arrives.
+    const FROZEN_CARD_KEYS: [&str; 4] = ["task", "sessions", "costUsd", "artifactKeys"];
     // The TS mirror of these TEN is `export interface TaskRow` in the same file.
     const FROZEN_TASK_KEYS: [&str; 10] = [
         "id",
@@ -4751,6 +5018,7 @@ fn the_task_card_view_wire_keys_are_frozen() {
             stage_slug: None,
         }],
         cost_usd: Some(1.75),
+        artifact_keys: vec!["spec".to_string()],
     };
     let value = serde_json::to_value(&view).expect("TaskCardView serializes");
 
@@ -4765,8 +5033,10 @@ fn the_task_card_view_wire_keys_are_frozen() {
     expected_card_keys.sort_unstable();
     assert_eq!(
         card_keys, expected_card_keys,
-        "the card payload is exactly `{{task, sessions, costUsd}}` — `#[serde(flatten)]` \
-         is deliberately NOT used, so the nested `task` key is part of the wire shape"
+        "the card payload is exactly `{{task, sessions, costUsd, artifactKeys}}` — \
+         `#[serde(flatten)]` is deliberately NOT used, so the nested `task` key is \
+         part of the wire shape, and `artifactKeys` is REQUIRED (never \
+         `skip_serializing_if`), so a card with no artifacts sends `[]`"
     );
 
     let task = value.get("task").expect("the nested task key");
@@ -4817,6 +5087,7 @@ fn the_task_card_view_wire_keys_are_frozen() {
         task: view.task,
         sessions: vec![],
         cost_usd: None,
+        artifact_keys: vec![],
     };
     let absent = serde_json::to_value(&unmeasured).expect("the null-cost card serializes");
     assert!(
@@ -4827,6 +5098,19 @@ fn the_task_card_view_wire_keys_are_frozen() {
     assert!(
         absent.get("costUsd").expect("the key is there").is_null(),
         "…and it is JSON `null`, which is what `moneyOf(null)` renders as nothing"
+    );
+    // `artifactKeys` obeys the same rule as `costUsd`: PRESENT when there is
+    // nothing to show. `Vec<String>` has no `None`, so an empty list is the whole
+    // story — but a `skip_serializing_if = "Vec::is_empty"` would make the key
+    // vanish and the TS mirror's required `artifactKeys: string[]` would be a lie
+    // the frontend could not distinguish from a stale payload.
+    assert_eq!(
+        absent
+            .get("artifactKeys")
+            .and_then(serde_json::Value::as_array),
+        Some(&Vec::<serde_json::Value>::new()),
+        "`artifactKeys` must be PRESENT and `[]` on a card with no artifacts — a \
+         required wire key, not an optional one"
     );
 }
 
@@ -4973,7 +5257,7 @@ fn reorder_tasks_persists_the_new_within_stage_order_in_one_pass() {
     let dir = crate::test_support::ScratchDir::in_env_temp("db-task-reorder-", "scratch");
     let db = Db::open(&dir.join("t.db")).expect("db should open");
     let space = board_space("reorder");
-    db.get_board(&space).expect("seed the five stages");
+    db.get_board(&space).expect("seed the six stages");
 
     // Three cards in `backlog` (the first stage, so `stage_slug: None` lands
     // them there) and two in `done`. The `done` pair is the control group: it
@@ -5347,5 +5631,1727 @@ fn backfill_predicate_names_both_literals_and_renames_nothing() {
     assert!(
         !source.contains("checklist_json"),
         "sessions.todos_json is FROZEN (ADR 0093) — no column rename here"
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// T1 (issue #179) — the configurable-Stage schema, its gated migration, the six
+// Stage verbs, the Strict-workflow gate on `move_task`, and the `board_strict`
+// read.
+//
+// Spec `docs/roadmap/task-board-stage-config.md` §3, §3.1, §4, §4.1, §4.2, §5;
+// ADR 0098 (a Stage owns the launch Skill) and ADR 0099 (the transition graph,
+// enforced only under a per-Space opt-in).
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// The schema a pre-#179 database holds: the FIVE-column `stages`, the
+/// `spaces` row with no `board_strict`, complete `sessions`, and the tail with
+/// its FK so `Db::open`'s FK-rewrite batch stays quiet.
+///
+/// This is the string the migration tests hand [`preexisting_db`]. It is spelled
+/// from the cluster's macros so a future column addition cannot quietly leave it
+/// stale in one table while the other fixtures move — but note it is the ONLY
+/// fixture allowed to omit TWO gated columns, because a migration test wants
+/// every #179 gate to fire at once (the cluster fixtures must never use it).
+const SCHEMA_PRE_TASK_BOARD_CONFIG: &str = concat!(
+    legacy_sessions_complete!(),
+    legacy_stages_pre_task_board_config!(),
+    legacy_spaces_without_board_strict!(),
+    legacy_tail!()
+);
+
+/// The five Stage rows a pre-#179 install holds for one Space, plus that
+/// Space's `spaces` row (keyed RAW — the migration never re-keys `spaces`).
+fn pre_task_board_rows(space: &str) -> String {
+    format!(
+        "INSERT INTO spaces (path, created_at, last_opened_at, trusted, sort_order) \
+         VALUES ('{space}', 1, 1, 0, 0);\n\
+         INSERT INTO stages (space_path, slug, label, sort_order) VALUES \
+           ('{space}','backlog','Backlog',0),\
+           ('{space}','research','Research',1),\
+           ('{space}','approved','Approved',2),\
+           ('{space}','doing','Doing',3),\
+           ('{space}','done','Done',4);\n"
+    )
+}
+
+/// Does this live database have `table.column`? (The fresh-database half of the
+/// schema claim goes straight to `pragma_table_info`, because the point is that
+/// the COLUMN exists without any `ALTER` having run.)
+fn has_column(db: &Db, table: &str, column: &str) -> bool {
+    let guard = db.conn.lock().expect("db mutex poisoned");
+    let has: i64 = guard
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+            params![table, column],
+            |row| row.get(0),
+        )
+        .expect("pragma_table_info should read");
+    has > 0
+}
+
+/// `(slug, sort_order)` for one Space's stages, in `sort_order`.
+fn stage_order(db: &Db, space: &str) -> Vec<(String, i64)> {
+    let guard = db.conn.lock().expect("db mutex poisoned");
+    let mut stmt = guard
+        .prepare(
+            "SELECT slug, sort_order FROM stages WHERE space_path = ?1 \
+             ORDER BY sort_order ASC, slug ASC",
+        )
+        .expect("prepare");
+    stmt.query_map(params![space], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })
+    .expect("query")
+    .collect::<Result<Vec<_>, _>>()
+    .expect("rows")
+}
+
+/// (spec §3 + §3.1, the fresh path) a brand-new database gets all THREE new
+/// columns from `SCHEMA` — no `ADD COLUMN` runs, because no gate's probe finds a
+/// missing column — and seeds SIX stages with `discuss` at index 1.
+#[test]
+fn fresh_database_gets_the_three_new_columns_from_schema_and_seeds_six() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-fresh-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+
+    for (table, column) in [
+        ("stages", "on_enter_skill"),
+        ("stages", "next_slugs"),
+        ("spaces", "board_strict"),
+    ] {
+        assert!(
+            has_column(&db, table, column),
+            "a fresh database must get `{table}.{column}` from SCHEMA"
+        );
+    }
+
+    let space = board_space("fresh-columns");
+    let board = db.get_board(&space).expect("get_board seeds six");
+    let shaped: Vec<(&str, i64, Option<&str>)> = board
+        .iter()
+        .map(|c| {
+            (
+                c.stage.slug.as_str(),
+                c.stage.sort_order,
+                c.stage.on_enter_skill.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shaped,
+        vec![
+            ("backlog", 0, None),
+            ("discuss", 1, Some("discuss")),
+            ("research", 2, Some("research")),
+            ("approved", 3, None),
+            ("doing", 4, None),
+            ("done", 5, None),
+        ],
+        "six defaults in order, `discuss` BEFORE `research`, and only the two \
+         launch columns carry a Skill (ADR 0098)"
+    );
+    assert!(
+        board.iter().all(|c| c.stage.next_slugs.is_none()),
+        "`next_slugs` is NOT backfilled and the seed leaves it NULL — NULL means \
+         unconfigured, not \"no edges\" (ADR 0099)"
+    );
+}
+
+/// (spec §3.1, the migration path) an existing FIVE-stage database gains a
+/// `discuss` column immediately BEFORE `research`, both launch Skills
+/// backfilled, `next_slugs` left NULL — and a SECOND `Db::open` changes nothing.
+#[test]
+fn five_stage_database_gains_discuss_before_research_and_both_skills_on_open() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-migrate-", "scratch");
+    let space = board_space("upgrade-me");
+    let path = preexisting_db(
+        &dir,
+        SCHEMA_PRE_TASK_BOARD_CONFIG,
+        &pre_task_board_rows(&space),
+    );
+
+    {
+        let db = Db::open(&path).expect("the migration runs on open");
+        assert_eq!(
+            stage_order(&db, &space),
+            vec![
+                ("backlog".to_string(), 0),
+                ("discuss".to_string(), 1),
+                ("research".to_string(), 2),
+                ("approved".to_string(), 3),
+                ("doing".to_string(), 4),
+                ("done".to_string(), 5),
+            ],
+            "`discuss` lands at research's OLD index and everything from \
+             `research` up shifts by one, so the order stays dense"
+        );
+        let skills: Vec<(String, Option<String>)> = raw_column(
+            &db,
+            &format!(
+                "SELECT slug || '|' || COALESCE(on_enter_skill,'NULL') FROM stages \
+                 WHERE space_path = '{space}' ORDER BY sort_order ASC, slug ASC"
+            ),
+        )
+        .into_iter()
+        .map(|pair| {
+            let (slug, skill) = pair.split_once('|').expect("the fixture spells a pair");
+            (
+                slug.to_string(),
+                (skill != "NULL").then(|| skill.to_string()),
+            )
+        })
+        .collect();
+        assert_eq!(
+            skills,
+            vec![
+                ("backlog".to_string(), None),
+                ("discuss".to_string(), Some("discuss".to_string())),
+                ("research".to_string(), Some("research".to_string())),
+                ("approved".to_string(), None),
+                ("doing".to_string(), None),
+                ("done".to_string(), None),
+            ],
+            "spec §3.1 steps 1–2 backfill exactly the two launch Skills"
+        );
+        assert_eq!(
+            raw_i64s(
+                &db,
+                &format!(
+                    "SELECT COUNT(*) FROM stages WHERE space_path = '{space}' \
+                     AND next_slugs IS NOT NULL"
+                )
+            )
+            .first(),
+            Some(&0),
+            "`next_slugs` is NOT backfilled (spec §3.1 step 4)"
+        );
+        // The board the user sees after upgrading keeps BOTH launch buttons —
+        // the failure ADR 0098's Consequence calls out for a missing backfill.
+        let board = db.get_board(&space).expect("get_board after the migration");
+        assert_eq!(board.len(), 6, "six columns after one open");
+    }
+
+    // Re-open the SAME file: the gate's probe now finds the column, so nothing
+    // re-runs and no second `discuss` appears.
+    let db = Db::open(&path).expect("a second open is a no-op");
+    assert_eq!(
+        stage_order(&db, &space),
+        vec![
+            ("backlog".to_string(), 0),
+            ("discuss".to_string(), 1),
+            ("research".to_string(), 2),
+            ("approved".to_string(), 3),
+            ("doing".to_string(), 4),
+            ("done".to_string(), 5),
+        ],
+        "idempotent on re-open: neither a second `discuss` row nor a second shift"
+    );
+}
+
+/// (spec §3.1 step 3's pre-check) the backfill keys on a `research` row
+/// existing. A Space whose owner renamed that column has no `research` slug, so
+/// the migration gives it nothing — inventing a `discuss` column beside a
+/// renamed workflow would be the migration deciding the user's business.
+#[test]
+fn a_space_with_a_hand_renamed_research_slug_gains_no_discuss_row() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-spike-", "scratch");
+    let space = board_space("hand-renamed");
+    let rows = format!(
+        "INSERT INTO stages (space_path, slug, label, sort_order) VALUES \
+           ('{space}','backlog','Backlog',0),\
+           ('{space}','spike','Spike',1),\
+           ('{space}','done','Done',2);\n"
+    );
+    let path = preexisting_db(&dir, SCHEMA_PRE_TASK_BOARD_CONFIG, &rows);
+
+    let db = Db::open(&path).expect("open runs the gate");
+    assert_eq!(
+        stage_order(&db, &space),
+        vec![
+            ("backlog".to_string(), 0),
+            ("spike".to_string(), 1),
+            ("done".to_string(), 2),
+        ],
+        "no `research` row means no `discuss` insert, and `spike` keeps its index"
+    );
+}
+
+/// (the backfill's idempotence claim, mutated) the `NOT IN` pre-check is what
+/// makes the `discuss` INSERT safe to re-run. Delete it and this file — a
+/// pre-#179 Space that ALREADY has a `discuss` column — fails the
+/// `PRIMARY KEY (space_path, slug)` constraint inside the gate, i.e. `Db::open`
+/// bricks instead of skipping.
+#[test]
+fn a_space_that_already_has_a_discuss_row_is_left_alone_by_the_backfill() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-already-", "scratch");
+    let space = board_space("already-discuss");
+    let rows = format!(
+        "INSERT INTO stages (space_path, slug, label, sort_order) VALUES \
+           ('{space}','backlog','Backlog',0),\
+           ('{space}','discuss','My Discussions',1),\
+           ('{space}','research','Research',2),\
+           ('{space}','done','Done',3);\n"
+    );
+    let path = preexisting_db(&dir, SCHEMA_PRE_TASK_BOARD_CONFIG, &rows);
+
+    let db = Db::open(&path).expect("open must NOT fail on the existing discuss row");
+    let guard = db.conn.lock().expect("db mutex poisoned");
+    let label: String = guard
+        .query_row(
+            "SELECT label FROM stages WHERE space_path = ?1 AND slug = 'discuss'",
+            params![space],
+            |row| row.get(0),
+        )
+        .expect("the owner's discuss row is still there");
+    drop(guard);
+    assert_eq!(
+        label, "My Discussions",
+        "the pre-check skips the Space wholesale — the migration never overwrites \
+         a label a person wrote"
+    );
+    assert_eq!(
+        stage_order(&db, &space),
+        vec![
+            ("backlog".to_string(), 0),
+            ("discuss".to_string(), 1),
+            ("research".to_string(), 2),
+            ("done".to_string(), 3),
+        ],
+        "and it never shifts the existing rows either"
+    );
+    // The Skill backfill still ran for the two launch columns (steps 1–2 are
+    // unconditional; only the INSERT is pre-checked).
+    assert_eq!(
+        db.list_stages(&space)
+            .expect("list_stages")
+            .iter()
+            .filter(|s| s.on_enter_skill.is_some())
+            .count(),
+        2,
+        "`discuss` and `research` both carry their Skill"
+    );
+}
+
+// ── The six Stage verbs (spec §4, §4.1, §5) ─────────────────────────────────
+
+/// (spec §4 + §5) `create_stage` appends at the end, and refuses a slug
+/// collision by NAMING the slugs that are taken rather than suffixing — a
+/// silent `spike-2` is a slug nobody typed.
+#[test]
+fn create_stage_inserts_at_the_end_and_refuses_a_taken_slug_naming_the_valid_ones() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-create-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("create");
+    db.get_board(&space).expect("seed the six");
+
+    let made = db
+        .create_stage(&space, "spike", "Spike!", Some("brainstorm"))
+        .expect("create_stage");
+    assert_eq!(made.slug, "spike");
+    assert_eq!(
+        made.label, "Spike!",
+        "the LABEL is stored as the user typed it"
+    );
+    assert_eq!(made.sort_order, 6, "a new column joins at the END");
+    assert_eq!(
+        made.on_enter, "none",
+        "the DDL default, not a second copy here"
+    );
+    assert_eq!(
+        made.on_enter_skill.as_deref(),
+        Some("brainstorm"),
+        "ADR 0098: the Stage owns the launch Skill"
+    );
+    assert_eq!(made.next_slugs, None, "a new column starts unconfigured");
+
+    let err = db
+        .create_stage(&space, "research", "Research Again", None)
+        .expect_err("a taken slug is refused, never suffixed");
+    match err {
+        BoardError::StageSlugTaken { slug, available } => {
+            assert_eq!(slug, "research");
+            assert!(
+                available.contains("backlog") && available.contains("done"),
+                "the refusal names the valid slugs (ADR 0090), got `{available}`"
+            );
+        }
+        other => panic!("expected StageSlugTaken, got {other:?}"),
+    }
+    assert_eq!(
+        db.list_stages(&space).expect("list_stages").len(),
+        7,
+        "the refusal wrote nothing"
+    );
+}
+
+/// (spec §5) an empty derived slug is a refusal in storage too, so the write
+// path cannot be reached with a column nobody can name.
+#[test]
+fn create_stage_refuses_an_empty_slug() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-empty-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("empty-slug");
+    db.get_board(&space).expect("seed");
+
+    for slug in ["", "   "] {
+        let err = db
+            .create_stage(&space, slug, "Whitespace", None)
+            .expect_err("{slug:?} is not a slug");
+        assert!(
+            matches!(err, BoardError::EmptyStageSlug),
+            "for {slug:?}, got {err:?}"
+        );
+    }
+    assert_eq!(
+        db.list_stages(&space).expect("list_stages").len(),
+        6,
+        "neither refusal wrote a row"
+    );
+}
+
+/// (spec §5 — the slug is FROZEN) `rename_stage` writes the LABEL and nothing
+/// else, because `tasks.stage_slug` points at the slug by string with no FK.
+#[test]
+fn rename_stage_writes_only_the_label_and_keeps_the_slug() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-rename-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("rename");
+    db.get_board(&space).expect("seed");
+    let card = db
+        .create_task(&space, "pointed card", None, Some("research"))
+        .expect("create_task");
+
+    let renamed = db
+        .rename_stage(&space, "research", "Spike")
+        .expect("rename_stage");
+    assert_eq!(renamed.slug, "research", "the KEY never moves");
+    assert_eq!(renamed.label, "Spike");
+    assert_eq!(renamed.sort_order, 2, "and neither does the position");
+    assert_eq!(
+        db.get_task(&card.id)
+            .expect("get_task")
+            .expect("the card")
+            .stage_slug,
+        "research",
+        "the card still points at the same slug — the rename did not orphan it"
+    );
+
+    let err = db
+        .rename_stage(&space, "nope", "Ghost")
+        .expect_err("a missing stage is refused");
+    assert!(
+        matches!(err, BoardError::MissingStage { .. }),
+        "got {err:?}"
+    );
+}
+
+/// (ADR 0098) `set_stage_skill` sets the Skill and CLEARS it back to NULL.
+#[test]
+fn set_stage_skill_sets_and_clears_the_skill() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-skill-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("skill");
+    db.get_board(&space).expect("seed");
+
+    let set = db
+        .set_stage_skill(&space, "approved", Some("review"))
+        .expect("set");
+    assert_eq!(set.on_enter_skill.as_deref(), Some("review"));
+
+    let cleared = db
+        .set_stage_skill(&space, "approved", None)
+        .expect("clear to NULL");
+    assert_eq!(
+        cleared.on_enter_skill, None,
+        "`None` clears the column rather than writing an empty string"
+    );
+
+    let err = db
+        .set_stage_skill(&space, "ghost", Some("x"))
+        .expect_err("a missing stage is refused BEFORE the write");
+    assert!(
+        matches!(err, BoardError::MissingStage { .. }),
+        "got {err:?}"
+    );
+}
+
+/// (ADR 0099) the edges round-trip: JSON at rest, `Vec<String>` back out.
+#[test]
+fn set_stage_next_persists_the_edges_and_round_trips_them() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-next-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("next");
+    db.get_board(&space).expect("seed");
+
+    let wanted = vec!["discuss".to_string(), "research".to_string()];
+    let set = db
+        .set_stage_next(&space, "backlog", &wanted)
+        .expect("set_stage_next");
+    assert_eq!(
+        set.next_slugs,
+        Some(wanted.clone()),
+        "button-render order is preserved, not sorted"
+    );
+
+    let raw = raw_column(
+        &db,
+        &format!("SELECT next_slugs FROM stages WHERE space_path = '{space}' AND slug = 'backlog'"),
+    );
+    assert_eq!(
+        raw.first().map(|s| s.as_str()),
+        Some(r#"["discuss","research"]"#),
+        "JSON-at-rest, following the `sessions.todos_json` precedent"
+    );
+    let read_back = db.get_board(&space).expect("get_board");
+    assert_eq!(
+        read_back[0].stage.next_slugs,
+        Some(wanted),
+        "and the board read parses it back"
+    );
+}
+
+/// (spec §4) an unknown destination is a REJECTION naming the valid slugs, not a
+/// silent drop — a dropped destination is a workflow that shrank.
+#[test]
+fn set_stage_next_refuses_an_unknown_slug_naming_the_valid_ones() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-next-404-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("next-404");
+    db.get_board(&space).expect("seed");
+
+    let wanted = vec!["done".to_string(), "sprint-review".to_string()];
+    let err = db
+        .set_stage_next(&space, "backlog", &wanted)
+        .expect_err("an unknown destination is refused, not filtered");
+    match err {
+        BoardError::MissingStage { wanted, available } => {
+            assert_eq!(wanted, "sprint-review");
+            assert!(
+                available.contains("discuss"),
+                "the refusal names the valid slugs, got `{available}`"
+            );
+        }
+        other => panic!("expected MissingStage, got {other:?}"),
+    }
+    assert_eq!(
+        db.get_board(&space).expect("get_board")[0].stage.next_slugs,
+        None,
+        "the refusal wrote nothing at all — not even the valid half"
+    );
+}
+
+/// (spec §4) a self-loop is a button that moves a card to the column it is
+/// already in.
+#[test]
+fn set_stage_next_refuses_a_self_loop() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-loop-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("loop");
+    db.get_board(&space).expect("seed");
+
+    let err = db
+        .set_stage_next(&space, "doing", &["doing".to_string()])
+        .expect_err("a stage cannot lead to itself");
+    assert!(
+        matches!(&err, BoardError::SelfLoop { slug } if slug == "doing"),
+        "got {err:?}"
+    );
+}
+
+/// (ADR 0099's NULL-vs-empty distinction) `[]` is a CONFIGURED "no edges"
+/// answer and must round-trip as `Some(vec![])`, while NULL stays the
+/// unconfigured answer. Collapsing the two is the silent-green shape ADR 0099
+/// rejects by name.
+#[test]
+fn set_stage_next_an_empty_slice_persists_explicit_no_edges() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-nedges-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("no-edges");
+    db.get_board(&space).expect("seed");
+
+    let set = db
+        .set_stage_next(&space, "done", &[])
+        .expect("[] is a legal configuration");
+    assert_eq!(
+        set.next_slugs,
+        Some(vec![]),
+        "explicit, and distinguishable"
+    );
+
+    let raw = raw_column(
+        &db,
+        &format!(
+            "SELECT COALESCE(next_slugs,'NULL') FROM stages \
+             WHERE space_path = '{space}' AND slug = 'done'"
+        ),
+    );
+    assert_eq!(
+        raw.first().map(|s| s.as_str()),
+        Some("[]"),
+        "at rest it is `[]`, NOT NULL — otherwise the two meanings collapse"
+    );
+}
+
+/// (spec §4 — the `reorder_spaces` contract, not `reorder_tasks`'s) the whole
+/// slice renumbers, index becomes `sort_order`, dense from 0, in one call.
+#[test]
+fn reorder_stages_persists_the_new_column_order_in_one_pass() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-order-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("order");
+    db.get_board(&space).expect("seed");
+
+    let slugs = [
+        "done", "doing", "approved", "research", "discuss", "backlog",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    db.reorder_stages(&space, &slugs).expect("reorder_stages");
+
+    assert_eq!(
+        stage_order(&db, &space),
+        slugs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.clone(), i as i64))
+            .collect::<Vec<_>>(),
+        "the caller's order IS the stored order, dense from 0"
+    );
+    let board = db.get_board(&space).expect("get_board");
+    assert_eq!(
+        board
+            .iter()
+            .map(|c| c.stage.slug.as_str())
+            .collect::<Vec<_>>(),
+        vec!["done", "doing", "approved", "research", "discuss", "backlog"],
+        "and the board renders that order"
+    );
+}
+
+/// (spec §4) an unknown slug is a SILENT no-op — the `reorder_spaces` contract.
+/// The board's editor passes every Stage it shows, so a row it never mentioned
+/// keeps its place rather than failing the whole drag.
+#[test]
+fn reorder_stages_is_a_silent_no_op_on_an_unknown_slug() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-order2-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("order-ghost");
+    db.get_board(&space).expect("seed");
+
+    let slugs = vec![
+        "done".to_string(),
+        "ghost".to_string(),
+        "backlog".to_string(),
+    ];
+    db.reorder_stages(&space, &slugs)
+        .expect("an unknown slug is a no-op, not an error");
+
+    let after = stage_order(&db, &space);
+    let named =
+        |slug: &str| -> Option<i64> { after.iter().find(|(s, _)| s == slug).map(|(_, o)| *o) };
+    assert_eq!(named("done"), Some(0), "the named rows renumber…");
+    assert_eq!(named("backlog"), Some(2), "…in the caller's order…");
+    assert_eq!(named("ghost"), None, "…and the ghost wrote no row at all");
+    for (slug, untouched) in [
+        ("discuss", 1),
+        ("research", 2),
+        ("approved", 3),
+        ("doing", 4),
+    ] {
+        assert_eq!(
+            named(slug),
+            Some(untouched),
+            "a row the caller never named keeps the position it had — the \
+             `reorder_spaces` contract, not `reorder_tasks`'s refusal"
+        );
+    }
+}
+
+/// (spec §4.1, refusal one) deleting a Stage that holds cards would make them
+/// INVISIBLE to `get_board` while they keep costing money — the no-FK
+/// consequence ADR 0090 names. The error carries the count AND the alternatives.
+#[test]
+fn delete_stage_refuses_a_stage_that_holds_cards_and_names_the_count_and_the_slugs() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-del-cards-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("del-cards");
+    db.get_board(&space).expect("seed");
+    db.create_task(&space, "one", None, Some("doing"))
+        .expect("create");
+    db.create_task(&space, "two", None, Some("doing"))
+        .expect("create");
+
+    let err = db
+        .delete_stage(&space, "doing", None)
+        .expect_err("a Stage with cards is not deletable");
+    match err {
+        BoardError::StageNotEmpty {
+            slug,
+            count,
+            available,
+        } => {
+            assert_eq!(slug, "doing");
+            assert_eq!(count, 2, "the refusal counts what it is refusing");
+            assert!(
+                available.contains("done"),
+                "and names where they could go, got `{available}`"
+            );
+        }
+        other => panic!("expected StageNotEmpty, got {other:?}"),
+    }
+    assert_eq!(
+        db.list_stages(&space).expect("list_stages").len(),
+        6,
+        "the refusal deleted nothing"
+    );
+}
+
+/// (spec §4.1, refusal two, ADR 0099's Consequence) deleting a Stage another
+/// Stage's graph points at would silently SHRINK a workflow. Filtering dangling
+/// slugs at read time is the rejected alternative; this refusal is the chosen one.
+#[test]
+fn delete_stage_refuses_a_stage_another_stage_s_next_slugs_names_it() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-del-ref-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("del-referenced");
+    db.get_board(&space).expect("seed");
+    db.set_stage_next(&space, "backlog", &["doing".to_string()])
+        .expect("backlog → doing");
+
+    let err = db
+        .delete_stage(&space, "doing", None)
+        .expect_err("a referenced Stage is not deletable");
+    match err {
+        BoardError::StageReferenced { slug, referrers } => {
+            assert_eq!(slug, "doing");
+            assert_eq!(
+                referrers, "backlog",
+                "the refusal names the Stage that points here, so the user knows \
+                 which graph to edit"
+            );
+        }
+        other => panic!("expected StageReferenced, got {other:?}"),
+    }
+
+    // A Stage whose graph merely does not mention the target is not a referrer,
+    // and a NULL graph never is (unconfigured must not block a delete).
+    db.set_stage_next(&space, "backlog", &["done".to_string()])
+        .expect("re-point the edge away");
+    db.delete_stage(&space, "doing", None)
+        .expect("with the edge gone, the delete goes through");
+    assert_eq!(
+        db.list_stages(&space).expect("list_stages").len(),
+        5,
+        "one row deleted"
+    );
+}
+
+/// (spec §4.1, refusal three) `create_task`'s first-column fallback and
+/// `get_board`'s shape both assume at least one row.
+#[test]
+fn delete_stage_refuses_the_last_stage() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-del-last-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("del-last");
+    db.get_board(&space).expect("seed");
+    let only = db
+        .create_stage(&space, "solo", "Solo", None)
+        .expect("create_stage");
+    // Empty the seeded six, leaving exactly one row.
+    for slug in [
+        "backlog", "discuss", "research", "approved", "doing", "done",
+    ] {
+        db.delete_stage(&space, slug, Some("solo"))
+            .expect("clear the seeded columns into solo");
+    }
+    assert_eq!(db.list_stages(&space).expect("list_stages").len(), 1);
+
+    let err = db
+        .delete_stage(&space, "solo", None)
+        .expect_err("the last column is not deletable");
+    assert!(
+        matches!(&err, BoardError::LastStage { slug } if slug == "solo"),
+        "got {err:?}"
+    );
+    assert_eq!(
+        db.list_stages(&space).expect("list_stages").len(),
+        1,
+        "and the refusal left the one row that keeps the board a board — the \
+         card-creating fallback still has somewhere to land"
+    );
+    assert_eq!(only.slug, "solo");
+}
+
+/// (spec §4.1's asymmetry, the five-compactions bug guard) the relocation is ONE
+/// `UPDATE tasks SET stage_slug …`, NOT N `move_task` calls: `move_task` reads
+/// the destination's `on_enter` and the command layer fires its boost, so
+/// "empty this column first" would attempt N compactions as bookkeeping.
+/// Observables: every card moved, `updated_at` UNTOUCHED (a relocation a delete
+/// forced is not an edit), and the destination's `on_enter = 'compact'` fired
+/// nothing — no Session, no link, no `MoveOutcome`.
+#[test]
+fn delete_stage_relocates_cards_with_one_update_without_touching_updated_at_or_on_enter() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-del-move-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("del-relocate");
+    db.get_board(&space).expect("seed");
+    let first = db
+        .create_task(&space, "one", None, Some("doing"))
+        .expect("create");
+    let second = db
+        .create_task(&space, "two", None, Some("doing"))
+        .expect("create");
+    // The destination asks for a compaction. If the relocation ran `move_task`,
+    // this is where two boosts would be owed.
+    db.conn
+        .lock()
+        .expect("db mutex poisoned")
+        .execute(
+            "UPDATE stages SET on_enter = 'compact' WHERE space_path = ?1 AND slug = 'done'",
+            params![space],
+        )
+        .expect("make the destination a compact stage");
+    // Plant a DISTINCTLY old `updated_at` rather than trusting the one
+    // `create_task` stamped: a relocation landing in the same millisecond would
+    // otherwise leave the "untouched" assert green by accident, and an
+    // accidentally-green guard is how this assertion stops being a guard.
+    const PLANTED: i64 = 1000;
+    for id in [&first.id, &second.id] {
+        db.conn
+            .lock()
+            .expect("db mutex poisoned")
+            .execute(
+                "UPDATE tasks SET updated_at = 1000 WHERE id = ?1",
+                params![id],
+            )
+            .expect("plant the old timestamp");
+    }
+
+    db.delete_stage(&space, "doing", Some("done"))
+        .expect("delete with a destination relocates");
+
+    for id in [&first.id, &second.id] {
+        let card = db.get_task(id).expect("get_task").expect("the card");
+        assert_eq!(card.stage_slug, "done", "the card moved out");
+    }
+    let moved_updated: Vec<i64> = raw_i64s(
+        &db,
+        &format!("SELECT updated_at FROM tasks WHERE space_path = '{space}' ORDER BY number ASC"),
+    );
+    assert_eq!(
+        moved_updated,
+        vec![PLANTED, PLANTED],
+        "`updated_at` is UNTOUCHED — the same reason `reorder_tasks` gives: a \
+         relocation a delete forced is not an edit, and the planted timestamp \
+         survived the relocation"
+    );
+    assert_eq!(
+        db.task_sessions(&first.id).expect("links").len(),
+        0,
+        "the relocation created no Session and no link: the destination's \
+         `compact` was never acted on"
+    );
+    assert_eq!(
+        db.list_stages(&space).expect("list_stages").len(),
+        5,
+        "and the emptied column is gone"
+    );
+}
+
+/// (spec §4.1) a destination that is not one of THIS Space's columns is refused
+/// by name — the same `missing_stage` sentence `move_task` composes.
+#[test]
+fn delete_stage_refuses_a_relocate_destination_that_is_not_a_stage_of_this_space() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-del-404-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("del-ghost-dest");
+    db.get_board(&space).expect("seed");
+    db.create_task(&space, "stays put", None, Some("doing"))
+        .expect("create");
+
+    let err = db
+        .delete_stage(&space, "doing", Some("sprint-review"))
+        .expect_err("the destination must be one of this Space's stages");
+    assert!(
+        matches!(&err, BoardError::MissingStage { wanted, .. } if wanted == "sprint-review"),
+        "got {err:?}"
+    );
+    assert_eq!(
+        db.list_stages(&space).expect("list_stages").len(),
+        6,
+        "a refused delete deleted the column AND stranded the card in no way at all"
+    );
+    assert_eq!(
+        db.list_tasks(&space).expect("list_tasks")[0].stage_slug,
+        "doing",
+        "the card is still where it was"
+    );
+}
+
+// ── The Strict workflow (ADR 0099) — the write, the read, and the gate ──────
+
+/// (ADR 0099) the toggle persists both ways and reads back through
+/// `Db::board_strict`; a Space with NO `spaces` row reads `false`, which is the
+/// same answer `move_task`'s gate computes — the Switch and the gate cannot
+/// disagree about a Space that has no row.
+#[test]
+fn set_board_strict_persists_1_and_0_and_reads_back() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-strict-write-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("strict-toggle");
+    db.upsert_space(&space, false).expect("upsert_space");
+
+    assert!(
+        db.set_board_strict(&space, true).expect("set_board_strict"),
+        "a matching row reports that it was touched"
+    );
+    assert!(
+        db.board_strict(&space).expect("board_strict"),
+        "the read sees what the write stored"
+    );
+    assert!(db
+        .set_board_strict(&space, false)
+        .expect("clear_board_strict"));
+    assert!(
+        !db.board_strict(&space).expect("board_strict"),
+        "the flag is a toggle, not a ratchet"
+    );
+    assert_eq!(
+        raw_i64s(
+            &db,
+            &format!("SELECT board_strict FROM spaces WHERE path = '{space}'")
+        )
+        .first(),
+        Some(&0),
+        "1 and 0 are the two stored values"
+    );
+
+    // A Space with no row at all: a silent no-op WRITE, and `false` READ.
+    let nowhere = board_space("strict-no-row");
+    assert!(
+        !db.set_board_strict(&nowhere, true).expect("no-op write"),
+        "mirrors `set_space_trusted`: a missing row is a diagnosable no-op"
+    );
+    assert!(
+        !db.board_strict(&nowhere).expect("board_strict"),
+        "and the read answers false, not an error"
+    );
+}
+
+/// (ADR 0099's default) with no `spaces` row the board behaves EXACTLY as it did
+/// before this feature: a non-edge drag is accepted. This is the assertion that
+/// an upgrade changes nothing for the Spaces the board tests model.
+#[test]
+fn move_task_with_no_spaces_row_is_not_strict() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-strict-norow-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("strict-absent");
+    db.get_board(&space).expect("seed");
+    db.set_stage_next(&space, "backlog", &["done".to_string()])
+        .expect("backlog → done only");
+    let card = db
+        .create_task(&space, "free card", None, None)
+        .expect("create_task");
+
+    let outcome = db
+        .move_task(&space, &card.id, "approved")
+        .expect("no spaces row → flag 0 → the check is skipped entirely");
+    assert_eq!(outcome.on_enter, "none");
+    assert_eq!(
+        db.get_task(&card.id)
+            .expect("get_task")
+            .expect("card")
+            .stage_slug,
+        "approved"
+    );
+}
+
+/// (ADR 0099's whole reason for being opt-in) `board_strict = 0` is the DEFAULT,
+/// so upgrading cannot change how an existing board answers a drag.
+#[test]
+fn move_task_with_board_strict_zero_accepts_a_non_edge_move() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-strict-off-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("strict-off");
+    db.upsert_space(&space, false).expect("upsert_space");
+    db.set_board_strict(&space, false).expect("explicitly off");
+    db.get_board(&space).expect("seed");
+    db.set_stage_next(&space, "backlog", &["done".to_string()])
+        .expect("backlog → done only");
+    let card = db
+        .create_task(&space, "unconstrained", None, None)
+        .expect("create_task");
+
+    db.move_task(&space, &card.id, "approved")
+        .expect("flag 0 skips the check entirely");
+}
+
+/// (spec §4.2) under `board_strict = 1`, a drag that is not an edge of the FROM
+/// Stage's graph is refused BEFORE the write, and the sentence names the legal
+/// destinations — the frontend's optimistic revert needs nothing more.
+#[test]
+fn move_task_with_board_strict_one_refuses_a_non_edge_move_naming_the_legal_destinations() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-strict-on-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("strict-on");
+    db.upsert_space(&space, false).expect("upsert_space");
+    db.set_board_strict(&space, true).expect("strict ON");
+    db.get_board(&space).expect("seed");
+    db.set_stage_next(&space, "backlog", &["done".to_string()])
+        .expect("backlog → done, and nothing else");
+    let card = db
+        .create_task(&space, "governed card", None, None)
+        .expect("create_task");
+
+    let err = db
+        .move_task(&space, &card.id, "approved")
+        .expect_err("approved is not an edge of backlog");
+    match err {
+        BoardError::StrictMoveRefused { from, to, allowed } => {
+            assert_eq!(from, "backlog", "the FROM stage is named");
+            assert_eq!(to, "approved");
+            assert_eq!(allowed, "done", "and so are the legal destinations");
+        }
+        other => panic!("expected StrictMoveRefused, got {other:?}"),
+    }
+    assert_eq!(
+        db.get_task(&card.id)
+            .expect("get_task")
+            .expect("card")
+            .stage_slug,
+        "backlog",
+        "a refused move writes NOTHING"
+    );
+
+    // The legal edge, same configuration.
+    db.move_task(&space, &card.id, "done")
+        .expect("the configured edge is accepted");
+    assert_eq!(
+        db.get_task(&card.id)
+            .expect("get_task")
+            .expect("card")
+            .stage_slug,
+        "done"
+    );
+}
+
+/// (spec §4.2 + ADR 0099's NULL rule) `NULL` means UNCONFIGURED, not forbidden.
+/// Under Strict, a Stage with no graph still accepts anything — otherwise every
+/// existing board that opts in would refuse every drag.
+#[test]
+fn move_task_with_board_strict_one_and_null_next_slugs_accepts_any_move() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-strict-null-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("strict-null");
+    db.upsert_space(&space, false).expect("upsert_space");
+    db.set_board_strict(&space, true).expect("strict ON");
+    db.get_board(&space)
+        .expect("seed — every next_slugs is NULL");
+    let card = db
+        .create_task(&space, "unconfigured board", None, None)
+        .expect("create_task");
+
+    db.move_task(&space, &card.id, "done")
+        .expect("NULL next_slugs passes unconditionally");
+    db.move_task(&space, &card.id, "research")
+        .expect("and it passes in both directions — position is not adjacency");
+}
+
+/// (ADR 0099's explicit consequence) an explicit `[]` under Strict is NOT the
+/// same as NULL: it is a configured graph with no edges, so every move out of
+/// that Stage is refused and the sentence says so instead of listing nothing.
+#[test]
+fn move_task_with_board_strict_one_and_an_empty_graph_refuses_everything() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-strict-empty-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("strict-empty");
+    db.upsert_space(&space, false).expect("upsert_space");
+    db.set_board_strict(&space, true).expect("strict ON");
+    db.get_board(&space).expect("seed");
+    db.set_stage_next(&space, "backlog", &[])
+        .expect("an explicit no-edge graph");
+    let card = db
+        .create_task(&space, "boxed in", None, None)
+        .expect("create_task");
+
+    let err = db
+        .move_task(&space, &card.id, "done")
+        .expect_err("a configured graph with no edges allows nothing");
+    match err {
+        BoardError::StrictMoveRefused { allowed, .. } => {
+            assert!(
+                !allowed.is_empty(),
+                "the sentence must say WHY there are no destinations, got \
+                 `{allowed}` — an empty list reads like a bug"
+            );
+        }
+        other => panic!("expected StrictMoveRefused, got {other:?}"),
+    }
+}
+
+/// (spec §3's leniency claim) a `next_slugs` cell that is not a JSON array is
+/// "unconfigured" — it must NEVER blank the board or surface a parse error. The
+/// strictness lives in the writer; the reader only has to survive data older or
+/// foreigner than itself.
+#[test]
+fn next_slugs_that_is_not_a_json_array_reads_as_unconfigured() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-next-bad-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("bad-json");
+    db.get_board(&space).expect("seed");
+
+    for junk in ["not json", r#"{"a":1}"#, "42", r#"[1,2]"#] {
+        db.conn
+            .lock()
+            .expect("db mutex poisoned")
+            .execute(
+                "UPDATE stages SET next_slugs = ?2 WHERE space_path = ?1 AND slug = 'backlog'",
+                params![space, junk],
+            )
+            .expect("plant the foreign value");
+        let board = db
+            .get_board(&space)
+            .expect("a bad cell must never blank the board");
+        assert_eq!(board.len(), 6, "the whole board still arrives for {junk:?}");
+        assert_eq!(
+            board[0].stage.next_slugs, None,
+            "`{junk:?}` reads as unconfigured, never as an error"
+        );
+    }
+}
+
+/// (Decision 6, the key-agreement pin) `Db::board_strict` reads back EXACTLY
+/// what `set_board_strict` wrote, and both go through the SAME `space_key`
+/// normalization the `move_task` gate uses. The interesting failure this pins is
+/// the one the vet called out: a Strict Switch lit while drags are accepted.
+///
+/// The setup makes the two spellings differ ON PURPOSE: the `spaces` row is
+/// keyed CANONICAL (what `upsert_space` stores) and the board rows are keyed by
+/// the RAW spelling the caller happens to hold. A gate that read `spaces` by the
+/// raw string would find no row, compute flag 0, and ACCEPT the illegal drag
+/// while `board_strict(raw)` reports Strict ON — the Switch and the enforcement
+/// disagreeing about the same Space.
+#[test]
+fn the_board_strict_read_and_the_move_gate_agree_on_a_non_canonical_path() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-strict-key-", "scratch");
+    let folder = dir.join("space folder");
+    std::fs::create_dir_all(&folder).expect("the folder exists so canonicalize works");
+    let canonical = std::fs::canonicalize(&folder)
+        .expect("canonicalize")
+        .display()
+        .to_string();
+    // The SAME folder, spelled through a `..` hop — a caller's raw string that
+    // is not its own canonical form (a symlink or a `..` is exactly this).
+    let raw = folder.join("..").join("space folder").display().to_string();
+
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    db.upsert_space(&canonical, false)
+        .expect("the row is keyed CANONICAL");
+    db.set_board_strict(&raw, true)
+        .expect("the toggle arrives with the RAW spelling");
+
+    // The read normalizes, so both spellings answer the same thing.
+    assert!(
+        db.board_strict(&canonical).expect("read canonical"),
+        "canonical sees the flag"
+    );
+    assert!(
+        db.board_strict(&raw).expect("read raw"),
+        "and so does the raw spelling — the read mirrors `set_space_trusted`'s \
+         keying, it does not re-derive it differently"
+    );
+
+    // The enforcement agrees: the board rows are keyed RAW (that is what the
+    // caller addressed), so the gate must still find the CANONICAL `spaces` row.
+    db.get_board(&raw).expect("seed the raw-keyed board");
+    db.set_stage_next(&raw, "backlog", &["done".to_string()])
+        .expect("backlog → done only");
+    let card = db
+        .create_task(&raw, "governed through a symlink", None, None)
+        .expect("create_task");
+
+    let err = db
+        .move_task(&raw, &card.id, "approved")
+        .expect_err("the Switch is ON, so the gate must be ON too");
+    assert!(
+        matches!(err, BoardError::StrictMoveRefused { .. }),
+        "the enforcement read the flag through `space_key`, got {err:?}"
+    );
+    assert_eq!(
+        db.get_task(&card.id)
+            .expect("get_task")
+            .expect("card")
+            .stage_slug,
+        "backlog",
+        "and nothing was written"
+    );
+}
+
+// ── Task artifacts (issue #180, spec §1, ADR 0100) ──────────────────────────
+//
+// A **Task artifact** is a named markdown document owned by a Task: one row of
+// `task_artifacts` keyed `PRIMARY KEY (task_id, key)`. Everything the tests
+// below exist to protect follows from two decisions, and each one has a test
+// that can actually SEE it:
+//
+//   - the markdown lives IN the database (ADR 0100: a `docs/roadmap/` file is
+//     deleted on ship, so a file-backed artifact is content that dies when the
+//     work succeeds), and
+//   - the BOARD never carries it. The board payload carries KEYS — names only —
+//     so the payload-side test asserts the absence of the content, not merely
+//     the presence of the keys. A test that only checks keys are present cannot
+//     see a content leak, and that split is the whole design.
+//
+// There is NO artifact delete, NO versioning, and NO per-artifact metadata
+// column, and these tests deliberately do not grow any: a `status` column would
+// hand the board a second, contradictory state vocabulary (**Stage** is the only
+// state authority), and a delete verb would re-open ADR 0090's amendment item.
+
+/// Every `task_artifacts` row, read through an INDEPENDENT connection to the
+/// same file (the `link_rows` precedent in `commands/tasks/tests/seed.rs`): the
+/// assertions below ask what the DATABASE holds, not what a `Db` method chose to
+/// report about it, so a method that wrote nothing and returned a plausible meta
+/// still reddens.
+fn artifact_rows(db_path: &std::path::Path) -> Vec<(String, String, String, i64, i64)> {
+    let conn = rusqlite::Connection::open(db_path).expect("an independent connection");
+    let mut stmt = conn
+        .prepare(
+            "SELECT task_id, key, markdown, created_at, updated_at FROM task_artifacts \
+             ORDER BY rowid ASC",
+        )
+        .expect("prepares");
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })
+        .expect("queries");
+    rows.collect::<Result<_, _>>().expect("maps")
+}
+
+/// (the ADR 0090/0100 no-FK pin, extended to the fourth table) `task_artifacts`
+/// appears EXACTLY ONCE in `SCHEMA` and its DDL body carries NO `REFERENCES`.
+///
+/// The asymmetry with `task_sessions` is the point, so it is asserted BOTH ways
+/// in one place: the artifact table has no FK, the link table keeps its cascade.
+/// A reviewer adding the "obvious" `REFERENCES tasks(id)` to tidy the schema
+/// fails here — and what they would have broken is ADR 0090's own bug one level
+/// down: an artifact dying because a Space tab closed.
+#[test]
+fn task_artifacts_are_in_schema_and_carry_no_foreign_key() {
+    assert_eq!(
+        SCHEMA
+            .matches("CREATE TABLE IF NOT EXISTS task_artifacts")
+            .count(),
+        1,
+        "`task_artifacts` must appear EXACTLY ONCE in SCHEMA"
+    );
+    let ddl = SCHEMA
+        .split("CREATE TABLE IF NOT EXISTS task_artifacts")
+        .nth(1)
+        .expect("the task_artifacts DDL")
+        .split(";")
+        .next()
+        .expect("the task_artifacts DDL body");
+    assert!(
+        !ddl.contains("REFERENCES"),
+        "ADR 0100/0090: `task_artifacts` carries NO foreign key — an artifact that \
+         cascaded away with a Space tab is ADR 0090's bug one level down; got {ddl}"
+    );
+    // The columns, pinned from the DDL text: the shape spec §1 froze. A column
+    // renamed here and not in `Artifact` is a mapper bug the read-back tests
+    // would catch, but a column ADDED (a `status`, say) is invisible to those and
+    // is exactly the second state vocabulary the spec forbids.
+    for column in ["task_id", "key", "markdown", "created_at", "updated_at"] {
+        assert!(
+            ddl.contains(column),
+            "the task_artifacts DDL must declare `{column}`; got {ddl}"
+        );
+    }
+    assert!(
+        ddl.contains("PRIMARY KEY (task_id, key)"),
+        "the composite PK is what makes an overwrite an UPSERT — one row per key, \
+         ever; got {ddl}"
+    );
+    // And the contrast, so the asymmetry stays a decision rather than drift.
+    let links = SCHEMA
+        .split("CREATE TABLE IF NOT EXISTS task_sessions")
+        .nth(1)
+        .expect("the task_sessions DDL");
+    assert!(
+        links.contains("REFERENCES sessions(id) ON DELETE CASCADE"),
+        "`task_sessions` KEEPS its cascade (a Session can be deleted; a Task has no \
+         delete verb) — this pin is not a blanket ban on FKs"
+    );
+}
+
+/// (`write_artifact`, the UPSERT) two writes to one `(task_id, key)` leave ONE
+/// row, the second `markdown` wins, `created_at` SURVIVES and `updated_at` moves.
+///
+/// `PRIMARY KEY (task_id, key)` is what makes this an overwrite rather than a
+/// second card holding a second `spec`, so the row COUNT is a load-bearing
+/// assertion, not tidiness. `created_at` surviving is the other one: it is the
+/// artifact's age, and a `DO UPDATE SET` list that includes it silently re-dates
+/// every artifact the model touches.
+///
+/// MUTATION (compiles, changes what is returned): add `created_at = \
+/// excluded.created_at` to the `DO UPDATE SET` list — the third assertion reddens
+/// while the row count and the markdown stay green.
+#[test]
+fn write_artifact_upserts_one_row_per_key_and_the_second_wins() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-artifact-upsert-", "scratch");
+    let path = dir.join("t.db");
+    let db = Db::open(&path).expect("db should open");
+    let space = board_space("upsert");
+    let task = db
+        .create_task(&space, "upsert me", None, None)
+        .expect("create");
+
+    let first = db
+        .write_artifact(&task.id, "spec", "the first draft")
+        .expect("first write");
+    assert_eq!(first.key, "spec", "the meta names the key it wrote");
+    assert_eq!(
+        first.bytes,
+        "the first draft".len(),
+        "`bytes` is the UTF-8 BYTE length of what was written"
+    );
+
+    // now_ms() is millisecond-resolution; a sleep keeps `updated_at > created_at`
+    // a fact rather than a coin flip.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let second = db
+        .write_artifact(&task.id, "spec", "the second draft, rewritten")
+        .expect("second write");
+    assert_eq!(
+        second.bytes,
+        "the second draft, rewritten".len(),
+        "the second write's byte count is the SECOND document's"
+    );
+
+    let rows = artifact_rows(&path);
+    assert_eq!(
+        rows.len(),
+        1,
+        "ONE row per key, ever — a second row would put two `spec`s on one card; \
+         got {rows:?}"
+    );
+    let (row_task, row_key, row_markdown, row_created, row_updated) = &rows[0];
+    assert_eq!(row_task, &task.id, "the row is the card's");
+    assert_eq!(row_key, "spec", "under the same key");
+    assert_eq!(
+        row_markdown, "the second draft, rewritten",
+        "the second write's markdown wins"
+    );
+    assert_eq!(
+        *row_created, first.updated_at,
+        "`created_at` SURVIVES the overwrite — it is the artifact's age, not its \
+         last touch (the mutation this test exists for)"
+    );
+    assert!(
+        *row_updated > first.updated_at,
+        "`updated_at` moved: {} must be later than {}",
+        row_updated,
+        first.updated_at
+    );
+    assert_eq!(
+        second.updated_at, *row_updated,
+        "and the meta reports the row's own `updated_at`, not a second clock reading"
+    );
+
+    // Two DIFFERENT keys are two rows — the PK is the pair, not the key alone.
+    db.write_artifact(&task.id, "research", "findings")
+        .expect("a second key");
+    assert_eq!(
+        artifact_rows(&path).len(),
+        2,
+        "one row per (task_id, key): a Task holds zero or MORE artifacts"
+    );
+}
+
+/// (`write_artifact`, the gate) a `task_id` with no `tasks` row is refused with
+/// `MissingTask` and writes NOTHING.
+///
+/// This is the refusal ADR 0100 calls out by name: there is no FK to catch a
+/// dangling id, so the layer that knows the difference has to say so.
+///
+/// MUTATION: delete the existence check in `write_artifact` — the error assertion
+/// reddens and the row count becomes 1.
+#[test]
+fn write_artifact_refuses_a_missing_task_and_writes_nothing() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-artifact-missing-", "scratch");
+    let path = dir.join("t.db");
+    let db = Db::open(&path).expect("db should open");
+    db.get_board(&board_space("missing")).expect("seed");
+
+    let err = db
+        .write_artifact("tsk_missing", "spec", "content for nobody")
+        .expect_err("a Task that does not exist must be refused, not written against");
+    assert!(
+        matches!(err, BoardError::MissingTask(ref id) if id == "tsk_missing"),
+        "the refusal names the id it refused; got {err:?}"
+    );
+    let text = err.to_string();
+    assert!(
+        text.contains("tsk_missing") && text.contains("no task with id"),
+        "the Display sentence is `no task with id {{id}}` and carries the id; got {text}"
+    );
+    assert_eq!(
+        artifact_rows(&path).len(),
+        0,
+        "a rejection writes NOTHING — the `require_title` rule, at the storage seam"
+    );
+}
+
+/// (`get_artifact`) asking for something that is not there is an answer, not an
+/// error — and BOTH absences answer the same way: a missing key AND a missing
+/// Task are `Ok(None)`, the `get_task` shape.
+///
+/// The READ path never refuses where the WRITE path does. That asymmetry is
+/// deliberate (a card's dialog asks "is there a spec?" as an ordinary question)
+/// and it is the reason no new `BoardError` variant was needed.
+///
+/// MUTATION: map `QueryReturnedNoRows` to `Err(e.into())` instead of `None` — the
+/// two `Ok(None)` assertions become `Err`s.
+#[test]
+fn get_artifact_on_a_missing_artifact_is_ok_none() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-artifact-get-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("get");
+    let task = db
+        .create_task(&space, "read me", None, None)
+        .expect("create");
+
+    assert_eq!(
+        db.get_artifact(&task.id, "no-such-key").expect("read"),
+        None,
+        "a missing ARTIFACT is `Ok(None)`"
+    );
+    assert_eq!(
+        db.get_artifact("tsk_missing", "spec").expect("read"),
+        None,
+        "and a missing TASK answers the same way — the write path refuses, the read \
+         path reports absence (the `get_task` shape)"
+    );
+
+    db.write_artifact(&task.id, "spec", "# The spec\n\nbody")
+        .expect("write");
+    let found = db
+        .get_artifact(&task.id, "spec")
+        .expect("read")
+        .expect("the artifact is there now");
+    assert_eq!(found.task_id, task.id, "all five fields ride back");
+    assert_eq!(found.key, "spec");
+    assert_eq!(
+        found.markdown, "# The spec\n\nbody",
+        "the READ path carries content"
+    );
+    assert_eq!(
+        found.created_at, found.updated_at,
+        "a first write is born with both stamps equal"
+    );
+}
+
+/// (`Db::artifact_keys`) one card's keys, and an empty `Vec` — never an error,
+/// never a `None` — for a card with no artifacts.
+///
+/// MUTATION: return `Vec` of `markdown` instead of `key` — the content appears
+/// where a name belongs.
+#[test]
+fn artifact_keys_lists_one_tasks_keys_and_is_empty_for_none() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-artifact-keys-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("keys");
+    let with = db
+        .create_task(&space, "has artifacts", None, None)
+        .expect("create");
+    let without = db
+        .create_task(&space, "has none", None, None)
+        .expect("create");
+
+    db.write_artifact(&with.id, "spec", "one").expect("write");
+    db.write_artifact(&with.id, "research", "two")
+        .expect("write");
+
+    assert_eq!(
+        db.artifact_keys(&with.id).expect("keys"),
+        vec!["spec".to_string(), "research".to_string()],
+        "the keys, oldest write first (the `Db::task_sessions` order)"
+    );
+    assert_eq!(
+        db.artifact_keys(&without.id).expect("keys"),
+        Vec::<String>::new(),
+        "no artifacts is an empty list, not an error and not a None"
+    );
+}
+
+/// (`get_board`, the payload) every card carries its own artifact KEYS, and a
+/// card with none carries `[]`.
+///
+/// The other two fields are re-asserted here on purpose: the artifact SELECT is a
+/// FOURTH statement under the SAME lock as the #174 links read, and a mistake in
+/// how the rows are grouped would disturb the sessions/cost payload too.
+///
+/// MUTATION: drop the `artifact_keys` value from the `TaskCardView` construction
+/// (compile error) or filter on the wrong tuple element — the second card's keys
+/// appear on the first card.
+#[test]
+fn get_board_returns_each_card_with_its_artifact_keys_and_empty_for_none() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-board-artifacts-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("board-keys");
+    db.get_board(&space).expect("seed");
+    let first = db
+        .create_task(&space, "documented", None, None)
+        .expect("create");
+    let second = db
+        .create_task(&space, "undocumented", None, None)
+        .expect("create");
+
+    db.write_artifact(&first.id, "spec", "the spec")
+        .expect("write");
+    db.write_artifact(&first.id, "research", "the finding")
+        .expect("write");
+
+    let cards = board_cards(&db, &space);
+    assert_eq!(cards.len(), 2, "two cards on this board");
+    let first_card = cards
+        .iter()
+        .find(|card| card.task.id == first.id)
+        .expect("the first card");
+    let second_card = cards
+        .iter()
+        .find(|card| card.task.id == second.id)
+        .expect("the second card");
+
+    assert_eq!(
+        first_card.artifact_keys,
+        vec!["spec".to_string(), "research".to_string()],
+        "the card that HAS artifacts carries both keys"
+    );
+    assert_eq!(
+        second_card.artifact_keys,
+        Vec::<String>::new(),
+        "the card with none carries `[]` — a REQUIRED field, so it is present and \
+         empty rather than absent"
+    );
+    for card in [&first_card, &second_card] {
+        assert!(
+            card.sessions.is_empty(),
+            "the artifact read did not disturb the #174 sessions payload: {:?}",
+            card.sessions
+        );
+        assert_eq!(
+            card.cost_usd, None,
+            "…nor the cost (`None`, never `Some(0.0)` — ADR 0082)"
+        );
+    }
+}
+
+/// (spec §1, the split's whole point) the board payload carries the artifact
+/// KEYS and NOT ONE BYTE of the markdown.
+///
+/// This is the test the key-presence assertions CANNOT substitute for: a payload
+/// that lists `spec` AND ships the document passes every "are the keys there?"
+/// assertion. So the sentinel is asserted absent from the SERIALIZED payload,
+/// while the key is asserted present in the same payload.
+///
+/// MUTATION: add `markdown` to the board's artifact SELECT and put it in the
+/// card — the keys stay green and this test reddens. That is the leak.
+#[test]
+fn the_board_payload_carries_keys_only_never_the_markdown() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-board-nocontent-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("no-content");
+    db.get_board(&space).expect("seed");
+    let task = db
+        .create_task(&space, "leaky board", None, None)
+        .expect("create");
+
+    const SENTINEL: &str = "TOP-SECRET-SENTINEL-9f3a1c-do-not-ship-this-to-the-board";
+    db.write_artifact(&task.id, "spec", SENTINEL)
+        .expect("write an artifact whose content is unmistakable");
+
+    let board = db.get_board(&space).expect("get_board");
+    let json = serde_json::to_string(&board).expect("the board serializes");
+    assert!(
+        !json.contains(SENTINEL),
+        "the board payload must carry NO artifact content — a payload that ships the \
+         markdown makes the keys-only split a lie. Found the sentinel in {json}"
+    );
+    let cards = board_cards(&db, &space);
+    assert_eq!(
+        cards[0].artifact_keys,
+        vec!["spec".to_string()],
+        "…while the NAME does ride along, which is what makes the assertion above a \
+         leak test rather than an empty-payload test"
+    );
+}
+
+/// (`artifact_keys_for_space`) the keys are scoped by `task_id IN (SELECT id
+/// FROM tasks WHERE space_path = ?1)` — a card of ANOTHER Space contributes
+/// none, in either direction.
+///
+/// The scoping question is "whose card is this", and only `task_id` answers it
+/// (the #174 links comment, restated): a `cwd` filter would drop a card whose
+/// Space is not a directory and pull in a neighbour's.
+///
+/// MUTATION: drop the `IN (SELECT …)` subquery so the statement scans the whole
+/// table — Space B's key appears in Space A's answer and vice versa.
+#[test]
+fn artifact_keys_for_space_is_scoped_to_the_space() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-artifact-scope-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let a = board_space("scope-a");
+    let b = board_space("scope-b");
+    db.get_board(&a).expect("seed a");
+    db.get_board(&b).expect("seed b");
+    let task_a = db.create_task(&a, "in A", None, None).expect("create");
+    let task_b = db.create_task(&b, "in B", None, None).expect("create");
+
+    db.write_artifact(&task_a.id, "a-only-key", "A content")
+        .expect("write");
+    db.write_artifact(&task_b.id, "b-only-key", "B content")
+        .expect("write");
+
+    let keys_a = db.artifact_keys_for_space(&a).expect("keys for A");
+    let keys_b = db.artifact_keys_for_space(&b).expect("keys for B");
+    assert_eq!(
+        keys_a,
+        vec![(task_a.id.clone(), vec!["a-only-key".to_string()])],
+        "Space A's answer is A's card and A's key, and nothing else"
+    );
+    assert_eq!(
+        keys_b,
+        vec![(task_b.id.clone(), vec!["b-only-key".to_string()])],
+        "and the same holds for B — the scoping is symmetric, not a filter that \
+         happens to work in one direction"
+    );
+    // The shape itself is the no-content guarantee for this method: a `String`
+    // key list has nowhere to put a document.
+    assert!(
+        !keys_a
+            .iter()
+            .flat_map(|(_, keys)| keys.iter())
+            .any(|k| k.contains("A content")),
+        "keys only, by shape"
+    );
+
+    // An empty Space answers `vec![]`, not an error.
+    assert_eq!(
+        db.artifact_keys_for_space("/board-space/scope-empty")
+            .expect("an empty space is an answer"),
+        Vec::<(String, Vec<String>)>::new(),
+        "a Space with no cards has no keys"
+    );
+}
+
+/// (ADR 0090, one level down) closing a Space tab leaves the artifact rows in
+/// place — the same survival `delete_space_leaves_the_board_rows_in_place` pins
+/// for the card, now for the document the card owns.
+///
+/// MUTATION: add `REFERENCES tasks(id) ON DELETE CASCADE` to the DDL and a
+/// `DELETE FROM task_artifacts` to `delete_space` — the count drops to 0.
+#[test]
+fn delete_space_leaves_the_artifact_rows_in_place() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-artifact-orphan-", "scratch");
+    let path = dir.join("t.db");
+    let db = Db::open(&path).expect("db should open");
+    let space = board_space("tab-close");
+    db.upsert_space(&space, false).expect("upsert_space");
+    db.get_board(&space).expect("seed the stages");
+    let task = db
+        .create_task(&space, "survive the tab close", None, None)
+        .expect("create");
+    db.write_artifact(&task.id, "spec", "the finding the research session wrote")
+        .expect("write");
+
+    db.delete_space(&space)
+        .expect("delete_space (a tab close deletes from `spaces` alone)");
+    assert!(
+        db.find_space(&space).expect("find_space").is_none(),
+        "the Space row is gone — that is what a tab close does"
+    );
+
+    let rows = artifact_rows(&path);
+    assert_eq!(
+        rows.len(),
+        1,
+        "ADR 0090: the artifact SURVIVES the tab close — a document that died \
+         because a folder was closed is the bug this table exists to prevent; \
+         got {rows:?}"
+    );
+    assert_eq!(rows[0].2, "the finding the research session wrote");
+    assert_eq!(
+        db.get_artifact(&task.id, "spec")
+            .expect("get_artifact")
+            .expect("the artifact is still readable"),
+        Artifact {
+            task_id: task.id.clone(),
+            key: "spec".to_string(),
+            markdown: "the finding the research session wrote".to_string(),
+            created_at: rows[0].3,
+            updated_at: rows[0].4,
+        },
+        "and it reads back through the same path, unchanged"
+    );
+}
+
+/// (why the gate is load-bearing, pinned at the SQL level) SQLite does NOT
+/// reject a dangling `task_id` — the table has no FK — so the ONLY thing between
+/// a dangling artifact and the database is the gate in `write_artifact`.
+///
+/// This test asserts the HOLE, not the protection (#3 above pins the
+/// protection). It exists so a future reader does not "simplify" the gate away
+/// on the assumption that the schema would catch it anyway.
+///
+/// MUTATION: add `REFERENCES tasks(id)` to the DDL and this direct INSERT starts
+/// failing — which is the point: the schema would then be doing what the gate
+/// does, and ADR 0090's no-cascade rule would be broken to get there.
+#[test]
+fn write_artifact_refuses_a_dangling_task_id_there_is_no_fk_to_catch_it() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-artifact-dangling-", "scratch");
+    let path = dir.join("t.db");
+    let db = Db::open(&path).expect("db should open");
+    db.get_board(&board_space("dangling")).expect("seed");
+
+    // The gate refuses…
+    db.write_artifact("tsk_never_existed", "spec", "orphan")
+        .expect_err("the gate refuses a Task that is not there");
+
+    // …but the SCHEMA would have accepted it. Foreign keys are ON in this
+    // database (`Db::open` turns the pragma on — the reason `link_session` can
+    // rely on the `sessions` FK), so a successful insert here is proof about the
+    // DDL, not about a pragma left off.
+    let conn = rusqlite::Connection::open(&path).expect("an independent connection");
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("turn the FK enforcement ON for this connection too");
+    let inserted = conn.execute(
+        "INSERT INTO task_artifacts (task_id, key, markdown, created_at, updated_at) \
+         VALUES ('tsk_never_existed', 'spec', 'orphan', 1, 1)",
+        [],
+    );
+    assert_eq!(
+        inserted.expect("the statement is valid SQL against this DDL"),
+        1,
+        "the INSERT SUCCEEDS with FK enforcement on — there is no FK to catch it"
+    );
+    assert!(
+        db.get_task("tsk_never_existed")
+            .expect("get_task")
+            .is_none(),
+        "…and the row now dangles: no `tasks` row owns it"
+    );
+    assert_eq!(
+        artifact_rows(&path).len(),
+        1,
+        "so the dangling row EXISTS in the database, written by the caller that the \
+         gate turned away. This is what removing the gate would let through."
     );
 }

@@ -1,11 +1,33 @@
 //! Tauri commands for the per-Space Task board (spec §2 — ADR 0090).
 //!
-//! EIGHT commands. Seven of them are a `spawn_blocking` delegation to `impl Db`
-//! in `storage/db.rs`, in the shape `commands/spaces.rs` sets:
+//! EIGHTEEN commands. Seventeen of them are a `spawn_blocking` delegation to
+//! `impl Db` in `storage/db.rs`, in the shape `commands/spaces.rs` sets:
 //! `State<'_, Arc<Db>>` first, `state.inner().clone()` into the closure,
-//! `Result<_, TasksError>` out. The eighth, [`start_task_session`], returns the
+//! `Result<_, TasksError>` out. The eighteenth, [`start_task_session`], returns the
 //! `SessionError` family instead because it is a Session command wearing board
 //! clothing — see its own doc.
+//!
+//! The seventeen delegations are the seven the board shipped with
+//! ([`get_board`], [`create_task`], [`get_task`], [`edit_task`], [`move_task`],
+//! [`reorder_tasks`], [`link_session`]) plus the eight issue #179 added: the six
+//! Stage verbs ([`create_stage`], [`rename_stage`], [`set_stage_skill`],
+//! [`set_stage_next`], [`reorder_stages`], [`delete_stage`]) and the
+//! Strict-workflow pair ([`set_board_strict`], [`get_board_strict`]) — plus the
+//! two issue #180 artifact commands ([`write_artifact`], [`get_artifact`]), which
+//! delegate too but refuse three things BEFORE the storage layer is reached (see
+//! the artifact section for why each refusal lives here).
+//!
+//! Three of the seventeen do NOT go through [`board_call`], and it is not an
+//! oversight: [`set_board_strict`] and [`get_board_strict`] write and read the
+//! `spaces` table, so their storage layer answers `DbError` rather than
+//! `BoardError`, and `board_call` is typed to `BoardError`. They go through
+//! [`db_call`], its twin for that family — the same two-layer flattening, mapping
+//! every failure to `Other` because `DbError` has no absence cases to preserve.
+//! `commands/spaces.rs` maps the same `DbError` by hand for the same reason, and no
+//! `From<DbError> for TasksError` is added here. [`write_artifact`] is the third:
+//! its body composes command-layer refusals that only exist in the wire family, so
+//! it goes through [`wire_call`].
+//!
 //! The blocking rule is the file rule from `commands/files/mod.rs`, restated in
 //! `spaces.rs`: SQLite work goes on a worker thread, and it is
 //! `tauri::async_runtime::spawn_blocking`, not `tokio::task::spawn_blocking` —
@@ -31,7 +53,9 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::agent::{debuglog, EventSink, SessionError, SessionInfo, SessionManager, TasksError};
-use crate::storage::{Db, StageWithTasks, TaskRow, TaskSessionRow};
+use crate::storage::{
+    Artifact, ArtifactMeta, Db, StageRow, StageWithTasks, TaskRow, TaskSessionRow,
+};
 
 /// What a `move_task` reports: the destination stage's `on_enter`, plus — only
 /// when this layer owed the caller a boost it could not deliver — why.
@@ -91,6 +115,46 @@ fn require_title(raw: &str) -> Result<String, TasksError> {
     crate::agent::clean_title(raw, None).ok_or(TasksError::EmptyTitle)
 }
 
+/// Derive a Stage slug from a label (spec §5): lowercase; every run of
+/// whitespace and every non-`[a-z0-9-]` character collapses to a single `-`; a
+/// label with no slug characters at all derives `""`, which `create_stage`
+/// refuses.
+///
+/// A WIRE rule, so it lives here and not in `storage/db.rs` — the exact reason
+/// [`require_title`] is here too: text mangling belongs at the boundary, and the
+/// storage layer has no business importing the agent layer (nor a second copy of
+/// this chain). The rule is also why `rename_stage` does NOT call this: a rename
+/// changes the LABEL only, and the slug is frozen (spec §5), so re-deriving it
+/// would move the key that every `tasks.stage_slug` in the column points at.
+///
+/// Deliberately NOT a `clean_title` reuse: that cleaner collapses whitespace and
+/// strips quotes for a title that is displayed raw, whereas a slug must also fold
+/// punctuation (`"Deep Dives!"` → `deep-dives`, not `deep dives!`) because it is
+/// the string `move_task`'s error and a card's `<task stage="…">` block report.
+fn stage_slug_from_label(label: &str) -> String {
+    label
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphabetic() {
+                // Uppercase FOLDS to lowercase rather than becoming a separator.
+                // Spec §5's first word is "lowercase", and its own example is
+                // `"Deep Dives!"` → `deep-dives`: treating `D` as a non-`[a-z0-9-]`
+                // character would spell that `eep-ives` and quietly drop the first
+                // letter of every capitalised label a user types.
+                c.to_ascii_lowercase()
+            } else if c.is_ascii_digit() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 /// Flatten the TWO error layers a board command crosses: the join (the worker
 /// thread died) and the storage error (the database refused, or the row is not
 /// there).
@@ -117,6 +181,56 @@ fn board_call<T, E: std::fmt::Display>(
 ) -> Result<T, TasksError> {
     match joined {
         Ok(inner) => inner.map_err(TasksError::from),
+        Err(join) => Err(TasksError::Other(join.to_string())),
+    }
+}
+
+/// [`board_call`]'s twin for the two commands that speak to the `spaces` table.
+///
+/// The board's storage layer answers `BoardError`, whose two absence cases must
+/// stay distinguishable from a database failure — hence the `From` impl
+/// `board_call` applies. The Strict-workflow pair reads and writes
+/// `spaces.board_strict`, so its storage layer answers `DbError`: a three-variant
+/// type with NO absence cases at all (absence is a `false`/`Ok(false)` there, by
+/// `set_space_trusted`'s precedent). Nothing may be flattened INTO `NotFound`
+/// because there is nothing to flatten, and no `From<DbError> for TasksError` is
+/// added for the same reason `tasks` has none for the rest of the family: a
+/// blanket `Database(_)` mapping would be a second error-flattening path in this
+/// file, and `commands/spaces.rs` already maps the same `DbError` by hand.
+///
+/// So every failure of either kind — a `DbError` from SQLite, or the join — is
+/// `Other`, and the sentence is the storage layer's. Same generic-over-`E` shape
+/// as `board_call` for the same stated reason: `spawn_blocking` hands back a
+/// `tauri::Error` that this file's dialect does not name.
+fn db_call<T, E: std::fmt::Display>(
+    joined: Result<Result<T, crate::storage::DbError>, E>,
+) -> Result<T, TasksError> {
+    match joined {
+        Ok(inner) => inner.map_err(|e| TasksError::Other(e.to_string())),
+        Err(join) => Err(TasksError::Other(join.to_string())),
+    }
+}
+
+/// The third flattener in this file, for the two commands whose body already
+/// answers [`TasksError`] rather than a storage family.
+///
+/// Why a third and not a reuse: the artifact commands' refusals are a MIX — the
+/// key grammar and the byte cap are command-layer verdicts that only exist in the
+/// wire family, while a missing Task or a bad statement arrives from `BoardError`.
+/// So the core composes both into `TasksError` (the type the command returns
+/// anyway) and this helper's only job is the outer `JoinError` arm — the same
+/// mapping [`board_call`] and [`db_call`] make, for the same stated reason (this
+/// file's dialect does not name `tauri::Error`).
+///
+/// The distinction the other two helpers exist to protect is NOT lost: the core
+/// maps its own `BoardError` through `TasksError::from`, which is exactly where
+/// `MissingTask` → `NotFound` happens. Nothing is flattened into `Other` that had
+/// a kind of its own.
+fn wire_call<T, E: std::fmt::Display>(
+    joined: Result<Result<T, TasksError>, E>,
+) -> Result<T, TasksError> {
+    match joined {
+        Ok(inner) => inner,
         Err(join) => Err(TasksError::Other(join.to_string())),
     }
 }
@@ -159,7 +273,7 @@ fn handoff_instructions(from_stage: Option<&str>, to_stage: &str) -> String {
     )
 }
 
-/// The board for one Space: the five default stages seed lazily on this read
+/// The board for one Space: the six default stages seed lazily on this read
 /// (spec §2), so opening a board is what creates a Space's columns.
 #[tauri::command]
 pub async fn get_board(
@@ -381,6 +495,430 @@ pub async fn link_session(
             db.link_session(&task_id, &session_id, stage_slug.as_deref())
         })
         .await,
+    )
+}
+
+// ── issue #179 — the configurable Stage (spec §4/§4.1/§5, ADRs 0098 + 0099) ──
+//
+// The board's columns stop being frozen data. Six verbs edit a Stage row, and one
+// per-Space flag decides whether the graph those rows describe is advice or a
+// rule. All eight take ONLY `Arc<Db>` — none of them starts or compacts a Session,
+// so none of them needs `Arc<SessionManager>`, and the file's "two entries need a
+// second managed type" note stays true of `move_task` and `start_task_session`
+// alone.
+
+/// Add a column to one Space's board.
+///
+/// The slug is DERIVED HERE, before the blocking hop: label→slug is text mangling
+/// and `storage/db.rs` has no business owning a display-string rule (the
+/// `require_title` precedent, one file over). The derivation is the whole reason a
+/// collision is possible at all, so the storage layer's refusal names the slugs
+/// that ARE taken rather than suffixing — a silent `spike-2` is a slug nobody typed
+/// (spec §5).
+///
+/// `skill` is the ADR 0098 launch Skill: the `$name` a Session started from this
+/// column loads. `None` (or `null` from the wire) means the column launches
+/// nothing, which is the state every pre-#179 column is in.
+#[tauri::command]
+pub async fn create_stage(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+    label: String,
+    skill: Option<String>,
+) -> Result<StageRow, TasksError> {
+    let slug = stage_slug_from_label(&label);
+    if slug.is_empty() {
+        // Refused HERE so the sentence is about the label the user typed rather
+        // than about a slug they never saw. Storage refuses an empty slug too — it
+        // is the last writer and cannot trust its caller to have mangled text —
+        // so this early return is a nicer message, not the only guard.
+        return Err(TasksError::Other(
+            "cannot create a stage from this label".to_string(),
+        ));
+    }
+    let db = state.inner().clone();
+    board_call(
+        tauri::async_runtime::spawn_blocking(move || {
+            db.create_stage(&space_path, &slug, &label, skill.as_deref())
+        })
+        .await,
+    )
+}
+
+/// Rename a column's LABEL. The slug is FROZEN (spec §5) — see
+/// `Db::rename_stage` for why writing the key would orphan every card in it.
+#[tauri::command]
+pub async fn rename_stage(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+    slug: String,
+    label: String,
+) -> Result<StageRow, TasksError> {
+    let db = state.inner().clone();
+    board_call(
+        tauri::async_runtime::spawn_blocking(move || db.rename_stage(&space_path, &slug, &label))
+            .await,
+    )
+}
+
+/// Set or clear the Skill a Session started from this column loads (ADR 0098).
+///
+/// `skill: None` clears it to NULL. This is the write that replaces
+/// `lib/taskPrompt.ts`'s `TASK_LAUNCH_MODES` switch — the reason that constant was
+/// deleted rather than kept as a fallback is ADR 0098's, and in short: two
+/// authorities deciding one question, and the database was already winning.
+#[tauri::command]
+pub async fn set_stage_skill(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+    slug: String,
+    skill: Option<String>,
+) -> Result<StageRow, TasksError> {
+    let db = state.inner().clone();
+    board_call(
+        tauri::async_runtime::spawn_blocking(move || {
+            db.set_stage_skill(&space_path, &slug, skill.as_deref())
+        })
+        .await,
+    )
+}
+
+/// Set one column's outgoing transitions (ADR 0099). `slugs` is the button-render
+/// order and arrives verbatim — this layer does not sort, dedupe or filter it,
+/// because a dropped destination is a workflow that shrank; `Db::set_stage_next`
+/// refuses an unknown slug or a self-loop by name.
+///
+/// An EMPTY `slugs` is a meaningful write, not a no-op: it stores `[]`, which means
+/// "this column leads nowhere" — distinct from NULL's "unconfigured, unconstrained".
+#[tauri::command]
+pub async fn set_stage_next(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+    slug: String,
+    slugs: Vec<String>,
+) -> Result<StageRow, TasksError> {
+    let db = state.inner().clone();
+    board_call(
+        tauri::async_runtime::spawn_blocking(move || db.set_stage_next(&space_path, &slug, &slugs))
+            .await,
+    )
+}
+
+/// Rewrite the board's column order in one pass.
+///
+/// `slugs` is the board's whole visible slice in its new order and the index
+/// becomes each column's stored `sort_order`, so this layer must NOT sort, dedupe
+/// or tidy it — the order it is handed IS the order that lands. The fourth instance
+/// of the verb (`reorder_spaces` / `reorder_sessions` / `reorder_tasks` / this) and
+/// it follows `reorder_spaces`: an unknown slug is a silent no-op, because the
+/// editor passes every column it shows.
+///
+/// Writes `sort_order` ONLY. ADR 0099 splits the two questions on purpose —
+/// `sort_order` is "where does this render", `next_slugs` is "what may a Task go to
+/// next" — and neither is derived from the other, so a drag that reorders columns
+/// cannot quietly change which drags are legal.
+#[tauri::command]
+pub async fn reorder_stages(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+    slugs: Vec<String>,
+) -> Result<(), TasksError> {
+    let db = state.inner().clone();
+    board_call(
+        tauri::async_runtime::spawn_blocking(move || db.reorder_stages(&space_path, &slugs)).await,
+    )
+}
+
+/// Delete a column, optionally relocating its cards first.
+///
+/// `relocate_to` is the parameter that makes the editor's "where do these cards
+/// go?" step answerable in one round trip: `None` with cards inside is the
+/// refusal (naming the count and the slugs available), `Some(slug)` is the bulk
+/// relocation. The relocation is ONE `UPDATE` inside the delete's transaction and
+/// NEVER a `move_task` per card — `move_task` reads the destination's `on_enter`
+/// and the boost happens in THIS layer, so reusing it here would fire one
+/// compaction per card as a side effect of deleting a column (spec §4.1 spells the
+/// asymmetry out because reusing the verb reads like good deduplication). That is
+/// also why this command returns `()` and not an outcome: there is no
+/// `MoveOutcome` to report, by design.
+#[tauri::command]
+pub async fn delete_stage(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+    slug: String,
+    relocate_to: Option<String>,
+) -> Result<(), TasksError> {
+    let db = state.inner().clone();
+    board_call(
+        tauri::async_runtime::spawn_blocking(move || {
+            db.delete_stage(&space_path, &slug, relocate_to.as_deref())
+        })
+        .await,
+    )
+}
+
+/// The Strict-workflow opt-in (ADR 0099): does this Space's transition graph BIND
+/// its drags, or only describe them?
+///
+/// Lands in THIS file rather than `commands/spaces.rs` even though it writes the
+/// `spaces` table, because it is the board's toggle: it gates `move_task`, it
+/// co-terminates with the six Stage commands it configures, and spec §4 spells its
+/// signature in the board's command list. Which table a command writes is not what
+/// groups commands — what the caller is doing with them is.
+///
+/// Not `board_call`: the storage call answers `DbError`, not `BoardError`, and
+/// `board_call` is typed to the latter. The `Result<bool, DbError>` maps by hand,
+/// exactly as `commands/spaces.rs` maps the same `Result` from
+/// `set_space_trusted`; no `From<DbError> for TasksError` is added, since `tasks`
+/// has no blanket `Database(_)` mapping to lean on and inventing one here would put
+/// a second error-flattening path in the file. Whether a row matched is a fact the
+/// board does not need (a Space with no row is Strict OFF, and the read says so),
+/// so the `bool` is dropped on the way out.
+#[tauri::command]
+pub async fn set_board_strict(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+    strict: bool,
+) -> Result<(), TasksError> {
+    let db = state.inner().clone();
+    // The `bool` (did a `spaces` row match?) is dropped on the way out: a Space
+    // with no row is Strict OFF, and `get_board_strict` says so, so the board has
+    // nothing to do with the distinction. Spec §4's signature is `→ ()`.
+    db_call(
+        tauri::async_runtime::spawn_blocking(move || db.set_board_strict(&space_path, strict))
+            .await,
+    )
+    .map(|_matched| ())
+}
+
+/// Read the Strict-workflow flag back (ADR 0099).
+///
+/// The write alone would leave the flag invisible: the Stage editor's
+/// `Strict workflow` Switch has to be SEEDED from the stored value, and a board
+/// header's Strict marker reads the same thing. So the read and the enforcement are
+/// one contract — `Db::board_strict` keys `spaces` by `space_key` exactly as
+/// `move_task`'s gate does, and both answer `false` for a Space with no `spaces`
+/// row. The failure that contract prevents is the interesting one: a Switch showing
+/// Strict ON over a board whose drags are all accepted.
+///
+/// The `bool` crosses the wire as a primitive — no board payload changes shape, so
+/// no board reader, optimistic write, or reversion moves.
+#[tauri::command]
+pub async fn get_board_strict(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+) -> Result<bool, TasksError> {
+    let db = state.inner().clone();
+    db_call(tauri::async_runtime::spawn_blocking(move || db.board_strict(&space_path)).await)
+}
+
+// ── Task artifacts (issue #180 D1, spec §1/§2, ADR 0100) ────────────────────
+//
+// TWO commands, and D1 ships them as a HUMAN surface only: nothing here
+// advertises a verb to a model. There is no `trait TaskStore`, no `tool_specs()`
+// entry, no `execute_tool` arm and no `<artifacts>` launch block — those are D2,
+// and the launch block waits for the verbs that make its sentence true (spec,
+// "Why `<artifacts>` waits for D2"). D1 is independently useful because a person
+// can write and read a Task's documents through these two commands today.
+// `commands/tasks/tests/artifacts.rs::d1_ships_no_model_facing_artifact_verb`
+// pins the boundary from the source text, so an early D2 leak is a red test.
+
+/// The artifact markdown ceiling: 256 KB (spec §1).
+///
+/// A CONST ALIAS of [`Db::MAX_ARTIFACT_MARKDOWN_BYTES`], not a second number.
+/// Rust cannot `use` an associated const by path, so this spells it as an alias —
+/// the VALUE still comes from storage, so editing storage's cap moves this one and
+/// a divergent pair is not constructible. There is ONE cap and it lives in storage,
+/// because storage is the single path BOTH doors to `task_artifacts` pass through:
+/// this command, and D2's `impl TaskStore for Db`, which the `write_artifact` TOOL
+/// reaches through. D1 owned the constant HERE and storage checked nothing, so the
+/// tool path had no bound at all — and the bound is not decorative: the document
+/// crosses a JSONL pipe on the way to the Worker (the Worker has no `Db`; the
+/// Supervisor is the sole SQLite writer, ADR 0025), F1's grounding measured that the
+/// crate's stdio JSONL readers carry NO line cap (the 1 MiB guard is the daemon
+/// socket, a different transport), so an uncapped `TEXT` is an uncapped FRAME, and
+/// the alternative to refusing is a truncated spec that reads as a complete one.
+///
+/// Modelled on `MAX_IMAGE_BYTES` in `agent/session/mod.rs`. It stays spelled
+/// `MAX_ARTIFACT_MARKDOWN_BYTES` in this module so this file's tests and every
+/// existing reader keep their name.
+pub(crate) const MAX_ARTIFACT_MARKDOWN_BYTES: usize = Db::MAX_ARTIFACT_MARKDOWN_BYTES;
+
+/// Validate an artifact key, or refuse it — never clean it.
+///
+/// The grammar is `[a-z0-9][a-z0-9-]{0,39}`, and the predicate that decides it is
+/// [`Db::artifact_key_is_well_formed`] in storage. This function deliberately does
+/// NOT re-spell the character classes: two spellings of one grammar is how a rule
+/// with two entry points grows two different answers, and entry points are exactly
+/// what it now has. What this wrapper owns is the WIRE TYPE — the same refusal as
+/// [`TasksError::BadArtifactKey`], naming the key and the grammar.
+///
+/// LOAD-BEARING, NOT COSMETIC: a key is interpolated into the `<task>` launch block
+/// (ADR 0100). Stated honestly: `src/lib/taskPrompt.ts` runs every key through
+/// `escapeAttr`, so an ill-formed key is NOT a live injection hole in that block
+/// today. What this rule protects is the INVARIANT the ADR states — keys are
+/// grammar-shaped — which the tool's door was not holding, so a model could persist
+/// `My Spec` that a person could not, and the next surface that interpolates a key
+/// WITHOUT escaping inherits the bug from a row this grammar exists to make
+/// impossible. That is also why this rule REFUSES where [`require_title`] CLEANS —
+/// a mangled key is a different key, and silently renaming a document the caller
+/// asked for is the same class of lie as writing a title nobody typed.
+pub(crate) fn require_artifact_key(raw: &str) -> Result<String, TasksError> {
+    if Db::artifact_key_is_well_formed(raw) {
+        // Rejects, never cleans: the caller's spelling comes back UNCHANGED, which
+        // `require_artifact_key_validates_the_grammar` pins for every accepted key.
+        Ok(raw.to_string())
+    } else {
+        Err(TasksError::BadArtifactKey(raw.to_string()))
+    }
+}
+
+/// The byte-cap check, split out so the refusal is testable without `State`.
+///
+/// Refused and NEVER truncated. A truncation would read as a complete spec —
+/// a document that ends mid-sentence carries no signal that it is incomplete,
+/// which is the confident-well-formed-lie shape this repo keeps documenting.
+///
+/// The NUMBER comes from storage (see [`MAX_ARTIFACT_MARKDOWN_BYTES`]); what lives
+/// here is the `TasksError` shape, which carries `size`/`max` a second time as
+/// envelope keys so a frontend need not parse prose (ADR 0063).
+fn require_artifact_size(markdown: &str) -> Result<(), TasksError> {
+    if markdown.len() > MAX_ARTIFACT_MARKDOWN_BYTES {
+        return Err(TasksError::ArtifactTooLarge {
+            size: markdown.len(),
+            max: MAX_ARTIFACT_MARKDOWN_BYTES,
+        });
+    }
+    Ok(())
+}
+
+/// [`write_artifact`]'s testable core (the `start_task_session_inner` precedent —
+/// `tauri::State` cannot be built in a unit test).
+///
+/// THREE refusals, in this order, and each one writes NOTHING:
+///
+///  1. the key grammar ([`require_artifact_key`]) — a key outside the ADR 0100
+///     grammar, which the launch block escapes today but must not come to depend on;
+///  2. the byte cap ([`require_artifact_size`]) — refused, never truncated;
+///  3. a missing Task — the gate below.
+///
+/// ALL THREE are re-checked by `Db::write_artifact`, and that is now the rule's
+/// home rather than a courtesy: D2's `impl TaskStore for Db` is a second door to
+/// `task_artifacts` — the one the `write_artifact` TOOL reaches through — and it
+/// skipped this function entirely, so for a while the model could persist what the
+/// human could not. These pre-checks stay because they answer `TasksError` with the
+/// friendlier envelope (the `artifact_too_large` `size`/`max` keys) and because a
+/// rejection here never spends a connection; `From<BoardError> for TasksError` maps
+/// the storage arms onto the SAME variants and sentences, so the two doors are
+/// indistinguishable on the wire.
+/// `the_storage_artifact_refusals_keep_the_command_envelope_exactly` pins that
+/// equivalence, and `tests/fulcrum_seams.rs` pins the storage half.
+///
+/// The `get_task` gate is NOT redundant with `Db::write_artifact`'s own refusal,
+/// and it is worth saying so because it looks redundant: `task_artifacts.task_id`
+/// carries NO foreign key (ADR 0100, for ADR 0090's reason — the board must
+/// survive a tab close, so nothing here cascades), so SQLite will not catch a
+/// dangling Task id. A missing Task is therefore a deterministic error HERE, at the
+/// seam that knows the difference, and ALSO one at the storage layer. Both refuse
+/// on purpose: this refusal is what a caller sees, the storage one is what makes
+/// the hole impossible to reach through any caller that skips this command. That
+/// is `write_task_session_link`'s gate and its reasoning, copied.
+///
+/// Returns [`ArtifactMeta`] — identity, the fresh `updatedAt`, the byte count —
+/// and NEVER the markdown: the caller just sent it.
+pub(crate) fn write_artifact_core(
+    db: &Db,
+    task_id: &str,
+    key: &str,
+    markdown: &str,
+) -> Result<ArtifactMeta, TasksError> {
+    let key = require_artifact_key(key)?;
+    require_artifact_size(markdown)?;
+    if db
+        .get_task(task_id)
+        .map_err(|e| TasksError::Database(format!("task read {task_id}: {e}")))?
+        .is_none()
+    {
+        // Rides the EXISTING `NotFound` kind — `From<BoardError>` already maps a
+        // missing Task there, so no new wire string was invented for a case the
+        // wire already means.
+        return Err(TasksError::NotFound(format!("no task with id {task_id}")));
+    }
+    db.write_artifact(task_id, &key, markdown)
+        .map_err(TasksError::from)
+}
+
+/// [`get_artifact`]'s testable core. One delegation, no gate.
+///
+/// The command deliberately does NOT check `get_task` first: absence is an
+/// ANSWER on the read path, not an error, and a missing Task and a missing key are
+/// the same reply (`Ok(None)`) — the [`get_task`] command's own shape. Gating here
+/// would make the dialog's ordinary question "does this card have a spec?" a
+/// failure mode.
+///
+/// Answers `BoardError` (not the wire family) because it composes NO command-layer
+/// refusal — there is nothing here to add to the wire vocabulary — so the command
+/// reuses [`board_call`] like the fifteen other delegations do, and no extra
+/// flattener is invented for a read that has no opinions.
+pub(crate) fn get_artifact_core(
+    db: &Db,
+    task_id: &str,
+    key: &str,
+) -> Result<Option<Artifact>, crate::storage::BoardError> {
+    db.get_artifact(task_id, key)
+}
+
+/// Write (UPSERT) one Task artifact; answers `{ key, updatedAt, bytes }` and
+/// NEVER the markdown (the caller has it — spec §2).
+///
+/// One row per `(task_id, key)`, ever: the second write wins and `createdAt`
+/// survives. Refuses (writing NOTHING) a key outside `[a-z0-9][a-z0-9-]{0,39}`
+/// (`bad_artifact_key`, naming the key and the grammar), a markdown over 256 KB
+/// (`artifact_too_large`, naming the limit AND the size), or a Task that does not
+/// exist (`not_found`). See [`write_artifact_core`] for why each refusal is where
+/// it is.
+///
+/// Both artifact commands take ONLY the `Db` — no `SessionManager`, no `EventSink`
+/// — because they are pure database writes, unlike [`start_task_session`].
+#[tauri::command]
+pub async fn write_artifact(
+    state: State<'_, Arc<Db>>,
+    task_id: String,
+    key: String,
+    markdown: String,
+) -> Result<ArtifactMeta, TasksError> {
+    // The two PURE refusals run before this hop, so a rejection never even spends
+    // a worker thread — the `create_task` title rule, in the same building. They
+    // are re-checked inside [`write_artifact_core`] (cheap, and what makes the core
+    // safe for a caller that did not come through here); neither can write, because
+    // both run before any statement does.
+    let key = require_artifact_key(&key)?;
+    require_artifact_size(&markdown)?;
+    let db = state.inner().clone();
+    wire_call(
+        tauri::async_runtime::spawn_blocking(move || {
+            write_artifact_core(&db, &task_id, &key, &markdown)
+        })
+        .await,
+    )
+}
+
+/// Read one Task artifact; `null` when the artifact OR the Task is absent —
+/// asking for something that is not there is an answer, not an error (the
+/// [`get_task`] shape).
+///
+/// This is the ONE place artifact content crosses the wire. The board payload
+/// carries `artifactKeys` alone, so a document travels only when a person opens a
+/// card and picks a key.
+#[tauri::command]
+pub async fn get_artifact(
+    state: State<'_, Arc<Db>>,
+    task_id: String,
+    key: String,
+) -> Result<Option<Artifact>, TasksError> {
+    let db = state.inner().clone();
+    board_call(
+        tauri::async_runtime::spawn_blocking(move || get_artifact_core(&db, &task_id, &key)).await,
     )
 }
 

@@ -116,6 +116,40 @@ fn tasks_error_kinds_are_the_wire_strings() {
     );
     assert_eq!(TasksError::Database("busy".into()).kind(), "database");
     assert_eq!(TasksError::Other("join".into()).kind(), "other");
+    // The two #180 artifact refusals. Both are strings the frontend branches on,
+    // and neither is derivable from the other two — a bad KEY and an oversized
+    // PAYLOAD get different messages and different fixes.
+    assert_eq!(
+        TasksError::BadArtifactKey("Bad Key".into()).kind(),
+        "bad_artifact_key"
+    );
+    assert_eq!(
+        TasksError::ArtifactTooLarge {
+            size: 300_000,
+            max: 262_144,
+        }
+        .kind(),
+        "artifact_too_large"
+    );
+    // And the `ArtifactTooLarge` envelope keeps `FilesError::ImageTooLarge`'s
+    // shape (ADR 0063): `kind` + `message` PLUS `size`/`max` as JSON numbers, so
+    // the frontend can say how far over the cap a write was without parsing the
+    // sentence.
+    let wire = tauri::ipc::InvokeError::from(TasksError::ArtifactTooLarge {
+        size: 300_000,
+        max: 262_144,
+    })
+    .0;
+    assert_eq!(wire["kind"], serde_json::json!("artifact_too_large"));
+    assert_eq!(wire["size"], serde_json::json!(300_000));
+    assert_eq!(wire["max"], serde_json::json!(262_144));
+    assert!(
+        wire["message"]
+            .as_str()
+            .expect("the message is a string")
+            .contains("262144"),
+        "the message names the limit AND the size; got {wire}"
+    );
     // `NotFound`'s message passes through UNPREFIXED — the storage layer
     // already composed the sentence (and, for a bad slug, the valid-stage
     // list ADR 0090 requires). Re-wrapping it would put two sentences in the

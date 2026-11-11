@@ -152,6 +152,13 @@ export type {
   TaskRow,
   TaskSessionRow,
   MoveTaskOutcome,
+  // (issue #180 D1, spec §1, ADR 0100) The two Task-artifact wire shapes.
+  // TYPE-ONLY — they vanish at runtime, so `TAURI_RUNTIME_API` does NOT gain them
+  // (the `AccessRule`/`AccessDirection` precedent), while the two command wrappers
+  // below DO enter both lists. `Artifact` is the only shape that carries artifact
+  // CONTENT; `ArtifactMeta` is what a write answers with, deliberately without it.
+  Artifact,
+  ArtifactMeta,
 } from "./tauri/types";
 
 export {
@@ -219,6 +226,29 @@ export {
   // `TAURI_PUBLIC_API` in this commit; it returns the already-pinned
   // `SessionInfo`, so no new TYPE name enters with it.
   startTaskSession,
+  // (issue #179, spec §4, ADRs 0098 + 0099) The six Stage verbs and the
+  // Strict-workflow pair. All EIGHT enter `TAURI_RUNTIME_API` and
+  // `TAURI_PUBLIC_API` in this commit; none adds a TYPE name, because the six
+  // Stage verbs return the already-pinned `StageRow` and the other four return
+  // `void`/`boolean` primitives. `StageRow` itself gains `onEnterSkill` and
+  // `nextSlugs` in the same commit — widening an existing interface does not move
+  // either list, but leaving it narrow would make the wired type a lie.
+  createStage,
+  renameStage,
+  setStageSkill,
+  setStageNext,
+  reorderStages,
+  deleteStage,
+  setBoardStrict,
+  getBoardStrict,
+  // (issue #180 D1, spec §1) The two artifact commands — a HUMAN surface today,
+  // and the verbs the crate seam's D2 step will build on. Both enter
+  // `TAURI_RUNTIME_API` and `TAURI_PUBLIC_API` in this commit. Neither is a model
+  // tool: D1 advertises nothing to a model, and
+  // `commands::tasks::tests::artifacts::d1_ships_no_model_facing_artifact_verb`
+  // pins that from the source text.
+  writeArtifact,
+  getArtifact,
 } from "./tauri/commands/tasks";
 
 export {

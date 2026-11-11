@@ -87,6 +87,8 @@ const stage = (slug: string, sortOrder: number): StageRow => ({
   label: slug[0]!.toUpperCase() + slug.slice(1),
   sortOrder,
   onEnter: "none",
+  onEnterSkill: null,
+  nextSlugs: null,
 });
 
 const taskRow = (over: Partial<TaskRow> = {}): TaskRow => ({

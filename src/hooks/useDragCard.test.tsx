@@ -91,6 +91,8 @@ const stage = (slug: string): StageRow => ({
   label: slug,
   sortOrder: 0,
   onEnter: "none",
+  onEnterSkill: null,
+  nextSlugs: null,
 });
 
 /** One board CARD (issue #174): the wire element is a `TaskCardView` — the row
@@ -112,6 +114,7 @@ const card = (id: string, stageSlug: string): TaskCardView => ({
   },
   sessions: [],
   costUsd: null,
+  artifactKeys: [],
 });
 
 /** Three columns, the third EMPTY — because the seeded default board is mostly

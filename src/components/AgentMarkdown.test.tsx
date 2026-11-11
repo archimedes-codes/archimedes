@@ -1,17 +1,17 @@
 import { fireEvent, render } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import MessageBubble, { safeUrlTransform } from "./MessageBubble";
-import type { Message } from "../store/sessions";
+import { AgentMarkdown, safeUrlTransform } from "./AgentMarkdown";
 import { SpaceCwdProvider } from "./SpaceCwd";
 import { externalOpen } from "../lib/tauri";
 
 // The IPC module is mocked with the `importActual` SPREAD form (the shape
-// `SessionStalledBanner.test.tsx:11-22` uses) rather than a factory-only mock:
-// this file's import graph reaches `../lib/tauri` TRANSITIVELY
-// (`MessageBubble` → `SubagentDelegatingCard` / `ToolCallCard` → the stores), so
-// a factory listing only `externalOpen` would delete every other export and red
-// the whole file. Only `externalOpen` is replaced — the real one would `invoke`
-// Tauri, which does not exist in jsdom.
+// `SessionStalledBanner.test.tsx:11-22` uses) rather than a factory-only mock,
+// because `OpenAnchor` imports `externalOpen` from that barrel and the mock must
+// not let the REAL one `invoke` Tauri, which does not exist in jsdom. The spread
+// is kept (rather than a factory naming only `externalOpen`) because this file
+// renders a component whose transitive imports go through the same barrel — a
+// factory would delete every other export and red the whole file if that render
+// graph ever grows again, which is exactly the failure this form was adopted for.
 vi.mock("../lib/tauri", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("../lib/tauri");
   return { ...actual, externalOpen: vi.fn() };
@@ -28,30 +28,33 @@ vi.mock("../lib/tauri", async () => {
  * `px-3 py-2` cells, and the dotted hover-underline link.
  */
 /**
- * `cwd` mounts the `SpaceCwdProvider` — the active **Space**'s folder that
- * `OpenAnchor` passes to `external_open` so a RELATIVE path has something to
- * resolve against. `undefined` (the default) mounts NO provider, which is what
- * a surface outside the app tree sees, and `null` is the in-tree "no active
- * Space" value.
+ * `cwd` is the value the `SpaceCwdProvider` carries — the active **Space**'s
+ * folder that `OpenAnchor` passes to `external_open` so a RELATIVE path has
+ * something to resolve against.
+ *
+ * THE PROVIDER WRAPS IN TREE, UNCONDITIONALLY, IN EVERY ARM — one `render`, no
+ * ternary. The provider's value is what each case pins (`null` for the default,
+ * the Space path for the relative-path case), and `null` is exactly what
+ * `useSpaceCwd()` answers with NO provider at all, so wrapping always preserves
+ * the un-provided semantics instead of changing them. A two-arm helper would
+ * have made the tree's top-level shape depend on the argument, and the DOM path
+ * `markdownRoot` walks below is the same for every case only because it does not.
  */
 function renderAgentText(text: string, cwd?: string | null) {
-  const message: Message = { kind: "agent-text", messageId: "m1", text, at: 1 };
-  const bubble = <MessageBubble message={message} />;
+  const markdown = <AgentMarkdown text={text} />;
+  const cwdForTree = cwd === undefined ? null : cwd;
   return render(
-    cwd === undefined ? (
-      bubble
-    ) : (
-      <SpaceCwdProvider cwd={cwd}>{bubble}</SpaceCwdProvider>
-    ),
+    <SpaceCwdProvider cwd={cwdForTree}>{markdown}</SpaceCwdProvider>,
   );
 }
 
-// The agent-text band (`data-testid="agent-band"`) is the bubble's first node
-// and `AgentMarkdown`'s root is its first child, so the path below is exactly
-// what the arm returns — a fragment, with no wrapper element in between.
+// `AgentMarkdown`'s root div IS the tree's first ELEMENT child — the
+// `SpaceCwdProvider` renders NO element node of its own (a `Context.Provider`
+// renders its children directly), so `firstElementChild` is the root div, not a
+// wrapper. The band belonged to `MessageBubble`'s `AgentText`, which this test
+// no longer renders.
 function markdownRoot(container: HTMLElement): HTMLElement {
-  const wrapper = container.firstElementChild as HTMLElement;
-  return wrapper.firstElementChild as HTMLElement;
+  return container.firstElementChild as HTMLElement;
 }
 
 beforeEach(() => {

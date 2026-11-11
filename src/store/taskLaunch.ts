@@ -1,9 +1,7 @@
 import { expandMentions } from "../lib/skills";
 import {
-  skillOfMode,
-  stageOfMode,
   buildLaunchMessage,
-  type TaskLaunchMode,
+  type TaskLaunchDestination,
 } from "../lib/taskPrompt";
 import { sendPrompt, startTaskSession, type SessionInfo } from "../lib/tauri";
 import { describeIpcError } from "../lib/ipcError";
@@ -21,9 +19,22 @@ import { useTasks } from "./tasks";
  * `NewTaskDialog` owned this sequence privately and correctly (create → start →
  * select → send, in that order, for the reasons its header records). Task
  * interaction adds a SECOND family of launch surfaces, and a second copy of a
- * write-ordering rule is exactly the drift this repo documents: the order inside
- * the sequence IS the feature, so the sequence needs one owner. The components keep
- * the part that differs — which button means which mode, and what to paint.
+ * write-ordering rule is exactly the drift this repo documents: the order inside the
+ * sequence IS the feature, so the sequence needs one owner. The components keep the
+ * part that differs — which DESTINATION column a click means, whether it launches at
+ * all, and what to paint.
+ *
+ * ## The destination Stage replaced the mode (issue #179, ADR 0098)
+ *
+ * Every function here used to thread a `TaskLaunchMode` literal, and a `switch` in
+ * `lib/taskPrompt` translated that literal into a skill name and a preferred column.
+ * That made the TypeScript a second authority beside the `stages` rows, and
+ * `resolveStage` was already printing "This Space has no `research` column" as the
+ * sound of the two disagreeing. A Stage row now answers all three questions — its
+ * `slug` is where the card goes, its `label` is the instruction sentence, its
+ * `on_enter_skill` is the Skill — and this module resolves the row from the SAME
+ * `boardsBySpace` slice the board renders, so a Space that renames a column changes
+ * the button, the gate, the prompt and the move together.
  *
  * ## The order, and the three rules that make it load-bearing
  *
@@ -60,11 +71,13 @@ import { useTasks } from "./tasks";
  *
  * ## Why the column is CHECKED and not assumed
  *
- * `research` and `backlog` are the SEEDED slugs. A Space whose columns were renamed
- * has no such row, and `move_task` / `create_task` REFUSE an unknown slug rather
- * than filing an invisible card (ADR 0090). So the board is consulted first, and:
- *  - a launch SKIPS the move and reports the skip in its return value (a click
- *    whose job was to open a Session must not fail because a column was renamed);
+ * A destination slug arrives from a button the board painted, so under #179 it names
+ * a row that exists — but the slice can still be STALE (a column deleted in another
+ * window) or NEVER LOADED, and `move_task` / `create_task` REFUSE an unknown slug
+ * rather than filing an invisible card (ADR 0090). So the board is consulted first,
+ * and:
+ *  - a launch SKIPS the move and reports the skip in its return value (a click whose
+ *    job was to open a Session must not fail because a column went away);
  *  - a draft CREATE falls back to the board's FIRST column, which is what the modal
  *    did before this change — losing the user's text to a renamed column is worse
  *    than filing it somewhere visible.
@@ -113,6 +126,32 @@ export interface TaskCreateOutcome extends TaskLaunchOutcome {
 /** Nothing was started. */
 const NOTHING: TaskLaunchOutcome = { sessionId: null, note: null };
 
+/** The create that must NOT launch a Session — the New Task modal's save-only button.
+ *
+ *  It is a real destination rather than a `null` or a separate `launch: boolean`
+ *  argument on purpose: the button still files the card in a column, so it still has
+ *  a slug and a label, and the ONLY thing that differs from a launch is that nothing
+ *  is started afterwards. `launches: false` says that directly.
+ *
+ *  `slug: "backlog"` is the seeded column it belongs to and it is NOT inert: the
+ *  create still writes that column explicitly, which is what keeps a card out of
+ *  "whatever happens to be first" on a Space whose board was reordered (pinned in
+ *  `NewTaskDialog.test.tsx` as "files it in the backlog column, not the board's first
+ *  column"). `onEnterSkill: null` is what makes `missingSkill` never refuse it.
+ *
+ *  NOTE the deliberate divergence from the plan this task was written against, which
+ *  specified `slug: ""` with the save-only arm keyed on that empty string. An empty
+ *  slug falls through to the board's FIRST column, which silently changes that pinned
+ *  behaviour on any Space whose first column is not `backlog` — and `NewTaskDialog
+ *  .test.tsx` is outside this task's owned file set, so the pin is not mine to
+ *  rewrite. `launches` is the same decision spelled without a magic string. */
+export const SAVE_ONLY: TaskLaunchDestination = {
+  slug: "backlog",
+  label: "Backlog",
+  onEnterSkill: null,
+  launches: false,
+};
+
 /** Launches currently in flight, keyed by the thing being launched.
  *
  *  A module `Set` and not `useState`, for the reason `useAsyncAction`'s header
@@ -130,25 +169,38 @@ export function resetTaskLaunchInFlight(): void {
   inFlight.clear();
 }
 
-/** The column a mode wants, and whether this Space actually has it.
+/** The destination column this Space actually has, and what to write.
  *
  *  Returns the slug to write, or `null` for "do not write a column". A card whose
- *  stored stage is already the wanted one is `null` too: `moveTask`'s own guard
+ *  stored stage is already the destination is `null` too: `moveTask`'s own guard
  *  drops a same-column move silently, so firing it would be an IPC that provably
  *  does nothing.
  *
- *  `absent` reports the case the caller must surface: the mode WANTED a column and
- *  the Space does not have one. `undefined` means "nothing wanted, nothing to say". */
+ *  Since ADR 0098 there is no "do not move it" arm for a chosen destination: the
+ *  wanted slug is ALWAYS the destination, because the destination is a real row the
+ *  caller painted a button for (the old `stageOfMode("discuss") === null` case — a
+ *  mode with no column — cannot arise when the column is where the button came FROM).
+ *
+ *  `absent` reports the case the caller must surface: a destination was asked for and
+ *  this Space's slice does not have it. `undefined` means "nothing to say".
+ *
+ *  It stays reachable rather than being deleted as "unreachable under #179", for two
+ *  reasons this repo cares about. (1) An absent slice means NEVER LOADED, not "no
+ *  columns", and neither proves the destination exists — guessing is a refused write
+ *  and an error line under a click that succeeded. (2) The slice can go stale between
+ *  painting the button and clicking it (a column deleted in another window), which is
+ *  the same shape the detail modal's header argues about. The draft-create flow needs
+ *  it too: a new card falls back to the board's FIRST column so a draft is never lost
+ *  for want of a column. */
 function resolveStage(
   spacePath: string,
   task: TaskRow,
-  mode: TaskLaunchMode,
+  destination: TaskLaunchDestination,
 ): { slug: string | null; absent?: true } {
-  const wanted = stageOfMode(mode);
-  if (wanted === null) return { slug: null };
+  const wanted = destination.slug;
   const columns = useTasks.getState().boardsBySpace[spacePath];
   // Absent board slice is "NEVER LOADED", not "no columns" — and neither proves a
-  // `research` column exists, so both answer "cannot write it". Guessing is a
+  // destination column exists, so both answer "cannot write it". Guessing is a
   // refused write and an error line under a click that succeeded.
   if (columns === undefined) return { slug: null, absent: true };
   if (!columns.some((c) => c.stage.slug === wanted)) {
@@ -158,10 +210,12 @@ function resolveStage(
   return { slug: wanted };
 }
 
-/** The sentence for a mode whose column this Space does not have.
+/** The sentence for a destination whose column this Space does not have.
  *
  *  Names the slug in backticks and lowercase on purpose: it is the slug the caller
- *  asked for, and the detail modal's test resolves the word in it. */
+ *  asked for, and the detail modal's test resolves the word in it. The sentence is
+ *  byte-identical to the pre-#179 one and is pinned in THREE files — do not reword
+ *  it as a side effect of touching this module. */
 function missingColumnNote(task: TaskRow, wanted: string): string {
   return (
     `This Space has no \`${wanted}\` column, so T${task.number} stayed in ` +
@@ -171,14 +225,19 @@ function missingColumnNote(task: TaskRow, wanted: string): string {
 
 /** Refuse a launch whose skill the catalog does not have.
  *
- *  Returns `null` when the mode needs no skill or the catalog has it. The thrown
- *  error names the skill, because the operator's next action is "install that
- *  skill" and a message that does not say which one is not actionable. */
+ *  Returns `null` when the destination needs no skill or the catalog has it. The
+ *  thrown error names the skill, because the operator's next action is "install that
+ *  skill" and a message that does not say which one is not actionable.
+ *
+ *  The NAME now comes from the Stage row (`onEnterSkill`) rather than from a
+ *  `switch`, which is what makes the refusal honest for a Space that configured its
+ *  own Skill: the sentence names the skill the row actually asks for. A Stage with no
+ *  Skill answers `null` first and never refuses. */
 function missingSkill(
-  mode: TaskLaunchMode,
+  destination: TaskLaunchDestination,
   catalogs: TaskLaunchCatalogs,
 ): Error | null {
-  const skill = skillOfMode(mode);
+  const skill = destination.onEnterSkill;
   if (skill === null) return null;
   const known = catalogs.skills.some((s) => s.name === skill);
   // A skill marked `disable-model-invocation` is still launchable: ADR 0036 drops
@@ -216,17 +275,22 @@ function missingSkill(
  *     the renderer's NO-LOSS rule is load-bearing for pasted-block cases
  *     (`skills.test.ts`) and was left alone deliberately.
  *
- *  There is deliberately no "name outside the `$` grammar" arm. The mode's skill
- *  name is the literal `"discuss"` / `"research"` from `skillOfMode`, both of which
- *  the grammar carries, and `missingSkill` already REFUSED any launch whose catalog
- *  has no exact-named row — so an unmatchable name can never reach here. An arm for
- *  it would be unreachable code pretending to be a guard.
+ *  There is deliberately no "name outside the `$` grammar" arm. The Skill name is
+ *  whatever `stages.on_enter_skill` holds, and `missingSkill` already REFUSED any
+ *  launch whose catalog has no exact-named row — so an unmatchable name can never
+ *  reach here. An arm for it would be unreachable code pretending to be a guard.
+ *
+ *  The same argument is STRONGER than it was when the name came from the mode table:
+ *  a user-typed Skill name is more likely to sit outside the grammar, and it still
+ *  cannot get here, because the catalog row is the precondition for reaching this
+ *  line at all. No new inlining logic arrives with a Stage-owned Skill (spec §6.2) —
+ *  the bare-token route generalises for free.
  */
 function shouldInlineSkill(
-  mode: TaskLaunchMode,
+  destination: TaskLaunchDestination,
   catalogs: TaskLaunchCatalogs,
 ): boolean {
-  const name = skillOfMode(mode);
+  const name = destination.onEnterSkill;
   if (name === null) return false;
   const skill = catalogs.skills.find((s) => s.name === name);
   // `undefined` cannot reach here either (the same guard), but inlining is the
@@ -242,35 +306,56 @@ function shouldInlineSkill(
  * the prompt could not be sent — the caller renders that through `describeIpcError`.
  * A rejection after the Session exists leaves the Session live and listed: that is
  * the honest outcome, and the user can retry from the sidebar row.
+ *
+ * `toStageSlug` is the DESTINATION column, and it replaced a mode for the reason
+ * ADR 0098 gives: the destination Stage IS the mode. Its row supplies the label the
+ * instruction sentence names and the Skill the message loads, read from the SAME
+ * `boardsBySpace` slice the board is rendering — so the button a person clicked and
+ * the prompt that goes out cannot disagree about what that column means.
  */
 export async function launchTaskSession(
   spacePath: string,
   task: TaskRow,
-  mode: TaskLaunchMode,
+  toStageSlug: string,
   catalogs: TaskLaunchCatalogs,
 ): Promise<TaskLaunchOutcome> {
-  const refusal = missingSkill(mode, catalogs);
+  const stage = useTasks.getState().boardsBySpace[spacePath]?.find(
+    (c) => c.stage.slug === toStageSlug,
+  )?.stage;
+  // A destination the slice does not have resolves to a Skill-less destination
+  // labelled with the slug. That is not a shrug, it is the only honest reading: the
+  // label fallback is the same one the detail modal's stage line uses ("we could not
+  // name it" is a different claim from "it has no column"), and `onEnterSkill: null`
+  // means we never invent a Skill for a row we cannot read. `resolveStage` then
+  // answers `absent` for the same slice, so the caller sees the skipped-column note
+  // rather than a Session launched on an invented Skill.
+  const destination: TaskLaunchDestination = {
+    slug: toStageSlug,
+    label: stage?.label ?? toStageSlug,
+    onEnterSkill: stage?.onEnterSkill ?? null,
+  };
+  const refusal = missingSkill(destination, catalogs);
   if (refusal !== null) throw refusal;
-  // Guarded on the CARD id and not per-mode: launching two buttons against one card
-  // at once is the same double-Session outcome the guard exists for.
+  // Guarded on the CARD id and not per-destination: launching two buttons against one
+  // card at once is the same double-Session outcome the guard exists for.
   if (inFlight.has(task.id)) return NOTHING;
   inFlight.add(task.id);
   try {
-    const { slug, absent } = resolveStage(spacePath, task, mode);
+    const { slug, absent } = resolveStage(spacePath, task, destination);
     let note: string | null = null;
     if (slug !== null) {
       await useTasks.getState().moveTask(spacePath, task.id, slug);
     } else if (absent) {
-      note = missingColumnNote(task, stageOfMode(mode)!);
+      note = missingColumnNote(task, destination.slug);
     }
     // The block must carry the stage the card is ACTUALLY in at the moment the
-    // Session starts, not the one the modal read when it painted. After a Research
-    // move those differ, and a `<task stage="backlog">` on a card the user can see
-    // sitting in Research is a small lie on the wire.
+    // Session starts, not the one the modal read when it painted. After a launch into
+    // a new column those differ, and a `<task stage="backlog">` on a card the user can
+    // see sitting in Research is a small lie on the wire.
     const launched = await startAndSendLinked(
       spacePath,
       slug !== null ? { ...task, stageSlug: slug } : task,
-      mode,
+      destination,
       catalogs,
     );
     return { sessionId: launched.sessionId, note };
@@ -293,7 +378,7 @@ export async function launchTaskSession(
 async function startAndSendLinked(
   spacePath: string,
   task: TaskRow,
-  mode: TaskLaunchMode,
+  destination: TaskLaunchDestination,
   catalogs: TaskLaunchCatalogs,
 ): Promise<TaskLaunchOutcome> {
   // `stageSlug: null` and not `task.stageSlug`: the Rust command resolves a null to
@@ -307,8 +392,37 @@ async function startAndSendLinked(
   // DISPATCHED, NOT AWAITED — see `sendLaunchMessage`'s header for why awaiting it
   // deadlocks. The Session exists and the prompt is committed, so this half's job is
   // done; the turn's outcome belongs to the transcript, not to the click.
-  void sendLaunchMessage(info, task, mode, catalogs);
+  void sendLaunchMessage(info, task, destination, catalogs, artifactKeysFor(spacePath, task.id));
   return { sessionId: info.sessionId, note: null };
+}
+
+/** The card's artifact KEY NAMES, read from the board slice the store already holds.
+ *
+ *  D2's `<artifacts>` source (issue #180, spec §5). The keys are
+ *  `TaskCardView.artifactKeys` — a field of the BOARD payload, not of `TaskRow`,
+ *  because `get_task` / `create_task` / `edit_task` all answer a bare row and grew
+ *  no artifact field (see `lib/tauri/types.ts`). So the launch path, which is handed
+ *  a bare `TaskRow`, has to look the card up. It reads the SAME `boardsBySpace`
+ *  slice `launchTaskSession` already reads for the destination Stage — one owner for
+ *  "what the board says", no new fetch, and no new prop threaded through two
+ *  components that would otherwise have to learn a fact only the prompt needs.
+ *
+ *  `[]` for a card the slice does not carry, and that is the right answer twice
+ *  over: an unloaded slice is "never read" and must not become a guess, and a card
+ *  `create_task` just returned has no artifacts by construction. `[]` renders NO
+ *  `<artifacts>` element at all (spec §5), so an unresolved lookup says nothing
+ *  rather than asserting an empty list.
+ *
+ *  By ID and not by position: a drag between columns repaints the slice between the
+ *  click and this read, and the id survives the move that position does not. */
+function artifactKeysFor(spacePath: string, taskId: string): string[] {
+  const columns = useTasks.getState().boardsBySpace[spacePath];
+  if (!columns) return [];
+  for (const column of columns) {
+    const card = column.tasks.find((c) => c.task.id === taskId);
+    if (card) return card.artifactKeys;
+  }
+  return [];
 }
 
 /** Record the first message and dispatch it, WITHOUT holding the caller.
@@ -356,11 +470,12 @@ async function startAndSendLinked(
 async function sendLaunchMessage(
   info: SessionInfo,
   task: TaskRow,
-  mode: TaskLaunchMode,
+  destination: TaskLaunchDestination,
   catalogs: TaskLaunchCatalogs,
+  artifactKeys: readonly string[] = [],
 ): Promise<void> {
-  const inline = shouldInlineSkill(mode, catalogs);
-  const text = buildLaunchMessage(task, mode, (head) =>
+  const inline = shouldInlineSkill(destination, catalogs);
+  const text = buildLaunchMessage(task, destination, (head) =>
     inline
       ? expandMentions(head, {
           skills: catalogs.skills,
@@ -368,6 +483,7 @@ async function sendLaunchMessage(
           mcpServers: [],
         })
       : head,
+    artifactKeys,
   );
   const sessions = useSessions.getState();
   sessions.addUserMessage(info.sessionId, text);
@@ -421,17 +537,19 @@ function fieldsToColumns(
 }
 
 /**
- * The New Task modal's one action: turn a draft into a card, then (for Discuss and
- * Research) open it as a Session.
+ * The New Task modal's one action: turn a draft into a card, then (for a destination
+ * that launches) open it as a Session.
  *
- * NO LLM RUNS FOR THE `backlog` MODE, and that is the point of the change — a card
- * is created from text alone, in one write, and nothing is started.
+ * NO LLM RUNS FOR A SAVE-ONLY DESTINATION, and that is the point of the change — a
+ * card is created from text alone, in one write, and nothing is started. Which
+ * button means that is the modal's decision, carried by
+ * [`SAVE_ONLY`]'s `launches: false`; everything else a button means is a column.
  */
 export async function createTaskFromDraft(
   spacePath: string,
   titleField: string,
   bodyField: string | null,
-  mode: TaskLaunchMode,
+  destination: TaskLaunchDestination,
   catalogs: TaskLaunchCatalogs,
 ): Promise<TaskCreateOutcome> {
   const { title, body } = fieldsToColumns(titleField, bodyField);
@@ -447,28 +565,31 @@ export async function createTaskFromDraft(
   }
   inFlight.add(guardKey);
   try {
-    const refusal = missingSkill(mode, catalogs);
+    const refusal = missingSkill(destination, catalogs);
     if (refusal !== null) throw refusal;
 
-    const wanted = stageOfMode(mode);
+    const wanted = destination.slug;
     const columns = useTasks.getState().boardsBySpace[spacePath];
-    const hasWanted =
-      wanted !== null && (columns?.some((c) => c.stage.slug === wanted) ?? false);
+    const hasWanted = columns?.some((c) => c.stage.slug === wanted) ?? false;
     // The create writes the column DIRECTLY: a create-then-move would be two writes
     // for one fact, and the move's `on_enter` would fire for a card that was never
     // anywhere else. A missing wanted column falls back to the board's FIRST column
     // (what the modal did before), because an invisible card is worse than a card in
     // an unexpected column — and `create_task` would REFUSE the unknown slug anyway.
-    const stageSlug = hasWanted ? wanted! : (columns?.[0]?.stage.slug ?? null);
+    const stageSlug = hasWanted ? wanted : (columns?.[0]?.stage.slug ?? null);
 
     const task = await useTasks.getState().createTask(spacePath, title, body, stageSlug);
-    if (mode === "backlog") return { task, ...NOTHING };
+    if (destination.launches === false) return { task, ...NOTHING };
     // The note is computed from the row the SERVER returned (its `number` and stored
     // stage are what the sentence names), and the launch skips the move — the create
     // already filed the card in its destination column.
-    const note =
-      wanted !== null && !hasWanted ? missingColumnNote(task, wanted) : null;
-    const launched = await startAndSendLinked(spacePath, task, mode, catalogs);
+    const note = !hasWanted ? missingColumnNote(task, wanted) : null;
+    const launched = await startAndSendLinked(
+      spacePath,
+      task,
+      destination,
+      catalogs,
+    );
     return { task, sessionId: launched.sessionId, note };
   } finally {
     inFlight.delete(guardKey);

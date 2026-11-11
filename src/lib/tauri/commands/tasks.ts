@@ -7,7 +7,7 @@
  * it takes no task-context argument at all.
  *
  * Three wire facts worth knowing before you change a signature:
- *   - `get_board` WRITES. The five default stages seed lazily on the first read
+ *   - `get_board` WRITES. The six default stages seed lazily on the first read
  *     of a Space that has no stage rows, so "just fetch it" is also what creates
  *     a Space's columns. That is deliberate (no migration writes for every
  *     existing Space), and it means a board fetch is not free of side effects.
@@ -19,12 +19,34 @@
  *     the cross-column drop (`stage_slug` + `on_enter`); `reorderTasks` is the
  *     within-column drop (`sort_order` only). Neither is a general patch and
  *     `editTask` is not a third: see spec §3's table.
+ *
+ * Issue #179 added EIGHT more wrappers — the six Stage verbs (`createStage`,
+ * `renameStage`, `setStageSkill`, `setStageNext`, `reorderStages`, `deleteStage`)
+ * and the Strict-workflow pair (`setBoardStrict`, `getBoardStrict`) — and two more
+ * wire facts come with them:
+ *   - A Stage's `slug` is FROZEN after `createStage` derives it from the label.
+ *     `renameStage` changes the label only, so the editor shows the slug rather
+ *     than hiding the mismatch (spec §5).
+ *   - `nextSlugs: null` and `nextSlugs: []` are DIFFERENT answers (ADR 0099):
+ *     unconfigured-and-unconstrained versus configured-and-leading-nowhere. And a
+ *     drag is only refused when `getBoardStrict` says the Space opted in — with the
+ *     flag off, every wrapper here behaves exactly as it did before #179.
+ *
+ * Issue #180 D1 added TWO more wrappers — `writeArtifact` and `getArtifact` — and
+ * one more wire fact:
+ *   - The board carries artifact KEYS only (`TaskCardView.artifactKeys`); content
+ *     comes from `getArtifact` alone. And a write against a Task that does not
+ *     exist is REFUSED — `task_artifacts` has no foreign key on purpose, so nothing
+ *     below this call would catch a dangling id.
  */
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  Artifact,
+  ArtifactMeta,
   MoveTaskOutcome,
   SessionInfo,
+  StageRow,
   StageWithTasks,
   TaskRow,
 } from "../types";
@@ -172,4 +194,210 @@ export async function startTaskSession(
     taskId,
     stageSlug: stageSlug ?? null,
   });
+}
+
+
+// ---------------------------------------------------------------------------
+// The configurable Stage (issue #179 — spec §4/§4.1/§5, ADRs 0098 + 0099)
+// ---------------------------------------------------------------------------
+
+/**
+ * Add a column to one Space's board.
+ *
+ * The SLUG is derived from `label` in Rust (lowercase, runs of non-`[a-z0-9-]`
+ * collapse to `-`) and it is FROZEN afterwards — `renameStage` writes the label
+ * only, because `tasks.stage_slug` points at the slug by string with no foreign
+ * key (spec §5). So show the slug in the editor; do not hide it.
+ *
+ * A collision within the Space REJECTS with `kind: "not_found"` naming the slugs
+ * that are taken, rather than suffixing: a silent `spike-2` is a slug nobody
+ * typed. `skill` is the ADR 0098 launch Skill (the `$name` a Session started from
+ * this column loads); omit it or pass `null` for a column that launches nothing.
+ */
+export async function createStage(
+  spacePath: string,
+  label: string,
+  skill?: string | null,
+): Promise<StageRow> {
+  return invoke<StageRow>("create_stage", {
+    spacePath,
+    label,
+    skill: skill ?? null,
+  });
+}
+
+/** Rename a column's LABEL. The slug does not move (spec §5 — see `createStage`). */
+export async function renameStage(
+  spacePath: string,
+  slug: string,
+  label: string,
+): Promise<StageRow> {
+  return invoke<StageRow>("rename_stage", { spacePath, slug, label });
+}
+
+/**
+ * Set or clear the Skill a Session started from this column loads (ADR 0098).
+ *
+ * `null` CLEARS it (the column launches nothing). This is the write that makes
+ * `lib/taskPrompt.ts`'s `TASK_LAUNCH_MODES` map redundant: ADR 0098 rules the
+ * Stage row the SOLE authority for the launch Skill, so that constant is deleted
+ * rather than kept as a fallback — two authorities deciding one question is the
+ * split `store/taskLaunch.ts` already reports as a bug ("This Space has no
+ * `research` column"). Removing it is the launch-path task's edit; until it lands,
+ * nothing here reads it.
+ */
+export async function setStageSkill(
+  spacePath: string,
+  slug: string,
+  skill: string | null,
+): Promise<StageRow> {
+  return invoke<StageRow>("set_stage_skill", { spacePath, slug, skill });
+}
+
+/**
+ * Set one column's outgoing transitions (ADR 0099) — the destinations a Task in
+ * this column may go to, in button-render order.
+ *
+ * Two distinctions the renderer has to keep:
+ *   - `[]` means "configured, and nothing may follow this column". A `null`
+ *     `nextSlugs` on the way back means UNCONFIGURED, which is unconstrained, and
+ *     the fallback is the column at `sort_order + 1`. The two are not the same
+ *     answer and neither is the absence of the other.
+ *   - An unknown slug or the column's own slug (a self-loop) REJECTS with
+ *     `kind: "not_found"` naming the valid slugs. Nothing is silently dropped — a
+ *     dropped destination is a workflow that shrank.
+ *
+ * `sortOrder` is a separate question and a separate verb (`reorderStages`): ADR
+ * 0099 splits "where does this render" from "what may a Task go to next", and
+ * neither is derived from the other.
+ */
+export async function setStageNext(
+  spacePath: string,
+  slug: string,
+  slugs: string[],
+): Promise<StageRow> {
+  return invoke<StageRow>("set_stage_next", { spacePath, slug, slugs });
+}
+
+/**
+ * Rewrite the board's column order in one pass.
+ *
+ * `slugs` is the board's WHOLE visible slice in its new order — pass every column
+ * you show. The index becomes each column's stored `sort_order`, dense from 0, and
+ * a slug that matches no row is a silent no-op (the `reorderSpaces` contract, not
+ * `reorderTasks`'s refusal). Do not sort or dedupe it: the order you hand over is
+ * the order that lands.
+ */
+export async function reorderStages(
+  spacePath: string,
+  slugs: string[],
+): Promise<void> {
+  return invoke("reorder_stages", { spacePath, slugs });
+}
+
+/**
+ * Delete a column, optionally relocating its cards first.
+ *
+ * `relocateTo` is the answer to the editor's "where do these cards go?" step. Omit
+ * it (or pass `null`) while the column holds cards and this REJECTS with
+ * `kind: "not_found"` naming the count and the columns available; a column another
+ * column's `nextSlugs` points at rejects too, naming the pointing columns; and the
+ * LAST column of a Space cannot be deleted at all, because a board with no columns
+ * cannot receive a card.
+ *
+ * The relocation is one bulk write and never runs a column's `on_enter` — so no
+ * compaction fires for the relocated cards, and this returns nothing precisely
+ * because there is no per-card outcome to report (spec §4.1).
+ */
+export async function deleteStage(
+  spacePath: string,
+  slug: string,
+  relocateTo?: string | null,
+): Promise<void> {
+  return invoke("delete_stage", { spacePath, slug, relocateTo: relocateTo ?? null });
+}
+
+/**
+ * The Strict-workflow opt-in (ADR 0099): does this Space's transition graph BIND
+ * its drags, or only describe them?
+ *
+ * Off (the default, and the state every existing Space is in) `moveTask` accepts
+ * any column, exactly as it always did — the flag exists so upgrading cannot
+ * change how a board answers a drag.
+ */
+export async function setBoardStrict(
+  spacePath: string,
+  strict: boolean,
+): Promise<void> {
+  return invoke("set_board_strict", { spacePath, strict });
+}
+
+/**
+ * Read the Strict-workflow flag back — the seed for the editor's `Strict
+ * workflow` Switch, and for the board header's Strict marker.
+ *
+ * The value this returns is the SAME flag `moveTask` enforces: both key the
+ * `spaces` row the same way and both treat a Space with no `spaces` row as
+ * `false`. That agreement is the contract — a Switch showing Strict ON over a
+ * board whose drags are all accepted is the failure it exists to prevent, so do
+ * NOT seed this from a cached `SpaceRow` or a local default.
+ */
+export async function getBoardStrict(spacePath: string): Promise<boolean> {
+  return invoke<boolean>("get_board_strict", { spacePath });
+}
+
+
+// ---------------------------------------------------------------------------
+// Task artifacts (issue #180 D1 — spec §1/§2, ADR 0100)
+// ---------------------------------------------------------------------------
+
+/**
+ * Write (UPSERT) one Task artifact.
+ *
+ * Answers `{ key, updatedAt, bytes }` and NEVER the markdown — the caller has it,
+ * and echoing a 256 KB document back for no information is a second frame for
+ * nothing. One row per `(taskId, key)`, ever: the second write wins and `createdAt`
+ * survives, because `PRIMARY KEY (task_id, key)` is what makes an overwrite an
+ * upsert rather than a second card holding a second `spec`.
+ *
+ * Refuses, and writes NOTHING, in three cases (the wire `kind` in brackets):
+ *   - a key outside `[a-z0-9][a-z0-9-]{0,39}` [`bad_artifact_key`], naming the key
+ *     AND the grammar. Load-bearing, not cosmetic: a key is interpolated into the
+ *     `<task>` launch block, so a key carrying `<` or `"` is an injection point on
+ *     a card a harness tool created. The key is REJECTED, never cleaned — a mangled
+ *     key is a different key.
+ *   - a markdown over 256 KB [`artifact_too_large`], naming the limit AND the size
+ *     (plus `size`/`max` envelope keys). Refused and NEVER truncated: a spec that
+ *     silently ends mid-sentence reads as a complete spec.
+ *   - a `taskId` that does not exist [`not_found`]. `task_artifacts.task_id`
+ *     carries NO foreign key (ADR 0100, for ADR 0090's reason — a Space tab close
+ *     must not take a card's documents with it), so SQLite will not catch a
+ *     dangling id and this call refuses it instead.
+ */
+export async function writeArtifact(
+  taskId: string,
+  key: string,
+  markdown: string,
+): Promise<ArtifactMeta> {
+  return invoke<ArtifactMeta>("write_artifact", { taskId, key, markdown });
+}
+
+/**
+ * Read one Task artifact.
+ *
+ * `null` when the artifact OR the Task is absent — asking for something that is
+ * not there is an answer, not an error (the `getTask` shape). Both absences answer
+ * the same way, so a caller that needs to tell "no such card" from "no such key"
+ * must ask about the card separately; the dialog does not care, which is why this
+ * read carries no gate the write does.
+ *
+ * This is the ONLY call that brings artifact content over the wire. The board
+ * carries [`TaskCardView.artifactKeys`] alone, so a document travels only when a
+ * person opens a card and picks a key.
+ */
+export async function getArtifact(
+  taskId: string,
+  key: string,
+): Promise<Artifact | null> {
+  return invoke<Artifact | null>("get_artifact", { taskId, key });
 }

@@ -125,6 +125,9 @@ fn ctx(cwd: &Path, roots: &[&Path]) -> ToolCtx {
         render_requester: None,
         // (B1) No event sink: emitting is a silent no-op here.
         event_sink: None,
+        // No task store: the boundary tests drive no task tool (issue #180 F1's
+        // `ToolCtx` field).
+        task_store: None,
     }
 }
 
@@ -622,6 +625,9 @@ THE-SKILL-BODY",
         render_requester: None,
         // (B1) No event sink: emitting is a silent no-op here.
         event_sink: None,
+        // No task store: this literal does NOT spread `ctx()`, so F1's field has
+        // to be spelled here too (issue #180 F1's `ToolCtx` field).
+        task_store: None,
     };
     let via_link = home_link.join(".agents/skills/alpha/SKILL.md");
     let r = execute_tool(

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, it, expect, afterEach, vi } from "vitest";
-import MessageBubble, { shikiThemeFor } from "./MessageBubble";
+import MessageBubble from "./MessageBubble";
+import { shikiThemeFor } from "./AgentMarkdown";
 import type { Message } from "../store/sessions";
 import { useSettings } from "../store/settings";
 import type { AppSettings } from "../lib/tauri";

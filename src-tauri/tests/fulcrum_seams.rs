@@ -1141,3 +1141,498 @@ fn session_store_and_ipc_store_satisfy_the_crate_store() {
     );
     drop(dir);
 }
+
+// ── Pin 4 — `Db` satisfies the D2 `TaskStore` seam (issue #180) ───────────────
+//
+// F1 shipped the crate half of the Task seam and F2 published it as
+// `fulcrum-harness 0.2.0`; D2 ships the DESKTOP half: `impl TaskStore for Db`
+// beside `impl FulcrumPersistence for Db` in `storage/db.rs`. The S4 ruling that
+// governs this file applies verbatim — *"a surface-comparison test that never
+// instantiates the impl is void"* — and a seam like this one raises the stakes,
+// because a `TaskStore` that is fully wired and returns nothing would compile
+// clean while silently changing what a model sees. So the pins below are
+// BEHAVIOURAL: they read and write real rows through the trait object.
+//
+// Non-vacuity, per pin:
+// - Delete `impl TaskStore for Db` (`storage/db.rs`) → `E0277: the trait bound
+//   Db: TaskStore is not satisfied` at the `assert_task_store::<Db>()` bound and
+//   at EVERY `Arc<dyn TaskStore>` coercion below.
+// - Delete a method body's delegation (e.g. make `write_artifact` return
+//   `Ok(Default::default())`) → the round-trip pin reddens on the markdown
+//   equality, not on a type error.
+// - Delete the `DbError::Sqlite → Io` arm → the mapping pin reddens on the
+//   `matches!` and on the sentence it carries.
+
+/// `storage::Db` IS a `TaskStore` — the trait F1's Worker calls through.
+///
+/// The generic bound is the assertion, exactly as [`db_satisfies_fulcrumpersistence`]
+/// does for persistence: it cannot be monomorphised without the real impl, and it
+/// carries the trait's `Send + Sync` supertraits, which is what lets the Supervisor
+/// hold the `Db` behind the `Arc` its router arm clones per request.
+#[test]
+fn db_satisfies_taskstore() {
+    fn assert_task_store<T: fulcrum_harness::seams::TaskStore>() {}
+    assert_task_store::<Db>();
+}
+
+/// One artifact ROUND-TRIPS through `Arc<dyn TaskStore>` over a real temp-dir
+/// `Db` — the behavioural proof, not an instantiation pin.
+///
+/// Every board verb the model can reach runs here through the TRAIT OBJECT, so
+/// what is exercised is the trait boundary D2 actually built: the DTO mapping
+/// (`u32` number, the required `artifact_keys` filled from `Db::artifact_keys`),
+/// the `Ok(None)` arms, and the two error maps. Reading back through the plain
+/// `Db` afterwards is the half that proves the seam WROTE rather than echoed.
+#[test]
+fn the_task_store_surface_round_trips_through_a_real_db() {
+    use fulcrum_harness::seams::TaskStore as CrateTaskStore;
+
+    let (dir, db) = temp_db("fulcrum-seams-taskstore-");
+    let space = "/seams/taskstore";
+    // Reading a Space's board is what seeds its six columns (ADR 0090's lazy
+    // seed) — so `create_task` has a first stage to land a card in.
+    db.get_board(space).expect("get_board seeds the defaults");
+
+    let store: Arc<dyn CrateTaskStore> = db.clone();
+
+    // ── create, through the seam ─────────────────────────────────────────────
+    let created = store
+        .create_task(space, "Wire the board", Some("a body"), None)
+        .expect("create_task over the seam");
+    assert_eq!(created.number, 1, "the first card of a Space is #1");
+    assert!(
+        created.id.starts_with("tsk_"),
+        "the key shape is {}",
+        created.id
+    );
+    let task_id = created.id.clone();
+
+    // ── THE artifact round trip: write, then read back through the trait ─────
+    let meta = store
+        .write_artifact(&task_id, "spec", "# Spec\nMARKDOWN-SENTINEL")
+        .expect("write_artifact over the seam");
+    assert_eq!(meta.key, "spec");
+    assert_eq!(
+        meta.bytes,
+        "# Spec\nMARKDOWN-SENTINEL".len(),
+        "`bytes` is the UTF-8 byte length, not a character count"
+    );
+    let read = store
+        .get_artifact(&task_id, "spec")
+        .expect("get_artifact over the seam")
+        .expect("the artifact the seam just wrote is there");
+    assert_eq!(
+        read.markdown, "# Spec\nMARKDOWN-SENTINEL",
+        "the markdown round-trips VERBATIM through the trait object"
+    );
+    assert_eq!(read.task_id, task_id);
+    assert_eq!(
+        read.created_at, read.updated_at,
+        "one write, so both stamps match"
+    );
+
+    // The row exists in the DESKTOP's own table, read back the plain way. This is
+    // the assertion that distinguishes "the seam wrote a row" from "the seam
+    // echoed its argument" — an echo would satisfy every line above.
+    let via_db = db
+        .get_artifact(&task_id, "spec")
+        .expect("get_artifact direct")
+        .expect("the row is in `task_artifacts`");
+    assert_eq!(via_db.markdown, "# Spec\nMARKDOWN-SENTINEL");
+
+    // An absent key answers `None`, and is NOT an error (the crate's contract for
+    // `get_artifact`, mirrored from the desktop's own read path).
+    assert!(
+        store
+            .get_artifact(&task_id, "never-written")
+            .expect("absence is an answer")
+            .is_none(),
+        "a key nobody wrote reads None through the seam"
+    );
+
+    // ── the keys reach the board row and the detail row ──────────────────────
+    // `artifact_keys` is REQUIRED on both DTOs, so this is where a half-wired
+    // mapping (an empty Vec for a card that has artifacts) shows up.
+    let board = store.list_board(space).expect("list_board over the seam");
+    assert_eq!(
+        board.len(),
+        1,
+        "one card on this Space's board, got {board:?}"
+    );
+    assert_eq!(
+        board[0].artifact_keys,
+        vec!["spec".to_string()],
+        "the board row carries the artifact KEY NAMES (never the markdown)"
+    );
+    let detail = store
+        .get_task(&task_id)
+        .expect("get_task over the seam")
+        .expect("the card exists");
+    assert_eq!(detail.number, 1, "`number` crosses the seam as u32");
+    assert_eq!(detail.artifact_keys, vec!["spec".to_string()]);
+
+    // ── the write verbs' row shape ───────────────────────────────────────────
+    let edited = store
+        .edit_task(&task_id, Some("Renamed"), None, None)
+        .expect("edit_task over the seam");
+    assert_eq!(edited.title, "Renamed");
+    assert_eq!(edited.number, 1, "an edit does not renumber the card");
+
+    // ── the move, and its opaque `on_enter` ─────────────────────────────────
+    let moved = store
+        .move_task(space, &task_id, "doing")
+        .expect("move_task over the seam");
+    assert_eq!(
+        moved.to_stage, "doing",
+        "the destination is what the call named"
+    );
+    assert_eq!(
+        moved.on_enter.as_deref(),
+        Some("none"),
+        "`on_enter` rides as opaque data for the command layer"
+    );
+
+    // ── absence: a write against a card that is not there ────────────────────
+    let gone = store.write_artifact("tsk_absent", "spec", "orphan");
+    match gone {
+        Err(fulcrum_harness::seams::TaskStoreError::NotFound { message }) => {
+            assert!(
+                message.contains("tsk_absent"),
+                "the refusal names the id it refused — got {message}"
+            );
+        }
+        other => panic!("a dangling task id must be `NotFound`, got {other:?}"),
+    }
+
+    // A bad stage slug is `Invalid`, and its sentence carries the valid slugs so
+    // a model can self-correct without a discovery round trip.
+    let bad_stage = store.move_task(space, &task_id, "not-a-column");
+    match bad_stage {
+        Err(fulcrum_harness::seams::TaskStoreError::Invalid { message }) => {
+            assert!(
+                message.contains("backlog"),
+                "the refusal names the slugs that DO exist — got {message}"
+            );
+        }
+        other => panic!("a bad slug must be `Invalid`, got {other:?}"),
+    }
+
+    // An empty board is an answer, not an error, and reads `[]` — the shape the
+    // crate's `list_board` arm renders as "the board is empty".
+    assert!(store
+        .list_board("/seams/never-a-space")
+        .expect("an unseen Space is an empty board, not a failure")
+        .is_empty());
+
+    drop(dir);
+}
+
+// ── Pin 4b — the two artifact wire rules hold on the SEAM path too (#180 D2) ──
+//
+// THE DEFECT THESE TWO TESTS WERE WRITTEN AGAINST (measured, not suspected). D1
+// put the key grammar and the 256 KB cap in `commands/tasks.rs`, and D2 added a
+// SECOND entry point to `task_artifacts` — `impl TaskStore for Db`, which
+// delegates straight to `Db::write_artifact` and called neither rule. So the
+// human could not persist `My Spec` or a 1 MB spec, and the MODEL could, through
+// the `write_artifact` tool. Both existing `WriteArtifact` tests used the key
+// `"spec"`, which is exactly why the hole was invisible: no test ever handed the
+// seam an illegal argument.
+//
+// Why these live HERE and not in `commands/tasks/tests/artifacts.rs`: the command
+// layer already refused both (three green tests), and those tests are the reason
+// the bug survived — they test the path that was never broken. The seam is the
+// path the tool takes, and `storage/db/tests/mod.rs` cannot see the crate's error
+// family. `tests/fulcrum_seams.rs` is the only file that reaches the trait object
+// AND the crate's `TaskStoreError`, so it is the only place this could be written.
+//
+// Non-vacuity, per test: delete the key check in `Db::write_artifact` → the first
+// reddens on `matches!` (an `Ok` meta arrives). Delete the size check → the second
+// reddens the same way, and its `artifact_rows` count becomes 1. Both mutations
+// leave EVERY pre-existing test green — that is the proof these two are load-bearing
+// and that the command layer's three refusals do not cover this path.
+
+/// Every `task_artifacts` row, through an INDEPENDENT connection to the same file
+/// (the `commands/tasks/tests/artifacts.rs::artifact_rows` precedent). "Wrote
+/// nothing" has to mean the DATABASE holds no row, not that a method returned an
+/// `Err` — a method that wrote a row and then refused would satisfy an
+/// `is_err()` assertion.
+fn artifact_rows(db_path: &std::path::Path) -> Vec<(String, String, String)> {
+    let conn = rusqlite::Connection::open(db_path).expect("an independent connection");
+    let mut stmt = conn
+        .prepare("SELECT task_id, key, markdown FROM task_artifacts ORDER BY rowid ASC")
+        .expect("prepares");
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .expect("queries");
+    rows.collect::<Result<_, _>>().expect("maps")
+}
+
+/// A `Db` with one seeded Space and one card, and the path its file lives at (so
+/// a test can read the table behind the `Db`'s back).
+fn db_with_one_card(
+    prefix: &str,
+    space: &str,
+) -> (
+    archimedes_lib::test_support::ScratchDir,
+    Arc<Db>,
+    String,
+    std::path::PathBuf,
+) {
+    let (dir, db) = temp_db(prefix);
+    let path = dir.join("db.sqlite");
+    db.get_board(space).expect("get_board seeds the six stages");
+    let task = db
+        .create_task(space, "a card the model writes to", None, None)
+        .expect("create_task");
+    (dir, db, task.id, path)
+}
+
+/// (the key grammar, ON THE SEAM) a key outside `[a-z0-9][a-z0-9-]{0,39}` is
+/// refused through `<Db as TaskStore>::write_artifact` — the path the
+/// `write_artifact` TOOL takes — and writes NOTHING.
+///
+/// This is the second entry point's rule, and the honest statement of what it
+/// protects: `src/lib/taskPrompt.ts` runs every key through `escapeAttr`, so an
+/// ill-formed key is NOT an injection hole in the launch block today. What it
+/// breaks is the INVARIANT ADR 0100 states — keys are grammar-shaped — with a
+/// second writer that does not hold it, so a model can persist `My Spec` that a
+/// human cannot, and the next surface that interpolates a key WITHOUT escaping
+/// inherits the bug from the row this refusal stops.
+///
+/// `My Spec` and `a<b` are the two shapes that matter: a space (a key a human
+/// types naturally and the grammar refuses) and the tag-closing character (the
+/// one ADR 0100 names). The boundary half is asserted too, so the fix cannot
+/// "solve" this by narrowing the legal set: a 40-char key and a digit-initial key
+/// still land through the seam.
+///
+/// MUTATION: delete the key check in `Db::write_artifact` → the `matches!` reddens
+/// (an `Ok` meta comes back) and the row count becomes 1. Every other test in the
+/// workspace stays green, which is the whole point of this one.
+#[test]
+fn the_task_store_refuses_a_key_outside_the_grammar_and_writes_nothing() {
+    use fulcrum_harness::seams::{TaskStore as CrateTaskStore, TaskStoreError};
+
+    let (_dir, db, task_id, path) = db_with_one_card("fulcrum-seams-badkey-", "/seams/bad-key");
+    let store: Arc<dyn CrateTaskStore> = db.clone();
+
+    for refused in [
+        "My Spec",
+        "a<b",
+        "spec\"id",
+        "UPPER",
+        "",
+        "k".repeat(41).as_str(),
+    ] {
+        let err = store
+            .write_artifact(&task_id, refused, "markdown a model believed it wrote")
+            .expect_err(
+                "`{refused}` is outside the grammar, so the seam must refuse it — \
+                         the command layer refuses it, and the tool path must not be wider",
+            );
+        match err {
+            TaskStoreError::Invalid { message } => {
+                assert!(
+                    message.contains(refused),
+                    "the refusal names the key it refused, so the model self-corrects \
+                     without a discovery round trip; got {message}"
+                );
+                assert!(
+                    message.contains("[a-z0-9][a-z0-9-]{0,39}"),
+                    "and names the GRAMMAR, not just its own displeasure — got {message}"
+                );
+            }
+            other => panic!("a malformed key is `Invalid`, got {other:?}"),
+        }
+    }
+
+    assert!(
+        artifact_rows(&path).is_empty(),
+        "a refused key writes NOTHING — no row exists under the ill-formed key, and \
+         none was written and then renamed; got {:?}",
+        artifact_rows(&path)
+    );
+
+    // The legal set is UNCHANGED: the seam still accepts what the command accepts,
+    // including both boundaries of the grammar. Without this half, "make the seam
+    // refuse bad keys" could be satisfied by refusing keys generally.
+    for accepted in ["spec", "1hello", "k".repeat(40).as_str()] {
+        let meta = store
+            .write_artifact(&task_id, accepted, "legal")
+            .unwrap_or_else(|e| {
+                panic!(
+                    "`{accepted}` is inside the grammar and must pass \
+                            through the seam unchanged; got {e:?}"
+                )
+            });
+        assert_eq!(meta.key, accepted, "the meta names the key it wrote");
+    }
+    assert_eq!(
+        artifact_rows(&path).len(),
+        3,
+        "all three legal keys landed — the fix did not narrow the legal set"
+    );
+}
+
+/// (the 256 KB cap, ON THE SEAM) a markdown over the cap is refused through
+/// `<Db as TaskStore>::write_artifact` naming BOTH the limit and the actual size,
+/// writes nothing, and EXACTLY 262144 bytes still lands.
+///
+/// This is the dangerous half of the defect, and the reason to fix it now rather
+/// than file it. The cap exists because the markdown crosses a JSONL pipe on the
+/// way to the Worker, and a truncated artifact READS AS A COMPLETE ARTIFACT — a
+/// document that ends mid-sentence carries no signal that it is incomplete, which
+/// is the confident-well-formed-lie shape this repo documents over and over. F1's
+/// grounding established that the crate's stdio JSONL readers carry NO line cap
+/// (the 1 MiB guard is the daemon socket, a different transport), so on the seam
+/// path there was no bound at all on frame size: the spec's Risk 3 says the cap
+/// bounds it, and through the tool it did not.
+///
+/// Refused, NEVER truncated — and the refusal must name the numbers, because a
+/// model that gets back "too big" with no figure cannot decide what to cut.
+///
+/// MUTATION: delete the size check in `Db::write_artifact` → the `match` reddens
+/// (an `Ok` meta arrives claiming 262145 bytes) and the row count becomes 1. Flip
+/// the comparison to `>=` instead and the boundary write reddens while the refusal
+/// stays green — the other direction of the same boundary.
+#[test]
+fn the_task_store_refuses_an_oversized_markdown_naming_limit_and_size() {
+    use fulcrum_harness::seams::{TaskStore as CrateTaskStore, TaskStoreError};
+
+    const CAP: usize = 256 * 1024;
+    let (_dir, db, task_id, path) = db_with_one_card("fulcrum-seams-size-", "/seams/oversized");
+    let store: Arc<dyn CrateTaskStore> = db.clone();
+
+    let oversized = "x".repeat(CAP + 1);
+    let err = store
+        .write_artifact(&task_id, "spec", &oversized)
+        .expect_err("262145 bytes is over the cap and must be refused on the seam path too");
+    match err {
+        TaskStoreError::Invalid { message } => {
+            assert!(
+                message.contains(&CAP.to_string()),
+                "the refusal names the LIMIT in bytes ({CAP}); got {message}"
+            );
+            assert!(
+                message.contains("256 KB"),
+                "…and in the human 256 KB spelling the command layer uses; got {message}"
+            );
+            assert!(
+                message.contains(&(CAP + 1).to_string()),
+                "…AND the size it was actually handed, so the caller knows how far over \
+                 it is; got {message}"
+            );
+        }
+        other => panic!("an oversized payload is `Invalid`, got {other:?}"),
+    }
+
+    assert!(
+        artifact_rows(&path).is_empty(),
+        "and NOTHING was written — no truncated artifact exists, because a truncated \
+         spec is the lie this cap exists to prevent; got {:?}",
+        artifact_rows(&path)
+    );
+
+    // The boundary: EXACTLY the cap is legal (`>`, not `>=`). This is the half a
+    // `>=` slip changes, and the half that proves the seam's legal set still ends
+    // where the command layer's does.
+    let at_the_cap = "y".repeat(CAP);
+    let meta = store
+        .write_artifact(&task_id, "spec", &at_the_cap)
+        .expect("a payload of EXACTLY 262144 bytes is a ceiling, not a refusal");
+    assert_eq!(
+        meta.bytes, CAP,
+        "and the meta reports the byte count it stored"
+    );
+    let rows = artifact_rows(&path);
+    assert_eq!(rows.len(), 1, "the legal write landed");
+    assert_eq!(rows[0].2.len(), CAP, "the whole document is in the row");
+}
+
+/// The `DbError` / `BoardError → TaskStoreError` maps, pinned at the boundary.
+///
+/// Mirrors `a_sqlite_error_maps_to_store_error_io_and_keeps_its_sentence`
+/// (`agent/harness/store.rs:347`) for the persistence seam: what matters is not
+/// only WHICH variant a desktop error collapses to, but that the sentence a model
+/// reads survives the collapse. These three maps are the only place the desktop's
+/// error vocabulary becomes the crate's, and the Worker shows the `message` field
+/// to the model as the tool result — a dropped sentence is a model that cannot
+/// tell a locked database from a missing card.
+#[test]
+fn task_store_error_maps_keep_their_sentences() {
+    use archimedes_lib::storage::BoardError;
+    use fulcrum_harness::seams::TaskStoreError;
+
+    // `Sqlite → Io`, sentence preserved through `Display` — the same
+    // `io error: sqlite error: …` degradation `From<DbError> for StoreError`
+    // documents, because `TaskStoreError::Io` carries a `String` and rusqlite
+    // stays out of the crate.
+    let sqlite = DbError::Sqlite(rusqlite::Error::QueryReturnedNoRows);
+    let before = sqlite.to_string();
+    let mapped = TaskStoreError::from(sqlite);
+    assert!(
+        matches!(mapped, TaskStoreError::Io { .. }),
+        "`Sqlite` collapses to `Io` — got {mapped:?}"
+    );
+    assert_eq!(
+        before, "sqlite error: Query returned no rows",
+        "the desktop's own spelling, unchanged (the half a `matches!` cannot see: \
+         what the string WAS)"
+    );
+    let TaskStoreError::Io { message } = &mapped else {
+        unreachable!("the match above proved the variant");
+    };
+    assert!(
+        message.contains("sqlite error"),
+        "the collapse keeps WHICH layer failed — got {message}"
+    );
+
+    // `Io → Io` and `Json → Invalid`: a JSON failure is a malformed row, not an
+    // I/O failure, so it does not ride the same arm as a disk error.
+    let io = TaskStoreError::from(DbError::Io(std::io::Error::other("disk gone")));
+    assert!(matches!(&io, TaskStoreError::Io { message } if message == "disk gone"));
+    let json = TaskStoreError::from(DbError::Json(
+        serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+    ));
+    assert!(
+        matches!(json, TaskStoreError::Invalid { .. }),
+        "a JSON failure is `Invalid`, not `Io`"
+    );
+
+    // `MissingTask → NotFound`, naming the id.
+    let missing = TaskStoreError::from(BoardError::MissingTask("tsk_gone".to_string()));
+    match missing {
+        TaskStoreError::NotFound { message } => assert!(
+            message.contains("tsk_gone"),
+            "the refusal names the absent card — got {message}"
+        ),
+        other => panic!("`MissingTask` maps to `NotFound`, got {other:?}"),
+    }
+
+    // `MissingStage → Invalid`, and the sentence keeps the valid slugs (ADR 0090:
+    // a bad slug must come back naming the ones that exist).
+    let bad = TaskStoreError::from(BoardError::MissingStage {
+        wanted: "spike".to_string(),
+        available: "backlog, doing".to_string(),
+    });
+    match bad {
+        TaskStoreError::Invalid { message } => {
+            assert!(
+                message.contains("spike"),
+                "names what was asked — {message}"
+            );
+            assert!(
+                message.contains("backlog, doing"),
+                "a bad slug names the valid ones so a model self-corrects — {message}"
+            );
+        }
+        other => panic!("`MissingStage` maps to `Invalid`, got {other:?}"),
+    }
+
+    // `BoardError::Sqlite → Io` too, with the same sentence preservation.
+    let board_sqlite =
+        TaskStoreError::from(BoardError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
+    assert!(
+        matches!(&board_sqlite, TaskStoreError::Io { message } if message.contains("sqlite error")),
+        "the board's Sqlite arm degrades the same way — got {board_sqlite:?}"
+    );
+}
