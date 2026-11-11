@@ -895,3 +895,75 @@ describe("TaskDetailDialog — closing", () => {
     expect(within(dialog()).getByRole("heading").textContent).toContain("T7");
   });
 });
+
+describe("TaskDetailDialog — the modal scrolls (issue #180 follow-up)", () => {
+  /**
+   * A long Task body used to push the launch buttons below the fold with nothing to
+   * scroll: the shell is capped at `max-h-[80vh]`, the body carried `shrink-0`, and
+   * no element between the header and the footer was a scroll container, so the
+   * capped box simply CLIPPED. A modal built to show the whole card that cannot be
+   * scrolled does not show the whole card — and the clipped half was the footer, so
+   * the buttons were the thing you lost.
+   *
+   * Pinned by CLASS because jsdom runs no layout: `scrollHeight > clientHeight` is
+   * unmeasurable here, so the assertion is on the recipe that produces scrolling in
+   * a browser. Same instrument the mention picker uses for the same reason
+   * ("It must SCROLL: without `overflow-y-auto` a `max-height` just clips.").
+   */
+  it("the content between header and footer is a scroll container", () => {
+    renderDialog({ task: taskRow({ body: "x".repeat(5000) }) });
+    const scroller = within(dialog()).getByTestId("detail-scroll");
+    // It must SCROLL, and `min-h-0` is the half people forget: a flex item's default
+    // `min-height: auto` refuses to shrink below its content, so `flex-1` alone still
+    // grows the box past the cap and clips exactly as before.
+    expect(scroller.classList.contains("overflow-y-auto")).toBe(true);
+    expect(scroller.classList.contains("min-h-0")).toBe(true);
+    expect(scroller.classList.contains("flex-1")).toBe(true);
+  });
+
+  it("the body, the id row and the sessions list all sit INSIDE the scroller", () => {
+    // Reaching the content is the point: a scroller that wraps only some of it
+    // re-creates the bug for whatever was left out.
+    renderDialog({
+      task: taskRow({ body: "A long body", specPath: "/w/alpha/spec.md" }),
+      sessions: [link("sess_a"), link("sess_b")],
+    });
+    const scroller = within(dialog()).getByTestId("detail-scroll");
+    expect(scroller.querySelector(".whitespace-pre-wrap")).not.toBeNull();
+    expect(within(scroller).getAllByTestId("task-session-row")).toHaveLength(2);
+    expect(scroller.textContent).toContain("/w/alpha/spec.md");
+    // The id row too — it is quiet, and a scroller that skipped it would clip it.
+    expect(scroller.textContent).toContain(taskRow().id);
+  });
+
+  it("the footer sits OUTSIDE the scroller and cannot be scrolled away", () => {
+    // The clipped element in the reported bug WAS the footer. If it moves inside the
+    // scroller the buttons become reachable only by scrolling past a 5000-char body,
+    // which is a different way of losing them.
+    renderDialog({ task: taskRow({ body: "x".repeat(5000) }) });
+    const scroller = within(dialog()).getByTestId("detail-scroll");
+    const footer = dialog().querySelector('[data-slot="dialog-footer"]');
+    expect(footer).not.toBeNull();
+    expect(scroller.contains(footer)).toBe(false);
+    expect(footer!.classList.contains("shrink-0")).toBe(true);
+    // And the header too — a squeezed header turns the title into an ellipsis.
+    const header = dialog().querySelector('[data-slot="dialog-header"]');
+    expect(scroller.contains(header)).toBe(false);
+    expect(header!.classList.contains("shrink-0")).toBe(true);
+  });
+
+  it("the shell is a capped flex column — the premise the scroller depends on", () => {
+    // Without the cap there is nothing to scroll: the dialog would grow with the
+    // body and push itself off screen instead. Pinned so a future `max-h` removal
+    // reddens this instead of silently un-scrolling the modal.
+    renderDialog();
+    // `role="dialog"` sits on `DialogContent` itself, so the shell IS the queried
+    // node — `querySelector("div")` would hand back the header and pin nothing.
+    const cls = Array.from(dialog().classList);
+    expect(cls.some((c) => c.startsWith("max-h-"))).toBe(true);
+    expect(cls).toContain("flex-col");
+    // The base primitive is a `grid`; the cap only bounds a FLEX column the way this
+    // component assumes, so the override has to survive `cn()`'s merge.
+    expect(cls).not.toContain("grid");
+  });
+});
