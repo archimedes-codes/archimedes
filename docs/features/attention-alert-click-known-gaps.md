@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-11-11
-verified-by: re-measured at the merge of PR #184 (`cad9f5ab`) rather than copied from the plan — `grep -rnE '^\s+[a-z]+_[a-z]+:' src/lib/*.ts | grep -v '\.test\.' | grep -v toolOutput.ts` gives **exactly 1** hit (`attention.ts` `click_token`), the toolOutput hits are TOOL-NAME keys not fields; `grep -n "attention" src-tauri/tests/ipc.rs` registers **only** `attention_disarm`; `bash scripts/check-commands.sh` prints **71 registered / 70 consumed, both directions agree** and its scan reads the first argument of each `invoke` as a NAME and drops payload keys, so it cannot see an argument rename; `grep -rn "initialTopMostItemIndex" src/` gives the prop at `MessageList.tsx:630`, prose at `MessageList.scroll.test.tsx:947`, and a **strip** at `src/test/setup.tsx:8`, i.e. no assertion; `cargo test --test attention_alert_click -- --list` gives **15 tests**; `ls docs/decisions/ | grep -oE '^[0-9]{4}' | sort | uniq -d` still prints only the known `0086`
+verified-by: re-measured at the merge of PR #184 (`cad9f5ab`) rather than copied from the plan — `grep -rnE '^\s+[a-z]+_[a-z]+:' src/lib/*.ts | grep -v '\.test\.' | grep -v toolOutput.ts` gives **exactly 1** hit (`attention.ts` `click_token`), the toolOutput hits are TOOL-NAME keys not fields; `grep -n "attention" src-tauri/tests/ipc.rs` registers **only** `attention_disarm`; `bash scripts/check-commands.sh` prints **71 registered / 70 consumed, both directions agree** and its scan reads the first argument of each `invoke` as a NAME and drops payload keys, so it cannot see an argument rename; `grep -rn "initialTopMostItemIndex" src/` gives the production prop in `TranscriptScroller`, prose in the arrival-settle docblock, and a **destructuring strip** in `src/test/setup.tsx`, i.e. no assertion anywhere; `cargo test --test attention_alert_click -- --list` gives **15 tests**; `ls docs/decisions/ | grep -oE '^[0-9]{4}' | sort | uniq -d` still prints only the known `0086`
 ---
 
 # Attention alert click-to-navigate — known gaps
@@ -112,13 +112,15 @@ arrives and a stored Session's first frame is the `units.length === 0` branch. T
 there and a request that survived the frame would be replayed by a later, unrelated mount.
 
 The guarantee that the next frame lands at the bottom therefore rests on `TranscriptScroller` mounting
-with `initialTopMostItemIndex={{ index: "LAST", align: "end" }}` (`MessageList.tsx:630`), not on
-`handleScrollToBottom`. Two things make that fragile:
+with `initialTopMostItemIndex={{ index: "LAST", align: "end" }}`, not on `handleScrollToBottom`.
+Two things make that fragile:
 
-- Nothing asserts the mount prop. `grep -rn "initialTopMostItemIndex" src/` finds it at the call site,
-  in prose at `MessageList.scroll.test.tsx:947`, and **stripped** at `src/test/setup.tsx:8` (the jsdom
-  setup removes it because real Virtuoso renders 0 rows synchronously with it). So removing the prop
-  would not redden a single test, and this path would silently stop scrolling.
+- Nothing asserts the mount prop. `grep -rn "initialTopMostItemIndex" src/` finds exactly three
+  production-relevant hits: the prop on `TranscriptScroller`'s Virtuoso, one sentence of prose in the
+  **arrival settle** docblock in `MessageList.scroll.test.tsx`, and a **destructuring strip** in
+  `src/test/setup.tsx` (the jsdom setup removes it because real Virtuoso renders 0 rows synchronously
+  with it). None is an assertion, so removing the prop would not redden a single test and this path
+  would silently stop scrolling.
 - The empty-branch consume IS pinned — "the EMPTY branch drains a matching request without
   scrolling (a stored session's first frame)" and "the EMPTY branch leaves a request for another
   session pending" in `src/components/chat/MessageList.scroll.test.tsx`. Those pins say the request
