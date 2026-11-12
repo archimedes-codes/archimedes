@@ -217,20 +217,22 @@ describe("the sweep reader: the list-then-import shape (palette discovery)", () 
 
   it("rethrows a NOT-FOUND for a row that is still on disk: the stale-glob case stays loud", async () => {
     // The dangerous ambiguity, and the reason `listedModule` asks the tree and
-    // not the error. `paletteTestKit.ts` builds
-    // `new URL(\`./palettes/${name}\`, import.meta.url)`; Vite rewrites that at
-    // TRANSFORM time, so a row the transform-time glob never saw resolves to
-    // `…/src/lib/undefined` and answers `ERR_MODULE_NOT_FOUND` — the SAME code a
-    // deleted row answers with. A code-only skip would swallow it, and discovery
+    // not the error. A COMPUTED specifier of the shape
+    // `new URL(\`./${dir}/${name}\`, import.meta.url)` is rewritten by Vite at
+    // TRANSFORM time against the glob it saw then, so a name that glob never saw
+    // resolves to `…/undefined` and answers `ERR_MODULE_NOT_FOUND` — the SAME code
+    // a deleted row answers with. A code-only skip would swallow it, and discovery
     // would then report a Palette that simply was not there, which is the exact
-    // silent-green this repo keeps writing about. Deterministic reproduction:
-    // the specifier the stale glob produces, pointed at a file that exists.
+    // silent-green this repo keeps writing about.
+    //
+    // `paletteTestKit.ts` no longer builds its specifiers that way (it uses
+    // `pathToFileURL`, because the root-absolute glob key resolves differently per
+    // host OS), so this no longer mirrors a live call site — it reproduces the
+    // hazard directly, which is what keeps the branch covered. The shape is
+    // reconstructed here on purpose: a computed specifier, in a file where nothing
+    // matching it existed at transform time.
     const sweep = createSourceSweep();
     const rel = plant("stillThere.mjs");
-    // The kit's exact shape: a COMPUTED specifier, so Vite rewrites it against
-    // the glob it saw when it transformed THIS file. Nothing named like this
-    // existed then, so the href degrades to `…/src/lib/undefined` and the loader
-    // answers `ERR_MODULE_NOT_FOUND` for a row that is on disk right now.
     const staleName = "aRowTheGlobNeverSaw.ts";
     const staleHref = new URL(`./palettes/${staleName}`, import.meta.url).href;
 

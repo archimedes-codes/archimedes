@@ -236,8 +236,14 @@ describe("the sweep survives a file that vanishes between listing and reading", 
     // must survive.
     const real = `${probe}/wire.ts`;
     const doomed = `${probe}/doomed.ts`;
+    // The import edge ALONE makes a file an offender — that is what
+    // `IPC_PACKAGES` matches and what the guard's rule is about. Deliberately no
+    // `invoke("name")` call here: `check-commands.sh` walks every `.ts` under
+    // `src/` including this file, and a call written inside this string literal is
+    // PROSE to the reader of the test but a real call site to that guard, which
+    // would then report a command named after the placeholder as unregistered.
     const wireSource = (): string =>
-      `import { invoke } from "${WIRE_PACKAGE}";\nexport const call = () => invoke("x");\n`;
+      `import { invoke } from "${WIRE_PACKAGE}";\nexport const call = invoke;\n`;
     fs.writeFileSync(real, wireSource());
     fs.writeFileSync(doomed, wireSource());
     sweep.resetSkipped();
@@ -270,7 +276,7 @@ describe("the sweep survives a file that vanishes between listing and reading", 
     const leaked = `${probe}/leaked.ts`;
     fs.writeFileSync(
       leaked,
-      `import { invoke } from "${WIRE_PACKAGE}";\nexport const call = () => invoke("x");\n`,
+      `import { invoke } from "${WIRE_PACKAGE}";\nexport const call = invoke;\n`,
     );
     sweep.resetSkipped();
     try {

@@ -2960,17 +2960,32 @@ describe("Wave 3: an unregistered spec row is graded from its own file, not skip
  * they now permit. So the recovery is the sweep at the top of this file, not an
  * alarm elsewhere, and the alarm here is the only one that exists.
  *
- * WHY A QUERY-BUSTED KIT IMPORT. Vite resolves the kit's
- * `new URL(\`./palettes/${name}\`, import.meta.url)` when it TRANSFORMS the kit,
- * so the copy this file imported at module scope keeps the directory as it was
- * when the run started and reports `…/src/lib/undefined` for a row written
- * mid-run. Importing `./paletteTestKit.ts?liveGuard=1` is a NEW module to Vite —
- * re-transformed, glob re-evaluated — so discovery is asked the question with a
- * fresh view. This is not a seam standing in for the real thing: `listPaletteSpecs`
- * still `readdirSync`s the real directory and still imports the real file, which
- * is exactly the property under test. (`vi.resetModules()` was tried first and
- * does NOT work when the kit was already loaded in the same file — measured, and
- * recorded here so nobody re-tries it.)
+ * WHY A QUERY-BUSTED KIT IMPORT — and why its reason is now historical. This used
+ * to be load-bearing: the kit built its import specifier as
+ * `new URL(\`./palettes/${name}\`, import.meta.url)`, Vite rewrote that at
+ * TRANSFORM time against the glob it had seen, and so the copy this file
+ * imported at module scope reported `…/src/lib/undefined` for a row written
+ * mid-run. The kit now builds the specifier with `pathToFileURL` from the
+ * repo-relative path (see `paletteTestKit.ts` — that change fixed the
+ * `windows-latest` leg, where the root-absolute glob key resolved to
+ * `file:///D:/src/lib/…` and took five palette files down at import), so the
+ * module-scope kit sees a mid-run row too. Measured on this tree: swapping
+ * `freshKit` for the module-scope `listPaletteSpecs` leaves all 142 tests in this
+ * file green, so NOTHING here depends on the re-transform any more.
+ *
+ * It is left in place rather than deleted because deleting it is a behaviour
+ * change with no test either way — a distinct query is a distinct module
+ * instance, and so a distinct `createSourceSweep()` ledger, which is the right
+ * shape for a guard that mutates the swept directory even though this file never
+ * reads `skippedSpecFiles()`. A future sweep of that ledger is the thing that
+ * would make it load-bearing again; until then it costs one re-transform and
+ * should not be quoted as the guard's mechanism.
+ *
+ * What IS load-bearing is unchanged: `listPaletteSpecs` still `readdirSync`s the
+ * real directory and still imports the real file, which is the property under
+ * test. (`vi.resetModules()` was tried first and does NOT work when the kit was
+ * already loaded in the same file — measured, and recorded here so nobody
+ * re-tries it.)
  *
  * WHY THE WINDOW IS NOT NARROWED FURTHER, and why the sweeps are the thing that
  * changed. The tempting second fix is to make the guard hold the tree steady — a
@@ -3005,18 +3020,14 @@ describe("the live guard: discovery really does see a row dropped into src/lib/p
   const GUARD_CSS = `src/styles/${GUARD_ID}.css`;
   const GUARD_CLASS = paletteClass(GUARD_ID, "dark");
 
-  /** The kit, TRANSFORMED AGAIN, so its view of `src/lib/palettes/` is fresh.
-   *
-   *  Vite resolves the kit's `new URL(\`./palettes/${name}\`, import.meta.url)` at
-   *  TRANSFORM time, so the copy this file imported at module scope holds the
-   *  directory as it was when the run started, and asking it to load a row written
-   *  mid-run yields `…/src/lib/undefined`. A query-busting specifier is a NEW
-   *  module to Vite — re-transformed, glob re-evaluated — while `listPaletteSpecs`
-   *  itself is untouched: it still `readdirSync`s the real directory and still
-   *  imports the real file. `vi.resetModules()` does NOT do this (measured: the
-   *  re-imported kit returns the stale glob when the module was loaded earlier in
-   *  the same file), and the specifier must be a LITERAL — a computed one is a
-   *  `Unknown variable dynamic import`. */
+  /** The kit, imported under a DISTINCT QUERY so it is a distinct module
+   *  instance. It used to be load-bearing for a second reason — the kit's
+   *  `new URL(\`./palettes/${name}\`, import.meta.url)` was rewritten by Vite at
+   *  TRANSFORM time, so the module-scope copy reported `…/src/lib/undefined` for a
+   *  row written mid-run. The kit builds its specifier with `pathToFileURL` now,
+   *  so that failure mode is gone and the module-scope copy sees a mid-run row
+   *  too. See the block comment on this `describe` for the measurement and for
+   *  why the query is left in place regardless. */
   const freshKit = async (): Promise<typeof import("./paletteTestKit")> => {
     // @ts-expect-error TS2307: the `?liveGuard=1` query is a Vite concept, so `tsc`
     // has no resolver that knows about it — exactly as it has none for `node:fs`,

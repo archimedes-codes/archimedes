@@ -163,15 +163,21 @@ export const createSourceSweep = (): {
           throw error;
         }
         // The code alone is NOT sufficient here, and this is the subtle half of
-        // this module. `paletteTestKit.ts` builds its specifier as
-        // `new URL(\`./palettes/${name}\`, import.meta.url)`, and Vite rewrites
-        // that expression when it TRANSFORMS the file. When `name` is a row the
-        // transform-time glob never saw, the specifier resolves to
-        // `…/src/lib/undefined` and the loader answers
-        // `ERR_MODULE_NOT_FOUND` — MEASURED, and the identical code a genuinely
-        // deleted row produces. Same code, opposite meanings: "the file went
-        // away" (skip) versus "the module graph is looking at a stale directory"
-        // (a broken sweep that must be loud).
+        // this module. A COMPUTED specifier of the shape
+        // `new URL(\`./${dir}/${name}\`, import.meta.url)` is rewritten by Vite
+        // when it TRANSFORMS the file: the static part becomes a glob key that is
+        // ROOT-ABSOLUTE, and a name the transform-time glob never saw resolves to
+        // `…/<base>/undefined`. That answers `ERR_MODULE_NOT_FOUND` — MEASURED, and
+        // the identical code a genuinely deleted row produces. Same code, opposite
+        // meanings: "the file went away" (skip) versus "the module graph is looking
+        // at a stale directory" (a broken sweep that must be loud).
+        //
+        // `paletteTestKit.ts` no longer builds its specifiers that way — it uses
+        // `pathToFileURL` on a repo-relative path, precisely because the glob key
+        // resolves differently per host OS (see the comment there, and the
+        // `windows-latest` failure that found it). The check stays, because the
+        // hazard belongs to COMPUTED SPECIFIERS IN GENERAL, which any future sweep
+        // may reach for, and `sourceSweep.test.ts` drives this branch directly.
         //
         // So ask the tree, not the error: if the row the listing named is STILL
         // THERE, nothing vanished and this is the stale-glob case — rethrow. The

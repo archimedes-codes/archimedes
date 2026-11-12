@@ -46,6 +46,11 @@ const { readFileSync, readdirSync } = (await import(NODE_FS)) as {
   readdirSync: (path: string, options?: { recursive?: boolean; encoding?: string }) => string[];
 };
 
+const NODE_URL = "node:" + "url";
+const { pathToFileURL } = (await import(NODE_URL)) as {
+  pathToFileURL: (path: string) => URL;
+};
+
 /** Where the per-Palette grading rows live, relative to the repo root (the cwd
  *  every test here runs in). */
 const SPEC_DIR = "src/lib/palettes";
@@ -343,16 +348,37 @@ export const skippedSpecFiles = (): VanishedPath[] => sweep.skipped();
 export const listPaletteSpecs = async (): Promise<PaletteSpec[]> => {
   const specs: PaletteSpec[] = [];
   for (const name of specFileNames()) {
-    // A COMPUTED specifier again, for the same reason as `node:fs`: `tsc` must not
-    // try to resolve a per-Palette path that only exists in some worktrees.
-    const href = new URL(`./palettes/${name}`, import.meta.url).href;
+    // An ABSOLUTE `file:` URL built from the repo-relative path, NOT
+    // `new URL(\`./palettes/${name}\`, import.meta.url)`. The latter looks like the
+    // natural spelling and it is a platform trap: Vite rewrites a computed
+    // specifier's static part at TRANSFORM time to a glob key that is
+    // ROOT-ABSOLUTE (`/src/lib/palettes/ayu.ts`), and what that resolves to then
+    // depends on the host OS. Against a POSIX base it lands on
+    // `file:///src/lib/palettes/ayu.ts`, which Vite's own resolver maps back to
+    // the project root, so it loads and the hazard is invisible. Against a
+    // Windows base the drive survives the resolution —
+    // `file:///D:/a/archimedes/archimedes/…` + `/src/lib/…` →
+    // `file:///D:/src/lib/palettes/ayu.ts` — no resolver maps that, and every
+    // gate that sweeps the directory dies at import. Measured on CI's
+    // `windows-latest` leg, where it took down five palette files at once.
+    //
+    // `pathToFileURL` over `SPEC_DIR` sidesteps the whole class: the path is
+    // already repo-relative and every test here runs at the repo root, the same
+    // assumption `readdirSync(SPEC_DIR)` above makes, so listing and import agree
+    // by construction on every platform. It also drops the stale-glob failure
+    // mode this used to depend on — the specifier is no longer something a
+    // transform-time glob can miss.
+    const href = pathToFileURL(`${SPEC_DIR}/${name}`).href;
     // Through the sweep reader, so a row that another worker DELETED between
     // `specFileNames()` and here is skipped and recorded rather than blowing up a
     // sibling gate. The distinction `listedModule` draws is the one this function
     // must keep: a module that EXISTS and fails to load is still a hard error
-    // (see the header above), and so is the STALE-GLOB case, where Vite's
-    // transform-time glob never saw the row and the specifier degrades to
-    // `…/src/lib/undefined`. Only a row that is genuinely gone is skipped.
+    // (see the header above), and so is its STALE-GLOB case. That case can no
+    // longer arise from THIS specifier — `pathToFileURL` is not something a
+    // transform-time glob can miss — but `listedModule` keeps the check, because
+    // `sourceSweep.test.ts` drives it directly and a sweep that skips a file it
+    // can see is the silent-green this whole mechanism exists to prevent. Only a
+    // row that is genuinely gone is skipped.
     const mod = await sweep.listedModule<Record<string, unknown>>(
       href,
       `${SPEC_DIR}/${name}`,
