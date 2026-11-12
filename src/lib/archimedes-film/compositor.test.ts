@@ -524,7 +524,7 @@ describe("resolveTokenColor", () => {
   it("measures the probe while it is ATTACHED to the live tree", () => {
     // jsdom cannot tell the two apart — an unstyled class computes to
     // `rgb(0, 0, 0)` attached or detached — so the contract is checked
-    // structurally. The palette classes (`.dark`, `.theme-dracula`, …) sit on the
+    // structurally. The palette classes (`.dark`, `.theme-dracula-dark`, …) sit on the
     // root element, so a probe left detached resolves against nothing and would
     // read the `@theme` default instead of the theme the user actually picked:
     // a wrong colour that no jsdom test could ever see.

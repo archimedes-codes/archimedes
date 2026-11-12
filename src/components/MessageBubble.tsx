@@ -305,9 +305,9 @@ export default memo(
         // square corners would read as a table row, not as the user's message.
         // NO border (asked for). Measured in a real browser against the built
         // CSS, sampling the rendered pixels — the fill against the chat column
-        // is 1.11 (Dracula), 1.12 (zai dark) and 1.08 (zai light, `#ffffff` on
+        // is 1.11 (Dracula), 1.12 (default dark) and 1.08 (default light, `#ffffff` on
         // a `#f6f6f6` column). All three are faint boundaries — well under the
-        // 3:1 a non-text boundary ideally wants — and zai light is the weakest:
+        // 3:1 a non-text boundary ideally wants — and default light is the weakest:
         // there the band reads as a barely-there tint. That is the cost of the
         // border going, and no existing token avoids it (`--color-card`,
         // `--color-input` and `--color-header` are all the same `#ffffff` in
@@ -316,7 +316,7 @@ export default memo(
         //
         // ONLY the text is in the band. The mention rows below stay where
         // they were, on the column, because `SkillBlockCard` /
-        // `NamedResourceChip` paint `bg-input` — in the zai palettes that is the
+        // `NamedResourceChip` paint `bg-input` — in the default palettes that is the
         // SAME colour as `bg-composer`, so inside the band each card's edge
         // would vanish. The band is the user's sentence; the rows are
         // annotations about it.

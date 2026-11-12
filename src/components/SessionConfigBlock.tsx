@@ -365,7 +365,8 @@ export default function SessionConfigBlock({
               2.76 / 1.73 against the four fills this component emits, so the red
               band was almost invisible on the bar it was drawn on. Every palette
               but Dracula aliases the new token straight back to
-              `foreground-subtlest`, so zai renders EXACTLY as it always has. The
+              `foreground-subtlest`, so the default palette renders EXACTLY as it always
+              has. The
               per-palette ratios (track vs the pane it rides, and each band vs
               the track) are pinned in the context-bar gate in
               `paletteCompleteness.test.ts`. */}

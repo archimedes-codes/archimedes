@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createSourceSweep } from "./sourceSweep";
 
 /**
  * THE LAYER CENSUS (finding 13 / D3, task FE2) — a source scanner, in the shape
@@ -125,13 +126,29 @@ import { describe, expect, it } from "vitest";
 // a bare `import "node:fs"` does not typecheck. The idiom `cssSource.ts`,
 // `themeTokens.test.ts` and `tauriBoundary.test.ts` use.
 const NODE_FS = "node:" + "fs";
-const { readFileSync, readdirSync } = (await import(NODE_FS)) as {
-  readFileSync: (path: string, encoding: string) => string;
+const { readdirSync } = (await import(NODE_FS)) as {
   readdirSync: (
     path: string,
     options: { recursive: true; encoding: string },
   ) => string[];
 };
+// Reads go through the SWEEP READER (see `sourceSweep.ts`). This file walks
+// `src/lib` RECURSIVELY and opens every path in later predicates, and vitest runs
+// test files concurrently across workers — so a listed path can be deleted
+// between the listing and the open. That is not hypothetical on this branch: the
+// live palette guard writes `src/lib/palettes/guardprobe.ts`, which sits INSIDE
+// the directory walked here.
+const sweep = createSourceSweep();
+
+/** The module, for the non-vacuity probe below — it CREATES and DELETES a scratch
+ *  file so the skip branch is driven on purpose rather than waited for. Same
+ *  COMPUTED specifier (this app ships no `@types/node`). */
+const NODE_FS_MODULE = (await import(NODE_FS)) as unknown as {
+  writeFileSync: (path: string, data: string) => void;
+  rmSync: (path: string, options?: { force?: boolean; recursive?: boolean }) => void;
+  mkdirSync: (path: string, options?: { recursive?: boolean }) => void;
+};
+const fs = NODE_FS_MODULE;
 
 /** Normalise a `readdirSync` result to `/`-spelled repo-relative paths. On
  *  Windows `readdirSync` returns BACKSLASH paths, which would break every
@@ -256,11 +273,15 @@ const isTypeOnly = (clause: string): boolean => {
 
 /** The predicate the whole file exists to test: files under `src/lib/` with a
  *  RUNTIME edge into `src/store/` or `src/components/`. Exported for the mutation
- *  proof below — it is used over the tree AND over the allowlist. */
+ *  proof below — it is used over the tree AND over the allowlist.
+ *
+ *  A path that vanished between the `SOURCES` listing and this read yields `""`
+ *  and so matches nothing — the true answer for a file that no longer exists, and
+ *  `sourceSweep.ts` explains why that is a skip rather than a swallowed error. */
 const runtimeUpwardImporters = (files: readonly string[]): string[] =>
   files
     .filter((file) => {
-      const src = stripJsComments(readFileSync(file, "utf8"));
+      const src = stripJsComments(sweep.listed(file) ?? "");
       return specifiersOf(src, "runtime")
         .map((spec) => resolveSpecifier(file, spec))
         .some((resolved) => resolved !== null && isUpperLayer(resolved));
@@ -271,7 +292,7 @@ const runtimeUpwardImporters = (files: readonly string[]): string[] =>
 const typeOnlyUpwardImporters = (files: readonly string[]): string[] =>
   files
     .filter((file) => {
-      const src = stripJsComments(readFileSync(file, "utf8"));
+      const src = stripJsComments(sweep.listed(file) ?? "");
       return specifiersOf(src, "type")
         .map((spec) => resolveSpecifier(file, spec))
         .some((resolved) => resolved !== null && isUpperLayer(resolved));
@@ -313,6 +334,83 @@ const ALLOWED: { file: string; reason: string }[] = [
 ];
 
 const ALLOWED_FILES = ALLOWED.map((a) => a.file).sort();
+
+describe("the sweep survives a file that vanishes between listing and reading", () => {
+  // THE SKIP BRANCH, DRIVEN ON PURPOSE — not a race attempt.
+  //
+  // THIS FILE IS EXPOSED TOO, and it is not one of the four named in the Wave-3
+  // diagnosis. It walks `src/lib` RECURSIVELY, and the live palette guard writes
+  // `src/lib/palettes/guardprobe.ts` — squarely inside that walk — then deletes it
+  // from ANOTHER worker's `finally`. The listing this file takes at module scope
+  // can therefore name a path that is gone by the time `runtimeUpwardImporters`
+  // opens it, which is the same `ENOENT` that reddened `tauriBarrel.test.ts`.
+  // Reproducing the collision needs full-suite scheduling, so this hands the REAL
+  // predicate a listing it controls and deletes one path from under it. `.tmp/` is
+  // gitignored and outside `src/`, so a probe cannot become a fake `lib` module in
+  // the tree this census grades.
+  const probe = ".tmp/layerSweep";
+  /** An upward runtime edge — the shape this guard convicts. Written plainly:
+   *  THIS file is a `.test.ts`, and tests are walked but EXEMPT by name (see
+   *  `LIB_PRODUCTION`), so the scanner cannot convict its own scanner here the way
+   *  it can in `tauriBarrel.test.ts`, where tests are in scope. */
+  const upwardSource = (): string =>
+    'import { useSettings } from "../../src/store/settings";\n';
+
+  it("skips a listed file that disappears mid-sweep, and records it", () => {
+    fs.mkdirSync(probe, { recursive: true });
+    const real = `${probe}/real.ts`;
+    const doomed = `${probe}/doomed.ts`;
+    fs.writeFileSync(real, upwardSource());
+    fs.writeFileSync(doomed, upwardSource());
+    sweep.resetSkipped();
+    try {
+      // Pass 1: both exist, both are convicted. Without this, pass 2's shorter
+      // list would not distinguish "skipped one" from "predicate reads nothing" —
+      // the vacuity trap this file's own header says it exists to avoid.
+      expect(runtimeUpwardImporters([real, doomed])).toEqual([doomed, real].sort());
+      expect(sweep.skipped(), "nothing has vanished yet").toEqual([]);
+
+      // Pass 2: the file is gone, the SAME listing is swept again.
+      fs.rmSync(`${probe}/doomed.ts`, { force: true });
+      expect(
+        runtimeUpwardImporters([real, doomed]),
+        "the vanished file is gone (it does not exist); the real one is still an offender",
+      ).toEqual([real]);
+      expect(sweep.skipped(), "the skip is recorded, never silent").toEqual([
+        { file: doomed, code: "ENOENT" },
+      ]);
+    } finally {
+      fs.rmSync(probe, { force: true, recursive: true });
+      sweep.resetSkipped();
+    }
+  });
+
+  it("reads a listed file that is PRESENT, so a leaked artifact is still graded", () => {
+    // A leftover `guardprobe.ts` is PRESENT, so the census opens it. Tolerating a
+    // vanishing path must not become tolerating a stray one.
+    fs.mkdirSync(probe, { recursive: true });
+    const leaked = `${probe}/leaked.ts`;
+    fs.writeFileSync(leaked, upwardSource());
+    sweep.resetSkipped();
+    try {
+      expect(runtimeUpwardImporters([leaked])).toEqual([leaked]);
+      expect(sweep.skipped(), "a present file is never skipped").toEqual([]);
+    } finally {
+      fs.rmSync(leaked, { force: true });
+      fs.rmSync(probe, { force: true, recursive: true });
+    }
+  });
+
+  it("a NAMED path that is missing still throws (tolerance does not leak to literals)", () => {
+    // The `ALLOWED` allowlist entries are literals. If the sweep went tolerant of
+    // those, the stale-entry test above would go green on a tree where the
+    // allowlisted module had been moved away.
+    expect(() => sweep.named("src/lib/not-a-real-module.ts")).toThrow(/ENOENT|no such file/);
+    expect(sweep.named("src/lib/settings.ts"), "a real allowlisted module still reads").toContain(
+      "import",
+    );
+  });
+});
 
 describe("the lib layer boundary (FE2 census)", () => {
   it("the scanner actually reads the tree", () => {

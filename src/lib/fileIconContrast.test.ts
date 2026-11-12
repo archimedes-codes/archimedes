@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { readResolvedIndexCss, stripCssComments } from "./cssSource";
+import { cssReader, listPaletteSpecs, readCssFile, stripComments } from "./paletteTestKit";
+import { paletteClass, PALETTES as REGISTRY, themeClassNames } from "./palettes";
+import type { PaletteSpec } from "./paletteSpec";
 
 /**
  * The file-type DESCRIPTOR hues must clear 3:1 against the surface they sit
@@ -16,10 +18,10 @@ import { readResolvedIndexCss, stripCssComments } from "./cssSource";
  *
  * Hence a TABLE, not a constant. Every `.theme-*` palette that ships a dark
  * surface of its own is a row here, because "dark" is not one background:
- * `.theme-zai-dark` renders on neutral `#161616`, `.theme-dracula` on the
+ * `.theme-default-dark` renders on neutral `#161616`, `.theme-dracula-dark` on the
  * purple-black `#282a36`, and a hue that clears one does not clear the other —
- * Zai's `--color-file-css` `#7e57c2` is 3.47 on the first and 2.73 on the
- * second, which is why Dracula re-reads it. A new palette adds a row; it must
+ * the default palette's `--color-file-css` `#7e57c2` is 3.47 on the first and
+ * 2.73 on the second, which is why Dracula re-reads it. A new palette adds a row; it must
  * never be judged against someone else's surface.
  *
  * Which is also why the parser is LOUD. It used to match only bare `#rrggbb`,
@@ -33,12 +35,13 @@ import { readResolvedIndexCss, stripCssComments } from "./cssSource";
  */
 
 /**
- * The stylesheet, with every CSS comment removed BEFORE anything is parsed.
+ * The stylesheets this file grades — EACH PALETTE'S OWN FILE, never the resolved
+ * `index.css`.
  *
  * Parsing the raw text fails OPEN in two ways, both of which this file used to
  * have:
  *  - `block()` can land on a selector named in PROSE (`.dark`, `@theme` and
- *    `.theme-dracula` are all discussed in comments long before any block
+ *    `.theme-dracula-dark` are all discussed in comments long before any block
  *    opens), and a comment parsed as a block yields ZERO tokens — so an absence
  *    assertion passes for the wrong reason;
  *  - worse for the positive assertions, a declaration that is COMMENTED OUT
@@ -47,15 +50,54 @@ import { readResolvedIndexCss, stripCssComments } from "./cssSource";
  *    the value it no longer has, so the contrast suite grades a hue that is not
  *    on screen. That is exactly the "judged against someone else's surface"
  *    failure this file exists to prevent.
- * `paletteCompleteness.test.ts` already stripped; the siblings kept the bug.
+ * So every text below is comment-STRIPPED before it reaches `cssReader`, which
+ * is what the resolved-stylesheet read used to hand us — the strip happened on
+ * the whole sheet before any block was cut. `cssReader`'s own `declared` /
+ * `values` strip again defensively; feeding it stripped text makes that a no-op
+ * and keeps the selector match itself out of the prose.
+ *
+ * WHY PER-FILE AND NOT THE RESOLVED SHEET. `readResolvedIndexCss()` inlines only
+ * the `@import`s that exist, so a gate reading it cannot see a Palette whose
+ * import has not landed yet: either that Palette's author gets a red shared
+ * suite, or the gate skips it — and skipping makes every check here vacuous for
+ * exactly the Palettes it exists to grade. `spec.cssFile` is the Palette's own
+ * file, so the grading is real before the import lands. Verified equivalent on
+ * today's tree: the body `block()` returns for all five selectors is
+ * byte-identical whether cut from the resolved sheet or from the owning file, so
+ * this is a wiring change and not a re-grade.
  */
 
-const css = stripCssComments(readResolvedIndexCss());
+/** Read one CSS file, comments removed first (see the block above). */
+const strippedCss = (path: string) => cssReader(stripComments(readCssFile(path)));
 
-/** The strip is load-bearing, so pin that it actually removed something — a
- * no-op regex would silently restore the fail-open behaviour above. */
-if (!/\/\*[\s\S]*?\*\//.test(readResolvedIndexCss())) {
-  throw new Error("index.css has no comments: the comment-strip guard is vacuous");
+/** The per-Palette grading rows, discovered by reading `src/lib/palettes/`. */
+const SPECS = await listPaletteSpecs();
+
+/** Look up a row by id. Throws rather than returning `undefined`: a missing row
+ *  would turn every gate that reads it into a loop over nothing. */
+const specFor = (id: string): PaletteSpec => {
+  const found = SPECS.find((spec) => spec.id === id);
+  if (!found) throw new Error(`no spec row for "${id}" in src/lib/palettes/`);
+  return found;
+};
+
+/** The Default palette's row — the one that owns the shared `@theme` / `.dark`
+ *  base layers every palette's `var()` hops resolve against. */
+const DEFAULT_SPEC = specFor("default");
+
+/** Pin that the strip really is doing work — a no-op regex would silently put the
+ * fail-open behaviour back. Retargeted from the resolved sheet to the files this
+ * file actually grades, which is the stronger version of the same guard: it is
+ * now per-graded-file rather than one fact about an assembled sheet. */
+for (const [label, path] of [
+  ["the base layers", DEFAULT_SPEC.baseCssFile],
+  ...SPECS.map((spec) => [spec.id, spec.cssFile] as const),
+]) {
+  if (!/\/\*[\s\S]*?\*\//.test(readCssFile(path))) {
+    throw new Error(
+      `${path} (${label}) has no comments: the comment-strip guard is vacuous`,
+    );
+  }
 }
 
 /**
@@ -63,25 +105,24 @@ if (!/\/\*[\s\S]*?\*\//.test(readResolvedIndexCss())) {
  * START. The `\n}` heuristic this file used to use truncates at the first
  * nested block, and a bare `/\.theme-x/` can land on a prose mention of the
  * selector in the stylesheet's comments — both silently shrink the set of
- * tokens that were actually looked at. (Comments are already gone from `css`,
- * so the second trap cannot fire here.)
+ * tokens that were actually looked at. (Comments are already gone from every
+ * text handed to `cssReader` here, so the second trap cannot fire.)
  */
-const BLOCK = (selector: RegExp) => {
-  const head = css.match(selector);
-  if (!head || head.index === undefined) throw new Error(`no ${selector} block`);
-  const open = css.indexOf("{", head.index);
-  if (open < 0) throw new Error(`no opening brace for ${selector}`);
-  let depth = 0;
-  for (let i = open; i < css.length; i++) {
-    const ch = css[i];
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) return css.slice(open + 1, i);
-    }
-  }
-  throw new Error(`unbalanced braces after ${selector}`);
-};
+const BLOCK = (path: string, selector: RegExp) =>
+  strippedCss(path).block(selector);
+
+/** `paletteClass()` answers with the BARE class (`theme-dracula-dark`) while every
+ *  selector this file matches — and every test title it prints — carries the
+ *  leading dot. One helper so the two spellings cannot drift. */
+const selectorFor = (className: string): string => `.${className}`;
+
+const escapeRegExp = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** A palette selector as the anchored, line-start regex `block()` needs. Escaped
+ *  rather than interpolated raw, so a class name can never be read as a pattern. */
+const selectorRegExp = (selector: string): RegExp =>
+  new RegExp(`^${escapeRegExp(selector)}\\s*\\{`, "m");
 
 /**
  * Every `--color-file-*` declaration in a block, as `name -> raw value`.
@@ -239,7 +280,7 @@ const resolveToHex = (
   return fail();
 };
 
-const LIGHT_BG = "#f8f8f8"; // .theme-zai-light --color-background
+const LIGHT_BG = "#f8f8f8"; // .theme-default-light --color-background
 
 /** Every palette block that ships a dark surface, with every surface in that
  *  palette a DESCRIPTOR could plausibly land on. `@theme` itself is not a row:
@@ -284,52 +325,106 @@ const LIGHT_BG = "#f8f8f8"; // .theme-zai-light --color-background
  *  `CONTEXT.md`), so when a surface is too bright for them the SURFACE moves.
  *  That is exactly the fix the code-block header took (`bg-card` → `bg-panel`),
  *  and this list is what makes the reverse move fail loudly. */
-const DARK_SURFACES = [
-  {
-    block: /^\.theme-zai-dark\s*\{/m,
-    name: ".theme-zai-dark",
-    surfaces: [
-      { kind: "rendered", label: "background", token: "color-background" },
-      // zai's slab is a `color-mix()` over its own page, so it is RESOLVED by
-      // the same machinery that resolves the descriptors — not hardcoded here.
-      // An earlier comment claimed `#222222`; the actual composite is `#232323`,
-      // which is precisely the kind of recalled-not-measured number this file
-      // keeps having to take back.
-      { kind: "rendered", label: "chat", token: "color-chat" },
-      { kind: "rendered", label: "panel", token: "color-panel" },
-      { kind: "forbidden", label: "card", token: "color-card" },
-    ],
-  },
-  {
-    block: /^\.theme-dracula\s*\{/m,
-    name: ".theme-dracula",
-    surfaces: [
-      { kind: "rendered", label: "background", token: "color-background" },
-      // THE BINDING ROW for Dracula: the slab is now the palette's brightest
-      // surface that carries a descriptor (`file-py` 3.69 against the floor of
-      // 3.0), because `--color-panel` recessed below it to `#191a21`. Roughly
-      // half a point of headroom — the tightest rendered surface in the app.
-      { kind: "rendered", label: "chat", token: "color-chat" },
-      { kind: "rendered", label: "panel", token: "color-panel" },
-      // The raised step, which is what the code-block header used to ride. NOTE
-      // `--color-secondary` and `--color-tag` are the SAME `#343746` now, so
-      // this row also covers a `bg-secondary` badge.
-      { kind: "forbidden", label: "card", token: "color-card" },
-      { kind: "forbidden", label: "selection", token: "color-card-selected" },
-    ],
-  },
-];
+/** The baseline surfaces: every dark reading's page, slab and column are planes a
+ *  descriptor really does ride (`FileChip` on the slab, the code-block header on
+ *  `bg-panel`), and its raised `card` is the plane they must NOT be dropped onto.
+ *  Applied to EVERY dark reading, so a Palette that ships one is graded on day
+ *  one without anyone remembering to add a row — which is the whole defect this
+ *  table used to encode (a hardcoded two-entry list graded exactly two Palettes,
+ *  so a third bought no contrast grading at all).
+ *
+ *  A palette that needs MORE than the baseline says so in `EXTRA_SURFACES` below;
+ *  it cannot subtract from the baseline, because "this palette paints a descriptor
+ *  on fewer planes" is not a claim this file can accept without measuring it. */
+const BASELINE_SURFACES = [
+  { kind: "rendered", label: "background", token: "color-background" },
+  // The slab. Neither this nor the page is HARDCODED to a hex: the default
+  // palette's slab is a `color-mix()` over its own page and is resolved by the
+  // same machinery that resolves the descriptors. (An earlier comment here
+  // claimed the composite was `#222222`; the actual reading is `#232323` — one
+  // off on every channel, which is precisely the recalled-not-measured number
+  // this file keeps having to take back, and why nothing below hardcodes one.)
+  { kind: "rendered", label: "chat", token: "color-chat" },
+  { kind: "rendered", label: "panel", token: "color-panel" },
+  { kind: "forbidden", label: "card", token: "color-card" },
+] as const;
 
-const BASE = tokens(BLOCK(/^@theme\s*\{/m));
+/** Surfaces BEYOND the baseline, per palette, by class selector. Dracula's is the
+ *  Selection state — the brightest plane in the palette and therefore the worst
+ *  one for a dark-ish identity hue. Nothing may be allow-listed onto a `forbidden`
+ *  surface: the hues are IDENTITY colours a palette must not re-hue (the
+ *  `--color-file-*` rule in `CONTEXT.md`), so when a surface is too bright for
+ *  them the SURFACE moves — which is exactly the fix the code-block header took
+ *  (`bg-card` → `bg-panel`), and this list is what makes the reverse move fail. */
+const EXTRA_SURFACES: Record<string, ReadonlyArray<{ kind: string; label: string; token: string }>> = {
+  // Dracula's Selection state, and the BINDING ROW for the palette: the slab is
+  // its brightest rendered surface (`file-py` 3.69 against a floor of 3.0) because
+  // `--color-panel` recessed below it to `#191a21` — roughly half a point of
+  // headroom, the tightest rendered surface in the app. `card` and `secondary` are
+  // the SAME `#343746` here, so the baseline's `card` row also covers a
+  // `bg-secondary` badge.
+  ".theme-dracula-dark": [{ kind: "forbidden", label: "selection", token: "color-card-selected" }],
+};
+
+/**
+ * Every palette block that ships a DARK reading, with every surface in that
+ * palette a descriptor could plausibly land on. DERIVED FROM THE REGISTRY.
+ *
+ * `@theme` is not a row and never was: with no class on `<html>` the descriptors
+ * read the light-safe bases, which the LIGHT gate below grades. A LIGHT reading is
+ * likewise not a row — this table is the dark set, and the light page is graded by
+ * `LIGHT_BG` — so the derivation filters the registry's readings to `dark` rather
+ * than taking all of them.
+ *
+ * "Dark" is not one background: `.theme-default-dark` renders on neutral
+ * `#161616`, `.theme-dracula-dark` on the purple-black `#21222c`, and a hue that
+ * clears one does not clear the other — the default palette's `--color-file-css`
+ * `#7e57c2` is 3.47 on the first and 2.73 on Dracula's SLAB `#282a36` — it
+ * clears this palette's page `#21222c` at 3.03, so the slab is the surface that
+ * decides, and that is why Dracula re-reads it. (Before ADR 0027's one-step-down
+ * amendment the page WAS `#282a36`, and this sentence correctly said "on the
+ * page"; the amendment moved the page and left the sentence behind.) So a
+ * palette adds a ROW per SURFACE it paints a descriptor on and
+ * is never judged against someone else's.
+ *
+ * SURFACES ARE NAMED BY TOKEN, NOT BY HEX, and that is the whole point of the
+ * `hex` resolution below. An earlier revision hardcoded the hexes, and it drifted
+ * twice: it stayed green while the island layout moved `--color-panel` from
+ * `#343746` to `#21222c` (the row went on grading a surface `bg-panel` had
+ * stopped painting), and before that it described the transcript column as a
+ * 33% mix when the mix had already become a literal step. A palette that moves a
+ * surface must move the test with it, so the token is the source of truth and a
+ * hex appears only as the resolved reading of a derived token.
+ */
+const DARK_SURFACES = REGISTRY.filter((palette) =>
+  palette.modes.includes("dark"),
+).map((palette) => {
+  const name = selectorFor(paletteClass(palette.id, "dark"));
+  const spec = specFor(palette.id);
+  return {
+    name,
+    /** The file that declares this reading's block — read directly, never via the
+     *  resolved sheet, for the reason stated at the top of this file. */
+    cssFile: spec.cssFile,
+    surfaces: [
+      ...BASELINE_SURFACES,
+      ...(EXTRA_SURFACES[name] ?? []),
+    ].map((surface) => ({ ...surface })),
+  };
+});
+
+const BASE = tokens(BLOCK(DEFAULT_SPEC.baseCssFile, /^@theme\s*\{/m));
+
 /** Every token of the `@theme` base, prefixed-keyed so `resolveToHex`'s `var()`
  *  hop can find a target (it looks up `color-<name>`, while `tokens` above keys
  *  descriptors bare because descriptors never use `var()`). */
-const THEME_ALL = blockTokens(BLOCK(/^@theme\s*\{/m));
+const THEME_ALL = blockTokens(BLOCK(DEFAULT_SPEC.baseCssFile, /^@theme\s*\{/m));
 const PALETTES = DARK_SURFACES.map((s) => {
-  const overrides = tokens(BLOCK(s.block));
+  const overrides = tokens(BLOCK(s.cssFile, selectorRegExp(s.name)));
   /** The block's FULL token set over the `@theme` base — the cascade the browser
    *  actually resolves for `<html class="dark theme-…">`. */
-  const all = { ...THEME_ALL, ...blockTokens(BLOCK(s.block)) };
+  const all = { ...THEME_ALL, ...blockTokens(BLOCK(s.cssFile, selectorRegExp(s.name))) };
+
   /** Resolve one surface TOKEN to the colour it actually paints. A literal hex
    *  is its own answer; a derived token (`color-mix(…)`, a `var()` alias) is
    *  composited over the palette's `--color-background`, because that is the
@@ -364,22 +459,22 @@ const PALETTES = DARK_SURFACES.map((s) => {
  *  These are not "skipped" — every one is measured, listed and explained. They
  *  are the reason the code-block header sits on `bg-panel` rather than `bg-card`. */
 const FORBIDDEN_SURFACE_FAILURES = [
-  // Zai dark's card. One descriptor only, and it is the hue zai dark itself
-  // re-reads for the page (`#7e57c2`, 3.47 on `#161616`, 3.13 on the panel).
-  ".theme-zai-dark card: color-file-css (#7e57c2)",
+  // Default dark's card. One descriptor only, and it is the hue that block
+  // itself re-reads for the page (`#7e57c2`, 3.47 on `#161616`, 3.13 on the panel).
+  ".theme-default-dark card: color-file-css (#7e57c2)",
   // Dracula's Selection state — the brightest surface in the palette, and
   // therefore the worst one for a dark-ish identity hue. Listed rather than
   // assumed: `#424450` is legal for `card-selected`, so nothing but this row
   // stops a descriptor landing on it. (The raised card `#343746` now clears
   // 3:1 for every descriptor — the one-step-down shift is what fixed the seven
   // that `#424450` failed before — so it no longer appears here.)
-  ".theme-dracula selection: color-file-ts (#0288d1)",
-  ".theme-dracula selection: color-file-py (#0288d1)",
-  ".theme-dracula selection: color-file-html (#e65100)",
-  ".theme-dracula selection: color-file-sass (#ec407a)",
-  ".theme-dracula selection: color-file-graphql (#ec407a)",
-  ".theme-dracula selection: color-file-java (#f44336)",
-  ".theme-dracula selection: color-file-php (#1e88e5)",
+  ".theme-dracula-dark selection: color-file-ts (#0288d1)",
+  ".theme-dracula-dark selection: color-file-py (#0288d1)",
+  ".theme-dracula-dark selection: color-file-html (#e65100)",
+  ".theme-dracula-dark selection: color-file-sass (#ec407a)",
+  ".theme-dracula-dark selection: color-file-graphql (#ec407a)",
+  ".theme-dracula-dark selection: color-file-java (#f44336)",
+  ".theme-dracula-dark selection: color-file-php (#1e88e5)",
 ];
 
 describe("the file-type descriptor palette", () => {
@@ -391,6 +486,44 @@ describe("the file-type descriptor palette", () => {
 
   it("is a real palette (the descriptors exist as tokens)", () => {
     expect(names.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it("covers every dark reading the registry offers (the table cannot shrink)", () => {
+    // Non-vacuity of the DERIVATION, not of a measurement. `DARK_SURFACES` is now
+    // built from the registry, so the failure this guards is the derivation
+    // finding fewer Palettes than the app ships: a `dark` mode registered with no
+    // spec row owning it, or a row whose id the registry lost, would drop a
+    // Palette out of every contrast gate below and leave the suite green.
+    //
+    // Pinned against `themeClassNames()` and NOT against a hand-written list, so
+    // the cross-check cannot itself go stale when Wave 3 lands four more Palettes
+    // — and restricted to `-dark` readings, because a light reading is graded by
+    // the `LIGHT_BG` gate, never by this table.
+    expect(
+      DARK_SURFACES.map((row) => row.name).sort(),
+      "the dark-surface table does not cover exactly the dark readings the registry offers",
+    ).toEqual(
+      themeClassNames()
+        .filter((className) => className.endsWith("-dark"))
+        .map(selectorFor)
+        .sort(),
+    );
+    // And the baseline is really applied: a table that derived the right PALETTES
+    // but lost their SURFACES would still pass the check above. Four baseline
+    // surfaces per dark reading, plus whatever a palette names beyond it.
+    for (const row of DARK_SURFACES) {
+      expect(
+        row.surfaces.map((surface) => surface.token),
+        `${row.name} is missing a baseline descriptor surface`,
+      ).toEqual([
+        "color-background",
+        "color-chat",
+        "color-panel",
+        "color-card",
+        ...(EXTRA_SURFACES[row.name] ?? []).map((surface) => surface.token),
+      ]);
+      expect(row.surfaces.some((surface) => surface.kind === "rendered"), `${row.name} has no rendered surface`).toBe(true);
+    }
   });
 
   it("classifies every --color-file-* token it found", () => {
@@ -406,12 +539,22 @@ describe("the file-type descriptor palette", () => {
       ...Object.fromEntries(PALETTES.map((p) => [p.name, Object.keys(p.overrides).length])),
     };
     // 25 descriptors + the 3 role chips in the blocks that restate them; Dracula
-    // declares the 25 descriptors only, since `file-node*` are INHERITED from
-    // `.dark` by design (see `INHERITED` in `paletteCompleteness.test.ts`).
+    // and the four Wave-3 Palettes declare the 25 descriptors only, since
+    // `file-node*` are INHERITED from `.dark` by design (see `INHERITED` in
+    // `paletteCompleteness.test.ts`). The count is pinned PER BLOCK rather than
+    // derived, because that is the whole point: the `counts` object above is built
+    // from the parsed CSS, so a pin computed from it would be an identity. A block
+    // that quietly lost a descriptor — or a parser that quietly stopped seeing one
+    // — has to miss the number.
     expect(counts).toEqual({
       "@theme": 28,
-      ".theme-zai-dark": 28,
-      ".theme-dracula": 25,
+      ".theme-default-dark": 28,
+      ".theme-dracula-dark": 25,
+      ".theme-everforest-dark": 25,
+      ".theme-catppuccin-dark": 25,
+      ".theme-ayu-dark": 25,
+      ".theme-rose-pine-dark": 25,
+      ".theme-kanagawa-dark": 25,
     });
   });
 
@@ -470,23 +613,62 @@ describe("the file-type descriptor palette", () => {
       p.surfaces.map((s) => `${p.name} ${s.label} = ${s.hex}`),
     );
     expect(readings).toEqual([
-      // zai dark
-      ".theme-zai-dark background = #161616",
+      // default dark
+      ".theme-default-dark background = #161616",
       // The interesting one: a `color-mix()` RESOLVED over the page, not read
       // off the block. `#2b2b2b` at 60% over `#161616` is `#232323` — the
       // `#222222` a previous comment here asserted was off by one on every
       // channel, which is why nothing in this file hardcodes a composite.
-      ".theme-zai-dark chat = #232323",
-      ".theme-zai-dark panel = #202020",
-      ".theme-zai-dark card = #2b2b2b",
+      ".theme-default-dark chat = #232323",
+      ".theme-default-dark panel = #202020",
+      ".theme-default-dark card = #2b2b2b",
       // Dracula: the island scheme, one step down (amendment to ADR 0027). The
       // slab is the literal Background step and the panel sits BELOW it, which
       // is what makes a borderless card inside the slab visible.
-      ".theme-dracula background = #21222c",
-      ".theme-dracula chat = #282a36",
-      ".theme-dracula panel = #191a21",
-      ".theme-dracula card = #343746",
-      ".theme-dracula selection = #424450",
+      ".theme-dracula-dark background = #21222c",
+      ".theme-dracula-dark chat = #282a36",
+      ".theme-dracula-dark panel = #191a21",
+      ".theme-dracula-dark card = #343746",
+      ".theme-dracula-dark selection = #424450",
+      // Everforest: the `hard` reading (see `src/lib/palettes/everforest.ts` for
+      // why `hard` and not the spec's default `medium`). The page is `bg_dim`, the
+      // slab `bg1`, the recessed panel `bg0` — and the card is the SAME `#2e383c`
+      // as the slab, the designed collapse ADR 0096 records for default-dark. That
+      // equality is what this gate's pill rule exists to survive: the pill compares
+      // against `card` AND `panel`, and the page `#1e2326` differs from both.
+      ".theme-everforest-dark background = #1e2326",
+      ".theme-everforest-dark chat = #2e383c",
+      ".theme-everforest-dark panel = #272e33",
+      ".theme-everforest-dark card = #2e383c",
+      // Catppuccin Mocha: the flavour's own four-step ladder, and the one reading
+      // whose card is BRIGHTER than its chat slab (`surface0` is the raised step
+      // above `base`, while the slab is `mantle` — the page sits between the two).
+      ".theme-catppuccin-dark background = #181825",
+      ".theme-catppuccin-dark chat = #1e1e2e",
+      ".theme-catppuccin-dark panel = #11111b",
+      ".theme-catppuccin-dark card = #313244",
+      // Ayu: `sunk < base < lift < over`, so the ladder is monotonic and every one
+      // of the four rungs is a distinct plane — the cleanest case in the file. The
+      // page `#0d1017` is `surface.base`, which is also what Shiki's `ayu-dark`
+      // emits as its `bg`, so code paper and page agree here by construction.
+      ".theme-ayu-dark background = #0d1017",
+      ".theme-ayu-dark chat = #10141c",
+      ".theme-ayu-dark panel = #010102",
+      ".theme-ayu-dark card = #141821",
+      // Rosé Pine `main`: the tightest ladder of the set (a 12-role scheme spread
+      // over four planes), and the only one whose four steps are all within
+      // `#19`–`#26` of black — so the pill rule has the least room to separate in.
+      ".theme-rose-pine-dark background = #191724",
+      ".theme-rose-pine-dark chat = #21202e",
+      ".theme-rose-pine-dark panel = #1f1d2e",
+      ".theme-rose-pine-dark card = #26233a",
+      // Kanagawa wave: `sumiInk1` page, `sumiInk2` slab, `sumiInk0` panel and
+      // `sumiInk4` card — the four rungs `themes.lua` actually maps, not the five
+      // the README's table publishes (see `src/lib/palettes/kanagawa.ts`).
+      ".theme-kanagawa-dark background = #181820",
+      ".theme-kanagawa-dark chat = #1f1f28",
+      ".theme-kanagawa-dark panel = #16161d",
+      ".theme-kanagawa-dark card = #363646",
     ]);
   });
 
@@ -539,7 +721,8 @@ describe("the file-type descriptor palette", () => {
 
   it("every descriptor is overridden somewhere in the dark reading", () => {
     // ONE assertion on the MERGED map, not one per block. Checked per block it
-    // would be a lie: `.theme-zai-dark`'s `file-css` is `#7e57c2`, which EQUALS
+    // would be a lie: `.theme-default-dark`'s `file-css` is `#7e57c2`, which
+    // EQUALS
     // the `@theme` base and so legitimately "repeats" it there — the hue is
     // already legible on `#161616` (3.47), so restating it would be noise. It
     // only stops repeating once the merge picks up Dracula's `#bd93f9`, the

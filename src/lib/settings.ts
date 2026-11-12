@@ -1,5 +1,6 @@
 import { getSettings, type AppSettings, type FontSettings } from "./tauri";
 import { applySettingsTheme, applyThemeToDocument } from "./theme";
+import { DEFAULT_PALETTE_ID } from "./palettes";
 import { useSettings } from "../store/settings";
 
 /** The font-size clamp bounds (the settings UI's slider range). */
@@ -43,7 +44,7 @@ export function applySettingsFont(font: FontSettings): void {
 /** Apply ALL (theme + palette + font) — returns the theme cleanup. */
 export function applySettingsToDocument(settings: AppSettings): () => void {
   applySettingsFont(settings.font);
-  return applySettingsTheme(settings.theme, settings.palette ?? "zai");
+  return applySettingsTheme(settings.theme, settings.palette ?? "default");
 }
 
 /**
@@ -65,7 +66,10 @@ export async function loadAndApplySettings(): Promise<AppSettings | null> {
       "Failed to load settings; keeping the dark first-frame state",
       error,
     );
-    applyThemeToDocument("zai-dark", "zai");
+    // The two axes the registry takes: the DEFAULT palette's DARK reading, which
+    // is the first-frame state `main.tsx` applied and which this path must not
+    // move. The old call passed the collapsed `"default-dark"` app-theme string.
+    applyThemeToDocument(DEFAULT_PALETTE_ID, "dark");
     return null;
   }
 }

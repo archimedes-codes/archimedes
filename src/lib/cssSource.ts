@@ -10,9 +10,13 @@
  *
  *  - LOCAL imports (`./styles/*.css`) are inlined IN PLACE, in order, so the
  *    resolved source keeps the file's cascade: `@theme` < `.dark` <
- *    `.theme-zai-light` < `.theme-zai-dark` < `.theme-dracula` (pinned in
+ *    `.theme-default-light` < `.theme-default-dark` < `.theme-dracula-dark` <
+ *    every later Palette's block, in manifest order (pinned in
  *    `paletteCompleteness.test.ts`), including the hand-maintained
- *    `@media (forced-colors: active)` block in `src/styles/base.css`.
+ *    `@media (forced-colors: active)` block in `src/styles/base.css`. The list
+ *    is NOT restated in full here on purpose — it grows with the registry, and
+ *    the gate derives it from `themeClassNames()`; what this file owns is that
+ *    inlining preserves ORDER, which is the only property the layering depends on.
  *  - Package imports (`tailwindcss`, `tw-animate-css`, `shadcn/tailwind.css`)
  *    are DROPPED here — the tests only read the app's own tokens and rules,
  *    and the utilities they compile to are graded through components, not

@@ -2062,23 +2062,126 @@ describe("SettingsPage (the known-providers picker + the provider api field — 
 describe("Appearance: palette", () => {
   // (ADR 0027) The palette is a second, orthogonal axis beside Theme. The UI
   // stores the default as the `null` sentinel (like `spinnerStyle` / the font
-  // families), so a Zai selection leaves `settings.json` minimal — the shape a
+  // families), so a Default-palette selection leaves `settings.json` minimal — the
+  // shape a
   // pre-feature file already has.
-  it("offers Zai and Dracula, with Zai preselected for a `null` palette", async () => {
+  it("offers every registered Palette, with Default preselected for a `null` palette", async () => {
+    // THE ORDER IS PINNED HERE TOO, not just as membership. The picker renders
+    // `PALETTE_OPTIONS` in order and that list is `PALETTES.map`, so the option
+    // list IS the registry — which makes this the user-visible half of the order
+    // gate `paletteCompleteness.test.ts` pins from the data side. Default stays
+    // first (it is what a fresh install gets), the three already-shipped rows keep
+    // their slots, and the four new ones land after Everforest in plan order.
     render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
     const trigger = await screen.findByRole("combobox", { name: "Palette" });
     fireEvent.click(trigger);
-    expect(screen.getByRole("option", { name: "Zai (default)" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Dracula" })).toBeTruthy();
-    // The row states the pin (Dracula overrides the Theme setting).
+    const offered = screen
+      .getAllByRole("option")
+      .map((option) => option.textContent);
+    expect(offered).toEqual([
+      "Default",
+      "Dracula",
+      "Everforest",
+      "Catppuccin",
+      "Ayu",
+      "Rosé Pine",
+      "Kanagawa",
+    ]);
+    // The row states the pin, per-Palette: whether a palette follows the Theme
+    // setting is the palette's own property, and Dracula is the one that pins.
     expect(
       screen.getByText(/Dracula is dark-only .* overrides the Theme setting/i),
     ).toBeTruthy();
+    expect(screen.getByText(/each palette's own choice/i)).toBeTruthy();
   });
 
-  it("saves Dracula as the palette, and Zai as the null default", async () => {
+  it("round-trips every one of the seven values, saving `null` only for Default", async () => {
+    // THE rule the picker exists to get right, over the whole widened vocabulary.
+    // The measured failure this file was written for: `onValueChange` named both
+    // options it knew (`value === <default> ? null : "dracula"`), so selecting a
+    // THIRD Palette wrote `"dracula"` into `settings.json` — a wrong value persisted by a
+    // green suite, because the two-option test could not express a third case. With
+    // SEVEN options a two-arm rule is exactly as wrong, so the loop covers all
+    // seven: every Palette saves ITSELF, and only Default saves `null`.
+    //
+    // Each iteration starts from a palette that is NOT the one it is about to
+    // pick: Radix fires no `onValueChange` when the selection does not move, so a
+    // case that starts on its own target would save nothing and assert nothing.
+    // Dracula is therefore reached from `null` and every other value from Dracula.
+    const cases = [
+      ["Default", null],
+      ["Dracula", "dracula"],
+      ["Everforest", "everforest"],
+      ["Catppuccin", "catppuccin"],
+      ["Ayu", "ayu"],
+      ["Rosé Pine", "rose-pine"],
+      ["Kanagawa", "kanagawa"],
+    ] as const;
+    for (const [label, expected] of cases) {
+      vi.mocked(getSettings).mockResolvedValueOnce({
+        ...baseSettings,
+        palette: expected === "dracula" ? null : "dracula",
+      });
+      vi.mocked(saveSettings).mockClear();
+      const { unmount } = render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
+      await loaded();
+      await go("Appearance");
+      fireEvent.click(await screen.findByRole("combobox", { name: "Palette" }));
+      fireEvent.click(await screen.findByRole("option", { name: label }));
+      await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(1));
+      const saved = vi.mocked(saveSettings).mock.calls[0][0] as AppSettings;
+      expect(saved.palette, `picking ${label}`).toBe(expected);
+      // A COMPLETE document every time — the palette is one field of many, and a
+      // partial save would silently reset the rest of the user's settings.
+      expect(saved.theme).toBe(baseSettings.theme);
+      expect(saved.providers).toEqual(baseSettings.providers);
+      unmount();
+      cleanup();
+    }
+  });
+
+  it("shows every stored palette in the trigger", async () => {
+    // The trigger is what the user reads as "which palette am I on", and it is
+    // driven by `settings.palette ?? "default"` — so the `null` default has to render
+    // a LABEL, not nothing (the failure mode the font pickers document for an
+    // empty-string Radix value: `SelectValue` renders nothing and the control
+    // goes blank). All seven now, because a palette that renders a blank trigger
+    // is indistinguishable from one that was never wired.
+    for (const [palette, expected] of [
+      [null, "Default"],
+      ["default", "Default"],
+      ["dracula", "Dracula"],
+      ["everforest", "Everforest"],
+      ["catppuccin", "Catppuccin"],
+      ["ayu", "Ayu"],
+      ["rose-pine", "Rosé Pine"],
+      ["kanagawa", "Kanagawa"],
+      // An out-of-vocabulary value (a hand-edited file — the backend stores an
+      // unvalidated string) reads as Default, because `closedSelectValue` refuses
+      // to name a scheme the app is not actually wearing.
+      ["solarized", "Default"],
+    ] as const) {
+      vi.mocked(getSettings).mockResolvedValueOnce({
+        ...baseSettings,
+        // Cast: `"solarized"` is deliberately outside the wire union.
+        palette: palette as AppSettings["palette"],
+      });
+      const { unmount } = render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
+      await loaded();
+      await go("Appearance");
+      const trigger = await screen.findByRole("combobox", { name: "Palette" });
+      expect(
+        trigger.querySelector("[data-slot=select-value]")?.textContent,
+        `palette: ${JSON.stringify(palette)}`,
+      ).toBe(expected);
+      unmount();
+      cleanup();
+    }
+  });
+
+  it("saves Dracula as the palette, and Default as the null default", async () => {
     render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
     await loaded();
     await go("Appearance");
@@ -2092,18 +2195,18 @@ describe("Appearance: palette", () => {
     expect(saved.font).toEqual(baseSettings.font);
   });
 
-  it("saves Zai as the null sentinel, not as the string zai", async () => {
+  it("saves the Default option as the null sentinel, not as the string \"default\"", async () => {
     // The OTHER direction, which was asserted nowhere: the select's option value
-    // is the `"zai"` SENTINEL, and `onValueChange` must translate it to `null`
+    // is the `"default"` SENTINEL, and `onValueChange` must translate it to `null`
     // on the way out (the same pattern as `spinnerStyle` and the font families)
     // so a default palette leaves `settings.json` minimal and a pre-feature file
-    // (no `palette` key at all) and an explicit Zai choice stay the SAME
-    // document. Save `"zai"` instead of `null` and the two documents fork — the
+    // (no `palette` key at all) and an explicit Default choice stay the SAME
+    // document. Save `"default"` instead of `null` and the two documents fork — the
     // file grows a key that means nothing, and any other reader of `palette`
     // that only knows `null` as "default" now disagrees with the UI.
     //
     // Reached from a document that is ALREADY Dracula: starting from `null` the
-    // select is already on Zai, Radix fires no change, and the test would assert
+    // select is already on Default, Radix fires no change, and the test would assert
     // nothing.
     vi.mocked(getSettings).mockResolvedValueOnce({
       ...baseSettings,
@@ -2114,42 +2217,15 @@ describe("Appearance: palette", () => {
     await go("Appearance");
     fireEvent.click(await screen.findByRole("combobox", { name: "Palette" }));
     fireEvent.click(
-      await screen.findByRole("option", { name: "Zai (default)" }),
+      await screen.findByRole("option", { name: "Default" }),
     );
     await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(1));
     const saved = vi.mocked(saveSettings).mock.calls[0][0] as AppSettings;
     expect(saved.palette).toBeNull();
-    expect(saved.palette).not.toBe("zai");
+    expect(saved.palette).not.toBe("default");
     // And it is still a COMPLETE document — the sentinel must not be sent alone.
     expect(saved.theme).toBe(baseSettings.theme);
     expect(saved.providers).toEqual(baseSettings.providers);
-  });
-
-  it("shows the stored palette in the trigger for both values", async () => {
-    // The trigger is what the user reads as "which palette am I on", and it is
-    // driven by `settings.palette ?? "zai"` — so the `null` default has to render
-    // a LABEL, not nothing (the failure mode the font pickers document for an
-    // empty-string Radix value: `SelectValue` renders nothing and the control
-    // goes blank).
-    for (const [palette, expected] of [
-      [null, "Zai (default)"],
-      ["dracula", "Dracula"],
-    ] as const) {
-      vi.mocked(getSettings).mockResolvedValueOnce({
-        ...baseSettings,
-        palette,
-      });
-      const { unmount } = render(<SettingsPage onReturnToWorkspace={vi.fn()} />);
-      await loaded();
-      await go("Appearance");
-      const trigger = await screen.findByRole("combobox", { name: "Palette" });
-      expect(
-        trigger.querySelector("[data-slot=select-value]")?.textContent,
-        `palette: ${JSON.stringify(palette)}`,
-      ).toBe(expected);
-      unmount();
-      cleanup();
-    }
   });
 });
 
@@ -2337,10 +2413,10 @@ describe("a stored value the option list does not offer", () => {
       .querySelector("[data-slot=select-value]")?.textContent;
   }
 
-  it("renders the Zai default for a palette outside the vocabulary, not a blank trigger", async () => {
-    // `"solarized"` is the reported defect. The app applies Zai for anything
-    // it does not recognise (`applySettingsTheme` matches `palette ===
-    // "dracula"` exactly), so "Zai (default)" is not merely a placeholder — it
+  it("renders the Default palette for a palette value outside the vocabulary, not a blank trigger", async () => {
+    // `"solarized"` is the reported defect. The app applies the Default palette
+    // for anything it does not recognise (`applySettingsTheme` matches
+    // `palette === "dracula"` exactly), so "Default" is not merely a placeholder — it
     // is the truth about what is on screen, and the option the user can pick
     // to get back to a clean document.
     vi.mocked(getSettings).mockResolvedValueOnce({
@@ -2352,18 +2428,18 @@ describe("a stored value the option list does not offer", () => {
     await go("Appearance");
     const trigger = await screen.findByRole("combobox", { name: "Palette" });
     expect(trigger.querySelector("[data-slot=select-value]")?.textContent).toBe(
-      "Zai (default)",
+      "Default",
     );
     // And the default is the SELECTED option — the way back is visible.
     fireEvent.click(trigger);
-    const zai = await screen.findByRole("option", { name: "Zai (default)" });
-    expect(zai.getAttribute("data-state")).toBe("checked");
+    const defaultOption = await screen.findByRole("option", { name: "Default" });
+    expect(defaultOption.getAttribute("data-state")).toBe("checked");
     fireEvent.keyDown(trigger, { key: "Escape" });
     // Viewing the page rewrote nothing.
     expect(saveSettings).not.toHaveBeenCalled();
   });
 
-  it("renders the Zai default for a blank palette (Radix renders nothing for an empty value)", async () => {
+  it("renders the Default palette for a blank palette value (Radix renders nothing for an empty value)", async () => {
     // A hand-edited `"palette": ""`. Blank means absent (the same rule the
     // blank `defaultThinkingLevel` case establishes), so it reads as the
     // default rather than as a blank control.
@@ -2375,7 +2451,7 @@ describe("a stored value the option list does not offer", () => {
     await loaded();
     await go("Appearance");
     await screen.findByRole("combobox", { name: "Palette" });
-    expect(triggerText("Palette")).toBe("Zai (default)");
+    expect(triggerText("Palette")).toBe("Default");
   });
 
   it("renders the mode an out-of-vocabulary theme actually applies, not a blank trigger", async () => {
@@ -2383,7 +2459,7 @@ describe("a stored value the option list does not offer", () => {
     // render `""`). Its fallback is NOT the field's documented default (`dark`)
     // but `light`, because that is what the resolver really applies: every
     // value outside the vocabulary falls through `resolveTheme`'s final branch
-    // (`theme === "dark" ? zai-dark : zai-light`). A label of "Dark" would have
+    // (`theme === "dark" ? default-dark : default-light`). A label of "Dark" would have
     // described the default while the window rendered light — a lie of the same
     // kind as the blank it replaces.
     vi.mocked(getSettings).mockResolvedValueOnce({

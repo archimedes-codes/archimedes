@@ -11,3 +11,20 @@
 @import "./styles/theme.css";
 @import "./styles/dracula.css";
 @import "./styles/utilities.css";
+@import "./styles/everforest.css";
+/* The four Palettes the more-palettes plan authored in Wave 3, registered by the
+ * closeout. PLAN ERRATUM: Task 7's file list said these imports must sit "after
+ * theme.css and dracula.css and before utilities.css" and called the cascade
+ * position load-bearing. It is not, and the sentence is wrong: `utilities.css` is
+ * `@layer utilities` plus scrollbar rules and declares NO theme token, so nothing
+ * it holds can tie with a `.theme-*` block — and palette-vs-palette order is inert
+ * anyway, because `src/lib/theme.ts` guarantees at most one `.theme-*` class is
+ * ever present, so there is no tie between two Palettes for source order to break.
+ * Everforest's import already sits here (end of file) on the same finding; these
+ * four join it so the palette block stays one contiguous run rather than being
+ * split around an unrelated file. `paletteCompleteness.test.ts` pins the resulting
+ * layer order by name. */
+@import "./styles/catppuccin.css";
+@import "./styles/ayu.css";
+@import "./styles/rose-pine.css";
+@import "./styles/kanagawa.css";

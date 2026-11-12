@@ -1,0 +1,798 @@
+/*
+ * THE EVERFOREST PALETTE — dark and light. A colour scheme, not a light/dark
+ * mode: `src/lib/theme.ts` applies it as `.dark` + `.theme-everforest-dark`, so
+ * each block below is a PARTIAL diff over the shared tokens, exactly as
+ * `.theme-dracula-dark` is. Every palette block is a single-class selector of
+ * equal specificity, so source order alone decides a tie — which is why this file
+ * sits after `@theme` and after `.dark` (`paletteCompleteness.test.ts` grades that
+ * order over EVERY block the stylesheet declares, so a new block cannot opt out).
+ *
+ * SOURCE OF TRUTH: `sainnhe/everforest`'s own `palette.md`
+ * (https://github.com/sainnhe/everforest/blob/master/palette.md, raw
+ * https://raw.githubusercontent.com/sainnhe/everforest/master/palette.md, sha256
+ * 76c4b1a1bb612a0bdb39db0f5af944ea2fb83495423398e7dfb6d540c7120414, 21,927 bytes,
+ * 100 distinct hexes — hash-verified against the file this block was transcribed
+ * from, not spot-checked). It publishes 13 dark and 12 light background steps
+ * (`palette1`) at THREE contrast levels — `hard`, `medium` (the default) and
+ * `soft` — plus `palette2`'s foregrounds, and a usage column per identifier.
+ *
+ * TWO TRANSCRIPTION HAZARDS, both checked rather than assumed.
+ *
+ * - Three published hexes are written in LOWERCASE by the source (`#45443c`
+ *   `bg_yellow`, `#56635f` `bg5`, and the light `#bdc3af`-family rows are mixed)
+ *   and the rest uppercase. `gradePalette` lowercases before comparing, so this is
+ *   not a gate risk, but `publishedHexes` in `src/lib/palettes/everforest.ts`
+ *   carries them exactly as the file states them, so the next reader does not
+ *   "fix" a typo that is not there.
+ * - The light table publishes THIRTEEN slots and TWELVE distinct steps: `bg_dim`
+ *   and `bg2` are the SAME hex in all three contrast levels — the source's own
+ *   link label reads "bg_dim/bg2". They cannot be two rungs of a light ladder. See
+ *   the light block for which group holds both.
+ *
+ * ═══════════════════════ THE DARK READING SHIPS `hard`, AND THAT IS A DEPARTURE
+ *
+ * The spec calls `medium` the default level ("`medium` (default)"). This block
+ * takes `hard`. That is a deliberate departure, recorded here in the same register
+ * as Kanagawa's "`themes.lua` is the authority where the two disagree", and it is
+ * MEASURED rather than tasted.
+ *
+ * The app's file-type DESCRIPTORS are Identity colours (`CONTEXT.md`): 25 hues
+ * whose only job is to tell a `.py` chip from a `.json` one, which no palette may
+ * re-hue. `fileIconContrast.test.ts` grades all 25 at 3:1 on every plane a glyph
+ * actually rides — `--color-background`, `--color-chat`, `--color-panel` — and a
+ * `rendered` surface has NO exemption path of any kind. For a dark ground `S` and
+ * a lighter hue `H`, `contrast ≥ 3` holds exactly when
+ * `lum(S) ≤ (lum(H) + 0.05) / 3 − 0.05`, and the binding constraints (all 25 hues,
+ * kit-measured) are `file-css #7e57c2` at L ≤ 0.01716, then `file-ts`/`file-py
+ * #0288d1` at L ≤ 0.04075.
+ *
+ * With `--color-file-css` left at the Default palette's `#7e57c2`, exactly ONE of
+ * the 39 published dark steps anywhere in `palette.md` is dark enough:
+ * `hard/bg_dim`. An exhaustive search of all 39 steps × every ordered 4-rung
+ * assignment (39⁴ = 2,313,441 candidates, filtered to strictly-ascending ones with
+ * the forbidden-is-worst rule applied) found **0** ladders that keep every rendered
+ * plane safe. Not a thin margin — zero. The pill rule needs the page ≠ the panel,
+ * so one usable step cannot make a ladder.
+ *
+ * Re-reading `--color-file-css` at Everforest's OWN published `purple #d699b6` —
+ * the single move all five merged Palettes make, each for its own published
+ * violet — lifts the ceiling to L ≤ 0.04075, and the same search finds 8,595
+ * ascending ladders with every rendered plane safe (675 of them with the raised
+ * card clearing 3:1 too). Per contrast level, the steps under that ceiling:
+ * **`hard` has three** (`bg_dim`, `bg0`, `bg1`), `medium` has two, `soft` has one.
+ * Every `medium` and every `soft` shape leaves at least five descriptors under 3:1
+ * on a `rendered` plane, where nothing can be allow-listed. So `hard` is not a
+ * preference: **it is the only published flavour that can carry this app's planes.**
+ * Everforest's default level is simply lighter than every scheme in the app — the
+ * four merged dark pages all sit below `medium/bg0` — and `hard` (0.01618 /
+ * 0.02624 / 0.03735) lands in the same band as Dracula's.
+ *
+ * The app ships exactly ONE contrast flavour per Palette, so this Palette ships
+ * `hard` for dark. The cost is stated plainly: `hard` is the scheme's LOW-contrast
+ * flavour, so the dark reading is subtler than Everforest as most users meet it.
+ * `medium` stays the light reading's level (see the light block) because the light
+ * half has no such wall.
+ *
+ * ═══════════════════════════════════ THE DARK LADDER, AND WHAT IT PRICES
+ *
+ * Five published rungs plus the scheme's selection step, ordered by luminance and
+ * STRICTLY ASCENDING (ADR 0105). Luminances and every hop, measured with the kit's
+ * own `lumOf`/`contrast`:
+ *
+ *   #1e2326  hard/bg_dim   L 0.01618  bg_dim "Dimmed Background". The page plane,
+ *                                      the chrome band the islands sit in, the
+ *                                      composer island and the terminal's paper.
+ *      ↓ 1.1521
+ *   #272e33  hard/bg0      L 0.02624  bg0 "Default Background, Line Numbers
+ *                                      Background, Signs Background". RECESSED:
+ *                                      the cards inside the slab (they carry no
+ *                                      borders, so sitting below their container
+ *                                      is the only thing that makes them cards)
+ *                                      and the popover header.
+ *      ↓ 1.1457
+ *   #2e383c  hard/bg1      L 0.03735  bg1 "Cursor Line Background, Color Columns,
+ *                                      Closed Folds Background, Tab Line
+ *                                      Background". THE CONTENT SLAB, the
+ *                                      inspector, the active tab, the RAISED card
+ *                                      and the control wells.
+ *      ↓ 1.1473   ← THE SUB-FLOOR HOP, see below
+ *   #374145  hard/bg2      L 0.05022  bg2 "Popup Menu Background, Floating Window
+ *                                      Background, Window Toolbar Background" — the
+ *                                      scheme's OWN float step, taken literally.
+ *                                      Every float and the window's alternate step.
+ *      ↓ 1.1709
+ *   #414b50  hard/bg3      L 0.06735  bg3 "List Chars, Special Keys, Tab Line Label
+ *                                      Background (inactive)". RAISED: badges, the
+ *                                      inline-code chip, menu hover and the context
+ *                                      bar's track.
+ *
+ *   #495156  hard/bg4      L 0.07973  bg4 "Window Splits Separators, Whitespaces,
+ *                                      Breaks". THE SELECTION STATE, graded off the
+ *                                      ladder by `selectionRule:
+ *                                      "strictly-above-all"` — 1.1055 over the
+ *                                      raised rung, 1.9603 over the page.
+ *
+ * THE SUB-FLOOR HOP — A CONCESSION, RECORDED AND NOT ENGINEERED AWAY. Slab against
+ * float, `#2e383c` against `#374145`, measures **1.1473**, under the **1.2** floor
+ * `slabFloatSeparation.test.ts` states (1.2, not 1.3 — its own comment is explicit
+ * about which number is real). That gate grades Dracula's context-track against
+ * Dracula's pane today, so it does not fail this block; it is recorded anyway
+ * because Kanagawa records the identical concession ("THE PUBLISHED HOPS … the
+ * FIRST TWO HOP FALL UNDER IT") and a price nobody wrote down is a price nobody can
+ * pay off. The alternative was to invent a hex between `bg1` and `bg2` to clear
+ * 1.2, which would no longer be Everforest: the published rungs differ by about
+ * fifteen percent and that IS the scheme. What carries a float here is its shadow
+ * (the gate reads the float components for exactly that reason), and the pair the
+ * 1.2 floor actually exists to grade — the context bar's track against the pane it
+ * rides — clears it at **1.3434**.
+ *
+ * WHY `hard/bg4` IS THE SELECTION STEP AND `bg_visual` IS NOT. `strictly-above-all`
+ * needs a step brighter than every resting rung, i.e. brighter than `bg3` at
+ * L 0.06735. Two published steps qualify: `bg4 #495156` (0.07973) and `bg5
+ * #4f5b58` (0.09849). `bg_visual #4c3743` — the scheme's own "Visual Selection" and
+ * the obvious candidate — does NOT qualify: it is *below* `bg3` (L 0.04674) and
+ * would sink under the raised badges it has to sit above. `bg4` is taken over `bg5`
+ * because `bg5` is published as "_Not currently used_" — the scheme's spare — while
+ * `bg4` is the immediate next rung, so the state separates by the smallest
+ * published step that still clears every resting rung. `at-or-above-card`, which
+ * `default-dark` and every merged light reading use, would have made `bg_visual`
+ * legal and is the other honest answer; it was not taken because the scheme's
+ * selection step then stops being the brightest thing in the reading, which is what
+ * a selection is FOR. Stated because it is a real choice with a real alternative.
+ *
+ * ONE FORWARD-LOOKING MEASUREMENT, so the next reader does not rediscover it:
+ * `hard/bg4` itself rejects 13 of the 25 descriptors at 3:1. Nothing paints a
+ * descriptor there today (`fileIconContrast.test.ts` grades `background`, `chat`,
+ * `panel` as `rendered` and `card` as `forbidden`; the card here is `bg1`, which
+ * rejects 0 of 25), and no `FORBIDDEN_SURFACE_FAILURES` entry is needed. If the
+ * selection step is ever pinned as an extra `forbidden` surface the way Dracula's
+ * is, that row needs 13 lines — measured, not guessed.
+ *
+ * ══════════════════════════════════ ALPHA, CLASSIFIED PER TOKEN CLASS
+ *
+ * `palette.md` publishes **zero** alpha values: all 100 hexes are opaque
+ * `#rrggbb` (counted with the same 8-digit scan the kit's resolver rejects — 0
+ * matches). So the plan's decision-7 candidate `#475258c0` is not a published
+ * value at all: it is `medium/bg3` plus an invented alpha nibble, and this reading
+ * does not use `medium/bg3` either. Consequently:
+ *
+ * - SURFACE tokens carry NO alpha in either block. Not one member of
+ *   `SURFACE_TOKEN_PATTERN` is a `color-mix()` or an 8-digit hex, so ADR 0105's
+ *   "alpha on a surface is refused" is satisfied by construction rather than by
+ *   exemption, and `ladderExemptions` is empty in both readings.
+ * - TEXT tokens need NO alpha either, and that is a property of the scheme, not a
+ *   dodge: `palette2` publishes THREE opaque foreground roles — `fg`, `grey2`,
+ *   `grey1` — which are exactly the three de-emphasis tiers this app has. Nothing
+ *   has to be `color-mix`ed to get a quieter ink.
+ * - Every alpha-bearing declaration in this file — SIX in each block, counted from
+ *   the parsed blocks rather than recalled — is a `color-mix(… transparent)` over a
+ *   PUBLISHED hex, on a token that is a TINT or an OVERLAY and matches no surface
+ *   pattern: `idle-task-surface`, `interaction-ask-surface`,
+ *   `interaction-ask-fill`, `interaction-confirmation-surface`, `find-highlight`,
+ *   `plugin-paid-plan-badge`. That is the structure `.dark` itself uses, kept rather
+ *   than re-invented. The two `terminal-selection` readings, which are translucent
+ *   in every layer that states them, are inherited here rather than restated (the
+ *   scheme publishes no terminal table — see below), so they are not declarations of
+ *   this file at all.
+ *
+ * ══════════════════════════════════ WHAT THIS BLOCK DOES NOT OWN, AND WHY
+ *
+ * THE 25 DESCRIPTORS ARE RESTATED (24 verbatim from `.theme-default-dark` plus
+ * `file-css`), and the 22 `--color-terminal-*` tokens are NOT — 20 of them are
+ * named as inherited in the spec row, and the two this block does declare are
+ * `terminal-bg` (a rung of the ladder, so it must be this block's own) and
+ * `terminal-bright-blue` (the one live consumer of any terminal token: `@theme`'s
+ * `--color-icon-blue` aliases it, so markdown links and diff `@@` hunks ride
+ * Everforest's blue instead of `.dark`'s generic sky). The reason for the split is
+ * that **`palette.md` publishes no ANSI table at all** — `palette2` gives 10 named
+ * hues, not 16 terminal slots — so owning the set would mean inventing a MAPPING
+ * and writing it into shipped CSS. This is Catppuccin's situation and Catppuccin's
+ * answer (`palette.md` there "GENERATES the brights from a formula"), taken because
+ * the app has no terminal surface and 21 of the 22 tokens paint nothing in any
+ * palette. The HEXES of any mapping would all be published; it is the assignment
+ * that would not be, and the plan's gate is about transcribing what the project
+ * documents.
+ *
+ * THE RAMP (`caution` + `thinking-*`) IS NOT RE-HUED EITHER, and that is Rosé
+ * Pine's documented decision rather than an omission: the family's rule is that the
+ * hue answers "which level is this", so it may not be painted with hues the block
+ * already spends on other meanings — and `palette2` publishes 10 dark hues, SIX of
+ * which this block's status, brand and accent roles already wear (`blue`, `aqua`,
+ * `green`, `yellow`, `purple`, `red`). Five mutually distinct, cool→hot-ordered,
+ * non-colliding published hues do not exist here. Both readings therefore take the
+ * shared `.dark`/`@theme` ramp, `extraBeyondDefault` is empty, and
+ * `themeTokens.test.ts` grades the ramp in the blocks that DO re-hue it.
+ *
+ * The 54 Identity/overlay tokens — the 11 usage scales and 7 context-breakdown
+ * steps whose STEPS are the signal, the 8 git hues, the 18 role chips, the privacy
+ * hint, the 3 workflow tokens, the 2 wordmark gradients and the 3 luminance
+ * overlays — are inherited from `.dark` BY NAME in the spec row, checked in both
+ * directions by the completeness gate. Untouched BY this Palette, not preserved
+ * FROM the Default one.
+ *
+ * NO UTILITY-CLASS NAMES APPEAR IN PROSE anywhere in this file. Surfaces are named
+ * by TOKEN, which is the more precise reference and the convention the sibling
+ * files keep.
+ */
+
+.theme-everforest-dark {
+  /* ── surfaces — the five published `hard` rungs plus the scheme's selection
+   *    step. Luminances, darkest first, all measured with the kit:
+   *      #1e2326 0.01618   #272e33 0.02624   #2e383c 0.03735
+   *      #374145 0.05022   #414b50 0.06735   (selection #495156 0.07973)
+   *    Hops 1.1521 / 1.1457 / 1.1473 / 1.1709. The third is the sub-floor one the
+   *    block comment prices; every other pair that must read by fill clears. */
+  --color-background: #1e2326; /* bg_dim — the page plane */
+  /* THE CHROME BAND the islands float above: the titlebar and the sidebar read
+   * this one token, so the seam ADR 0027 records cannot come back when either
+   * moves. It is the deepest rung rather than the page, which is what makes the
+   * top and left of the window one recessed band. */
+  --color-frame: #1e2326;
+  --color-composer: #1e2326; /* the composer island — its own plane, sharing this rung */
+  --color-terminal-bg: #1e2326; /* the paper a future sheet would wear */
+  /* RECESSED — the cards INSIDE the slab (`ToolCallCard`, the
+   * `SubagentDelegatingCard` body, the code-block header) and the popover header.
+   * They carry no borders, so sitting below their container is the only thing that
+   * makes them cards. Against the slab `#2e383c` that is 1.1457. It is also the
+   * surface the code-block header's file glyph rides, and it is the SECOND-worst
+   * rendered plane for the descriptors: worst `file-ts`/`file-py` 3.5708. */
+  --color-panel: #272e33;
+  --color-popover-header: #272e33;
+  /* THE CONTENT SLAB — the most-used surface in the app: transcript column, side
+   * pane and composer chat column all read `--color-chat`, so they cannot drift
+   * apart. `bg1` is the scheme's "Cursor Line Background … Tab Line Background".
+   * `fileIconContrast.test.ts` grades this as `rendered` (a `FileChip` inside a
+   * transcript row wears it) and all 25 descriptors clear 3:1 here — worst
+   * `file-ts`/`file-py` at 3.1166, the tightest rendered plane in the palette and
+   * in-family with Kanagawa's 3.07 and Dracula's 3.06. */
+  --color-chat: #2e383c;
+  --color-inspector: var(--color-chat); /* the right-hand pane: one plane with the transcript */
+  --color-tab-active: var(--color-chat); /* the active tab IS the sheet showing through the chrome */
+  /* RAISED, and deliberately the SAME rung as the slab. `bg1` is the only
+   * published step that is both a raised card and clean for all 25 descriptors:
+   * `bg2` — the next one up — rejects 7 of 25, so a card there would be the first
+   * surface in the app that a `forbidden` row had to be written for. The slab/card
+   * plateau is the same designed collapse ADR 0096 records for `default-dark`
+   * (whose `--color-card` is its `--color-background-win-alt`), and here it costs
+   * nothing the gates care about: the pill rule compares `--color-background`
+   * against `--color-card` and `--color-panel`, and all three differ. */
+  --color-card: #2e383c;
+  /* The recessed CONTROLS, on the slab's own rung: a field reads as a field
+   * because of its border and its label, and `--color-border` is 3.70 on this
+   * surface, over the 3:1 boundary floor. */
+  --color-input: #2e383c;
+  --color-input-focused: var(--color-input);
+  /* EVERY FLOAT, and the window's alternate-background step. `bg2` is the
+   * scheme's own "Popup Menu Background, Floating Window Background, Window
+   * Toolbar Background", so this is the spec's float rung taken literally rather
+   * than a rung borrowed from elsewhere. 1.1473 above the slab — the concession
+   * the block comment records — and a float's shadow is what carries it. */
+  --color-header: #374145;
+  --color-background-win-alt: #374145;
+  --color-tab: #374145;
+  --color-menu: #374145;
+  --color-popover: #374145;
+  --color-toast: #374145;
+  --color-tooltip: #374145;
+  /* RAISED CHIPS AND HOVER STATE — `bg3`. `secondary`/`tag`/`tooltip-tag` are
+   * here (not on the slab's rung) because a `--color-secondary` badge lands INSIDE
+   * a `--color-menu` float and must read as raised over it; the
+   * badge-outshines-the-card inversion is the one ADR 0027 records fixing.
+   * `bg3` is also the scheme's "List Chars, Special Keys" step, i.e. its own
+   * mark-on-a-surface colour, which is what a chip is. */
+  --color-secondary: #414b50;
+  --color-tag: #414b50;
+  --color-tooltip-tag: #414b50;
+  --color-menu-hover: #414b50;
+  /* THE CONTEXT BAR'S TRACK. Two jobs that pull opposite ways: separate the band
+   * FILL from the unfilled remainder (wants dark) and be visible against the PANE
+   * it rides (wants light). Against `--color-inspector` `#2e383c` this rung scores
+   * 1.3434, over the 1.2 floor `slabFloatSeparation.test.ts` states; the rung
+   * below it (`#374145`) scores 1.1473 and would fail that floor. So the track is
+   * the one pair the 1.2 floor grades that this palette CLEARS, and the slab/float
+   * pair it does not grade is the one that does not. */
+  --color-context-track: #414b50;
+  /* THE SELECTION STATE — `bg4`, "Window Splits Separators, Whitespaces, Breaks".
+   * Brighter than every resting rung (1.1055 over the raised step, 1.9603 over the
+   * page), which is the property `selectionRule: "strictly-above-all"` grades.
+   * `bg_visual #4c3743` is the scheme's own "Visual Selection" and CANNOT be it —
+   * it is luminance-BELOW `bg3` and would sink under the badges a selected row
+   * must clear. `bg5 #4f5b58` would qualify but is published as "Not currently
+   * used". No JSX reads `--color-card-selected` today; the `--color-selected`
+   * white overlay `.theme-default-dark` shares is what the sidebar rows paint
+   * with, so this is a forward declaration on a rung, not a pixel. */
+  --color-card-selected: #495156;
+  /* The seam a resting board surface is outlined with. Aliased, as in both Default
+   * readings and in Kanagawa: `grey1` is the scheme's OWN published border colour
+   * ("UI Borders" is in its usage column), so there is no Dracula-style opaque
+   * border exception to make here. */
+  --color-card-border: var(--color-border);
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-border: var(--color-border);
+  --color-tab-border: var(--color-border);
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-brand);
+  /* The selection-adjacent tints. `bg_visual` is the scheme's "Visual Selection" —
+   * a wash over whatever the cell painted, not a plane — and green is its own
+   * "Search Highlights". Composite readings, measured: green at 30% over the slab
+   * `#2e383c` lands on `#35433d`, 1.0715 against the slab. A wash is a tint and
+   * not a surface, so it sits below the 1.2 fill floor on purpose; the mark inside
+   * it (the active match, `orange`) is what carries the match. */
+  --color-find-highlight: color-mix(in oklab, #a7c080 30%, transparent);
+  --color-find-highlight-active: #e69875; /* orange — a published hue no other UI role in this block wears */
+  --color-plugin-paid-plan-badge: color-mix(in oklab, #e69875 24%, transparent);
+  --color-plugin-paid-plan-badge-foreground: #e69875;
+
+  /* ── text — the scheme's three published de-emphasis roles, each an OPAQUE hex
+   *    (no alpha anywhere: see the block comment). Ratios below are composited and
+   *    measured with the kit; the worst resting reading is the FLOAT step
+   *    #374145, which is why the floors in the spec row name that number. */
+  --color-foreground: #d3c6aa; /* fg — "Default Foreground, Signs"; 6.20 worst resting */
+  /* grey2, "Cursor Line Number, Tab Line Label (inactive)". THE FIRST RECORDED
+   * WALL: 4.30 on the float step #374145 against a 4.5 floor (6.51 on the page,
+   * 4.93 on the slab, 3.67 on the raised step, 3.32 on the selection). The
+   * alternative is named so it can be overruled with numbers: `fg #d3c6aa` clears
+   * every surface (worst 5.30) but then the de-emphasis tier IS the body copy —
+   * separation, not legibility, is what this token exists to buy, and grey2 sits
+   * 1.5075 under the foreground. Pinned with `expiresAt: 4.5`. */
+  --color-foreground-subtle: #9da9a0;
+  /* grey1 — "Comments, Punctuation Delimiters, Closed Folds, Ignored/Disabled,
+   * UI Borders, Status Line Text". THE SECOND WALL and the scheme's own quiet ink:
+   * 3.23 on the float step (4.89 on the page, 3.70 on the slab, 2.76 raised, 2.49
+   * on the selection). It is also `--color-border` below, and that is the scheme
+   * doing it: one published hue legitimately serves "comment" and "UI border"
+   * because both are marks that must not compete with content. No published value
+   * sits between this and `grey0 #7a8478` (3.09 on the slab), so there is nothing
+   * to move TO without leaving the palette. */
+  --color-foreground-subtlest: #859289;
+  --color-foreground-inverse: #1e2326; /* the deepest step, so an inverted fill inverts to the page */
+  --color-tooltip-foreground: #d3c6aa;
+  --color-tooltip-tag-foreground: #9da9a0; /* 3.67 on the chip */
+  /* borders — `grey1` is the scheme's published "UI Borders" value, so the
+   * DEFAULT assignment is Everforest's own. 4.89 on the page, 3.70 on the slab,
+   * 3.23 on the float: over the 3:1 boundary floor on every plane a resting
+   * surface draws a line on, and 2.76 on the raised step, where a float's shadow
+   * carries the separation instead (the same reading `slabFloatSeparation.test.ts`
+   * records for Dracula's 2.51). */
+  --color-border: #859289;
+  --color-border-hover: #83c092; /* aqua — 4.95 on the float step */
+  /* accent — `purple`, the scheme's "Booleans, Numbers, Preprocessors".
+   * `brand` is load-bearing: `--color-input-border-focused` aliases it, so this is
+   * what puts the scheme's signature hue on the focus ring. It is ALSO
+   * `--color-file-css` below, which is the one descriptor this Palette re-reads —
+   * to its own published value, for the measured reason on that declaration. */
+  --color-brand: #d699b6;
+  --color-primary: #d699b6;
+  --color-primary-foreground: #1e2326; /* dark ink, 6.87 on the fill; white on it is 3.50 the WRONG way */
+  /* blue — "Identifiers, Uncategorised Special Symbols, Info Messages". As TEXT
+   * (`text-accent`) it reaches 5.53 on the slab and 6.34 on the panel, so the role
+   * reads rather than being waved at. */
+  --color-accent: #7fbbb3;
+  --color-idle-task: #83c092; /* aqua */
+  --color-idle-task-surface: color-mix(in oklab, #83c092 18%, transparent);
+  /* status — every one of the four takes the scheme's OWN semantic hue, and each
+   * is the brightest published value for its meaning: `red` IS "Error Messages,
+   * Error Signs", `yellow` IS "Warning Messages, Warning Signs", `green` IS "Hint
+   * Messages, Hint Signs". Everforest publishes no brighter red or yellow at all,
+   * so the walls below are the clause's, not a pick. */
+  --color-success: #a7c080; /* green — 5.24 worst resting, 4.47 raised, clears both floors */
+  --color-success-foreground: #1e2326;
+  --color-warning: #dbbc7f; /* yellow — 5.74 worst resting, 4.90 raised */
+  --color-warning-foreground: #1e2326;
+  /* red, and a RECORDED WALL: 3.82 on the float step, 3.26 on the raised step,
+   * 2.95 on the selection. `red` is the scheme's designated error hue and the only
+   * red it publishes — `bg_red #493b40` is a diff GROUND, not ink — so no
+   * published value clears 4.5 on the raised step. The FILL's ink improves either
+   * way (`#1e2326` on `#e67e80` is 5.79). */
+  --color-destructive: #e67e80;
+  --color-destructive-foreground: #1e2326;
+  --color-diff-added: #a7c080;
+  --color-diff-added-foreground: #1e2326;
+  --color-diff-removed: #e67e80;
+  --color-diff-removed-foreground: #1e2326;
+  /* Interaction fills keep the `.dark` color-mix STRUCTURE, re-anchored on
+   * published hues (aqua for ask, green for confirmation — the same roles
+   * Kanagawa gives springBlue and springGreen). Foregrounds: 5.68 and 5.53 on the
+   * slab, 4.82 and 4.95 on the float step. */
+  --color-interaction-ask-surface: color-mix(in oklab, #7fbbb3 14%, transparent);
+  --color-interaction-ask-foreground: #7fbbb3;
+  --color-interaction-ask-fill: color-mix(in oklab, #a7c080 24%, transparent);
+  --color-interaction-confirmation-surface: color-mix(in oklab, #a7c080 16%, transparent);
+  --color-interaction-confirmation-foreground: #a7c080;
+  /* Row glyph + row verb (ADR 0062), aliased to this palette's own de-emphasis
+   * pair — the same reading both Default readings and Kanagawa give them.
+   * Dracula is the one Palette that gives them separate hues, and
+   * `themeTokens.test.ts` pins that count by VALUE, so a new palette stating its
+   * own row hexes is graded, not waved at. */
+  --color-row-icon: var(--color-foreground-subtle);
+  --color-row-verb: var(--color-foreground-subtlest);
+  /* The film glyph (ADR 0071) — OPAQUE on purpose: the film's glyph BRIGHTNESS is
+   * the data, so the luminance bands must be the only dimmer, and a
+   * `color-mix(… transparent)` token would multiply with the film's own fade.
+   * `grey0` is "Line Numbers, Fold Columns, Concealed Text, Foreground UI
+   * Elements" — the scheme's designated drawn-but-not-read ink, which is exactly
+   * the film's job. 4.08 on the page, 3.09 on the slab. */
+  --color-film-glyph: #7a8478;
+  /* THE ANSI SET IS MOSTLY INHERITED, and the reason is the scheme's, not this
+   * block's convenience: `palette.md` publishes NO terminal table. `palette2` names
+   * 10 hues; a terminal wants 16 slots plus a paper and a selection. Copying means
+   * inventing a MAPPING, and the plan's gate is about transcribing what the project
+   * documents. Catppuccin is in the same position and inherits for the same reason,
+   * and 21 of these 22 tokens paint NOTHING today in ANY palette because this app
+   * has no terminal surface (no `xterm`/`node-pty`/`alacritty` dependency, zero
+   * `bg-terminal-*` consumers). So 20 stay on `.dark`'s generic readings and only
+   * the two with a stated basis are owned: the paper, which is a rung of this
+   * ladder, and `bright-blue`, which is the single live consumer of any terminal
+   * token — `@theme`'s `--color-icon-blue` aliases it, so markdown links and diff
+   * `@@` hunks ride Everforest's blue (6.34 on the panel) instead of `.dark`'s sky. */
+  --color-terminal-bright-blue: var(--color-accent);
+
+  /* THE 25 FILE-TYPE DESCRIPTORS, restated with the vivid dark readings. OFF-SPEC
+   * ON PURPOSE for 24 of them and allow-listed BY NAME in
+   * `src/lib/palettes/everforest.ts` — the one place this block knowingly breaks
+   * "use exact color values from this specification". The scheme publishes 10 dark
+   * hues and there are 25 file types; re-huing the descriptors to the spec set
+   * would make a `.py` chip indistinguishable from a `.json` one, and the hue IS
+   * the only thing distinguishing them, so the **Identity color** rule
+   * (`CONTEXT.md`) knowingly outranks the spec. That is the same shape all five
+   * merged Palettes are in (each allow-lists 24 of 25) and it is listed per token,
+   * never by family, because an entry that excuses a family is how an allow-list
+   * stops meaning anything.
+   *
+   * MANDATORY and easy to get wrong: these are declared in `@theme` (light-safe)
+   * AND in `.theme-default-dark` (vivid dark) but NOT in `.dark`, so a palette that
+   * omits one does not fail — it silently resolves through `.dark` to `@theme`'s
+   * light-safe reading, a DIFFERENT HUE, which is the real hazard when the hue is
+   * the whole signal.
+   *
+   * `file-css` is the one descriptor that needs NO allow-list entry, exactly as in
+   * Dracula (`#bd93f9`), Catppuccin (`#cba6f7`), Rosé Pine (`#c4a7e7`) and
+   * Kanagawa (`#957fb8`): it is re-read at Everforest's OWN published `purple`, so
+   * it is on-spec and needs no exception. Allow-listing it as well would be a hard
+   * failure, not a formality — the kit's unused-exception rule convicts an entry
+   * that carries no off-spec hex, and a re-read published hex carries none. The
+   * measured reason for the re-read: the Default palette's `#7e57c2` caps any dark
+   * surface at L 0.01716, which is why no ladder of published Everforest steps can
+   * pass with it in place (see the block comment); `#d699b6` caps it at 0.10152 and
+   * reads 3.1166 on the worst rendered plane here. */
+  --color-file-ts: #0288d1;
+  --color-file-react: #00bcd4;
+  --color-file-js: #ffca28;
+  --color-file-json: #f9a825;
+  --color-file-html: #e65100;
+  --color-file-css: #d699b6; /* purple — the scheme's own value, NOT an allow-list entry */
+  --color-file-sass: #ec407a;
+  --color-file-md: #42a5f5;
+  --color-file-rs: #ff7043;
+  --color-file-py: #0288d1;
+  --color-file-sh: #ff7043;
+  --color-file-yaml: #ff5252;
+  --color-file-toml: #cfd8dc;
+  --color-file-lock: #ffd54f;
+  --color-file-image: #26a69a;
+  --color-file-svg: #ffb300;
+  --color-file-archive: #afb42b;
+  --color-file-go: #00acc1;
+  --color-file-vue: #41b883;
+  --color-file-svelte: #ff5722;
+  --color-file-java: #f44336;
+  --color-file-php: #1e88e5;
+  --color-file-xml: #8bc34a;
+  --color-file-graphql: #ec407a;
+  --color-file-db: #ffca28;
+}
+
+/*
+ * EVERFOREST LIGHT — the light reading, at the `medium` contrast level.
+ *
+ * THE LIGHT READING RUNS THE OTHER WAY and Everforest light is the case ADR 0105
+ * was written for: no light theme publishes anything LIGHTER than its own Base, so
+ * nothing can sit above it and the selection state cannot be "the brightest step"
+ * the way the dark block's is. `bg0 #fdf6e3` is the lightest value the `medium`
+ * level publishes, so it is the TOP PLATEAU — the same move `default-light` makes
+ * with its white plateau (ADR 0096) and the move Kanagawa Lotus makes with
+ * `lotusWhite3`. Every group below strictly ascends and the plateau is the top
+ * group alone.
+ *
+ * WHY `medium` HERE AND `hard` IN THE DARK BLOCK, since the dark departure argues
+ * for one flavour. Because the wall that forced `hard` is a DARK wall: it is the
+ * identity hues failing on a bright ground, and a light ground fails them the other
+ * way (a dark hue on a pale ground gets BETTER as the ground lightens). Measured on
+ * `medium`, the four planes a descriptor actually rides — `--color-background`,
+ * `--color-chat`, `--color-panel`, and the `forbidden` `--color-card` — reject 0 of
+ * 25 each (worst `file-svelte` 3.0186 / 3.1580 / 3.3573 / 3.3573 against a 3.0
+ * floor). So the light reading takes the scheme's DEFAULT level and no flavour
+ * departure is needed. This is stated because "one flavour per Palette" is the rule
+ * the dark block leans on, and here it is knowingly broken per READING — which ADR
+ * 0105 makes legitimate for exactly this reason: the ladder's rules are per-reading,
+ * and so is the flavour that satisfies them.
+ *
+ * bg_dim AND bg2 ARE ONE HEX, AND THAT COLLAPSE IS PRICED, NOT HIDDEN. `palette.md`
+ * labels the slot "bg_dim/bg2" and publishes `#efebd4` for BOTH in every contrast
+ * level, so they cannot be two rungs of a ladder. This reading puts ONE group on it
+ * — the page group (`--color-background`, `--color-composer`,
+ * `--color-background-win-alt`, `--color-terminal-bg`) — and uses `bg2` NOWHERE. The
+ * alternative, splitting them across the page and the chrome band, would have
+ * produced two rungs 1.0000 apart and the ladder gate would (correctly) refuse it.
+ * `bg_visual #eaedc8` is the near-miss worth knowing about: it is 0 of 25 for
+ * descriptors and looks like a free extra rung, but it is L 0.82231 against
+ * `bg_dim`'s 0.82521 — **1.0033 apart**, a plateau in the middle of a ladder, which
+ * ADR 0105 allows only at the top. It is therefore used only as a tint
+ * (`--color-find-highlight`), never as a plane.
+ *
+ * bg5 IS THE DARKEST LIGHT STEP AND IT CANNOT HOST A GLYPH PLANE. `#bdc3af` is
+ * L 0.52944 — the darkest published light value — and it rejects **25 of 25**
+ * descriptors at 3:1 (worst `file-svelte` 1.9985). `bg4 #e0dcc7` and `bg3 #e6e2cc`
+ * reject **19 of 25** each. That is exactly Kanagawa Lotus's `lotusWhite0`
+ * situation, and the answer is the same: the steps that reject hues are used for
+ * planes that paint NO file-type glyph, and which planes those are is a measured
+ * census, not an assumption. `grep` over `src/` for raw descriptor classes finds
+ * exactly TWO renderers — the code-block header (`MessageBubble.tsx`, on
+ * `--color-panel`) and `FileChip` (on the transcript column, `--color-chat`) — and
+ * the three `file-node*` role chips have zero consumers at all. So:
+ *
+ *   bg5 #bdc3af  the context bar's TRACK — a rail, and the census finds no glyph on it
+ *   bg4 #e0dcc7  the MARKS: badges, the inline-code chip, menu hover — fills that
+ *                carry TEXT, and text is graded by the 4.5 floors below, not by 3:1
+ *   bg3 #e6e2cc  the CHROME BAND (`--color-frame`) — session rows and section
+ *                headers, which wear the role chips (inherited) and text tokens, not
+ *                a raw descriptor
+ *   bg_dim, bg1, bg0  the page, the slab and the plateau — ALL 0 of 25, and these
+ *                     are the planes the census says a glyph really rides
+ *
+ * `--color-panel` is on the PLATEAU (`#fdf6e3`) rather than recessed the way Kanagawa
+ * Lotus recesses its own, and that is forced by the census: the code-block header
+ * rides `--color-panel`, so the panel must sit on a 0-of-25 step, and Lotus's
+ * recessed `#d5cea3` rejects 20. `default-light` does the same thing for the same
+ * reason — its `--color-panel` IS its `--color-card`, both `#ffffff`.
+ *
+ * THE 4.5 WALLS ARE STRUCTURAL, AND `--color-foreground` IS ONE OF THEM. `fg
+ * #5c6a72` is the ONLY foreground `palette2` publishes for light, and it is the
+ * DARKEST published light value of any kind (L 0.13798 — `statusline2 #708089` is
+ * 0.2298, `grey0` is 0.41696). So on the chrome band `#e6e2cc` it reaches **4.29**,
+ * and there is NOTHING DARKER IN THE SPECIFICATION TO MOVE IT TO. That is a
+ * published flavour's ceiling, not a pick, and it is recorded in the spec row with
+ * `expiresAt: 4.5` like every other wall here. The alternative is named so it can be
+ * overruled: putting the chrome band on the page step (`bg_dim`) would lift the
+ * foreground to 4.66 and clear the floor, but it would also make the chrome band the
+ * page, giving up the frame/page separation every merged reading keeps
+ * (`default-light`'s `#f0f0f0` against its `#f8f8f8`, Kanagawa Lotus's `bg_m3`,
+ * Dracula's Background Darker). The chrome band is where the app puts its quietest
+ * copy, so this reading pays the 0.21 there rather than lose the band.
+ *
+ * THE DE-EMPHASIS TIER AND THE FOUR STATUS HUES ARE WALLS EVERYWHERE, at the same
+ * scale Kanagawa Lotus reports. The scheme publishes three light greys and takes the
+ * brightest two for its de-emphasis tiers, so `grey2 #829181` is 2.55 on the chrome
+ * band and `grey1 #939f91` is 2.12; the semantic hues are mid-tones by construction
+ * (`yellow #dfa000`, the scheme's own "Warning Messages", is 1.76 there and the
+ * brightest yellow `palette2` has). Every one of those numbers is pinned as a floor
+ * with `expiresAt: 4.5`, and none was re-hued to make a wall disappear.
+ *
+ * `--color-border` IS `grey1`, which is what the spec's own usage column says grey1
+ * is FOR ("… UI Borders …"), and on a cream page it reaches 2.56 on the plateau and
+ * 2.12 on the chrome band — under the 3:1 boundary floor, and recorded rather than
+ * fixed. Kanagawa records the identical price for its own published border colour
+ * (2.41 on the page). The only published value that would clear 3:1 on every light
+ * plane is `fg` itself, which would draw every divider in the body-copy ink.
+ *
+ * THE RAMP AND THE ANSI SET ARE INHERITED, for the reasons the dark block's header
+ * gives (10 published hues, six already spent; no ANSI table published at all). ONE
+ * asymmetry with the dark block is stated rather than left to be discovered: the
+ * dark reading owns `--color-terminal-bright-blue`, the one live terminal consumer
+ * (`@theme`'s `--color-icon-blue` aliases it, so markdown links and diff `@@` hunks
+ * ride the palette's blue), and the LIGHT reading does NOT. Everforest light's blue
+ * `#3a94c5` reaches only 2.94 on the slab as link text, and `@theme`'s light-safe
+ * reading exists precisely to be legible on a pale page — so this reading leaves it
+ * shadowing nothing, which is Catppuccin Latte's documented choice for the same
+ * token. Kanagawa Lotus owns it at 2.18 on its page and says so; this reading takes
+ * the other side of the same decision.
+ */
+
+.theme-everforest-light {
+  /* ── surfaces — five published `medium` rungs plus the Base plateau, ordered by
+   *    luminance (the scheme's rung NAMES are not monotonic here, so luminance
+   *    decides, exactly as it does for Kanagawa Lotus):
+   *      #bdc3af 0.52944   #e0dcc7 0.71157   #e6e2cc 0.75575
+   *      #efebd4 0.82521   #f4f0d9 0.86563   #fdf6e3 0.92340
+   *    Hops 1.3143 / 1.0580 / 1.0862 / 1.0462 / 1.0631. The tight hops are the
+   *    scheme's own — and the pair the 1.2 floor actually grades (track against the
+   *    pane it rides) clears it at 1.5802. */
+  /* THE CONTEXT BAR'S TRACK — `bg5`, the darkest published light step and the one
+   * rung whose job is separation rather than plane. Against `--color-chat`
+   * `#f4f0d9`, the pane it rides, it scores 1.5802, over the 1.2 floor
+   * `slabFloatSeparation.test.ts` states. It is also the step that rejects 25 of 25
+   * descriptors, and the census is what makes that legal: a track is a rail and
+   * carries no file glyph. */
+  --color-context-track: #bdc3af;
+  /* THE MARKS — `bg4`, "Window Splits Separators, Whitespaces, Breaks", i.e. the
+   * scheme's own quiet-mark step. In a LIGHT reading a badge and a hover state are
+   * DARKER than the surface they sit on, the exact inverse of the dark block:
+   * `default-light`'s `--color-secondary #e6e6e6` sits below its `#ffffff` card, and
+   * that inversion is ADR 0105's measurement for why group membership is per-reading
+   * data. This rung rejects 19 of 25 descriptors, and it carries none — these fills
+   * hold text, graded by the floors below. */
+  --color-secondary: #e0dcc7;
+  --color-tag: #e0dcc7;
+  --color-tooltip-tag: #e0dcc7;
+  --color-menu-hover: #e0dcc7;
+  /* THE CHROME BAND — `bg3`, DARKER than the page it frames, exactly as
+   * `default-light`'s `#f0f0f0` is darker than its `#f8f8f8`. `bg3` is the scheme's
+   * "List Chars, Special Keys, Tab Line Label Background (inactive)" step: the
+   * colour for things that are drawn but not read. It rejects 19 of 25 descriptors
+   * and carries none (the census names no raw descriptor on the chrome band), and it
+   * is the binding surface for every text token in this reading — see the 4.29 wall
+   * on `--color-foreground`. */
+  --color-frame: #e6e2cc;
+  /* THE PAGE PLANE — `bg_dim`, the scheme's "Dimmed Background", which is where
+   * Everforest itself puts a dimmed ground; `bg2` is the same hex and is used
+   * nowhere (the collapse the block comment prices). The page sits BELOW the slab so
+   * the content column reads as lifted without a border, and below the plateau so
+   * the pill rule (page ≠ card, page ≠ panel) holds. */
+  --color-background: #efebd4;
+  --color-composer: #efebd4; /* the composer island — its own plane, sharing this rung */
+  --color-background-win-alt: #efebd4;
+  /* The paper follows the page rather than a terminal table, because the scheme
+   * publishes no terminal table (see the block comment). Both Default readings do
+   * the same thing. */
+  --color-terminal-bg: var(--color-background);
+  /* THE CONTENT SLAB — transcript column, side pane and active tab on one token, so
+   * they cannot drift apart. `bg1` is the scheme's "Cursor Line Background … Tab
+   * Line Background". 0 of 25 descriptors fail here (worst `file-svelte` 3.1580),
+   * which is the property the slab needs because `FileChip` rides it. */
+  --color-chat: #f4f0d9;
+  --color-inspector: var(--color-chat); /* the right-hand pane: one plane with the transcript */
+  --color-tab-active: var(--color-chat); /* the active tab IS the sheet under the chrome */
+  /* THE PLATEAU — `bg0`, the scheme's "Default Background" and the LIGHTEST value
+   * the level publishes. Card, header, tab strip, every float, the recessed controls
+   * and the panel are all ONE colour here and cannot be separated by fill at all;
+   * separation is carried by `--color-card-border` and a float's shadow, which is
+   * what ADR 0096's designed collapse means and why `slabFloatSeparation.test.ts`
+   * reads the float components themselves. `default-light` plateaus the same seven
+   * tokens on its `#ffffff` and Kanagawa Lotus on its Base; this is the case ADR 0105
+   * says a light reading is ALLOWED to plateau, and only at its top. */
+  --color-card: #fdf6e3;
+  --color-header: #fdf6e3;
+  --color-panel: #fdf6e3; /* the code-block header's plane: on a 0-of-25 step, as the census requires */
+  --color-input: #fdf6e3;
+  --color-input-focused: var(--color-input);
+  --color-tab: #fdf6e3;
+  --color-menu: #fdf6e3;
+  --color-popover: #fdf6e3;
+  --color-toast: #fdf6e3;
+  --color-tooltip: #fdf6e3;
+  /* The selection state, aliased onto the plateau. Everforest light publishes
+   * nothing lighter than `bg0`, so "brighter than every resting step" is not
+   * satisfiable here and would veto the scheme rather than describe it;
+   * `selectionRule: "at-or-above-card"` is the property that actually matters — a
+   * selected row must not SINK below the surface it sits on. Same rule and same
+   * reasoning as `default-light` and Kanagawa Lotus, which collapse the token the
+   * same way. A selected row reads by its ring and its foreground, stated rather
+   * than dressed up as an elevation step. */
+  --color-card-selected: var(--color-card);
+  --color-card-border: var(--color-border);
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-border: var(--color-border);
+  --color-tab-border: var(--color-border);
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-brand);
+  /* The selection-adjacent tints. `bg_visual` is the scheme's "Visual Selection" — a
+   * wash over whatever the cell painted, never a plane (see the block comment for the
+   * 1.0033 near-plateau that rules it out as a rung). Green is the scheme's own
+   * "Search Highlights". Composite reading, measured: green at 30% over the slab
+   * `#f4f0d9` lands on `#eff0d6`, 1.0324 against the slab — a tint, not a surface,
+   * so it sits under the 1.2 fill floor on purpose and the mark inside it carries. */
+  --color-find-highlight: color-mix(in oklab, #8da101 30%, transparent);
+  --color-find-highlight-active: #f57d26; /* orange — a published hue no other UI role in this block wears */
+  --color-plugin-paid-plan-badge: color-mix(in oklab, #f57d26 24%, transparent);
+  --color-plugin-paid-plan-badge-foreground: #5c6a72; /* fg — dark ink on a pale tint */
+
+  /* ── text — the scheme's three published light foreground roles, all OPAQUE (the
+   *    spec publishes no alpha at all; see the alpha census in the header). Every
+   *    ratio below is measured with the kit and pinned in the spec row's three floor
+   *    tables. The BINDING surface for all of them is the chrome band `#e6e2cc`,
+   *    which is why the floors name that number and not the page's. */
+  /* fg — "Default Foreground, Signs". THE RECORDED WALL and the scheme's ceiling:
+   * 4.29 on the chrome band, 4.66 on the page, 5.18 on the plateau. NOTHING in
+   * `palette.md` is darker, so there is no value to move it to — the next candidate
+   * down is `statusline2 #708089` at L 0.2298, which is LIGHTER than `fg` at
+   * 0.13798 and would read worse. Pinned with `expiresAt: 4.5`. */
+  --color-foreground: #5c6a72;
+  /* grey2, "Cursor Line Number, Tab Line Label (inactive)". 2.55 on the chrome band
+   * (2.77 page, 3.08 plateau, 2.41 on the mark step). It is DIMMER than the
+   * foreground by construction — L 0.26582 against 0.13798 — which is the property
+   * this tier exists to buy, and the reason it cannot be lifted to clear 4.5 without
+   * becoming the body copy. */
+  --color-foreground-subtle: #829181;
+  /* grey1 — "Comments, Punctuation Delimiters, Closed Folds, Ignored/Disabled, UI
+   * Borders, Status Line Text". THE QUIETEST INK the scheme publishes for light
+   * (2.12 chrome band, 2.00 mark step) and, below, its border colour too: one
+   * published hue legitimately serves "comment" and "UI border" because both are
+   * marks that must not compete with content. `grey0 #a6b0a0` is lighter still
+   * (1.73), so there is nothing between this and the floor to move to. */
+  --color-foreground-subtlest: #939f91;
+  --color-foreground-inverse: #fdf6e3; /* the plateau, so an inverted fill inverts to the lightest step */
+  --color-tooltip-foreground: #5c6a72;
+  --color-tooltip-tag-foreground: #829181; /* 2.41 on the chip */
+  /* borders — `grey1` is the scheme's published "UI Borders" value, so the DEFAULT
+   * assignment is Everforest's own, and so is the shortfall: 2.56 on the plateau,
+   * 2.12 on the chrome band, under the 3:1 boundary floor on every light plane.
+   * Recorded as a departure, exactly as Kanagawa records its own published border at
+   * 2.41 on its page. The only published value that clears 3:1 everywhere is `fg`
+   * (5.18 / 4.29), which would draw every divider in the body-copy ink. */
+  --color-border: #939f91;
+  --color-border-hover: #3a94c5; /* blue — 2.94 on the slab; a hover boundary is a hint, and it is the scheme's own info hue */
+  /* accent — `purple`, the scheme's "Booleans, Numbers, Preprocessors", its
+   * signature violet. Load-bearing: `--color-input-border-focused` aliases it, so
+   * this is what puts the accent on the focus ring. As TEXT it reaches 2.79 on the
+   * slab, which is why the accent TEXT role in this reading is `blue` below and this
+   * hue keeps the fill and ring jobs. */
+  --color-brand: #df69ba;
+  --color-primary: #df69ba;
+  --color-primary-foreground: #fdf6e3; /* the plateau: 2.83 on the fill, the better of the two (fg ink is 1.83) */
+  /* blue — "Identifiers, Info Messages". The brightest light hue `palette2` puts to
+   * use for text after red: 3.13 on the plateau, 3.08 on the slab. Still a wall
+   * against 4.5, recorded in the spec row's floor table like every other coloured
+   * text role here. */
+  --color-accent: #3a94c5;
+  --color-idle-task: #35a77c; /* aqua */
+  --color-idle-task-surface: color-mix(in oklab, #35a77c 18%, transparent);
+  /* status — each takes the scheme's OWN semantic hue and the brightest published
+   * value for its meaning: `red` IS "Error Messages, Error Signs", `yellow` IS
+   * "Warning Messages, Warning Signs", `green` IS "Hint Messages, Hint Signs".
+   * Everforest light publishes no brighter red, yellow or green at all, so the walls
+   * below are the clause's, not a pick. */
+  --color-success: #8da101; /* green — 2.23 worst resting, 2.11 raised */
+  --color-success-foreground: #fdf6e3;
+  --color-warning: #dfa000; /* yellow — 1.76 worst resting, 1.66 raised: the lowest text ratio in either reading */
+  --color-warning-foreground: #fdf6e3;
+  --color-destructive: #f85552; /* red — 2.51 worst resting, 2.38 raised */
+  --color-destructive-foreground: #fdf6e3;
+  --color-diff-added: #8da101;
+  --color-diff-added-foreground: #fdf6e3;
+  --color-diff-removed: #f85552;
+  --color-diff-removed-foreground: #fdf6e3;
+  /* Interaction fills keep the `.dark` color-mix STRUCTURE, re-anchored on published
+   * hues (blue for ask, green for confirmation). Foregrounds 2.94 and 2.53 on the
+   * slab — both recorded walls, both the scheme's own semantic hues. */
+  --color-interaction-ask-surface: color-mix(in oklab, #3a94c5 14%, transparent);
+  --color-interaction-ask-foreground: #3a94c5;
+  --color-interaction-ask-fill: color-mix(in oklab, #8da101 24%, transparent);
+  --color-interaction-confirmation-surface: color-mix(in oklab, #8da101 16%, transparent);
+  --color-interaction-confirmation-foreground: #8da101;
+  /* Row glyph + row verb (ADR 0062), aliased — as in both Default readings, Kanagawa
+   * and this Palette's own dark block. `themeTokens.test.ts` pins this family per
+   * reading BY VALUE and its collision allow-list is empty, so a palette that gives
+   * these its own hues is graded by name rather than waved at. */
+  --color-row-icon: var(--color-foreground-subtle);
+  --color-row-verb: var(--color-foreground-subtlest);
+  /* The film glyph (ADR 0071) — OPAQUE on purpose (the film's glyph BRIGHTNESS is
+   * the data, so the luminance bands must be the only dimmer). `grey0` is "Line
+   * Numbers, Fold Columns, Concealed Text, Foreground UI Elements" — the scheme's
+   * designated drawn-but-not-read ink, and the LIGHTEST published ink, which is what
+   * a light reading's film needs to stay behind the copy. 1.87 on the page, 1.96 on
+   * the slab: deliberately sub-floor, because the film is not copy. */
+  --color-film-glyph: #a6b0a0;
+  /* THE ANSI SET IS INHERITED (no published terminal table — see the header), and so
+   * is `--color-terminal-bright-blue`, the one live consumer: `@theme`'s
+   * `--color-icon-blue` aliases it, and Everforest light's blue reaches only 2.94 on
+   * the slab as link text, so this reading leaves the token on `@theme`'s light-safe
+   * reading rather than shadowing it — Catppuccin Latte's documented choice for the
+   * same token. The dark block DOES own it. 21 of the 22 terminal tokens paint
+   * nothing in any palette, because this app has no terminal surface. */
+
+  /* THE 25 FILE-TYPE DESCRIPTORS ARE DELIBERATELY ABSENT, and so are the 54 Identity
+   * and overlay tokens and the 21 inherited terminal readings — all named in
+   * `inheritedFromDefault` in `src/lib/palettes/everforest.ts` and checked in BOTH
+   * directions by the completeness gate, never a silent omission. The reason is the
+   * light reading's own: it renders with NO `.dark` class, so it resolves the
+   * descriptors through `@theme`'s light-safe readings — chosen to be legible on a
+   * pale page, and 0 of 25 fail on any plane this block uses. Restating the vivid
+   * dark hues here would put a `#ff5252` glyph on a `#f4f0d9` slab (measured 2.65,
+   * under the 3:1 glyph floor) AND shadow the value a classless document depends on.
+   * `.theme-default-light` declares none of the 25 and names all 25 as inherited for
+   * exactly this reason, and this block follows it. So does `file-css`: the dark
+   * block's `#d699b6` re-read is a DARK-surface fix, and a light reading needs no
+   * fix — which is also why it is not allow-listed in either direction. */
+}

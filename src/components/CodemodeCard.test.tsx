@@ -25,10 +25,10 @@ import type { ToolCallUiStatus } from "../store/sessions";
  *
  * DO NOT READ THAT AS "NO STORE": the card DOES import one — `useSettings`, and
  * it subscribes to it for exactly one thing, the syntax-highlight palette
- * (`useSettings((s) => s.settings?.palette ?? "zai")`, which picks the shiki
+ * (`useSettings((s) => s.settings?.palette ?? "default")`, which picks the shiki
  * theme). No test in this file dirties the settings store, so `settings` stays
- * `null` and the palette resolves to the `"zai"` default on every run — that is
- * what makes the highlight output deterministic here WITHOUT a reset. The
+ * `null` and the palette resolves to the Default palette on every run — that is what
+ * makes the highlight output deterministic here WITHOUT a reset. The
  * determinism is an accident of nothing seeding it, not a property of the card.
  * So: a future test in this file that sets a palette (or a `resetStores()`
  * added for some other reason, which would restore the initial `null`) changes

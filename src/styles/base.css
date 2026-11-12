@@ -5,9 +5,22 @@
  *
  *   Tailwind (its `@import`s resolve before this file's content)
  *   -> base (this file: html/body/#root, focus-ring reset, @custom-variant)
- *   -> theme.css  (@theme, .dark, .theme-zai-light, .theme-zai-dark)
- *   -> dracula.css (.theme-dracula)
+ *   -> theme.css  (@theme, .dark, .theme-default-light, .theme-default-dark)
+ *   -> dracula.css (.theme-dracula-dark)
  *   -> utilities.css
+ *   -> everforest.css, catppuccin.css, ayu.css, rose-pine.css, kanagawa.css
+ *      (one file per Palette, each declaring its own dark and light block)
+ *
+ * The tail is not the end of the list by accident and it is not load-bearing:
+ * everything after `utilities.css` is a Palette block, all of them single-class
+ * selectors of EQUAL specificity, and `src/lib/theme.ts` guarantees at most one
+ * `.theme-*` class is ever present on `<html>` — so there is no tie between two
+ * Palettes for source order to break. The two facts the cascade DOES depend on,
+ * `@theme` first and `.dark` before every Palette block, are pinned by name by
+ * `paletteCompleteness.test.ts`; the palettes' mutual order is deliberately
+ * left unpinned there. Note that `utilities.css` sits BEFORE the Palette blocks
+ * and declares no theme token (it is `@layer utilities` plus scrollbar rules),
+ * so its position relative to them decides nothing either.
  *
  * The `@media (forced-colors: active)` duplicate at the end of this file is
  * hand-maintained: cascade order makes it win over the out-of-media rule
@@ -19,7 +32,7 @@
  * Make `dark:` utilities class-driven instead of OS-preference-driven.
  * Without this, `dark:` rules compile to `@media (prefers-color-scheme: dark)`
  * and the ported primitives (tabs/dialog/select/dropdown/button) lose their
- * dark overrides on OS-light machines, since the app is always Zai Dark.
+ * dark overrides on OS-light machines, since the app is dark by default.
  * Keying on the `.dark` class (toggled by applyThemeToDocument) makes the
  * rendering independent of the OS color scheme.
  */

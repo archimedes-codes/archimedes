@@ -1,0 +1,807 @@
+/*
+ * The Ayu PALETTE (ADR 0027) — a color scheme, not a light/dark mode.
+ * `src/lib/theme.ts` applies it as `.dark` + `.theme-ayu-dark` or (no class) +
+ * `.theme-ayu-light`, so each block is a PARTIAL diff over the shared layers.
+ * WHAT THIS FILE ACTUALLY CONTAINS, stated because a previous description of it
+ * did not match it: exactly TWO blocks and nothing else — `.theme-ayu-dark`,
+ * which declares 120 tokens and inherits 54 of `.theme-default-dark`'s 168, and
+ * `.theme-ayu-light`, which declares 90 and inherits 79. There is no
+ * `--color-ayu-*` token anywhere, no `.light` layer, and no `surface.panel`,
+ * `surface.pane` or `ui.line` TOKEN: `surface.*` and `ui.line` are Ayu's names
+ * for VALUES it publishes, and they appear here as ladder group LABELS and as
+ * prose, never as declarations. Both counts are pinned by `declaredCount` in
+ * `src/lib/palettes/ayu.ts`, so this sentence is checked rather than trusted.
+ * Every palette block is a single-class selector of equal specificity, so if two
+ * ever co-existed source order alone would decide the winner (`theme.ts` toggles
+ * every theme class with explicit booleans, so exactly one is ever present).
+ *
+ * SOURCE OF TRUTH: `ayu-theme/ayu-colors`, `themes/dark.yaml` and
+ * `themes/light.yaml` at `master`.
+ *   https://github.com/ayu-theme/ayu-colors/blob/master/themes/dark.yaml
+ *   https://github.com/ayu-theme/ayu-colors/blob/master/themes/light.yaml
+ * Ayu's `AGENTS.md` is explicit that these two files are the only source: "The
+ * `themes/` YAML files are the only place colors are defined … Edit the YAML,
+ * never the output."
+ *
+ * WHAT WAS REJECTED, AND ON WHAT EVIDENCE.
+ *
+ * - `#0B0E14`, the background the Ayu WEBSITE quotes, is published by no
+ *   machine-readable source: it is in neither YAML, in no resolution of either,
+ *   and in neither value Shiki ships. It appears NOWHERE in this file, and it is
+ *   deliberately absent from `publishedHexes` — a hex no source resolves to
+ *   cannot be a spec value, and an allow-list entry carrying one would be a free
+ *   slot for whatever came next.
+ * - The scheme's OLDER revision, whose `editor.fg` is `#bfbdb6`. That value is
+ *   not hypothetical: it is what the theme file this repo actually ships still
+ *   carries — `@shikijs/themes@4.4.3`'s `ayu-dark` states
+ *   `colors["editor.foreground"] = #bfbdb6`, while `master`'s YAML publishes
+ *   `editor.fg: FCF8EC A0.74` → `#fcf8ecbd`. `#fcf8ecbd` is what the YAML says,
+ *   so `master` is the revision transcribed. (The claim this file used to make —
+ *   that the npm tarball was run and 21 values diffed — is NOT repeated here,
+ *   because nobody in this worktree could run it: `ayu` is not a dependency and
+ *   no copy of it exists on this machine. What is verifiable is stated; what is
+ *   not, is not.)
+ * - Provenance of the 153 hexes in `publishedHexes`, stated honestly: 55 are
+ *   LITERALS in one of the two YAMLs and were read there directly. The other 98
+ *   are ramp steps, `$ref` chains and alpha resolutions, which are only knowable
+ *   by running Ayu's generator. They were NOT re-run here — the generator needs
+ *   the project's own `src/color.ts`, which is not vendored in this repo. They
+ *   were instead CHECKED structurally: every hue's five steps are evenly spaced
+ *   in OKLCH lightness across the declared `range` (`0.675:0.875` dark,
+ *   `0.625:0.825` light), and each hue's YAML literal lands on exactly the step
+ *   its `syntax:` reference names (`syntax.string` is `palette.green.l4` and
+ *   `#aad94c` really is that hue's fourth step at L 0.825; `syntax.markup` is
+ *   `palette.red.l2` and `#f07178` is red's second at L 0.701, and so on for
+ *   gray, purple, indigo, blue and the light set). That is a strong consistency
+ *   check on the published ramp, and it is not the same thing as running the
+ *   generator. Anyone who can run it should re-derive and diff.
+ *
+ * THREE DIFFERENT BACKGROUNDS EXIST AND NONE OF THEM IS THE CODE-BLOCK COLOUR.
+ * `#0B0E14` is the spec page. `#10141c` is the shipped theme file's
+ * `editor.background` (and Ayu's `surface.lift`, which is also `editor.bg`). And
+ * Shiki's normalised `bg` is `#0d1017` — measured against
+ * `@shikijs/themes@4.4.3`: `ayu-dark`'s `tokenColors[].settings.background` is
+ * `#0d1017` while its own `editor.background` says `#10141c`, so the two
+ * published fields inside ONE theme file disagree.
+ *
+ * CORRECTING WHAT THIS COMMENT USED TO SAY: it claimed `#0d1017` for ALL THREE
+ * Ayu variants. It is not. Measured per variant through `normalizeTheme`, the
+ * `bg` is `#0d1017` for `ayu-dark`, `#f8f9fa` for `ayu-light` and `#1f2430` for
+ * `ayu-mirage` — i.e. each variant's own `surface.base`, and nothing is shared.
+ * The point stands but the number was wrong, and a per-variant value cannot be
+ * quoted as a constant.
+ *
+ * So the code-block paper MUST come from `getTheme(<id>).bg` at runtime (ADR
+ * 0104 / plan decision 8) — never from the spec page, never from
+ * `editor.background`, and never from a hardcoded `#0d1017` on the theory that
+ * one value covers every Ayu reading. `#0d1017` IS legitimately
+ * `surface.base`, which is why it is the PAGE token here; that is a coincidence
+ * of values, not a licence to treat it as the code surface. No surface token in
+ * this file was set to `#0B0E14` or `#10141c` as the code-block colour.
+ *
+ * THE ALPHA IS KEPT, AND IT IS THE DEFINING CONSTRAINT. Ayu's foregrounds are
+ * published as 8-digit alpha (`editor.fg: FCF8EC A0.74` → `#fcf8ecbd`) and its own
+ * `AGENTS.md` says why: "text colors are translucent so they blend over any
+ * surface", with alpha SCALING by default (`A0.5` multiplies, `=A0.5` sets) so a
+ * colour derived from a translucent one stays a fraction of it. De-alphasing
+ * `editor.fg` into `#fcf8ec` would raise the theme's own weight from 74% to 100%
+ * and undo the mechanism on every surface at once. So `--color-foreground` keeps
+ * its alpha and the kit composites it (ADR 0105). THE COMPOSITED READINGS, which
+ * are the numbers worth quoting — the raw alpha is not a ratio:
+ *
+ *   on the page   #0d1017 → #bebcb5   10.01
+ *   on the slab   #10141c → #bfbdb6    9.81
+ *   on sunk       #010102 → #bbb8af   10.52
+ *   on raised     #141821 → #c0beb7    9.55   ← the worst resting reading
+ *   on selection  #333b44 → #c8c7c1    6.70
+ *
+ * Alpha is REFUSED on surface tokens, for the opposite reason: a translucent
+ * surface is not an elevation step, and the ladder grades rungs by luminance. So
+ * every surface token below is an opaque published hex, and `--color-hover`,
+ * `--color-surface` and the rest of the white-overlay family stay inherited from
+ * `.dark` rather than being re-derived at alpha here.
+ *
+ * THE ALPHA AUDIT, since ADR 0105 draws the line at TEXT versus SURFACE and the
+ * line is easy to cross by accident. Every 8-digit hex and every
+ * `color-mix(… transparent)` in BOTH blocks, classified. The test applied is the
+ * kit's own: a token whose name matches `SURFACE_TOKEN_PATTERN` (the set the
+ * ladder must classify) may not carry alpha, because the ladder resolves each rung
+ * to an opaque hex and compares luminance — a translucent rung has no luminance
+ * until something is painted behind it.
+ *
+ *   DARK  11 alpha-bearing declarations. TEXT or OVERLAY, all of them:
+ *         `foreground` (8-digit), `foreground-subtle`, `foreground-subtlest`,
+ *         `idle-task-surface`, `interaction-ask-surface`, `interaction-ask-fill`,
+ *         `interaction-confirmation-surface`, `find-highlight`,
+ *         `plugin-paid-plan-badge`, `terminal-selection`,
+ *         `terminal-selection-inactive`.
+ *   LIGHT 10 alpha-bearing declarations, the same list minus `find-highlight`
+ *         (which takes the published opaque pale yellow instead) — TEXT or
+ *         OVERLAY, all of them.
+ *
+ * ZERO of the 21 carries a name matching `SURFACE_TOKEN_PATTERN`, and none is a
+ * ladder member, so no SURFACE token in this file carries alpha and ADR 0105 is
+ * met. The `…-surface` suffix on `idle-task-surface` and
+ * `interaction-ask-surface` reads like a surface and is NOT one in the kit's
+ * sense: neither is in `SURFACE_TOKEN_PATTERN`, neither is on the ladder, and both
+ * are tints a status chip or an ask block paints OVER a plane that shows through
+ * — which is exactly what the `.dark` layer's readings of the same tokens do, and
+ * the structure this block keeps rather than re-inventing.
+ *
+ * SURFACES follow Ayu's own four-step vocabulary — `surface.sunk / base / lift /
+ * over` — which maps onto the app's ladder without inventing a rung. THE GROUP
+ * LABELS IN `ladderGroups` ARE AYU'S OWN NAMES for exactly this reason: a reader
+ * can trace each rung to a key in the YAML rather than to a taste call.
+ *
+ *   #010102  surface.sunk. The recessed plane: the cards that live INSIDE the
+ *            slab (they carry no borders, so sitting below it is the only thing
+ *            that makes them cards rather than a patch of it), the chrome band the
+ *            islands sit in, form controls, popover headers.
+ *   #0d1017  surface.base. The PAGE plane, the composer island (`ui.bg`) and the
+ *            terminal's paper (this app's choice — the scheme publishes no
+ *            `terminal.background` key, so the page step is what the sheet wears).
+ *   #10141c  surface.lift. The content slab, the inspector AND every float —
+ *            header, tabs, menus, popovers, toasts, tooltips (`editor.bg`).
+ *   #141821  ui.panel.bg. RAISED: cards, badges, the inline-code chip, menu hover.
+ *            Ayu's own `editorWidget.background` / `dropdown.background` step —
+ *            the value the scheme uses for things that sit ON a panel.
+ *   #333b44  palette.gray.l1. The SELECTION STATE — a state, graded off the ladder
+ *            by `selectionRule`, never a resting rung. See the token below for why
+ *            this rung had to be chosen rather than copied.
+ *
+ * `ui.line` `#1b1f29` is Ayu's hairline step — `panel.border`, `editorGroup.border`
+ * and `widget.border` are all this value in its own port — and it is used here only
+ * as the context bar's TRACK and as the seam between the recessed column and the
+ * slab. It is still the top rung of the ladder, because the track is a rail ON the
+ * pane and the gate grades it as one; but it is the ONE rung that is not a fill,
+ * and the group label says so, so a reader does not mistake it for a surface a card
+ * could wear.
+ *
+ * `surface.over` `#ffffff` is NOT the fifth dark rung, and that is a measurement
+ * rather than a preference: in Ayu's own VS Code reading `#ffffff` appears exactly
+ * ONCE, as `terminal.ansiBrightWhite`. Giving it the brightest surface role would
+ * invent a job the scheme never assigns it. It IS the top rung of the LIGHT
+ * ladder, where `ui.popup.bg: FFFFFF` really does publish it as a surface.
+ *
+ * FLOATS ON THE SLAB — THE SAME COLLISION DRACULA BUYS, BOUGHT AGAIN, AND FOR THE
+ * SAME REASON. `#10141c` is Ayu's `editor.bg` and the app's slab, so the menu, the
+ * popover and the tooltip fill are the EXACT same colour (1.00, not merely close)
+ * as the surface they open over. Keeping the slab below the floats would need a
+ * step Ayu does not publish — the thing the spec gate exists to refuse — and
+ * moving the floats up to `#141821` leaves card, secondary and tag nowhere above
+ * them, which is the badge-outshines-the-card inversion ADR 0027 records fixing.
+ * WHAT CARRIES A FLOAT IS ITS SHADOW, not its fill or its border:
+ * `--color-popover-border` aliases `--color-border` to 3.15 on the slab, and a
+ * float that loses its shadow becomes invisible over the chat — which is
+ * why `slabFloatSeparation.test.ts` reads the float components themselves.
+ *
+ * THE CONTRAST WALLS, measured with the kit's own `lumOf`/`contrast`/
+ * `resolveToHex` (never by hand, never quoted from another palette, never carried
+ * over from a previous cut of this file — three of the figures this comment used to
+ * carry did not survive re-measurement and are corrected below and at the tokens).
+ *
+ * DARK — `--color-border` is `syntax.comment` `#5a6673`, Ayu's own grey, and it
+ * clears the 3:1 non-text boundary floor on every resting surface: 3.25 on the
+ * page, 3.15 on the slab, 3.56 on sunk, 3.03 on raised. It does NOT clear it on
+ * the selection step `#333b44` (1.94) or on its own line band (2.81); a float's
+ * border is a hint there and its shadow is the separation, exactly as in Dracula.
+ *
+ * DARK — `destructive` `common.error` `#d95757` is 4.94 on the page, 4.79 on the
+ * slab, 5.42 on sunk and 4.61 on the raised step — every RESTING and RAISED
+ * reading clears 4.5, so the dark block records no floor for those classes. The
+ * selection state is the exception, and it is a real one: `#d95757` reaches only
+ * **2.95 on `#333b44`**, and `foreground-subtlest` reaches **4.01** there. Both are
+ * recorded floors with 4.5 expiries in `src/lib/palettes/ayu.ts`.
+ *
+ *   THE MEASURED REASON THIS IS THE RIGHT RUNG AND NOT A CHEAPER ONE. Every
+ *   published dark hex brighter than the hairline was tested as the selection step.
+ *   Below `gray.l1` the two candidates (`editor.line` `#161a24`, `ui.line`
+ *   `#1b1f29`) hold the text — but separate from the raised card by only 1.021 and
+ *   1.078, which is not a selected row, it is the same row; and `#161a24` is also
+ *   dimmer than the hairline, so it cannot be the brightest thing the palette owns.
+ *   Above `gray.l1`, `gray.l2` `#404953` buys separation at 1.942 and costs the
+ *   text on the state: `foreground-subtlest` falls to 3.51 and `destructive` to
+ *   2.37. `#333b44` is the point where the two curves stop both being satisfiable,
+ *   and the shortfall is recorded rather than hidden.
+ *
+ *   And no published red fixes it: `#d95757` IS `common.error`, the only value Ayu
+ *   publishes for "this failed". The next red up, `palette.red.l2` `#f07178`, is
+ *   `syntax.markup` — clearing the floor would mean making the error hue the same
+ *   colour as markup, and `palette.red.l3` `#f39193` and above are pale pinks that
+ *   would read as a selection tint rather than an error anywhere else they appear.
+ *
+ * DARK — the context bar's TRACK is `ui.line` `#1b1f29`, and it is the ONLY
+ * published value that satisfies both of the track's jobs. It must separate the
+ * band fills from the unfilled remainder (measured against it: success 9.99,
+ * caution 9.34, warning 7.26, destructive 4.28 — all over the 3:1 non-text floor)
+ * and it must be LIGHTER than the pane it rides, or it is a groove and the groove
+ * has been rejected twice as a well. STATED SHORTFALL: against the slab it
+ * measures 1.119, below the 1.2 floor `slabFloatSeparation.test.ts` holds Dracula
+ * to, because Ayu simply has no step at that distance from `#10141c` — the next
+ * published values up are `ui.panel.bg` `#141821` at 1.038 and `editor.line`
+ * `#161a24` at 1.060, both further from the pane than the hairline is, and both
+ * already spoken for: `#141821` IS the raised step, and a track that equals the
+ * cards would read as a card. That
+
+ * gate is Dracula-specific today; recording the number here is what stops the
+ * next reader assuming it was met.
+ *
+ *
+ * LIGHT — this is the real wall, and it is the scheme's, not this port's. Ayu
+ * publishes its status hues as SYNTAX hues, and a syntax hue is tuned to read on a
+ * dark page. The light scheme's own `common.error` `#e65050` reaches 3.20 on the
+ * recessed `surface.sunk` step and `syntax.string` `#86b300` reaches 2.13 there;
+ * NO light value in the published set clears 4.5 on Ayu's own Base. So each status
+ * token takes `palette.<hue>.l1` — the scheme's own darkest step of that hue,
+ * which is its "readable on light" end — and the shortfall is recorded per surface
+ * in `src/lib/palettes/ayu.ts` with an expiry at 4.5, the same shape
+ * `.theme-default-light` uses for its four. The worst resting readings:
+ * destructive 3.37, warning 3.24, caution 3.11, success 2.94, all on `#ebeef0`.
+ *
+ * LIGHT — `--color-border` `ui.line` `#6b7d8f` CLEARS the floor everywhere: 4.02
+ * on the page, 3.64 on sunk, 4.13 on lift, 4.24 on over. The light reading has no
+ * border wall, which is worth saying because the dark reading nearly does.
+ *
+ * LIGHT — `foreground-subtlest` at 55% reaches 4.24 on `#ebeef0`, a recorded
+ * floor. Ayu publishes exactly two text steps (`editor.fg` at 64%, `ui.fg`
+ * `#021a3c` at 48%) and `ui.fg` at its published alpha reaches only 3.05 on
+ * `#ebeef0`, so 55% of `editor.fg` is the nearest published-hue reading that both
+ * clears its floor and stays visibly DIMMER than `foreground-subtle` at 60%.
+ *
+ * LIGHT — the track is `surface.over` `#ffffff` on a `ui.panel.bg` `#fafafa` pane:
+ * 1.044. No published light step clears 1.2 against that pane — the next candidate,
+ * `surface.lift` `#fcfcfc`, separates by only 1.017, i.e. LESS than the white does.
+ * The bands over it
+ * do clear 3:1 (3.43 / 3.62 / 3.78 / 3.93), so the bar
+ * still communicates; the rail-vs-pane separation is the concession.
+ *
+ * DELIBERATE DEPARTURES FROM THE SPEC — three, all stated plainly.
+ *
+ * 1. THE FILE-TYPE DESCRIPTORS KEEP THE DEFAULT PALETTE'S HUES. Ayu publishes 11
+ *    hues × 5 steps and could in principle name 25 file types, but `CONTEXT.md`'s
+ *    Identity color rule says the hue encodes WHAT KIND OF FILE this is and a
+ *    Palette must not re-hue it: a scheme that re-maps them makes the same claim
+ *    in a private language no other palette speaks. So 24 are copied verbatim from
+ *    `.theme-default-dark` and allow-listed BY NAME, each with its own measured
+ *    reason. `file-css`
+ *    is the one exception, and it is a legibility fix rather than a re-hue: the
+ *    Default reading `#7e57c2` is 3.41 on this block's raised `#141821` step, and
+ *    Ayu already ships a purple, so CSS reads as `syntax.constant` `#d2a6ff`
+ *    (9.00 there, 9.64 on the page).
+ * 2. THE RAMP IS BUILT FROM AYU'S `l1` STEPS. The six ramp tokens are re-hued (see
+ *    `--color-thinking-*` below for the ordering proof and the collision audit).
+ * 3. THE SELECTION STATE IS A PUBLISHED OPAQUE STEP, NOT AYU'S SELECTION COLOUR.
+ *    Ayu publishes `ui.selection.active: 475266 A0.25` — an alpha, over an
+ *    unspecified background. `--color-card-selected` is a resting surface the ladder
+ *    grades by luminance, and ADR 0105 refuses alpha on a surface token, so the
+ *    block had to state an opaque step. An earlier cut of this file resolved Ayu's
+ *    alpha over the slab and shipped the result, `#1e242f`. That value is published
+ *    by no source — not the YAML, not a resolution of it, not Shiki — so the spec
+ *    gate was right to refuse the allow-list entry that excused it, and the honest
+ *    fix was to stop needing the exception: the block now states `palette.gray.l1`
+ *    `#333b44`, a step Ayu does publish. What that costs, and why nothing cheaper
+ *    in the published set would do, is measured at the token and under DARK above.
+ */
+
+.theme-ayu-dark {
+  /* surfaces — Ayu's `surface.sunk / base / lift / over`, plus the two published
+   * UI steps the scheme defines above `lift` for widgets and hairlines. The
+   * ladder in `src/lib/palettes/ayu.ts` walks these in luminance order:
+   * #010102 0.00033 < #0d1017 0.00518 < #10141c 0.00694 < #141821 0.00912
+   * < #1b1f29 0.01373, strictly ascending. */
+  --color-panel: #010102; /* surface.sunk */
+  --color-frame: #010102;
+  --color-popover-header: #010102;
+  --color-input: #010102;
+  --color-input-focused: var(--color-input);
+  --color-background: #0d1017; /* surface.base — the page plane (and Shiki's `bg`) */
+  --color-composer: #0d1017;
+  /* `surface.base`. NOT a published terminal background — the scheme ships no
+   * `terminal.background` key at all (its `terminal:` table is the 16 ANSI slots
+   * and nothing else), so this is this app's choice, and the choice is the page
+   * step: a sheet that matches the page reads as an inset of it, and it keeps the
+   * token off the ladder's critical path (the kit grades `terminal-bg` as a
+   * surface, so it has to sit ON a rung rather than between two). */
+  --color-terminal-bg: #0d1017;
+  --color-chat: #10141c; /* surface.lift — the slab, and every float */
+  --color-inspector: var(--color-chat); /* the right-hand pane: one plane with the transcript */
+  --color-header: #10141c;
+  --color-background-win-alt: #10141c;
+  --color-tab: #10141c;
+  --color-tab-active: var(--color-chat); /* the active tab IS the content sheet showing through the frame */
+  --color-menu: #10141c;
+  --color-popover: #10141c;
+  --color-toast: #10141c;
+  --color-tooltip: #10141c;
+  --color-card: #141821; /* ui.panel.bg — RAISED (the port's `editorWidget.background`) */
+  --color-secondary: #141821;
+  --color-tag: #141821;
+  --color-tooltip-tag: #141821;
+  --color-menu-hover: #141821;
+  /* The selection state, and the ONE value here that had to be chosen rather than
+   * copied. Ayu publishes its selection as alpha (`ui.selection.active: 475266
+   * A0.25`), and ADR 0105 refuses alpha on a SURFACE token — a translucent surface
+   * is not an elevation step, because the ladder compares rungs by luminance. So
+   * the block must state an opaque step, and the honest one is a step Ayu publishes
+   * rather than a hex nobody publishes.
+   *
+   * `palette.gray.l1` `#333b44` is that step. It is the only published dark value
+   * that clears BOTH jobs at once: it is brighter than every resting rung, which is
+   * what `selectionRule: "strictly-above-all"` asserts (L 0.042491 against the
+   * track rung's 0.013731), and it separates from the raised card `#141821` by
+   * 1.565, so a selected row actually reads (Dracula's selection step separates
+   * from its card by 1.221, so this is not a demanding bar).
+   *
+   * MEASURED, AND WHY NOTHING ELSE IN THE SET WORKS. Every published dark hex
+   * between the track rung and `gray.l1` was tested as the selection step; the two
+   * closest (`editor.line` `#161a24` at 1.021 above the card, and `ui.line`
+   * `#1b1f29` at 1.078) separate so little that a selected card is indistinguishable
+   * from a resting one, and `#161a24` additionally sits BELOW the track rung, so it
+   * cannot satisfy strictly-above-all while the track stays on the ladder. Above
+   * `gray.l1` the next steps (`ui.line` is below; then `palette.gray.l2` `#404953`)
+   * cost the text on the state: `foreground-subtlest` falls to 3.51 on `#404953`
+   * against 4.01 here. The trade this makes is recorded as two floors with 4.5
+   * expiries in `src/lib/palettes/ayu.ts` (`destructive` 2.95, `foreground-subtlest`
+   * 4.01), the same shape `.theme-dracula-dark` uses for its own selection step.
+   *
+   * An earlier cut of this block stated `#1e242f` — Ayu's `#475266` at 25%
+   * composited over the slab. That hex is published by NO source, which is exactly
+   * what the spec gate exists to refuse; see departure 3 in the header. */
+  --color-card-selected: #333b44;
+  /* The seam between the recessed column and the slab. Ayu publishes `ui.line`
+   * for exactly this job — `panel.border`, `editorGroup.border` and
+   * `widget.border` are all `#1b1f29` in its own port — so unlike Dracula this
+   * block does not have to argue the value into existence. */
+  --color-card-border: #1b1f29;
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-border: var(--color-border);
+  --color-tab-border: var(--color-border);
+  --color-tooltip-foreground: var(--color-foreground);
+  --color-tooltip-tag-foreground: var(--color-foreground);
+
+  /* borders + text */
+  /* The spec's subtle-boundary role, taken as Ayu's own grey: `syntax.comment`
+   * (`palette.gray.l4`). 3.25 on the page / 3.15 on the slab / 3.56 on sunk /
+   * 3.03 on raised — over the 3:1 non-text floor on every resting surface, and it
+   * reaches the input, tab and popover borders through the aliases below. */
+  --color-border: #5a6673;
+  /* The interactive boundary: `syntax.tag` (`palette.indigo.l2`), 8.20 on the
+   * slab. Ayu's own focus colour is `common.accent.tint` (the port's
+   * `focusBorder`), which lands on the focus ring via `--color-brand` below. */
+  --color-border-hover: #39bae6;
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-brand);
+  /* PUBLISHED AS ALPHA AND KEPT THAT WAY — `editor.fg: FCF8EC A0.74`. The raw
+   * value is `#fcf8ecbd`; composited it is 10.01 on the page, 9.81 on the slab,
+   * 9.55 on raised (the worst resting reading) and 6.70 on the selection state.
+   * Ayu's `AGENTS.md`: "text colors are translucent so they blend over any
+   * surface". De-alphasing this to `#fcf8ec` is the departure this block refuses
+   * to make. */
+  --color-foreground: #fcf8ecbd;
+  /* Foreground's hue at 60%, the same derivation as `--color-foreground` one step
+   * down rather than a second hue: 6.84 on the page, 6.63 on raised, 4.99 on the
+   * selection state. Ayu publishes only two text steps of its own, so the middle
+   * step is a scale of the one it does publish. */
+  --color-foreground-subtle: color-mix(in oklab, #fcf8ec 60%, transparent);
+  /* De-emphasis TEXT at 50% of the same hue: 5.09 on the page, 5.05 on the slab,
+   * 5.01 on raised — over the 4.5 text floor on every RESTING and RAISED surface,
+   * which is what the kit grades. On the selection step `#333b44` it reaches 4.01,
+   * and that shortfall is a recorded floor with a 4.5 expiry in
+   * `src/lib/palettes/ayu.ts` rather than a pass.
+   *
+   * 50% and not 45%, because at 45% the RESTING surfaces fall to 4.30-4.34 and the
+   * block would need exemptions on the page itself. And not 55%, because 55%
+   * separates from `foreground-subtle` by only 1.146 on the raised step — at which
+   * point two de-emphasis steps are one step and a half, which defeats the point of
+   * having two. At 50% the separation is 1.324. */
+  --color-foreground-subtlest: color-mix(in oklab, #fcf8ec 50%, transparent);
+  /* The context bar's TRACK. It must be LIGHTER than the pane it rides (a track
+   * below its plane is a groove, and the groove was rejected twice as a well) and
+   * it must let all four band fills read: against `#1b1f29` they measure 9.99 /
+   * 9.34 / 7.26 / 4.28, every one over the 3:1 non-text floor. `ui.line` is
+   * published for hairline duty, so it is not stealing a fill step. Its own
+   * visibility against the slab is 1.119 — below the 1.2 Dracula is held to, and
+   * no published Ayu step does better at that distance; recorded, not fixed. */
+  --color-context-track: #1b1f29;
+  --color-foreground-inverse: #0d1017;
+
+  /* accent — `common.accent.tint`, which is the port's `focusBorder`,
+   * `activityBar.activeBorder` and `button.background`. It is load-bearing:
+   * `--color-input-border-focused` aliases `--color-brand`, so this is what puts
+   * Ayu's focus colour on the focus ring. */
+  --color-brand: #e6b450;
+  --color-primary: #e6b450;
+  /* Ayu ships an ink for this fill rather than making one up: the port's
+   * `button.foreground` is `common.accent.on` `#765b24`. `#0d1017` is used here
+   * instead because it is the page step and reaches 9.98 on the fill where
+   * `#765b24` reaches only 3.34 — under the 4.5 text floor, so Ayu's own chosen
+   * ink is the WORSE reading on a dark page and this block does not follow it.
+   * `#765b24` is therefore not declared anywhere in this file, and the badge below
+   * takes `common.accent.tint` itself as its text, because there the ink lands on
+   * a 24% tint of the same hue (5.87) rather than on the full fill. */
+  --color-primary-foreground: #0d1017;
+  --color-accent: #59c2ff; /* syntax.entity */
+
+  /* Status. `success`/`warning` are Ayu's syntax hues (a green and an orange that
+   * the scheme already uses to mean something), `destructive` is `common.error` —
+   * the only value Ayu publishes for "this failed". Every one clears 4.5 on the
+   * resting and raised surfaces; see the header for the 2.95 selection reading. */
+  --color-success: #aad94c; /* palette.green.l4 == syntax.string */
+  --color-success-foreground: #0d1017;
+  --color-warning: #ff8f40; /* palette.orange.l3 == syntax.keyword */
+  --color-warning-foreground: #0d1017;
+  --color-destructive: #d95757; /* common.error */
+  --color-destructive-foreground: #0d1017;
+
+  /* The row token family (ADR 0062) — aliased, as in both Default readings.
+   * `themeTokens.test.ts` pins that exactly ONE layer states a literal here (the
+   * Dracula one), so inheriting is the contract rather than an oversight. */
+  --color-row-icon: var(--color-foreground-subtle);
+  --color-row-verb: var(--color-foreground-subtlest);
+  /* The film glyph (ADR 0071): `palette.gray.l5`, opaque on purpose (the
+   * luminance bands are the film's only dimming mechanism) and 3.93 on the page,
+   * over the 3:1 glyph floor. */
+  --color-film-glyph: #667381;
+
+  --color-idle-task: #d2a6ff; /* palette.purple.l3 == syntax.constant */
+  --color-idle-task-surface: color-mix(in oklab, #d2a6ff 18%, transparent);
+  --color-diff-added: #aad94c;
+  --color-diff-added-foreground: #0d1017;
+  --color-diff-removed: #d95757; /* common.error */
+  --color-diff-removed-foreground: #0d1017;
+  /* Interaction fills keep the `.dark` color-mix STRUCTURE, re-anchored on
+   * published hues. `interaction-ask-foreground` is `syntax.entity`, so an ask
+   * reads in the same hue as an entity rather than a fourth one. */
+  --color-interaction-ask-surface: color-mix(in oklab, #59c2ff 14%, transparent);
+  --color-interaction-ask-foreground: #59c2ff;
+  --color-interaction-ask-fill: color-mix(in oklab, #aad94c 24%, transparent);
+  --color-interaction-confirmation-surface: color-mix(in oklab, #aad94c 16%, transparent);
+  --color-interaction-confirmation-foreground: #aad94c;
+  /* Ayu publishes findMatch as a literal dark olive (`editor.findMatch.active`),
+   * which is a fill for a light page; on a dark page the scheme's own active
+   * match colour is the yellow it highlights TO, so the tint is the hue at 30%
+   * and the active marker is `palette.yellow.l4`. */
+  --color-find-highlight: color-mix(in oklab, #ffb454 30%, transparent);
+  --color-find-highlight-active: #ffb454;
+  --color-plugin-paid-plan-badge: color-mix(in oklab, #e6b450 24%, transparent);
+  --color-plugin-paid-plan-badge-foreground: #e6b450;
+
+  /* The ramp (Task 2's family). `caution` carries a TEXT label — the context
+   * bar's percentage — hence the yellow. All six are published values.
+   *
+   * The five thinking LEVELS are Ayu's `l1` steps: the darkest step of five
+   * different hues, chosen because the family's own rationale is that a level's
+   * hue is IDENTITY and must not print the same hex as any status token. Taking
+   * the `l1` end gives five mutually distinct hues that collide with nothing in
+   * this block (every status token here is `#aad94c`, `#ff8f40`, `#ffb454`,
+   * `#d95757`, `#e6b450` or `#59c2ff`) and that all clear the 3:1 glyph floor on
+   * the raised step: 6.24 / 6.18 / 5.50 / 5.89 / 5.58.
+   *
+   * Ordered cool → hot, asserted as `hotness` (proximity to red) strictly
+   * increasing, which is the definition `themeTokens.test.ts` uses because
+   * "the hue angle increases" is false of Dracula:
+   *
+   *   low     #30a5cc palette.indigo.l1  hot  15.0
+   *   medium  #05a2e5 palette.blue.l1    hot  17.9
+   *   high    #b969fd palette.purple.l1  hot  92.4
+   *   xhigh   #c8872d palette.yellow.l1  hot 145.2
+   *   max     #ef616b palette.red.l1     hot 175.8
+   *
+   * The endpoints hold too: -low is a cool hue (≤ 60) and -max sits on the hot
+   * end (≥ 150). */
+  --color-caution: #ffb454; /* palette.yellow.l4 — 10.07 on the raised step */
+  --color-thinking-low: #30a5cc;
+  --color-thinking-medium: #05a2e5;
+  --color-thinking-high: #b969fd;
+  --color-thinking-xhigh: #c8872d;
+  --color-thinking-max: #ef616b;
+
+  /* FORWARD-DECLARED ANSI SET — 21 of these 22 tokens paint NOTHING today, in any
+   * palette, because THIS APP HAS NO TERMINAL. They are owned by the palette for
+   * the same reason Dracula owns them: the scheme PUBLISHES a `terminal:` table,
+   * so copying costs nothing and leaves no half-owned palette. Note the scheme's
+   * own table is derived, not literal — the chromatic slots are `$syntax.*` minus
+   * 0.07 lightness and the brights ARE the syntax hues — so the values below are
+   * the generator's resolution of that, not a second ANSI palette invented here.
+   *
+   * ONE token of the 22 IS live via an alias rather than a class:
+   * `--color-icon-blue` is defined in `@theme` as `var(--color-terminal-bright-blue)`,
+   * so markdown links and diff `@@` hunks ride the terminal tokens. Under Ayu they
+   * are `syntax.entity` `#59c2ff` — 9.59 on the page, 8.95 on the raised step, so
+   * comfortably over the text floor. That is the scheme's own value arriving by
+   * alias rather than a stray edit, and it is the ONLY consumer of any
+   * `--color-terminal-*` outside this file. */
+  --color-terminal-fg: var(--color-foreground);
+  --color-terminal-cursor: #e6b450; /* common.accent.tint */
+  --color-terminal-cursor-accent: #0d1017;
+  /* The scheme's own editor selection, at its published alpha: a selection sits
+   * over whatever the cell painted, so it is not a resting surface. */
+  --color-terminal-selection: color-mix(in oklab, #3388ff 25%, transparent);
+  --color-terminal-selection-inactive: color-mix(in oklab, #80b5ff 15%, transparent);
+  --color-terminal-black: #0a0000;
+  --color-terminal-red: #e6495a;
+  --color-terminal-green: #97c142;
+  --color-terminal-yellow: #e89d37;
+  --color-terminal-blue: #17acf2;
+  --color-terminal-magenta: #c385fe;
+  --color-terminal-cyan: #84ceb5;
+  --color-terminal-white: #ffffff;
+  --color-terminal-bright-black: #0a0000;
+  --color-terminal-bright-red: #f07178;
+  --color-terminal-bright-green: #aad94c;
+  --color-terminal-bright-yellow: #ffb454;
+  --color-terminal-bright-blue: #59c2ff;
+  --color-terminal-bright-magenta: #d2a6ff;
+  --color-terminal-bright-cyan: #95e6cb;
+  --color-terminal-bright-white: #ffffff;
+
+  /* The 25 file-type DESCRIPTORS, restated with the vivid dark readings.
+   * OFF-SPEC ON PURPOSE, and this is the ONE place this block knowingly breaks
+   * "use exact color values from this specification". The hue encodes what kind of
+   * file this is (CONTEXT.md's Identity color rule), so a Palette must not
+   * re-hue it — 24 are copied verbatim from `.theme-default-dark` and allow-listed
+   * BY NAME in `src/lib/palettes/ayu.ts`, each with its own reason. Every one
+   * clears 3:1 on all four surfaces a descriptor rides: worst is `file-css` at
+   * 3.41 on raised before the exception below, and the next-worst is `file-ts` /
+   * `file-py` at 4.61 there (4.78 on the slab, 4.93 on the page, 5.41 on sunk).
+   *
+   * MANDATORY and easy to get wrong. All 25 are declared in `@theme` (light-safe)
+   * AND in `.theme-default-dark` (vivid dark) but NOT in `.dark`, so a palette that
+   * omits one does not fail — it silently resolves through `.dark` to `@theme`'s
+   * light-safe reading, a different hue entirely.
+   *
+   * `file-css` is the single exception and it is a legibility fix, not a re-hue:
+   * the Default reading `#7e57c2` is 3.41 on this block's raised `#141821` — legal
+   * but the tightest glyph in the set — and this is a palette that already ships a
+   * purple, so CSS reads as `syntax.constant` `#d2a6ff` (9.00 on raised, 9.64 on
+   * the page, 10.57 on sunk). */
+  --color-file-ts: #0288d1;
+  --color-file-react: #00bcd4;
+  --color-file-js: #ffca28;
+  --color-file-json: #f9a825;
+  --color-file-html: #e65100;
+  --color-file-css: #d2a6ff;
+  --color-file-sass: #ec407a;
+  --color-file-md: #42a5f5;
+  --color-file-rs: #ff7043;
+  --color-file-py: #0288d1;
+  --color-file-sh: #ff7043;
+  --color-file-yaml: #ff5252;
+  --color-file-toml: #cfd8dc;
+  --color-file-lock: #ffd54f;
+  --color-file-image: #26a69a;
+  --color-file-svg: #ffb300;
+  --color-file-archive: #afb42b;
+  --color-file-go: #00acc1;
+  --color-file-vue: #41b883;
+  --color-file-svelte: #ff5722;
+  --color-file-java: #f44336;
+  --color-file-php: #1e88e5;
+  --color-file-xml: #8bc34a;
+  --color-file-graphql: #ec407a;
+  --color-file-db: #ffca28;
+}
+
+.theme-ayu-light {
+  /* Ayu's light steps ASCEND on the scheme's own vocabulary — `surface.sunk`
+   * #ebeef0 0.85103 < surface.base #f8f9fa 0.94610 < ui.panel.bg #fafafa 0.95600
+   * < surface.lift #fcfcfc 0.97345 < surface.over #ffffff 1.00000 — so this
+   * reading needs no plateau at all. That is a better outcome than
+   * `.theme-default-light`, which has to answer ADR 0105 with a white plateau
+   * because its Base IS its lightest published value; Ayu ships a step
+   * (`ui.panel.bg`) between its Base and its Lift, which is what lets the slab sit
+   * between them and lets `card` be a genuinely raised surface.
+   *
+   * Note the direction of the quiet fills: `secondary`/`tag` are `surface.sunk`
+   * HERE — the badge and the inline-code chip sit BELOW the page — while the dark
+   * reading (and Dracula) puts them on the raised step. That inversion is what
+   * ADR 0105 means by "group membership is per-Palette, not a shared table". */
+  --color-panel: #ebeef0; /* surface.sunk */
+  --color-frame: #ebeef0;
+  --color-input: #ebeef0;
+  --color-input-focused: var(--color-input);
+  --color-secondary: #ebeef0;
+  --color-tag: #ebeef0;
+  --color-tooltip-tag: #ebeef0;
+  --color-background: #f8f9fa; /* surface.base — the page plane (`ui.bg`) */
+  --color-composer: #f8f9fa;
+  --color-tab: #f8f9fa;
+  --color-popover-header: #f8f9fa;
+  --color-terminal-bg: #f8f9fa;
+  --color-chat: #fafafa; /* ui.panel.bg — the slab and the chrome floats */
+  --color-inspector: var(--color-chat);
+  --color-header: #fafafa;
+  --color-background-win-alt: #fafafa;
+  --color-tab-active: #fafafa;
+  --color-menu: #fcfcfc; /* surface.lift — the floats (`ui.popup.bg` is `over`) */
+  --color-popover: #fcfcfc;
+  --color-toast: #fcfcfc;
+  --color-tooltip: #fcfcfc;
+  --color-card: #ffffff; /* surface.over — published as a SURFACE here, unlike dark */
+  --color-menu-hover: #ffffff;
+  --color-card-selected: var(--color-card); /* the top rung; nothing light is lighter */
+  --color-card-border: #ebeef0;
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-border: var(--color-border);
+  --color-tab-border: var(--color-border);
+  --color-tooltip-foreground: var(--color-foreground);
+  --color-tooltip-tag-foreground: var(--color-foreground);
+
+  /* borders + text. `ui.line` CLEARS the 3:1 boundary floor on every surface of
+   * this reading: 4.02 on the page, 3.64 on sunk, 4.06 on `ui.panel.bg`, 4.13 on
+   * lift, 4.24 on over. The light reading has no border wall.
+   *
+   * NOTE ON THE PUBLISHED FORM: the YAML gives `ui.line` as `6B7D8F A0.12`, i.e.
+   * an alpha. Taken literally it composites to `#e7eaed` on the page — 1.15, no
+   * border at all. The opaque base `#6b7d8f` is the same published colour and the
+   * only reading that can carry a boundary, and ADR 0105 refuses alpha on a token
+   * the ladder grades, so this block states the base. The alpha survives where it
+   * is allowed: on the terminal's selection overlay below. */
+  --color-border: #6b7d8f;
+  /* `syntax.entity`. MEASURED WALL, not a pass: 2.65 on the page, 2.40 on the
+   * recessed step, so this hover border is under the 3:1 non-text floor on every
+   * surface of this reading. Ayu publishes no light blue that clears it and reads
+   * as a hover: the darkest step of the hue, `palette.blue.l1` `#1a91cd`, reaches
+   * 3.33 / 3.02 and would be the value to move to if this token ever gains a
+   * consumer that needs a legible hover. It has none today —
+   * `--color-input-border-hover` aliases it and the input's resting border is the
+   * one that carries the boundary — so the hue is kept for the palette's own
+   * consistency and the shortfall is recorded rather than quoted as a pass. */
+  --color-border-hover: #22a4e6; /* syntax.entity */
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-brand);
+  /* `editor.fg: 020A12 A0.64`, alpha kept for the same reason as the dark block:
+   * 5.81 on the recessed `#ebeef0` step is the worst reading, 6.02 on the page,
+   * 6.01 on `ui.panel.bg`, 6.10 on lift, 6.15 on over. */
+  --color-foreground: #020a12a3;
+  /* 5.06 on `#ebeef0`, 5.20 on the page, 5.30 on white — over the 4.5 floor
+   * everywhere, so this token needs no recorded floor. */
+  --color-foreground-subtle: color-mix(in oklab, #020a12 60%, transparent);
+  /* 4.24 on `#ebeef0` (4.35 on the page, 4.39 on `ui.panel.bg`, 4.44 on white) —
+   * a RECORDED FLOOR with a 4.5 expiry, and the reason is stated in the header:
+   * Ayu publishes two text steps and the paler one (`ui.fg: 021A3C A0.48`) reaches
+   * only 3.05 on `#ebeef0`. 60% would clear 4.5 everywhere but separates from
+   * `foreground-subtle` by only 1.193 on white, which makes two de-emphasis steps
+   * into one. */
+  --color-foreground-subtlest: color-mix(in oklab, #020a12 55%, transparent);
+  /* The track is the top rung, riding the `ui.panel.bg` pane: 1.044, and no
+   * published light step clears 1.2 there (`#fcfcfc` manages 1.017). The bands
+   * over it do clear 3:1 (3.43 / 3.62 / 3.78 / 3.93), so the bar still reads.
+   * Recorded in the header. */
+  --color-context-track: #ffffff;
+  --color-foreground-inverse: #ffffff;
+
+  --color-brand: #f29718; /* common.accent.tint == the port's `focusBorder` */
+  --color-primary: #f29718;
+  /* `editor.fg` `#020a12` — 8.74 on the fill. THE COMMENT HERE USED TO SAY WHITE,
+   * AND TO SAY IT REACHED 5.10. White reaches 2.28: the previous number was not a
+   * measurement, and 2.28 is not a legible label on a send button. Ayu's own ink
+   * for this fill, `common.accent.on` `#7e4b01`, reaches 3.18 — also under the 4.5
+   * text floor, so Ayu's published pairing does not clear it either and copying it
+   * would not have fixed anything. `#020a12` is the scheme's own darkest published
+   * colour and the only reading of it that clears 4.5 on this hue. `#7e4b01` is
+   * kept for the translucent badge below, where the ink lands on a 24% tint of the
+   * fill over the pane (5.76 there). */
+  --color-primary-foreground: #020a12;
+  /* `syntax.entity`, and the same wall as `--color-border-hover`: 2.65 on the page,
+   * 2.40 on the recessed step where its one consumer actually renders — the
+   * thinking-level label in `SubagentDelegatingCard`, painted with the accent text
+   * utility over the recessed panel band. The
+
+   * darkest blue the light scheme publishes, `palette.blue.l1` `#1a91cd`, reaches
+   * only 3.33 / 3.02, so NO published light value of this hue reaches the 4.5 text
+   * floor — this is the scheme's wall, the same one the status hues hit, and the
+   * same reason the floors below carry expiries. It is recorded rather than
+   * quoted as a pass; `--color-accent` is not in the kit's graded text set, so no
+   * gate will catch a reader who assumes otherwise. */
+  --color-accent: #22a4e6;
+
+  /* Status. Each takes `palette.<hue>.l1` — the darkest published step of its hue,
+   * which is Ayu's own "readable on a light page" end. None reaches 4.5 on this
+   * reading's surfaces and NONE COULD: the scheme publishes no light value of
+   * these hues that clears 4.5 even on its own white. The floors and the reason
+   * are per-surface data in `src/lib/palettes/ayu.ts`, each expiring at 4.5.
+   *
+   * THE INKS ARE `#020a12` AND NOT WHITE, which is a change from the previous cut
+   * of this block. White on these three hues reaches 3.43 / 3.78 / 3.93 — under
+   * the 4.5 text floor on all three, so every status FILL in this reading shipped
+   * an illegible label. `editor.fg` reaches 5.81 / 5.27 / 5.07, clearing the floor
+   * on each, and it is a published colour of the scheme rather than an invented
+   * one. (`.theme-default-light` pairs white with its own status fills; its hues
+   * are darker — its `warning` gives white 3.00, so that reading carries the same
+   * wall and is not evidence for white here.) */
+  --color-success: #719700; /* palette.green.l1 */
+  --color-success-foreground: #020a12;
+  --color-warning: #cf6610; /* palette.orange.l1 */
+  --color-warning-foreground: #020a12;
+  --color-destructive: #e5474f; /* palette.red.l1 — better than common.error #e65050 */
+  --color-destructive-foreground: #020a12;
+
+  --color-row-icon: var(--color-foreground-subtle);
+  --color-row-verb: var(--color-foreground-subtlest);
+  /* `palette.gray.l1` `#86878c`: 3.40 on the page, 3.44 on the pane — over the 3:1
+   * glyph floor. The previous value here was `palette.gray.l3` `#a0a1a4`, whose
+   * comment claimed 3.06 on the page; it measures 2.45, i.e. UNDER the floor the
+   * comment said it cleared, and `gray.l2` `#939498` still fails at 2.88. `l1` is
+   * the darkest published grey and the only one that clears. */
+  --color-film-glyph: #86878c;
+
+  --color-idle-task: #a37acc; /* palette.purple.l2 == syntax.constant */
+  --color-idle-task-surface: color-mix(in oklab, #a37acc 18%, transparent);
+  --color-diff-added: #719700;
+  --color-diff-added-foreground: #020a12;
+  --color-diff-removed: #e5474f;
+  --color-diff-removed-foreground: #020a12;
+  /* The interaction fills keep the `.dark` color-mix STRUCTURE, re-anchored on
+   * published hues — but the FOREGROUNDS hit the light reading's blue/green wall,
+   * and it is recorded rather than glossed: each hue on its OWN tint over the pane
+   * measures 2.34 (`ask`, `#22a4e6` at 14% over `#fafafa`) and 2.77
+   * (`confirmation`, `#719700` at 16%). The dark block reaches 7.20 and 7.91 at
+   * comparable percentages, because a syntax hue tuned for a dark page inverts on a
+   * light one. No published light blue reaches 4.5 on its own tint — the darkest
+   * step of the hue, `palette.blue.l1` `#1a91cd`, manages 2.88 — so there is
+   * nothing on-spec to move to, and this is the scheme's wall in the same family as
+   * the status hues above. */
+  --color-interaction-ask-surface: color-mix(in oklab, #22a4e6 14%, transparent);
+  --color-interaction-ask-foreground: #22a4e6;
+  --color-interaction-ask-fill: color-mix(in oklab, #719700 24%, transparent);
+  --color-interaction-confirmation-surface: color-mix(in oklab, #719700 16%, transparent);
+  --color-interaction-confirmation-foreground: #719700;
+  /* Ayu publishes the light find-match as a literal pale yellow
+   * (`editor.findMatch.active`), which is exactly a fill for a light page — so
+   * unlike the dark block this one uses the published value unmodified, and the
+   * active marker is `palette.yellow.l4`. */
+  --color-find-highlight: #ffe294;
+  --color-find-highlight-active: #eba400;
+  --color-plugin-paid-plan-badge: color-mix(in oklab, #f29718 24%, transparent);
+  /* 5.76 on the tint it rides (`#f8e2c4`: the fill at 24% over the pane) — which is
+   * where Ayu's own ink for this hue works, unlike on the solid fill above. */
+  --color-plugin-paid-plan-badge-foreground: #7e4b01; /* common.accent.on */
+
+  /* The ramp, LIGHT reading. Only `caution` moves: it carries a TEXT label (the
+   * context bar's percentage) and the light reading therefore takes
+   * `palette.yellow.l1` `#b37c00` — 3.11 on the recessed step, 3.43 on the page,
+   * 3.62 on white, a recorded floor like the other three status hues. (The comment
+   * here used to quote 4.22 and 4.67; neither is what the value measures.)
+   *
+   * The five thinking LEVELS stay silent here ON PURPOSE. They are 3:1 indicator
+   * GLYPHS, and `@theme`'s readings already clear that floor on a light surface,
+   * so restating them would shadow a value that is already correct — the same
+   * argument `.theme-default-light` records for the whole family. Naming them in
+   * this block would also claim a ramp reading this block does not ship. */
+  --color-caution: #b37c00;
+
+  /* The ANSI table, resolved from `themes/light.yaml`. Same forward-declaration
+   * caveat as the dark block: the app has no terminal, and this scheme's table is
+   * derived from its own syntax hues rather than published as literals. */
+  --color-terminal-fg: var(--color-foreground);
+  --color-terminal-cursor: #f29718;
+  --color-terminal-cursor-accent: #f8f9fa;
+  --color-terminal-selection: color-mix(in oklab, #035bd6 15%, transparent);
+  --color-terminal-selection-inactive: color-mix(in oklab, #035bd6 7%, transparent);
+  --color-terminal-black: #86878c;
+  --color-terminal-red: #f07171;
+  --color-terminal-green: #86b300;
+  --color-terminal-yellow: #eba400;
+  --color-terminal-blue: #22a4e6;
+  --color-terminal-magenta: #a37acc;
+  --color-terminal-cyan: #4cbf99;
+  --color-terminal-white: #adaeb1;
+  --color-terminal-bright-black: #939498;
+  --color-terminal-bright-red: #f07171;
+  --color-terminal-bright-green: #86b300;
+  --color-terminal-bright-yellow: #eba400;
+  --color-terminal-bright-blue: #22a4e6;
+  --color-terminal-bright-magenta: #a37acc;
+  --color-terminal-bright-cyan: #4cbf99;
+  --color-terminal-bright-white: #c5c5c8;
+
+  /* The 25 file-type DESCRIPTORS are deliberately NOT restated here, and that is a
+   * decision rather than an omission. `@theme` holds all 25 light-safe readings and
+   * a light block would SHADOW them for a classless document — which is exactly why
+   * `.theme-default-light` names all 25 in its `inheritedFromDefault` and declares
+   * none. The completeness gate checks both directions, so the token list in
+   * `src/lib/palettes/ayu.ts` is the record of that choice. */
+}

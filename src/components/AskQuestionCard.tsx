@@ -58,7 +58,7 @@ const RECOMMENDED_TAG = " (Recommended)";
  * What the row wins by being LAST: `flex` (over the base's `inline-flex`),
  * `gap-2` (over the size's `gap-1`), `px-1` (over `px-2`), `rounded-md`,
  * `items-center`, `text-ui-base`, `hover:bg-surface-hover` (the ghost arm's
- * `hover:bg-hover` is a different colour in zai-dark and Dracula — 5% against
+ * `hover:bg-hover` is a different colour in default-dark and Dracula — 5% against
  * surface-hover's 10%), and `disabled:opacity-50`, which is byte-identical to
  * the base's own so neither side can lose it.
  *

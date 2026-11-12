@@ -8,14 +8,15 @@ lives here, because the block is a ~270-declaration list that
 
 The other blocks keep their records inline: the `.dark` block's comments
 explain the dark readings (and the `--color-context-track` split), and the
-`.theme-dracula` block (`src/styles/dracula.css`) carries the ADR 0027
+`.theme-dracula-dark` block (`src/styles/dracula.css`) carries the ADR 0027
 spec-gate record, which is its own document and stays with the block.
 
 `src/lib/themeTokens.test.ts` is the gate for the ramp section below (hue
 pairing, cool→hot ordering, status-collision, contrast floors) and for the
 **row token family** (`--color-row-icon` / `--color-row-verb`), whose rationale
 is ADR 0062 rather than a section here — that family's readings are an alias in
-all four non-Dracula layers, so there is no base reading of its own to record.
+every Palette reading except Dracula's (12 of the 13 the registry offers), so
+there is no base reading of its own to record.
 `src/lib/fileIconContrast.test.ts` grades the descriptor hues against their
 real surfaces.
 
@@ -38,13 +39,13 @@ real surfaces.
 
   /* FILE-TYPE DESCRIPTOR COLORS (ZCode's DESIGN.md: "Keep file-type icons on
    * their own descriptor colors"). Deliberately NOT the semantic tokens:
-   * `--color-brand` is WHITE in zai-dark (so a `.tsx` chip painted with it
+   * `--color-brand` is WHITE in default dark (so a `.tsx` chip painted with it
    * rendered colorless), and painting `.rs`/`.py` with `--color-destructive`/
    * `--color-success` claims a file failed or was added.
    *
    * These BASE values are the light-theme-safe shades (every one clears 3:1
    * on the white background — several of ZCode's material-icon fills are pale
-   * yellows that vanish there); `.theme-zai-dark` overrides them with
+   * yellows that vanish there); `.theme-default-dark` overrides them with
    * ZCode's exact glyph fills, which are tuned for a dark surface. A file
    * type is not a light/dark concern, so the pair is the hue's two readings
    * of the same identity — like the git-status hues.
@@ -70,7 +71,7 @@ real surfaces.
    * `success` and `warning`.
    *
    * These BASE values are the LIGHT reading, and that placement is load-
-   * bearing: `applyThemeToDocument` gives zai light `.theme-zai-light` with NO
+   * bearing: `applyThemeToDocument` gives default light `.theme-default-light` with NO
    * `.dark` class, and a classless document reads `@theme`, so `@theme` is
    * what a light mode resolves — and the hues these replace did not clear it
    * there. Measured on what ACTUALLY rendered (this repo is Tailwind v4, whose
@@ -82,9 +83,9 @@ real surfaces.
    * warning, it is the signal gone. Each value below is the darkest shade of
    * its own hue that still reads as that hue: the thinking ramp is non-text UI
    * (3:1), `caution` also paints the percentage LABEL so it holds the 4.5:1
-   * text floor. The dark readings live in `.dark`, which zai dark also gets, so
-   * `.theme-zai-dark` needs no entry — the same two-reading structure as
-   * `--color-file-*`, and the reason `.theme-zai-light` must stay silent here:
+   * text floor. The dark readings live in `.dark`, which default dark also gets, so
+   * `.theme-default-dark` needs no entry — the same two-reading structure as
+   * `--color-file-*`, and the reason `.theme-default-light` must stay silent here:
    * a second light value there would shadow this one and leave a classless
    * document unlegible. */
 

@@ -1,0 +1,217 @@
+/*
+ * TEST FIXTURE — NOT A PALETTE, AND NOTHING MAY EVER @import THIS FILE.
+ *
+ * WHAT IT IS. A third Palette reading, present on disk and GRADED by
+ * `src/lib/paletteCompleteness.test.ts`, that is deliberately absent from the
+ * registry (`src/lib/palettes.ts`) and from `src/index.css`. That is exactly the
+ * state Tasks 3-6 of `docs/roadmap/more-palettes.md` leave behind: a spec row and
+ * its CSS file land together, the `@import` and the registration are the closeout.
+ * Before the (a)/(b) split, that state reddened three gates of the shared suite,
+ * because NAMES came from the SPEC DIRECTORY while OFFSETS and CLASS LISTS came
+ * from the RESOLVED SHEET and the REGISTRY.
+ *
+ * WHY THE BLOCK IS A RENAME OF `.theme-default-dark`. `gradePalette` must return
+ * ZERO failures for this row: a fixture that already fails cannot distinguish
+ * "graded and clean" from "skipped", which is the failure mode the plan calls out
+ * ("the gate must skip unimported specs, which makes the checks vacuous for
+ * exactly the Palettes they exist to grade"). A second dark reading over the same
+ * base, with the same 168 tokens, is the smallest thing that can satisfy every
+ * predicate — so the fixture is a rename, not an invention, and its grading is
+ * REAL: mutating one hex in this file is required to make ITS OWN grading fail.
+ *
+ * KEEPING IT IN STEP. `paletteCompleteness.test.ts` asserts this block still equals
+ * `.theme-default-dark` modulo the selector, so a token added to Default surfaces
+ * here as a loud named failure rather than as a fixture that quietly stopped
+ * resembling a Palette.
+ */
+
+.theme-wave3probe-dark {
+  --animated-gradient-text-strong: rgba(255, 255, 255, 1);
+  --animated-gradient-text-soft: rgba(255, 255, 255, 0.22);
+  --color-background: #161616;
+  --color-background-win-alt: #2b2b2b;
+  --color-chat: color-mix(in oklab, var(--color-background-win-alt) 60%, transparent);
+  --color-inspector: var(--color-chat); /* the right-hand pane: one plane with the transcript */
+  --color-composer: var(--color-input); /* the composer island — a text input, so it defaults to the control fill */
+  --color-brand: #ffffff;
+  --color-workflow-rule: rgba(255, 255, 255, 0.065);
+  --color-workflow-trace: rgba(255, 255, 255, 0.35);
+  --color-workflow-trace-strong: rgba(255, 255, 255, 0.6);
+  --color-accent: #bd93f9;
+  --color-find-highlight: #542500;
+  --color-find-highlight-active: #ff8a30;
+  --color-border: rgba(255, 255, 255, 0.1);
+  --color-border-hover: rgba(255, 255, 255, 0.15);
+  --color-hover: rgba(255, 255, 255, 0.05);
+  --color-selected: rgba(255, 255, 255, 0.1);
+  --color-header: #202020;
+  --color-panel: #202020;
+  --color-frame: #161616;
+  --color-surface: rgba(255, 255, 255, 0.05);
+  --color-surface-hover: rgba(255, 255, 255, 0.1);
+  --color-card: #2b2b2b;
+  --color-card-selected: var(--color-input);
+  --color-card-border: var(--color-border);
+  --color-popover: #2b2b2b;
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-header: #202020;
+  --color-popover-border: var(--color-border);
+  --color-input: #2b2b2b;
+  --color-input-focused: var(--color-input);
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-border-hover);
+  --color-terminal-bg: var(--color-background);
+  --color-terminal-fg: var(--color-foreground);
+  --color-terminal-cursor: #f8f8f8;
+  --color-terminal-cursor-accent: #161616;
+  --color-terminal-selection: rgba(64, 153, 255, 0.28);
+  --color-terminal-selection-inactive: rgba(255, 255, 255, 0.1);
+  --color-terminal-black: #363636;
+  --color-terminal-red: #ff5c5c;
+  --color-terminal-green: #46bf72;
+  --color-terminal-yellow: #ff8a30;
+  --color-terminal-blue: #4099ff;
+  --color-terminal-magenta: #7b5ce5;
+  --color-terminal-cyan: #42c8c8;
+  --color-terminal-white: #adadad;
+  --color-terminal-bright-black: #747474;
+  --color-terminal-bright-red: #ff9999;
+  --color-terminal-bright-green: #87d9a4;
+  --color-terminal-bright-yellow: #ffb26b;
+  --color-terminal-bright-blue: #80beff;
+  --color-terminal-bright-magenta: #a888f2;
+  --color-terminal-bright-cyan: #8ee5e5;
+  --color-terminal-bright-white: #f8f8f8;
+  --color-usage-chart-1: #4099ff;
+  --color-usage-chart-2: #46bf72;
+  --color-usage-chart-3: #7b5ce5;
+  --color-usage-chart-4: #ff5c5c;
+  --color-usage-chart-5: #ff8a30;
+  --color-usage-chart-6: #42c8c8;
+  --color-context-breakdown-1: #4099ff;
+  --color-context-breakdown-2: #66adff;
+  --color-context-breakdown-3: #80beff;
+  --color-context-breakdown-4: #9dceff;
+  --color-context-breakdown-5: #b9ddff;
+  --color-context-breakdown-6: #d0e8ff;
+  --color-context-breakdown-7: #e4f1ff;
+  --color-usage-heatmap-0: color-mix(in oklab, #4099ff 0%, var(--color-surface));
+  --color-usage-heatmap-1: color-mix(in oklab, #4099ff 24%, var(--color-surface));
+  --color-usage-heatmap-2: color-mix(in oklab, #4099ff 42%, var(--color-surface));
+  --color-usage-heatmap-3: color-mix(in oklab, #4099ff 62%, var(--color-surface));
+  --color-usage-heatmap-4: color-mix(in oklab, #80beff 78%, var(--color-surface));
+  --color-tab: #202020;
+  --color-tab-active: #161616;
+  --color-tab-border: var(--color-border);
+  --color-menu: #2b2b2b;
+  --color-menu-hover: #363636;
+  --color-primary: #ffffff;
+  --color-primary-foreground: #000000;
+  --color-secondary: #363636;
+  --color-interaction-ask-surface: #001d3d;
+  --color-interaction-ask-foreground: #80beff;
+  --color-interaction-ask-fill: rgba(70, 191, 114, 0.24);
+  --color-interaction-confirmation-surface: rgba(70, 191, 114, 0.16);
+  --color-interaction-confirmation-foreground: #87d9a4;
+  --color-foreground: var(--color-neutral-300);
+  --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-300) 60%, transparent);
+  --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-300) 30%, transparent);
+  /* Row glyph + row verb (ADR 0062) — aliased to this palette's existing
+   * readings; `.theme-dracula-dark` is the one palette that gives them its own hues.
+   * See `@theme` for the family's axis and the accepted `--color-warning`
+   * collision. Note the alias does NOT mean every row renders untouched: the
+   * `Thought` glyph used `foreground-subtlest` while its two siblings in the
+   * other consumers used `foreground-subtle`, so unifying them on the icon
+   * token lifts that one glyph a step. ADR 0062's Correction 1.
+   * SIBLING: `--color-row-verb` below. */
+  --color-row-icon: var(--color-foreground-subtle);
+  /* SIBLING of `--color-row-icon` above; the settled verb — a pending call keeps
+   * `animated-gradient-text`, which is the "this call is working" cue. ADR 0062. */
+  --color-row-verb: var(--color-foreground-subtlest);
+  /* The film glyph (ADR 0071) — OPAQUE on purpose (the luminance bands are the
+   * film's only dimming mechanism), aliased to the `.dark` reading, which is
+   * what both default dark and any `.dark`-only surface already read, so the default renders
+   * byte-identically. See `@theme` for the rejected `--color-foreground-subtlest`
+   * and `themeTokens.test.ts` for the per-layer gate that keeps it. */
+  --color-film-glyph: var(--color-neutral-400);
+  --color-context-track: var(--color-foreground-subtlest); /* see @theme */
+  --color-foreground-inverse: #000000;
+  --color-success: #46bf72;
+  --color-success-foreground: #000000;
+  --color-idle-task: #7b5ce5;
+  --color-idle-task-surface: #160d38;
+  --color-destructive: #ff5c5c;
+  /* Default Dark 曾把 destructive 前景设为黑色，与红色危险按钮的固定白字设计冲突。 */
+  --color-destructive-foreground: #ffffff;
+  --color-warning: #ff8a30;
+  --color-feedback-privacy-hint: var(--color-yellow-300);
+  --color-warning-foreground: #000000;
+  --color-diff-added: #46bf72;
+  --color-diff-added-foreground: #000000;
+  --color-diff-removed: #ff5c5c;
+  --color-diff-removed-foreground: #000000;
+  --color-git-none: var(--color-foreground);
+  --color-git-modified: #ff8a30;
+  --color-git-added: #46bf72;
+  --color-git-deleted: #ff5c5c;
+  --color-git-renamed: #4099ff;
+  --color-git-untracked: #46bf72;
+  --color-git-ignored: var(--color-foreground-subtlest);
+  --color-git-descendant: #ff8a30;
+  --color-toast: #2b2b2b;
+  --color-tooltip: #2b2b2b;
+  --color-tooltip-foreground: #f8f8f8;
+  --color-tooltip-tag: #363636;
+  --color-tooltip-tag-foreground: #adadad;
+  --color-tag: #363636;
+  --color-file-node: rgba(112, 174, 224, 0.16);
+  --color-file-node-hover: rgba(112, 174, 224, 0.22);
+  --color-file-node-foreground: #8fc5ef;
+  --color-skill-node: rgba(166, 137, 218, 0.16);
+  --color-skill-node-hover: rgba(166, 137, 218, 0.22);
+  --color-skill-node-foreground: #bda5e6;
+  --color-command-node: rgba(154, 166, 180, 0.14);
+  --color-command-node-hover: rgba(154, 166, 180, 0.2);
+  --color-command-node-foreground: #b5c0cc;
+  --color-subagent-node: rgba(183, 189, 117, 0.16);
+  --color-subagent-node-hover: rgba(183, 189, 117, 0.22);
+  --color-subagent-node-foreground: #c8cd90;
+  --color-session-node: rgba(104, 196, 188, 0.16);
+  --color-session-node-hover: rgba(104, 196, 188, 0.22);
+  --color-session-node-foreground: #93d8d2;
+  --color-plugin-node: rgba(224, 174, 112, 0.16);
+  --color-plugin-node-hover: rgba(224, 174, 112, 0.22);
+  --color-plugin-node-foreground: #efc58f;
+  --color-plugin-paid-plan-badge: #5a341b;
+  --color-plugin-paid-plan-badge-foreground: #ffd8b8;
+
+  /* The dark reading of the file-type descriptor hues: ZCode's literal
+   * Material Icon Theme glyph fills (its transcript renders those SVGs),
+   * which are bright by design on a dark surface. See the `@theme` block. */
+  --color-file-ts: #0288d1;
+  --color-file-react: #00bcd4;
+  --color-file-js: #ffca28;
+  --color-file-json: #f9a825;
+  --color-file-html: #e65100;
+  --color-file-css: #7e57c2;
+  --color-file-sass: #ec407a;
+  --color-file-md: #42a5f5;
+  --color-file-rs: #ff7043;
+  --color-file-py: #0288d1;
+  --color-file-sh: #ff7043;
+  --color-file-yaml: #ff5252;
+  --color-file-toml: #cfd8dc;
+  --color-file-lock: #ffd54f;
+  --color-file-image: #26a69a;
+  --color-file-svg: #ffb300;
+  --color-file-archive: #afb42b;
+  --color-file-go: #00acc1;
+  --color-file-vue: #41b883;
+  --color-file-svelte: #ff5722;
+  --color-file-java: #f44336;
+  --color-file-php: #1e88e5;
+  --color-file-xml: #8bc34a;
+  --color-file-graphql: #ec407a;
+  --color-file-db: #ffca28;
+}

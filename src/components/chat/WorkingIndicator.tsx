@@ -64,7 +64,7 @@ import { cn } from "../lib/utils";
  *
  * THE TEXT IS `foreground`, NOT the `foreground-subtle` it used to be, and the
  * reason is the move itself: the row's background changed from the chat plane
- * (`--color-chat`, `#232323` under zai dark) to the composer fill
+ * (`--color-chat`, `#232323` under default dark) to the composer fill
  * (`--color-input`, `#2b2b2b`), and on the lighter fill subtle text measures
  * **4.46:1** where it measured 4.76:1 on the chat plane — i.e. it crosses
  * WCAG's 4.5:1 small-text floor, on the one line the user reads while the

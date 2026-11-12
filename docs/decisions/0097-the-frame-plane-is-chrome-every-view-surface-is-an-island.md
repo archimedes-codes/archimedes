@@ -33,7 +33,7 @@ Floating it would dissolve that pairing and make the chrome band nothing.
   `SpacesList`.
 - **Fixed overlays are exempt, including one with a known elevation inversion.**
   `SubagentDetailHost`'s transcript sheet is `bg-background` (`#21222c`), which reads *darker* than
-  the side pane it overlaps (`#282a36`) — 1.11 in Dracula, 1.09 in zai-dark — so only its
+  the side pane it overlaps (`#282a36`) — 1.11 in Dracula, 1.09 in default dark — so only its
   `shadow-xl` claims it is on top. Accepted: an overlay is not a pane, and giving it `m-1` would
   detach it from the window edge it is meant to run flush against. This is recorded so the
   inversion reads as decided rather than missed.

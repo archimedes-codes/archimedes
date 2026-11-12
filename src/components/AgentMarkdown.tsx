@@ -6,7 +6,13 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 import OpenAnchor from "./OpenAnchor";
 import { Button } from "./ui/button";
 import { useSettings } from "../store/settings";
-import type { AppPalette } from "../lib/theme";
+import { modeOf } from "../lib/theme";
+import {
+  paletteFor,
+  paletteModeFor,
+  shikiThemeFor,
+  shikiThemesToLoad,
+} from "../lib/palettes";
 import { fileIconFor } from "../lib/fileIcons";
 import { cn } from "./lib/utils";
 import { useCopyButton } from "../hooks/useCopyButton";
@@ -54,11 +60,24 @@ export const COPY_GLYPH_WALL =
 /**
  * One shared highlighter for the whole app.
  *
- * BOTH syntax themes are loaded in this ONE call (ADR 0027): switching
+ * EVERY theme the registry names is loaded in this ONE call (ADR 0027): switching
  * palette then only re-runs `codeToHtml` against themes the singleton already
  * holds — no second highlighter, no re-instantiation, no flash of unhighlighted
  * code. (`createHighlighter` is the expensive part — grammars + themes — so a
  * per-palette instance would pay it twice for a purely cosmetic axis.)
+ *
+ * The `themes:` list comes from `shikiThemesToLoad()` rather than a literal
+ * `["github-dark", "dracula"]`, because the literal was the fourth silent-pass
+ * gate: a Palette registered with a class and a Shiki id still rendered
+ * `github-dark` code with a green suite, because `codeToHtml` asks for a theme
+ * the highlighter never loaded, throws, and the `catch` below renders the plain
+ * fallback. `paletteCompleteness.test.ts` asserts this list covers the registry,
+ * and it reads the list from THIS file's source rather than trusting the intent.
+ *
+ * DUAL-THEME OUTPUT (`themes: { light, dark }`) is deliberately NOT used: it
+ * tokenises once PER theme, measured at 1.45× HTML and 1.85× time with two
+ * themes — the wrong trade on a 7-Palette axis — and the mode is already known
+ * at the call site, so one `theme:` is enough.
  *
  * `tsx` / `jsx` are in the `langs` list because they are the alias grammars a
  * coding agent emits by far the most. Shiki THROWS on a lang outside this list
@@ -72,7 +91,7 @@ let highlighterPromise: Promise<Highlighter> | null = null;
 function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighter({
-      themes: ["github-dark", "dracula"],
+      themes: shikiThemesToLoad(),
       langs: [
         "bash",
         "rust",
@@ -91,24 +110,35 @@ function getHighlighter(): Promise<Highlighter> {
 }
 
 /**
- * (ADR 0027) The syntax theme DERIVES from the palette — no separate setting.
+ * The themes THIS singleton actually loaded, for the gate that proves the
+ * registry's Shiki ids really reach `createHighlighter`.
  *
- * Deliberately a one-line pure function exported for tests: the rule is then
- * assertable without a DOM, and the render tests below only have to prove the
- * rule is WIRED into `codeToHtml` (via the theme's own paper colour).
- *
- * Anything that is not `"dracula"` — `"zai"`, `null` (settings not loaded /
- * the stored default), `undefined` — answers `github-dark`, which is the
- * behaviour this component had before the palette axis existed. The pairing is
- * coherent in both directions: `dracula` is a DARK syntax theme and only
- * Dracula's dark variant ships here (a scope decision — ADR 0027), so that
- * palette pins the app dark and dark code never sits on a light bubble.
+ * EXPORTED FOR THAT GATE, and the reason it reads the RUNTIME list rather than
+ * re-deriving the argument is exactly the failure being closed: `codeToHtml` on a
+ * theme the highlighter never loaded THROWS, and the call site's bare `catch`
+ * renders the plain fallback — so a Palette can be registered, highlight wrong,
+ * and leave the suite green. `getLoadedThemes()` is the answer Shiki itself holds,
+ * so the gate cannot pass by comparing one expression with itself.
  */
-export function shikiThemeFor(
-  palette: AppPalette | null | undefined,
-): "dracula" | "github-dark" {
-  return palette === "dracula" ? "dracula" : "github-dark";
+export async function loadedShikiThemes(): Promise<string[]> {
+  return (await getHighlighter()).getLoadedThemes();
 }
+
+/**
+ * (ADR 0027 → ADR 0104) The syntax theme DERIVES from the palette AND the mode —
+ * no separate setting.
+ *
+ * The rule MOVED to `shikiThemeFor` in `../lib/palettes`, the registry, because
+ * it was a two-arm ternary that named Dracula: it could not know that the Default
+ * palette in LIGHT mode wants a light paper (so a code fence on a light bubble
+ * carried dark paper), and a third Palette silently rendered `github-dark`. The
+ * registry holds id → mode → Shiki id, so both call sites — this one and
+ * `CodemodeCard.tsx`, which used to INLINE its own copy of the ternary — read the
+ * same lookup. It stays re-exported here because this module is where the rule
+ * lived and where its tests were written; the derivation is assertable without a
+ * DOM either way.
+ */
+export { shikiThemeFor } from "../lib/palettes";
 
 /**
  * The ONE body class string, shared by BOTH render branches.
@@ -173,12 +203,23 @@ const CODE_BODY_CLASS = "overflow-x-auto p-3 font-mono text-sm";
 function CodeBlock({ code, lang }: { code: string; lang?: string }) {
   const [html, setHtml] = useState<string | null>(null);
 
-  // (ADR 0027) Which syntax theme to highlight with. Read straight from the
-  // settings store (the same subscription shape `ChatStream` uses for
-  // `spinnerStyle`), so a palette change in the settings UI reaches an
-  // already-mounted bubble with no reload; `null` (nothing loaded yet, or the
-  // stored default) is the zai default.
-  const palette = useSettings((s) => s.settings?.palette ?? "zai");
+  // (ADR 0027 → ADR 0104) Which syntax theme to highlight with: the palette AND
+  // the mode. Read straight from the settings store (the same subscription shape
+  // `ChatStream` uses for `spinnerStyle`), so a palette change in the settings UI
+  // reaches an already-mounted bubble with no reload; `null` (nothing loaded yet,
+  // or the stored default) is the Default palette.
+  //
+  // BOTH halves are subscribed because the theme depends on both. Reading the
+  // mode off `document.documentElement.classList` would be worse than not reading
+  // it: `classList` is imperative and is NOT a React subscription, so a fence that
+  // was already mounted would keep the previous mode's paper colour forever. So
+  // `theme` (with `"system"` resolving through `modeOf`'s `matchMedia` branch) is
+  // taken from the store too, and `paletteModeFor` applies the Palette's own pin
+  // — under Dracula, which ships one reading, the mode is inert exactly as the CSS
+  // class is inert.
+  const palette = useSettings((s) => s.settings?.palette ?? "default");
+  const theme = useSettings((s) => s.settings?.theme ?? "dark");
+  const shikiMode = paletteModeFor(paletteFor(palette), modeOf(theme));
 
   // Copy → confirm for 1.5s, owned by `useCopyButton` (the timer, the
   // restart-on-second-click and the unmount cleanup all live there now). The
@@ -242,7 +283,7 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
         setHtml(
           highlighter.codeToHtml(code, {
             lang: shikiLang,
-            theme: shikiThemeFor(palette),
+            theme: shikiThemeFor(palette, shikiMode),
           }),
         );
       } catch {
@@ -252,10 +293,12 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
     return () => {
       cancelled = true;
     };
-    // `palette` is a dependency on purpose: it is what makes an ALREADY-mounted
-    // fence re-highlight the instant the palette changes (both themes are
-    // already loaded, so this is just a re-render of the body).
-  }, [code, lang, palette]);
+    // `palette` AND `shikiMode` are dependencies on purpose: they are what makes
+    // an ALREADY-mounted fence re-highlight the instant either axis changes (the
+    // themes are already loaded, so this is just a re-render of the body).
+    // Leaving `shikiMode` out would keep the old paper colour after a light/dark
+    // flip under a Palette that ships both readings.
+  }, [code, lang, palette, shikiMode]);
 
   if (!html) {
     // Unknown / unsupported language (or the highlighter still loading): same

@@ -1,12 +1,12 @@
 
 /*
  * The Dracula PALETTE (ADR 0027) — a color scheme, not a light/dark mode.
- * `src/lib/theme.ts` applies it as `.dark` + `.theme-dracula`, so this block is
- * a PARTIAL diff over the shared dark tokens: it restates the 115 tokens the
- * palette owns and inherits the other 59 of `.theme-zai-dark`'s 168. Placement
+ * `src/lib/theme.ts` applies it as `.dark` + `.theme-dracula-dark`, so this block is
+ * a PARTIAL diff over the shared dark tokens: it restates the 120 tokens the
+ * palette owns and inherits the other 54 of `.theme-default-dark`'s 168. Placement
  * matters — every palette block is a single-class selector of equal
  * specificity, so if two ever co-existed source order alone would decide the
- * winner (`theme.ts` toggles all four classes with explicit booleans, so
+ * winner (`theme.ts` toggles every theme class with explicit booleans, so
  * exactly one is ever present; this ordering just keeps that honest).
  *
  * SOURCE OF TRUTH: the official specification, https://draculatheme.com/spec.
@@ -152,17 +152,17 @@
  * the one fill here dark enough that dark ink would be the WORSE reading
  * (`#21222c` on `#815cd6` is 3.34).
  *
- * WHY only 115 of `.theme-zai-dark`'s 168: the **Identity color** rule
+ * WHY only 120 of `.theme-default-dark`'s 168: the **Identity color** rule
  * (`CONTEXT.md`). A hue that encodes *what kind of thing this is* is never
  * re-hued by a palette — the usage/heatmap and context-breakdown scales, the
  * git statuses, the transcript roles, the role chips and the white overlays all
  * stay on `.dark`'s readings, because Dracula's 11 hues cannot name 25 file
  * types and 8 git states without making them indistinguishable. `src/lib/
  * paletteCompleteness.test.ts` pins that inherited set in BOTH directions, so a
- * token added to `.theme-zai-dark` must be classified rather than silently
- * dropped or silently inherited. These 59 do render differently from zai dark
+ * token added to `.theme-default-dark` must be classified rather than silently
+ * dropped or silently inherited. These 54 do render differently from default dark
  * (which restates them by hand) — that is the rule working: untouched BY
- * Dracula, not preserved FROM Zai. THE TERMINAL IS THE EXCEPTION, AND IT MOVED:
+ * Dracula, not preserved FROM the default palette. THE TERMINAL IS THE EXCEPTION, AND IT MOVED:
  * the 22 `--color-terminal-*` tokens used to be inherited on the reasoning that
  * the app has no terminal component and an ANSI set would therefore have to be
  * INVENTED. The first half of that is still true — there is no terminal surface
@@ -194,14 +194,14 @@
  * contrast against the surface, the track wants contrast against the BAR'S FILL.
  * It is now only the text (lightened to Foreground at 55%), and
  * `--color-context-track` is the bar. The new token is declared in `@theme`,
- * `.dark`, `.theme-zai-light` and `.theme-zai-dark` as a pure ALIAS back to
+ * `.dark`, `.theme-default-light` and `.theme-default-dark` as a pure ALIAS back to
  * `--color-foreground-subtlest`, so those readings composite to exactly the
- * colour they did before it existed — zai's rendering does not move by one byte
- * and Dracula is the only palette that overrides it. (`.theme-zai-light` has to
+ * colour they did before it existed — the default palette's rendering does not move by one byte
+ * and Dracula is the only palette that overrides it. (`.theme-default-light` has to
  * carry it too: that block is pinned to declare exactly `.dark`'s token set, so
  * anything added to `.dark` must be mirrored there.)
  */
-.theme-dracula {
+.theme-dracula-dark {
   /* surfaces — the spec's elevation ladder, re-anchored one step down (an
    * amendment to ADR 0027): the whole content moved to the darker rungs so the
    * chrome and every surface read a touch darker. THE PLANES, in order of
@@ -217,12 +217,12 @@
    *   #424450  the selection state — a transient above every resting surface
    */
   --color-background: #21222c; /* Background Dark: the page plane */
-  /* INERT IN THIS PALETTE, LIVE IN ZAI DARK — do not read "no `bg-*` class uses
+  /* INERT IN THIS PALETTE, LIVE IN DEFAULT DARK — do not read "no `bg-*` class uses
    * it" as "dead". Zero JSX consumers, and Dracula no longer derives anything
    * from it (`--color-chat` is the literal step now), so within this block it is
-   * a forward declaration. But `.theme-zai-dark` still declares
+   * a forward declaration. But `.theme-default-dark` still declares
    * `--color-chat: color-mix(… var(--color-background-win-alt) 60%, …)`, so the
-   * token is genuinely load-bearing for zai dark, and deleting it from all five
+   * token is genuinely load-bearing for default dark, and deleting it from all five
    * layers is its own change gated by the completeness rule that forces Dracula
    * to declare what `.dark` declares.
    *
@@ -249,7 +249,7 @@
   --color-composer: #21222c; /* the composer island — its own plane */
   /* The chrome band. STILL ZERO JSX CONSUMERS — see `--color-frame` for why the
    * titlebar reads that token instead, and do not "fix" this by wiring
-   * `bg-header` up without reading that: zai light's header (`#ffffff`) and its
+   * `bg-header` up without reading that: default light's header (`#ffffff`) and its
    * frame (`#f0f0f0`) DIFFER, so a `bg-header` titlebar draws a visible seam
    * against the left pane in every palette that gives them separate values. */
   --color-header: #282a36;
@@ -277,7 +277,7 @@
    * cannot come back when either moves, which the old alias achieved by a
    * different route (sharing the page).
    *
-   * Side effect worth knowing: this also removes a seam zai light has always
+   * Side effect worth knowing: this also removes a seam default light has always
    * had. Its sidebar is `#f0f0f0` while its titlebar was `#f8f8f8`; now both
    * read `#f0f0f0`. Both dark palettes are unaffected (their sidebar already
    * equals their page). */
@@ -292,7 +292,7 @@
    * page `#21222c` by 1.58 — real elevation, so a selected row reads by this
    * step plus its ring and foreground. (No JSX reads `bg-card-selected` today,
    * so this is a forward declaration; `bg-selected`, the white-overlay token
-   * `.theme-zai-dark` shares, is what the sidebar rows actually paint with.) */
+   * `.theme-default-dark` shares, is what the sidebar rows actually paint with.) */
   --color-card-selected: #424450; /* Background Lighter — the selection state */
   /* THE SEAM — the line a resting surface is outlined with, and the only border
    * token a board surface is allowed to draw.
@@ -318,7 +318,7 @@
   --color-popover-foreground: var(--color-foreground);
   --color-popover-header: #191a21;
   --color-popover-border: var(--color-border);
-  /* Recessed, where Zai raises it — the composer reads as a well in the page. */
+  /* Recessed, where the default palette raises it — the composer reads as a well in the page. */
   --color-input: #191a21;
   --color-input-focused: var(--color-input);
   --color-tab: #282a36;
@@ -406,7 +406,7 @@
    * ladder shifted one step down (amendment to ADR 0027) the island is now the
    * page plane `#21222c`, and the dark end fell back below the visibility floor
    * (1.10) — so `#343746` wins again: it clears 1.3 against the island and is
-   * the strongest band of the remaining candidates. Zai's own track is untouched.
+   * the strongest band of the remaining candidates. The default palette's own track is untouched.
    *
    * The gate in `paletteCompleteness.test.ts` recomputes this table on every run
    * and asserts the declared value is the winner, so the table above is checked
@@ -426,7 +426,7 @@
    * a `bg-menu` float, so it must read as raised above its own container.
    * Against the `#282a36` float it is 1.19. Its foreground is 6.33 here. */
   --color-secondary: #343746;
-  /* Purple. `text-accent` has one consumer and it was illegible under zai dark
+  /* Purple. `text-accent` has one consumer and it was illegible under default dark
    * at 1.07; Purple is 5.90 as text, so this palette fixes it by being itself. */
   --color-accent: #bd93f9;
   /* status — see departure 1: the syntax hues carry text, the Functional
@@ -454,7 +454,7 @@
   --color-row-verb: #8be9fd; /* Cyan */
   /* THE FILM GLYPH (ADR 0071) — the colour the Transcript's empty-state film
    * paints its ASCII glyphs with, and the ONE layer with its own reading; the
-   * other four alias to a neutral so zai renders byte-identically. OPAQUE ON
+   * other four alias to a neutral so the default palette renders byte-identically. OPAQUE ON
    * PURPOSE and not as a preference: the film's glyph BRIGHTNESS IS THE DATA
    * (luminance picks both the glyph and its intensity), so the luminance bands
    * must be the only dimming mechanism. Do NOT "fix" this by aliasing it onto
@@ -649,14 +649,14 @@
    * not re-hue file-type identity.
    *
    * MANDATORY and easy to get wrong. These are declared in `@theme` (light-safe)
-   * AND in `.theme-zai-dark` (vivid dark) — `@theme` declares all 25 — but NOT
-   * in `.dark` or `.theme-zai-light`, which carry only the `file-node*` role
+   * AND in `.theme-default-dark` (vivid dark) — `@theme` declares all 25 — but NOT
+   * in `.dark` or `.theme-default-light`, which carry only the `file-node*` role
    * chips. So a palette that omits one does not fail, it silently resolves
    * through `.dark` to `@theme`'s light-safe reading — a different hue entirely.
    * On the current page `#21222c` those light-safe readings happen to all clear
    * 3:1, so the hazard is the silent HUE swap rather than a contrast failure;
    * the restatement is forced by the completeness rule regardless. Copied from
-   * `.theme-zai-dark` verbatim except `file-css`: Zai's `#7e57c2` is 3.03 on
+   * `.theme-default-dark` verbatim except `file-css`: The default palette's `#7e57c2` is 3.03 on
    * `#21222c`, and this is a palette that already declares a purple, so CSS
    * reads as `#bd93f9` (6.55). */
   --color-file-ts: #0288d1;

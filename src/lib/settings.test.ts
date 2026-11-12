@@ -10,6 +10,7 @@ vi.mock("./tauri", () => ({
 
 import { getSettings, type AppSettings } from "./tauri";
 import { applyThemeToDocument } from "./theme";
+import { DEFAULT_PALETTE_ID, themeClassNames } from "./palettes";
 import {
   applySettingsFont,
   applySettingsToDocument,
@@ -43,7 +44,7 @@ const style = () => document.documentElement.style;
  * A complete `AppSettings` document for the wiring tests. `theme: "light"` on
  * purpose: the palette assertions below then fail if the palette ever stops
  * reaching `theme.ts`, because a light mode that stayed in charge would put
- * `.theme-zai-light` on `<html>` instead of `.dark` + `.theme-dracula`.
+ * `.theme-default-light` on `<html>` instead of `.dark` + `.theme-dracula-dark`.
  */
 function settingsFixture(overrides: Partial<AppSettings> = {}): AppSettings {
   return {
@@ -80,10 +81,12 @@ function settingsFixture(overrides: Partial<AppSettings> = {}): AppSettings {
   };
 }
 
-/** The four classes `applyThemeToDocument` owns. Every test starts from a
- * document that carries none of them, so a `contains(…) === false` assertion
- * cannot pass merely because a previous test never set the class. */
-const THEME_CLASSES = ["dark", "theme-zai-light", "theme-zai-dark", "theme-dracula"];
+/** The classes `applyThemeToDocument` owns: `dark` plus EVERY class the registry
+ * can produce. DERIVED rather than listed, for the same reason `theme.test.ts`
+ * derives its filter — a hardcoded four-name array cannot see a fifth class, so
+ * a `contains(…) === false` assertion could pass merely because a previous test
+ * set a class this list never clears. */
+const THEME_CLASSES = ["dark", ...themeClassNames()];
 const resetRoot = () => document.documentElement.classList.remove(...THEME_CLASSES);
 
 describe("applySettingsFont", () => {
@@ -133,9 +136,10 @@ describe("applySettingsFont", () => {
 
 describe("loadAndApplySettings", () => {
   beforeEach(() => {
-    // Simulate the first-frame state (main.tsx's `applyThemeToDocument("zai-dark")`).
+    // Simulate the first-frame state (main.tsx's
+    // `applyThemeToDocument(DEFAULT_PALETTE_ID, "dark")`).
     resetRoot();
-    applyThemeToDocument("zai-dark");
+    applyThemeToDocument(DEFAULT_PALETTE_ID, "dark");
     document.documentElement.style.removeProperty("--ui-font-size");
     document.documentElement.style.removeProperty("--font-sans");
     document.documentElement.style.removeProperty("--font-mono");
@@ -175,10 +179,10 @@ describe("loadAndApplySettings", () => {
       attentionAlertsEnabled: true,
       attentionAlertDelaySecs: 15,
     });
-    stubMatchMedia(true); // OS is dark → "system" resolves to zai-dark
+    stubMatchMedia(true); // OS is dark → "system" resolves to default-dark
     const settings = await loadAndApplySettings();
     expect(settings).not.toBeNull();
-    expect(document.documentElement.classList.contains("theme-zai-dark")).toBe(
+    expect(document.documentElement.classList.contains("theme-default-dark")).toBe(
       true,
     );
     expect(style().getPropertyValue("--ui-font-size")).toBe("16px");
@@ -189,7 +193,7 @@ describe("loadAndApplySettings", () => {
     vi.mocked(getSettings).mockRejectedValue(new Error("boom"));
     const settings = await loadAndApplySettings();
     expect(settings).toBeNull();
-    expect(document.documentElement.classList.contains("theme-zai-dark")).toBe(
+    expect(document.documentElement.classList.contains("theme-default-dark")).toBe(
       true,
     );
   });
@@ -200,7 +204,7 @@ describe("loadAndApplySettings", () => {
     // this boot path is the only place that happens on launch. Sever that one
     // argument and everything else still looks healthy: the save succeeds, the
     // store updates, code blocks recolour (they subscribe to the store
-    // directly), and the chrome silently stays Zai forever.
+    // directly), and the chrome silently stays Default forever.
     vi.mocked(getSettings).mockResolvedValue(
       settingsFixture({ theme: "light", palette: "dracula" }),
     );
@@ -209,23 +213,23 @@ describe("loadAndApplySettings", () => {
     await loadAndApplySettings();
 
     const classes = document.documentElement.classList;
-    expect(classes.contains("theme-dracula")).toBe(true);
+    expect(classes.contains("theme-dracula-dark")).toBe(true);
     expect(classes.contains("dark")).toBe(true);
-    expect(classes.contains("theme-zai-light")).toBe(false);
-    expect(classes.contains("theme-zai-dark")).toBe(false);
+    expect(classes.contains("theme-default-light")).toBe(false);
+    expect(classes.contains("theme-default-dark")).toBe(false);
   });
 
-  it("applies a stored `zai` palette to the document (the default stays wired too)", async () => {
+  it("applies a stored `default` palette to the document (the default stays wired too)", async () => {
     vi.mocked(getSettings).mockResolvedValue(
-      settingsFixture({ theme: "light", palette: "zai" }),
+      settingsFixture({ theme: "light", palette: "default" }),
     );
     stubMatchMedia(false);
 
     await loadAndApplySettings();
 
     const classes = document.documentElement.classList;
-    expect(classes.contains("theme-zai-light")).toBe(true);
-    expect(classes.contains("theme-dracula")).toBe(false);
+    expect(classes.contains("theme-default-light")).toBe(true);
+    expect(classes.contains("theme-dracula-dark")).toBe(false);
     expect(classes.contains("dark")).toBe(false);
   });
 });
@@ -237,34 +241,60 @@ describe("applySettingsToDocument — the palette → <html> wiring (ADR 0027)",
     vi.clearAllMocks();
   });
 
-  it("puts theme-dracula + dark on <html> for a dracula palette over the LIGHT theme", () => {
+  it("puts theme-dracula-dark + dark on <html> for a dracula palette over the LIGHT theme", () => {
     // `theme: "light"` is the point: only Dracula's dark variant ships (a
     // scope decision — ADR 0027), so the stored light mode must LOSE to the
     // palette, which pins dark rather than deferring to the mode.
     applySettingsToDocument(settingsFixture({ palette: "dracula" }));
 
     const classes = document.documentElement.classList;
-    expect(classes.contains("theme-dracula")).toBe(true);
+    expect(classes.contains("theme-dracula-dark")).toBe(true);
     expect(classes.contains("dark")).toBe(true);
-    expect(classes.contains("theme-zai-light")).toBe(false);
-    expect(classes.contains("theme-zai-dark")).toBe(false);
+    expect(classes.contains("theme-default-light")).toBe(false);
+    expect(classes.contains("theme-default-dark")).toBe(false);
   });
 
-  it("puts theme-zai-light on <html> for an explicit zai palette", () => {
-    applySettingsToDocument(settingsFixture({ palette: "zai" }));
+  it("puts theme-default-light on <html> for an explicit default palette", () => {
+    applySettingsToDocument(settingsFixture({ palette: "default" }));
 
     const classes = document.documentElement.classList;
-    expect(classes.contains("theme-zai-light")).toBe(true);
-    expect(classes.contains("theme-dracula")).toBe(false);
+    expect(classes.contains("theme-default-light")).toBe(true);
+    expect(classes.contains("theme-dracula-dark")).toBe(false);
     expect(classes.contains("dark")).toBe(false);
   });
 
-  it("treats the null default as zai (a pre-feature settings.json keeps its chrome)", () => {
+  it("treats the null default as default (a pre-feature settings.json keeps its chrome)", () => {
     applySettingsToDocument(settingsFixture({ palette: null }));
 
     const classes = document.documentElement.classList;
-    expect(classes.contains("theme-zai-light")).toBe(true);
-    expect(classes.contains("theme-dracula")).toBe(false);
+    expect(classes.contains("theme-default-light")).toBe(true);
+    expect(classes.contains("theme-dracula-dark")).toBe(false);
+  });
+
+  it("resolves EVERY value outside the vocabulary to the Default palette", () => {
+    // The Default palette is the ANSWER TO DEFAULT, not one arm of a ternary:
+    // `resolveTheme` branches on `palette === "dracula"` and on nothing else, so
+    // an out-of-vocabulary `palette` (a hand-edited file, or a value a FUTURE
+    // palette drops back to when its registry entry is removed) resolves by mode
+    // exactly as `null` does. Asserted over a list rather than one value, because
+    // the property is "anything unrecognised", and a single fixture would let a
+    // future third arm of the resolver pass unnoticed.
+    for (const palette of ["solarized", "", "DEFAULT", "Dracula", "tokyonight"]) {
+      resetRoot();
+      applySettingsToDocument(
+        settingsFixture({
+          theme: "light",
+          palette: palette as AppSettings["palette"],
+        }),
+      );
+      const classes = document.documentElement.classList;
+      expect(classes, `palette=${JSON.stringify(palette)}`).toContain(
+        "theme-default-light",
+      );
+      expect(classes, `palette=${JSON.stringify(palette)}`).not.toContain(
+        "theme-dracula-dark",
+      );
+    }
   });
 
   it("keeps the font wiring alive on the palette path (both halves apply)", () => {
@@ -272,7 +302,7 @@ describe("applySettingsToDocument — the palette → <html> wiring (ADR 0027)",
       settingsFixture({ palette: "dracula", font: { sizePx: 17, uiFamily: null, codeFamily: null } }),
     );
     expect(style().getPropertyValue("--ui-font-size")).toBe("17px");
-    expect(document.documentElement.classList.contains("theme-dracula")).toBe(
+    expect(document.documentElement.classList.contains("theme-dracula-dark")).toBe(
       true,
     );
   });

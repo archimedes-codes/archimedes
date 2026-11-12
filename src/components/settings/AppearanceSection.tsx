@@ -1,4 +1,9 @@
 import type { ReactElement } from "react";
+import {
+  PALETTE_OPTIONS as PALETTE_OPTIONS_FROM_REGISTRY,
+  PALETTE_PICKER_VALUES,
+  PALETTE_SENTINEL,
+} from "@/lib/palettePicker";
 import { MAX_FONT_PX, MIN_FONT_PX } from "@/lib/settings";
 import type { AppSettings } from "@/lib/tauri";
 import {
@@ -24,13 +29,17 @@ const THEME_OPTIONS = [
   { value: "dark", label: "Dark" },
   { value: "light", label: "Light" },
 ] as const;
-/** The Palette picker's closed vocabulary (ADR 0027). `"zai"` is the SENTINEL
- * the trigger uses for the `null` default — never `""`, which Radix renders as
- * nothing. */
-const PALETTE_OPTIONS = [
-  { value: "zai", label: "Zai (default)" },
-  { value: "dracula", label: "Dracula" },
-] as const;
+/** The Palette picker's options (ADR 0027), DERIVED FROM THE REGISTRY and shared
+ *  with `paletteCompleteness.test.ts` through `@/lib/palettePicker`.
+ *
+ *  This used to be a hand-written two-entry list paired with a save rule that
+ *  named both values, and the measured consequence was that selecting a third
+ *  Palette WROTE `"dracula"` into `settings.json` — a wrong value persisted by a
+ *  green suite. Both halves are now one expression over `PALETTES`, so
+ *  registering a Palette puts it in the picker with no edit here, and the gate
+ *  that asserts "every registered Palette is offered" reads the SAME list this
+ *  component renders rather than a copy of it. */
+const PALETTE_OPTIONS = PALETTE_OPTIONS_FROM_REGISTRY;
 
 /** The UI font's offered families (the saved value is the QUOTED CSS family
  * name for a web font — `applySettingsFont` splices it into the `--font-sans`
@@ -95,7 +104,7 @@ export default function AppearanceSection({
   const uiFont = openSelectItems(settings.font.uiFamily, UI_FONT_OPTIONS);
   const codeFont = openSelectItems(settings.font.codeFamily, CODE_FONT_OPTIONS);
   const themeValues = THEME_OPTIONS.map((option) => option.value);
-  const paletteValues = PALETTE_OPTIONS.map((option) => option.value);
+  const paletteValues = PALETTE_PICKER_VALUES;
   return (
     <SettingsGroupCard>
       <SettingsRow
@@ -127,27 +136,45 @@ export default function AppearanceSection({
       />
       <SettingsRow
         label="Palette"
-        description="Which hues the app wears. Dracula is dark-only — it overrides the Theme setting (including System)."
+        description="Which hues the app wears. Following the Theme setting is each palette's own choice: Dracula is dark-only — it overrides the Theme setting (including System)."
         controlLayout="wide"
         control={
           <Select
             // `closedSelectValue`: the backend stores `palette` as an
             // unvalidated string, so any value can arrive (e.g. a hand-edited
-            // `"solarized"`). Nothing but `"dracula"` selects a scheme other
-            // than Zai, so the Zai label is the honest readout for anything
-            // unrecognised — and it keeps the default selectable, instead of
-            // blanking the trigger (Radix renders no label for an off-list
-            // value). RENDERING ONLY: nothing is re-saved for being unreadable.
-            value={closedSelectValue(settings.palette, paletteValues, "zai")}
+            // `"solarized"`). Nothing but a palette the picker offers selects a
+            // scheme other than the default, so the Default label is the honest
+            // readout for anything unrecognised — and it keeps the default
+            // selectable, instead of blanking the trigger (Radix renders no
+            // label for an off-list value). RENDERING ONLY: nothing is re-saved
+            // for being unreadable.
+            value={closedSelectValue(
+              settings.palette,
+              paletteValues,
+              PALETTE_SENTINEL,
+            )}
             onValueChange={(value) =>
-              onSave({ palette: value === "zai" ? null : "dracula" })
+              // Pass the chosen value through rather than naming the options this
+              // picker happens to offer: a palette added tomorrow would otherwise
+              // save `"dracula"`. The cast is the Radix boundary —
+              // `onValueChange` hands back a `string` (the same cast the Theme
+              // row above makes).
+              onSave({
+                palette:
+                  value === PALETTE_SENTINEL
+                    ? null
+                    : (value as AppSettings["palette"]),
+              })
             }
           >
-            {/* The `"zai"` option saves `null` (not `"zai"`) — the same
+            {/* The `"default"` option saves `null` (not `"default"`) — the same
                 default-sentinel pattern as `spinnerStyle` and the font
                 families — so a default palette leaves `settings.json`
                 minimal, and a pre-feature file (no `palette` key) and an
-                explicit Zai choice stay the SAME document (ADR 0027). */}
+                explicit Default choice stay the SAME document (ADR 0027). The
+                handler passes any OTHER value through rather than naming the
+                two options it knows: a palette the picker adds tomorrow must
+                save ITSELF, not fall through to `"dracula"`. */}
             <SelectTrigger aria-label="Palette" className="w-48">
               <SelectValue />
             </SelectTrigger>

@@ -280,7 +280,7 @@ export const FILM_GLYPH_COLOR_CLASS = "text-film-glyph";
  * browser, and it round-trips through `fillStyle`.
  *
  * The element is ATTACHED, because the palette classes (`.dark`,
- * `.theme-dracula`, …) sit on the root element: a detached probe would resolve
+ * `.theme-dracula-dark`, …) sit on the root element: a detached probe would resolve
  * against nothing and read the `@theme` default instead of the live theme. It is
  * removed again, so it never occupies layout or shows up in a snapshot.
  *

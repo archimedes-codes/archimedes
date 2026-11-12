@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createSourceSweep } from "./sourceSweep";
 
 /**
  * THE `cn()` CONVENTION GUARD (finding 15) — a source scanner, not a linter.
@@ -99,13 +100,28 @@ import { describe, expect, it } from "vitest";
 // `themeTokens.test.ts`, `chromeButton.test.ts` and `subagentSheetLayout.test.ts`
 // use; see those for the longer explanation.
 const NODE_FS = "node:" + "fs";
-const { readFileSync, readdirSync } = (await import(NODE_FS)) as {
-  readFileSync: (path: string, encoding: string) => string;
+const { readdirSync } = (await import(NODE_FS)) as {
   readdirSync: (
     path: string,
     options: { recursive: true; encoding: string },
   ) => string[];
 };
+// Reads go through the SWEEP READER (see `sourceSweep.ts`): this file lists
+// `src/` at module scope and opens every path later in `findSites`, and vitest
+// runs test files concurrently across workers — so a listed path can be deleted
+// between the listing and the open. The live palette guard does exactly that,
+// writing `src/lib/palettes/guardprobe.ts` and deleting it in a `finally`.
+const sweep = createSourceSweep();
+
+/** The module, for the non-vacuity probe at the bottom: it CREATES and DELETES a
+ *  scratch file so the skip branch is driven on purpose rather than waited for.
+ *  Same COMPUTED specifier (this app ships no `@types/node`). */
+const NODE_FS_MODULE = (await import(NODE_FS)) as unknown as {
+  writeFileSync: (path: string, data: string) => void;
+  rmSync: (path: string, options?: { force?: boolean; recursive?: boolean }) => void;
+  mkdirSync: (path: string, options?: { recursive?: boolean }) => void;
+};
+const fs = NODE_FS_MODULE;
 
 /** Every shipped `.ts`/`.tsx` under `src/`, minus the tests.
  *
@@ -176,10 +192,20 @@ const isClassNameProp = (name: string): boolean =>
 
 type Site = { file: string; line: number; prop: string; expr: string };
 
-const findSites = (): Site[] => {
+/** The `className` sites in `files`, which defaults to the real `SOURCES` listing.
+ *  A parameter so the non-vacuity test below can drive THIS scanner — the one the
+ *  guard runs, not a copy — over a listing it controls.
+ *
+ *  A path that vanished since the listing contributes NO sites and lands in the
+ *  sweep's skip ledger: it is not a clean file, it is an absent one, and
+ *  `sourceSweep.ts` explains why that is the true answer rather than a swallowed
+ *  error. */
+const findSites = (files: readonly string[] = SOURCES): Site[] => {
   const sites: Site[] = [];
-  for (const file of SOURCES) {
-    const src = stripJsComments(readFileSync(file, "utf8"));
+  for (const file of files) {
+    const text = sweep.listed(file);
+    if (text === null) continue;
+    const src = stripJsComments(text);
     
     for (const match of src.matchAll(CLASS_NAME_PROP)) {
       if (!isClassNameProp(match[1]!)) continue;
@@ -297,7 +323,80 @@ const STATIC_TERNARY_SECTIONS = [
 const keyOf = (s: Site): string =>
   `${s.file} ${s.prop}= ${s.expr.slice(0, 60)}`;
 
+describe("the sweep survives a file that vanishes between listing and reading", () => {
+  // THE SKIP BRANCH, DRIVEN ON PURPOSE — not a race attempt. This file is one of
+  // the four that sweep `src/` while the live palette guard in
+  // `paletteCompleteness.test.ts` is writing and deleting
+  // `src/lib/palettes/guardprobe.ts` from ANOTHER worker, and `ENOENT` on that
+  // path was the Wave-3 failure. Reproducing the collision needs full-suite
+  // scheduling, so instead this hands `findSites` a listing it controls and
+  // deletes one path from under it. `.tmp/` is gitignored and outside `src/`, so
+  // a probe can never become a fake component in the tree this guard grades.
+  const probe = ".tmp/classNameSweep";
+  /** A hand-rolled composition — the exact shape the guard convicts. */
+  const offendingSource = (): string =>
+    'export const Row = () => <div className={`flex ${"px-4"}`} />;\n';
+
+  it("skips a listed file that disappears mid-sweep, and records it", () => {
+    fs.mkdirSync(probe, { recursive: true });
+    const real = `${probe}/Real.tsx`;
+    const doomed = `${probe}/Doomed.tsx`;
+    fs.writeFileSync(real, offendingSource());
+    fs.writeFileSync(doomed, offendingSource());
+    sweep.resetSkipped();
+    try {
+      // Pass 1: both exist, both are seen. This is what makes pass 2 a
+      // measurement of the SKIP rather than of a scanner that reads nothing —
+      // the vacuity trap every scanner in this repo says it was bitten by.
+      const before = findSites([real, doomed]);
+      expect(before.map((s) => s.file).sort()).toEqual([doomed, real].sort());
+      expect(sweep.skipped(), "nothing has vanished yet").toEqual([]);
+
+      // Pass 2: the file is gone, the SAME listing is swept again.
+      fs.rmSync(`${probe}/Doomed.tsx`, { force: true });
+      const after = findSites([real, doomed]);
+      expect(
+        after.map((s) => s.file),
+        "the vanished file contributes no sites (it does not exist); the real one still does",
+      ).toEqual([real]);
+      expect(sweep.skipped(), "the skip is recorded, never silent").toEqual([
+        { file: doomed, code: "ENOENT" },
+      ]);
+    } finally {
+      fs.rmSync(probe, { force: true, recursive: true });
+      sweep.resetSkipped();
+    }
+  });
+
+  it("reads a listed file that is PRESENT, so a leaked artifact is still graded", () => {
+    // A leftover probe file is PRESENT, so it is opened and its sites are
+    // counted — the tolerance covers only a file that DISAPPEARS.
+    fs.mkdirSync(probe, { recursive: true });
+    const leaked = `${probe}/Leaked.tsx`;
+    fs.writeFileSync(leaked, offendingSource());
+    sweep.resetSkipped();
+    try {
+      expect(findSites([leaked]).map((s) => s.file)).toEqual([leaked]);
+      expect(sweep.skipped(), "a present file is never skipped").toEqual([]);
+    } finally {
+      fs.rmSync(leaked, { force: true });
+      fs.rmSync(probe, { force: true, recursive: true });
+    }
+  });
+
+  it("a NAMED path that is missing still throws (tolerance does not leak to the allowlist)", () => {
+    // `HAND_ROLLED_COMPOSITION`'s entries are literals. If the sweep went
+    // tolerant of those, the "every allowlisted site explains itself" test above
+    // would pass on a tree where the allowlisted file had been deleted.
+    expect(() => sweep.named(".tmp/classNameSweep/not-here.tsx")).toThrow(
+      /ENOENT|no such file/,
+    );
+    expect(sweep.named("src/components/ModelPickerDialog.tsx")).toContain("className");
+  });
+});
+
 describe("dynamic className strings go through cn() (finding 15)", () => {
+
   it("no production file composes a className by hand, except the measured allowlist", () => {
     const offenders = sites
       .filter((s) => classify(s.expr).startsWith("compose:"))
@@ -355,7 +454,10 @@ describe("dynamic className strings go through cn() (finding 15)", () => {
     const files = [...new Set(HAND_ROLLED_COMPOSITION.map((k) => k.split(" ")[0]))];
     expect(files).toHaveLength(3);
     for (const file of files) {
-      const src = readFileSync(file, "utf8");
+      // A NAMED path, not a listed one: these come from the allowlist literal, so
+      // a missing file means the allowlist is stale, and that is a red test — not
+      // something the sweep's vanished-path tolerance may absorb.
+      const src = sweep.named(file);
       expect(src, `${file} does not explain its exception`).toMatch(
         /LEFT AS A TEMPLATE LITERAL on purpose/,
       );

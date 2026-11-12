@@ -1,0 +1,808 @@
+/*
+ * The Catppuccin PALETTE — Mocha (dark) and Latte (light).
+ *
+ * `src/lib/theme.ts` applies a reading as `.dark` + `.theme-catppuccin-dark`, or
+ * classless + `.theme-catppuccin-light`, so each block below is a PARTIAL diff
+ * over the shared layers: Mocha declares 101 tokens (95 of `.theme-default-dark`'s
+ * 168 plus the 6 ramp tokens) and Latte 69, and every token either block
+ * leaves alone is named in `src/lib/palettes/catppuccin.ts`'s
+ * `inheritedFromDefault` — 73 and 99 — with the reason. Every
+ * palette block is a single-class selector of equal specificity, so if two ever
+ * co-existed source order alone would decide the winner — `theme.ts` toggles
+ * every theme class with explicit booleans, so exactly one is ever present.
+ *
+ * SOURCE OF TRUTH: https://catppuccin.com/palette, cross-checked against the
+ * machine-readable `palette.json` in `catppuccin/palette` (v1.8.0). Each flavour
+ * publishes EXACTLY 26 colours and nothing else; general use-cases come from
+ * `catppuccin/docs/style-guide.md`. NOT an editor port. The trap ADR 0027
+ * records for Dracula is live here too: `catppuccin/nvim`, `catppuccin/vim` and
+ * `catppuccin/terminal` each RE-LABEL these 26 colours for their own surfaces,
+ * and a transcription that trusts a port's labels would put a terminal's
+ * `black`/`selection`/`gutter` semantics into an app's borders and elevation
+ * steps. So no hex below comes from a port, and the two things the spec gives as
+ * a FORMULA rather than a value — the ANSI brights and the "semantic" 60%
+ * mixes — are NOT transcribed at all (see "THE ANSI TABLE IS NOT OWNED" below).
+ *
+ * SURFACES. Six published neutrals per flavour, five resting steps per reading
+ * plus a selection state, assigned by the flavour's OWN luminance and not by the
+ * colour's name. The style guide's own mapping is the starting point — "Base:
+ * Background Pane", "Crust, Mantle: Secondary Panes", "Surface 0/1/2: Surface
+ * Elements" — and the island layout then decides which of those is the page, the
+ * slab and the chrome.
+ *
+ * ── MOCHA (#11111b → #585b70), relative luminance measured with the kit's
+ *    `lumOf`:
+ *      #11111b Crust      0.0060  the deepest: the chrome band, the cards inside
+ *                                   the slab, the terminal's paper
+ *      #181825 Mantle     0.0098  the PAGE and the composer island, and THE SEAM
+ *      #1e1e2e Base       0.0140  the content slab, the inspector, every float
+ *      #313244 Surface 0  0.0335  RAISED: cards, badges, menu hover, the track
+ *      #45475a Surface 1  0.0651  the selection state only
+ *      #585b70 Surface 2  0.1073  unused as a surface — see below
+ *    Four resting groups, strictly ascending, plus the selection step; every
+ *    value published, none invented.
+ *
+ * THE SEAM, and why `--color-card-border` is a literal here. ADR 0096 chose
+ * Dracula's `#21222c` for that token because it is the exact per-channel
+ * midpoint of the two surfaces the line joins (`#191a21` ↔ `#282a36`) AND is
+ * itself spec-published — a seam that reads as neither highlight nor shadow.
+ * Catppuccin reproduces the property in BOTH readings, from the flavour's own
+ * table — the one thing of its kind in this file, and verified for both blocks
+ * below rather than asserted across the plan (the sibling Palettes are other
+ * tasks' uncommitted work, and a claim about them would be exactly the kind this
+ * header exists to avoid). The pair is the recessed Crust
+ * column and the Base slab the card is outlined against:
+ *
+ *   Mocha  #11111b ↔ #1e1e2e   R: (17+30)/2 = 23.5 → 24 = 0x18
+ *                              G: (17+30)/2 = 23.5 → 24 = 0x18
+ *                              B: (27+46)/2 = 36.5 → 37 = 0x25   →  #181825
+ *      = MANTLE, published.
+ *   Latte  #dce0e8 ↔ #eff1f5   R: (220+239)/2 = 229.5 → 230 = 0xe6
+ *                              G: (224+241)/2 = 232.5 → 233 = 0xe9
+ *                              B: (232+245)/2 = 238.5 → 239 = 0xef  →  #e6e9ef
+ *      = MANTLE, published.
+ *
+ * STATED WITH THE TIES, because every channel is an exact `.5` and that is worth
+ * a reader knowing: both midpoints land on a published value only under
+ * round-half-up. Rounding down would give `#171724` and `#e5e8ee` (Mocha's R and
+ * G channels are 23.5, and `floor(23.5)` is 23 = `0x17`, not `0x18`), neither of
+ * which exists in either flavour — so the property is "the published neutral the
+ * midpoint falls on", not "an arithmetic identity", and it is asserted as a
+ * published hex by the kit rather than as a computed one by a test. What the gate
+ * CAN check, and does, is that the value is the flavour's own; what it cannot
+ * check is the midpoint claim, so the arithmetic is above rather than a comment
+ * that says "it's the midpoint" and leaves the reader to trust it.
+ *
+ * SURFACE 2 IS NOT A SURFACE IN EITHER READING, and that is measured, not
+ * tidiness. Mocha's `#585b70` (L 0.1073) is the flavour's brightest neutral, so a
+ * card wearing it would out-shine the selection step, and three graded text
+ * tokens fall under the 4.5 floor on it (`foreground-subtlest` 3.00,
+ * `destructive` 2.88, `success` 4.49). Latte's `#acb0be` (L 0.4354) is its
+ * DARKEST neutral, so it is the one step a light reading cannot put copy on: the
+ * body colour reaches only 3.69 there and both de-emphasis steps fall under the
+ * 3:1 non-text floor outright (`Subtext 1` 2.89, `Subtext 0` 2.28), so nothing
+ * this reading paints on it clears the 4.5 text floor.
+ * In both flavours the sixth neutral is therefore used for nothing: the reading
+ * is one rung shorter than the flavour is wide, rather than one rung wider than
+ * it can defend.
+ *
+ * LATTE'S LADDER RUNS THE OTHER WAY FROM EVERY DARK READING, and three things
+ * follow from it. This is the part a reader cannot infer from the flavour's own
+ * naming, so it is spelled out with the luminances — without these numbers the
+ * block below reads like a bug rather than a designed override (ADR 0105).
+ *
+ * Latte's six neutrals ascend `surface2 0.4354 < surface1 0.5275 < surface0
+ * 0.6301 < crust 0.7435 < mantle 0.8133 < base 0.8785`. Note what that list
+ * says: the flavour's `crust` — its word for "deepest" — is a MID-TONE, and its
+ * `base` — its word for "the page" — is the LIGHTEST value the flavour publishes.
+ *
+ *  (a) THE THEME'S OWN BASE IS NOT THE PAGE. This app's layout frames a content
+ *      slab inside a chrome band, so the page sits BELOW the slab and the chrome
+ *      sits below the page. That forces `--color-background` onto Mantle (0.8133)
+ *      and leaves Base (0.8785) for the slab — the flavour's `base` is one rung
+ *      ABOVE this reading's page, not the page itself. Mocha is inverted the same
+ *      way for the same reason (its `base` is the slab, its page is Mantle);
+ *      neither reading takes the flavour's Base as its background.
+ *  (b) THE CHROME TAKES A DARKER GREY THAN THE PAGE, which is how a light band
+ *      reads as chrome at all. `--color-frame` is Surface 0 `#ccd0da` (0.6301)
+ *      against a Mantle page (0.8133) — 1.27 apart, and DARKER, where every dark
+ *      reading's chrome is the darkest step it owns. `crust` is NOT used for the
+ *      chrome: it is lighter than Surface 0, so taking the flavour's "deepest"
+ *      neutral for the deepest-looking band would invert the very ladder it is
+ *      meant to express.
+ *  (c) RECESS MEANS DARKER, so the flavour's `crust` becomes the recessed card.
+ *      `--color-panel` is Crust (0.7435) under the Base slab (0.8785) — 1.17 of
+ *      separation for a borderless card inside the slab. Surface 2 (0.4354) is
+ *      darker still and was rejected for that job: it is the step no copy clears
+ *      (see above), and a card is not a safe.
+ *
+ * And the ceiling the plateau comes from: nothing in the flavour is lighter than
+ * `base`, so `card`, `input`, `popover`, `menu`, `toast` and the slab all wear
+ * `#eff1f5`, the selection state plateaus with the card rather than rising above
+ * it, and separation inside that group is carried by `--color-card-border` and by
+ * a float's shadow. ADR 0105: a light ladder is non-decreasing and may plateau
+ * ONLY at its top group — a middle plateau would be an untracked rung, this one is
+ * a ceiling. `default-light` answers the identical ceiling with ten `#ffffff`
+ * tokens, so this is the shape of a light reading, not a Catppuccin quirk.
+ *
+ * ALPHA, classified — every translucent declaration in this file, because ADR
+ * 0105 permits alpha on a TEXT token and refuses it on a SURFACE one (a
+ * translucent surface has no luminance of its own, so "one step up" is not a
+ * measurable claim). There are NO 8-digit hexes anywhere in this file — Catppuccin
+ * publishes plain 6-digit colours, so unlike Ayu there is nothing to de-alpha and
+ * nothing to preserve — and 14 `color-mix(… transparent)` declarations, SEVEN PER
+ * BLOCK, and every one of them is the SAME seven token kinds:
+ *
+ *   `--color-selected`                           the published selection WASH
+ *   `--color-idle-task-surface`                  a badge backdrop wash
+ *   `--color-interaction-ask-surface`            a prompt-row wash
+ *   `--color-interaction-ask-fill`               a progress fill wash
+ *   `--color-interaction-confirmation-surface`   a confirm-row wash
+ *   `--color-find-highlight`                     a search-highlight wash
+ *   `--color-plugin-paid-plan-badge`             a badge wash
+ *
+ * None of the 14 is a SURFACE token in the sense ADR 0105 means: none matches
+ * `SURFACE_TOKEN_PATTERN`, none is named in a `ladderGroups` entry, and none is
+ * `--color-card-selected`. Each is a WASH laid OVER a plane the ladder already
+ * names, which is the one place alpha is both correct and gradeable — the kit
+ * composites it against the plane it lands on rather than grading it as a rung.
+ * `--color-selected` is the deliberate home for the flavour's published
+ * Overlay-2-at-20–30% selection value precisely because that token is excluded
+ * from the ladder by design. And alpha on TEXT is unused here rather than
+ * disallowed: all SEVEN graded text tokens in BOTH readings are literal published
+ * hexes, so nothing needed compositing — Catppuccin names its de-emphasis steps
+ * (Subtext 1, Subtext 0) where Dracula had to invent a 55%/70% Foreground mix.
+ *
+ * SELECTION: THE PUBLISHED WASH GOES ON THE TOKEN THAT IS A WASH. The style
+ * guide's Selection Background is "Overlay 2, 20–30% opacity" — a translucent
+ * wash, not a step. ADR 0105 refuses alpha on a SURFACE token (a translucent
+ * surface has no luminance of its own, so "one step up" is not a measurable claim
+ * about it), and the kit's resolver would grade such a token on a composite it
+ * never renders. So the published value is `--color-selected`, the token whose
+ * entire job is the translucent row overlay the sidebar and the transcript paint
+ * with — the one place an alpha surface is both correct and graded off the ladder.
+ * `--color-card-selected`, which IS graded on the ladder, takes an opaque
+ * published step instead: Mocha Surface 1 `#45475a` (L 0.0651 against the raised
+ * `#313244` at 0.0335), and Latte `base`, where nothing in the flavour is lighter
+ * than the card so the selection plateaus with it and the ring carries the state
+ * (ADR 0096 records that collapse as designed for `default-light`; ADR 0105 makes
+ * it the rule for every light reading).
+ *
+ * ── CONTRAST, measured with the kit's `lumOf`/`contrast`/`resolveToHex` on the
+ *    surfaces the app actually paints (never by hand, never lifted from
+ *    `docs/features/palettes.md`, whose "on the page" figures are one rung
+ *    optimistic for exactly that reason). The seven graded text tokens, worst
+ *    reading per class — and note that each class has a DIFFERENT worst surface,
+ *    which is why the floors are per class and not per palette:
+ *      MOCHA  resting   7.37 (`foreground-subtlest` on the Base slab; 7.89 on the
+ *             Mantle page)   raised  5.65 (`foreground-subtlest` on Surface 0)
+ *             selected  3.94 (`destructive` on the Surface 1 selection step)
+ *        → `textFloors` and `raisedFloors` are EMPTY — every one of the seven
+ *          clears 4.5 on every resting and every raised plane, which is what
+ *          Mocha's pastel accents buy, and it is a measurement rather than a skip.
+ *          `selectedFloors` is NOT empty: the selection step is the one plane in
+ *          the dark reading with two walls (`foreground-subtlest` 4.10,
+ *          `destructive` 3.94), both recorded with `expiresAt: 4.5`. So Dracula's
+ *          `destructive` wall moved rather than vanished: it sits on the
+ *          TRANSIENT state here (3.94) instead of on a resting raised step (4.33).
+ *      LATTE  resting   1.70 (`warning` on the Surface 0 chrome band; 2.15 on the
+ *             Mantle page, 2.31 on the Base slab)   raised  1.44 (`warning` on the
+ *             Surface 1 chip step)   — six of the seven tokens are below 4.5
+ *             somewhere, and the WORST reading of each is on the chrome band or
+ *             the chip step, never on the page. Grading only `--color-background`
+ *             would report 2.15 where the app renders 1.70.
+ *        → every one is a RECORDED WALL with the number it reaches and the
+ *          `expiresAt: 4.5` ratchet, in `src/lib/palettes/catppuccin.ts`. Latte
+ *          publishes ONE yellow (#df8e1d), ONE green (#40a02b) and ONE red
+ *          (#d20f39) and the style guide assigns Warnings/Success/Errors to
+ *          exactly those, so there is no darker value to move to; `default-light`
+ *          carries the same class of wall on its `#e6e6e6` chip step (warning
+ *          2.40), so this is the shape of a light Catppuccin, not a mistake in
+ *          this transcription.
+ *    `--color-border` clears the 3:1 non-text floor on every RESTING and RAISED
+ *    surface of its own reading, and does not on the planes above them — stated
+ *    per surface, because "clears everywhere" is not true of either flavour and a
+ *    reader re-measuring would find that immediately. Mocha Overlay 1 `#7f849c`:
+ *    5.07 on the Crust chrome, 4.75 on the Mantle page, 4.44 on the Base slab,
+ *    3.40 on the raised Surface 0 — and 2.47 on the Surface 1 selection step,
+ *    which is a transient state whose own fill carries the separation and which
+ *    takes `--color-selected`'s wash rather than a seam. Latte Overlay 2
+ *    `#7c7f93`: 3.49 on the Base plateau, 3.25 on the Mantle page, then 2.99 on
+ *    the Crust panel, 2.56 on the Surface 0 chrome band and 2.17 on the Surface 1
+ *    chip step — three sub-3:1 planes, recorded as the wall they are, because
+ *    Overlay 2 is Latte's DARKEST published neutral and the flavour publishes
+ *    nothing darker that is still a neutral. (The style guide's terminal "Inactive
+ *    Border" is Overlay 0, which measures 2.57 on Mocha's raised step and 1.69 on
+ *    Latte's chrome band — worse on every plane, which is why chrome rules take
+ *    Overlay 1/2 instead. The float case is the same one Dracula documents: a
+ *    float's shadow, not its border, is what separates it —
+ *    `slabFloatSeparation.test.ts`.)
+ *
+ * DELIBERATE DEPARTURES FROM THE SPEC — four, all stated plainly.
+ *
+ * 1. `--color-border` IS OVERLAY 1, NOT OVERLAY 0. The style guide's only
+ *    published border instruction is the terminal's "Inactive Border: Overlay 0",
+ *    and Overlay 0 scores 2.57 on Mocha's raised step and 2.14 on Latte's Mantle
+ *    page (2.30 on its Base plateau) — below the 3:1 WCAG floor for a non-text
+ *    boundary this app holds its own chrome to (ADR 0096's ladder). The next
+ *    published neutral up is the one this block takes: Mocha's Overlay 1 clears
+ *    every resting and raised plane (worst 3.40 on the raised step), and Latte's
+ *    Overlay 2 — its darkest, its numbering runs against its luminance — clears
+ *    the two light plateaux (3.25 / 3.49) and is recorded short on the three
+ *    greys below them. Recorded as a departure because it is one.
+ * 2. `--color-accent` IS ROSEWATER, not an accent the ramp could not use.
+ *    `--color-accent` has ONE `text-accent` consumer and NO fill consumer at all
+ *    (zero uses of the accent token as a background anywhere in `src/` — stated by
+ *    count rather than by class name, because Tailwind v4 compiles a utility
+ *    quoted in a comment into the shipped build); Lavender has five levels' worth
+ *    of job to do in the thinking ramp, where neighbours must be ≥ 25° apart in
+ *    hue. With Lavender spent on the accent, the best ramp the remaining published
+ *    hues allows separates two
+ *    cool neighbours by 19.2° (Sky 189.2° → Teal 170.0°); spending the vestigial
+ *    accent instead lifts the worst gap to 28.5°. A hue with one consumer lost to
+ *    a family whose whole rationale is distinguishability.
+ * 3. THE ANSI TABLE IS NOT OWNED. Catppuccin publishes NO ANSI hexes. The style
+ *    guide GENERATES the brights from a formula over the named colours ("lightness
+ *    × 0.94, chroma + 8, hue + 2" for the dark flavours) and maps black/white
+ *    onto Surface 1/2 and Subtext 0/1. Writing those into shipped CSS would mean
+ *    shipping values I computed, which is the invented-hue failure the spec gate
+ *    exists to refuse — "anything you cannot find published is an allow-list
+ *    candidate, not a block value". So 20 of the 22 `--color-terminal-*` tokens
+ *    stay inherited from `.dark`, and the app has no terminal surface (no xterm,
+ *    no PTY, no component, zero `bg-terminal-*` consumers), so nothing renders
+ *    them. TWO are declared because they are not really terminal tokens any
+ *    more: `--color-terminal-bg` is the terminal's paper, which must sit on this
+ *    palette's ladder, and `--color-terminal-bright-blue` is the target of
+ *    `@theme`'s `--color-icon-blue: var(--color-terminal-bright-blue)`, which
+ *    `text-icon-blue` uses for markdown LINKS and diff `@@` hunk headers — and
+ *    the style guide's Links colour is Blue. It is stated as the ALIAS
+ *    `var(--color-blue)` rather than a derived bright: the guide's bright-blue is
+ *    Blue at lightness × 0.94 and hue + 2, i.e. within a hair of Blue itself, and
+ *    an alias carries no invented hex. (Dracula owns its 22 because Dracula
+ *    PUBLISHES a 16-colour ANSI table; the reasoning does not transfer, and
+ *    ADR 0027's amendment says so — "a published table copied beats a partial
+ *    palette", which is an argument for copying, not for deriving.)
+ * 4. THE 25 FILE-TYPE DESCRIPTOR HUES BELOW ARE OFF-SPEC ON PURPOSE — the
+ *    Identity-color rule (`CONTEXT.md`) knowingly outranking "use exact color
+ *    values from this specification". Catppuccin publishes 14 accents for 25 file
+ *    types, so re-huing them to the spec set forces nine collisions inside the
+ *    descriptor set and the hue is the ONLY thing distinguishing a `.py` chip
+ *    from a `.json` one. They are copied from `.theme-default-dark` verbatim,
+ *    with ONE exception, and it is the same exception Dracula makes:
+ *    `--color-file-css` takes this palette's Purple (Mauve `#cba6f7`) because the
+ *    default palette's `#7e57c2` measures 2.41 on Mocha's raised `#313244` step,
+ *    under the 3:1 glyph floor, and this is a palette that already publishes a
+ *    purple. `file-css` is therefore NOT allow-listed — it is a spec value.
+ *
+ * THE RAMP (`caution` + the five thinking levels) is re-hued in Mocha and left
+ * ALONE in Latte. In Mocha the six values are the six published hues no
+ * structural or status token in the block wears — Teal, Sapphire, Lavender, Pink,
+ * Maroon, plus Peach for `caution`, which carries a text label and so needs the
+ * brightest of them (9.92 on the Mantle page, 9.27 on the Base slab). Ordered
+ * cool → hot by `hotness` (proximity to red): 10.0 → 18.5 → 51.9 → 136.5 → 170.4,
+ * adjacent hue separation 28.5° / 33.4° / 84.6° / 33.9°, every level ≥ 7.93 on
+ * both dark planes it renders on (worst `max` on the Base slab) and ≥ 6.08 on the
+ * raised card, and the five LEVELS print no hex that any other UI-meaningful token
+ * in the block prints (`themeTokens.test.ts` measures exactly that — the five
+ * levels against its `MEANINGFUL_TOKENS` — with an EMPTY allow-list, so a new
+ * collision fails by name). One sharing the gate CANNOT see, stated rather than
+ * glossed: `caution` is Peach, and so is
+ * `--color-plugin-paid-plan-badge-foreground`. That is not a level colliding with
+ * a status hue — the gate's subject — and a paid-plan badge label and a
+ * thinking-level glyph never appear as the same kind of affordance, so it is
+ * accepted here; `caution` is not one of the five levels and carries no thinking
+ * meaning. The five LEVELS themselves stay hex-exclusive. Latte declares none:
+ * a light reading that stated them would SHADOW `@theme`'s light-safe hues for a
+ * classless document, which is exactly why `.theme-default-light` stays silent
+ * too, and Latte's own accents are mid-tones — Peach on Base is 2.64, Sapphire
+ * 2.78, Sky 2.47, all under the 3:1 glyph floor a 14px level indicator needs.
+ *
+ * THE TEXT/FILL ROLE SPLIT: every fill takes `base` as its ink
+ * (`*-foreground: #1e1e2e` in Mocha), because the style guide's On Accent colour
+ * IS Base and Mocha's accents are all high-luminance pastels (Crust ink on Mauve
+ * 9.23, white on Mauve 2.03 — the reverse of Dracula, where Purple wanted white).
+ * Latte inverts it: its accents are dark enough that Base ink on Blue is 4.34
+ * and Text ink on Blue is 1.63, so Latte's fills take Base ink too, from its own
+ * Base. Same rule, each flavour's own value.
+ */
+.theme-catppuccin-dark {
+  /* surfaces — Mocha's own ladder, in luminance order (see the header). THE
+   * PLANES, darkest first:
+   *   #11111b  the chrome band, the cards INSIDE the slab, the recessed
+   *            controls, the terminal's paper
+   *   #181825  the PAGE plane, the composer island, and the seam
+   *   #1e1e2e  the content slab, the inspector, and every float
+   *   #313244  raised: cards, badges, menu hover, the context bar's track
+   *   #45475a  the selection state — the only thing wearing Surface 1
+   */
+  --color-frame: #11111b; /* Crust: the left chrome band and the titlebar */
+  /* RECESSED, Crust — the cards INSIDE the slab (`ToolCallCard` and
+   * `SubagentDelegatingCard` bodies, the code-block header). They carry no
+   * borders, so sitting BELOW the slab is the only thing that makes them cards
+   * rather than a patch of it: 1.14 down from the `#1e1e2e` slab they actually
+   * render on, and 1.49 down from the raised `#313244` step a card outside the
+   * slab wears. The direction this
+   * commits to — inside a high plane, content sits LOWER — is the same one
+   * `.theme-dracula-dark` documents. */
+  --color-panel: #11111b;
+  /* The recessed control fill (`bg-input` is the app's most-used surface token
+   * after the slab). Crust against a Mantle page is only 1.07 — a well is not a
+   * groove here because the border does the work: `--color-border` on Crust is
+   * 5.07. Recessing rather than raising is the style guide's "Secondary Panes:
+   * Crust, Mantle" taken literally. */
+  --color-input: #11111b;
+  --color-input-focused: var(--color-input);
+  --color-popover-header: #11111b;
+  /* The terminal's paper on this palette's ladder. Still paints nothing — this
+   * app has no terminal surface — but a surface token must sit ON the ladder, and
+   * the ladder's bottom rung is Crust. */
+  --color-terminal-bg: #11111b;
+  /* THE PAGE PLANE. Mantle, not Base: the style guide calls Base the
+   * "Background Pane", but the island layout puts the SLAB on the step the
+   * chrome frames, and the flavour's own "Secondary Panes: Crust, Mantle" puts
+   * both of its deepest neutrals below it. Base is the slab here — see
+   * `--color-chat`. A reader checking this against the flavour table should
+   * expect exactly this swap, and the header says why. */
+  --color-background: #181825; /* Mantle */
+  /* The composer island — its own plane in the layout, and it shares the page
+   * step on purpose: it is a SIBLING of the transcript, not its child, so it can
+   * wear the page's fill and still read as an island. */
+  --color-composer: #181825;
+  /* THE SEAM — the line a resting surface is outlined with, and the only border
+   * a board surface may draw. `#181825` (Mantle) is the per-channel midpoint of
+   * the recessed Crust column (`#11111b`) and the Base slab (`#1e1e2e`) it
+   * separates, rounded half up — and it is itself published, which is the
+   * two-part property ADR 0096 picked Dracula's `#21222c` for. Catppuccin is the
+   * a seam that reads as neither highlight nor shadow. Both halves of the property
+   * are verified here — the arithmetic in this file's header, the published
+   * membership by the kit.
+   * MUST STAY A PUBLISHED HEX: `paletteTestKit.gradePalette` rejects any hex in
+   * this block that the flavour does not publish, so this value may not be
+   * "improved" into an invented grey. `--color-border` is NOT touched by this —
+   * it feeds inputs, popovers, tabs and every divider app-wide. */
+  --color-card-border: #181825;
+  /* THE CONTENT SLAB — the most-used surface token in the app: the transcript
+   * column, the side pane and the composer's chat column all read it, so they are
+   * guaranteed to agree. Base, taken literally rather than as a `color-mix`,
+   * which is what lets the ladder gate place it (a `color-mix()` is not
+   * comparable as a hex). */
+  --color-chat: #1e1e2e;
+  --color-inspector: #1e1e2e; /* the right-hand pane: one plane with the transcript */
+  --color-background-win-alt: #1e1e2e; /* the column's own backdrop */
+  --color-header: #1e1e2e;
+  --color-tab: #1e1e2e;
+  --color-tab-active: var(--color-chat); /* the active tab IS the sheet showing through the frame */
+  --color-tab-border: var(--color-border);
+  --color-menu: #1e1e2e;
+  --color-popover: #1e1e2e;
+  --color-toast: #1e1e2e;
+  --color-tooltip: #1e1e2e;
+  /* FLOATS ON THE SLAB, once more. `#1e1e2e` is what the slab wears, so
+   * `bg-menu`/`bg-popover`/`bg-tooltip` are the EXACT same colour as the surface
+   * they open over (1.00, not 1.0x), and what carries a float is its SHADOW —
+   * `slabFloatSeparation.test.ts` reads the float components and pins that,
+   * because no palette test can see an affordance that lives in a component.
+   * The alternatives were worse: giving the floats Surface 1 would leave
+   * `card`/`secondary`/`tag` nowhere above them, which is the badge-outshines-
+   * the-card inversion ADR 0027 records fixing, and it would spend the step this
+   * palette uses for selection. */
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-border: var(--color-border);
+  --color-card: #313244; /* Surface 0: the raised step */
+  --color-menu-hover: #313244;
+  /* The badge fill and the inline-code chip (`markdown-inline-code` aliases
+   * `tag`). Both share the raised step, because a `bg-secondary` badge lands
+   * INSIDE a `bg-menu` float and must read as raised above it. */
+  --color-secondary: #313244;
+  --color-tag: #313244;
+  --color-tooltip-tag: #313244;
+  /* Subtext 1 on the raised step: 7.10. */
+  --color-tooltip-tag-foreground: #bac2de;
+  /* The context bar's TRACK. Surface 0 — the raised step, LIGHTER than the pane
+   * it rides (`--color-inspector` is Base; 1.30 above it), so the unfilled
+   * remainder reads as a rail ON the plane and never as a slot cut into it: the
+   * groove was rejected twice by the user and `paletteCompleteness.test.ts`
+   * grades the direction, not just the distance. Against the four bands the bar
+   * paints: success 8.46, caution 7.10, warning 9.89, destructive 5.43. */
+  --color-context-track: #313244;
+  /* THE SELECTION STATE. Surface 1 — the flavour's next step up, and the only
+   * token wearing it. The published Selection Background (Overlay 2 at 20–30%)
+   * is a WASH, not a step, and ADR 0105 refuses alpha on a surface token, so the
+   * wash lives on `--color-selected` below, where a wash belongs; this token is
+   * graded on the ladder as a state and must not sink below the card it marks
+   * (L 0.0651 against the card's 0.0335). */
+  --color-card-selected: #45475a; /* Surface 1 */
+  /* THE PUBLISHED WASH, verbatim: the style guide's "Selection Background:
+   * Overlay 2, 20–30% opacity" at the middle of its own range. `--color-selected`
+   * is the token the sidebar rows and the transcript paint with, it is
+   * translucent in every palette that ships it, and it is deliberately NOT a
+   * ladder member (a translucent surface has no luminance of its own). */
+  --color-selected: color-mix(in oklab, #9399b2 25%, transparent);
+  /* borders + text */
+  /* Overlay 1 — departure 1. Clears the 3:1 boundary floor on every resting and
+   * raised plane of this reading: 5.07 on the Crust chrome, 4.75 on the Mantle
+   * page, 4.44 on the Base slab, 3.40 on the raised step. It does NOT clear it on
+   * the Surface 1 selection step (2.47), which is a transient state that carries
+   * its own fill and `--color-selected`'s wash rather than a seam. The style
+   * guide's terminal "Inactive Border" is Overlay 0, which measures 2.57 on the
+   * raised step; Overlay 1 is the flavour's next neutral up and the
+   * one that holds the floor, so this block buys the boundary the app asks for
+   * and pays for it with a slightly stronger rule than the guide's terminal. */
+  --color-border: #7f849c; /* Overlay 1 */
+  /* Interactive borders take the flavour's Links hue (the style guide's
+   * "Links, URLs: Blue"), 8.34 on the page, 7.79 on the slab. An alias, so the focus and hover
+   * rings move with the palette rather than being re-picked per token. */
+  --color-border-hover: var(--color-blue);
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  /* "Focus rings": the flavour's accent, via `--color-brand` below. */
+  --color-input-border-focused: var(--color-brand);
+  --color-foreground: #cdd6f4; /* Text: Body Copy and Main Headline, 12.14 on the page */
+  /* Subtext 1 — the style guide's "Sub-Headlines, Labels". A published colour
+   * rather than a `color-mix` over Text: the flavour already names the step, and
+   * a literal keeps it comparable on the ladder and gradeable by the kit. 9.91
+   * on the Mantle page, 9.26 on the Base slab, 7.10 on the raised step, 5.15 on
+   * the selection state — above 4.5 on every plane this reading paints. */
+  --color-foreground-subtle: #bac2de; /* Subtext 1 */
+  /* Subtext 0 — one step down the published hierarchy. Page 7.89, slab 7.37,
+   * raised 5.65: clear everywhere it RESTS. The selection step is the exception
+   * and is not hidden here — 4.10 on Surface 1 `#45475a`, under 4.5, recorded as
+   * a wall with `expiresAt: 4.5` in the spec row, because the flavour's next
+   * step up (Subtext 1) is already `foreground-subtle` above it. Dracula had
+   * to invent a 55% Foreground mix because its spec publishes no de-emphasis
+   * colour; Catppuccin names three (Subtext 1, Subtext 0, Overlay 1) and this
+   * block simply uses the middle two. Overlay 1 (4.75 on the page, 4.44 on the
+   * slab, 3.40 on the raised step) stays below the 4.5 TEXT floor on the planes
+   * that matter and is used for borders and the film glyph instead, which is what
+   * the style guide's "Subtle: Overlay 1" means in a theme that has no small-copy
+   * token to hang it on. */
+  --color-foreground-subtlest: #a6adc8; /* Subtext 0 */
+  --color-foreground-inverse: #11111b; /* Crust — the flavour's darkest neutral */
+  --color-tooltip-foreground: #cdd6f4;
+  /* accent — Mauve, the flavour's accent hue and the focus ring (the alias
+   * `--color-input-border-focused: var(--color-brand)` is what puts it there). */
+  --color-brand: #cba6f7; /* Mauve */
+  --color-primary: #cba6f7; /* Mauve: the send button, switch, badges, context bar */
+  /* Base ink, not white: the style guide's "On Accent" colour IS Base, and
+   * Mocha's accents are pastels — Base on Mauve is 8.07 where white is 2.03. The
+   * reverse of Dracula's `primary-foreground`, which needed white because its
+   * Purple is a mid-tone. */
+  --color-primary-foreground: #1e1e2e;
+  /* Rosewater — departure 2. One `text-accent` consumer (13.86 on the page, 12.95
+   * on the slab), spent so the thinking ramp can keep Lavender and stay ≥ 25° between
+   * neighbours. */
+  --color-accent: #f5e0dc; /* Rosewater */
+  /* status — the style guide's General Usage table assigns Success/Warnings/
+   * Errors to Green/Yellow/Red outright, and unlike Dracula there is nothing to
+   * argue about on the RESTING and RAISED planes: all three clear 4.5 there
+   * (`destructive` worst at 5.43 on the raised step, 7.08 on the slab, 7.58 on
+   * the page). They do NOT all clear on the SELECTION step — `destructive` is
+   * 3.94 and `foreground-subtlest` 4.10 on Surface 1 — so `selectedFloors` in the
+   * spec row carries both, each with `expiresAt: 4.5`. Dracula's `destructive`
+   * wall was 4.33 on a RESTING raised step; here it moved onto the transient
+   * state instead, which is a smaller problem and still a recorded one. */
+  --color-success: #a6e3a1; /* Green */
+  --color-success-foreground: #1e1e2e;
+  --color-warning: #f9e2af; /* Yellow */
+  --color-warning-foreground: #1e1e2e;
+  --color-destructive: #f38ba8; /* Red */
+  --color-destructive-foreground: #1e1e2e;
+  /* The idle-task indicator shares the accent hue (both are "this palette's
+   * purple"): it must NOT be one of the five ramp hues, which
+   * `themeTokens.test.ts` measures with an empty allow-list. */
+  --color-idle-task: #cba6f7; /* Mauve */
+  --color-idle-task-surface: color-mix(in oklab, #cba6f7 18%, transparent);
+  /* Diff rows. The style guide's Inserted/Removed colours are Green/Red, and the
+   * hues hold on every plane a diff renders on: `#a6e3a1` 8.46 on the raised card
+   * step and 11.81 on the page / 11.03 on the slab, `#f38ba8` 5.43, 7.58 and 7.08.
+   * The tinted row `DiffBlock` paints over is `--color-surface`, which this
+   * palette INHERITS — `color-mix(in oklab, var(--color-white) 5%, transparent)`,
+   * a luminance overlay rather than a hue. `--color-white` is Tailwind's own
+   * `#fff`, declared in `node_modules/tailwindcss/theme.css` and NOT in this
+   * Palette's `baseCssFile`, so the kit's resolver cannot reach it (one hop to a
+   * token it has no reading for) and these two figures are the only ones in this
+   * file measured OUTSIDE the kit: white at 5% over the Base slab composites to
+   * `#292938`, where the two read 9.62 and 6.18 — both clear, and both well clear,
+   * so no exemption hangs on them. */
+  --color-diff-added: #a6e3a1;
+  --color-diff-added-foreground: #1e1e2e;
+  --color-diff-removed: #f38ba8;
+  --color-diff-removed-foreground: #1e1e2e;
+  /* Interaction fills keep the `.dark` color-mix STRUCTURE, re-anchored on
+   * published hues. The ask foreground is Blue (the style guide's Links colour);
+   * confirmation is Green, which is also `success` — the same sharing the
+   * default palette has (`--color-interaction-confirmation-foreground` and
+   * `--color-git-added` are already the same hue there). */
+  --color-interaction-ask-surface: color-mix(
+    in oklab,
+    #89b4fa 14%,
+    transparent
+  );
+  --color-interaction-ask-foreground: #89b4fa; /* Blue */
+  --color-interaction-ask-fill: color-mix(in oklab, #a6e3a1 24%, transparent);
+  --color-interaction-confirmation-surface: color-mix(
+    in oklab,
+    #a6e3a1 16%,
+    transparent
+  );
+  --color-interaction-confirmation-foreground: #a6e3a1;
+  /* Find-in-page. The style guide's Search Background is Teal — and Teal is this
+   * block's `--color-thinking-low`, so taking it would put a search highlight in
+   * the thinking ramp, which is the collision the ramp family exists to prevent.
+   * Sky is the guide's other cool hue ("Links on hover: Sky") and is otherwise
+   * unused here, so the highlight wears it instead: stated rather than silent. */
+  --color-find-highlight: color-mix(in oklab, #89dceb 30%, transparent);
+  --color-find-highlight-active: #89dceb; /* Sky */
+  --color-plugin-paid-plan-badge: color-mix(in oklab, #fab387 24%, transparent);
+  --color-plugin-paid-plan-badge-foreground: #fab387; /* Peach */
+  /* Row glyph + row verb (ADR 0062) — ALIASED, not re-hued. The family's axis is
+   * "decoration, not identity", so a palette MAY take its own hues (Dracula
+   * does), but Catppuccin's decoration hues are all saturated accents and every
+   * one of them means something else in this block; the greys are the honest
+   * reading. `themeTokens.test.ts` pins this per reading once the Palette is
+   * registered (Task 7) — the pin table lives in that gate, not here. */
+  --color-row-icon: var(--color-foreground-subtle);
+  --color-row-verb: var(--color-foreground-subtlest);
+  /* The film glyph (ADR 0071) — OPAQUE on purpose: the film's glyph BRIGHTNESS
+   * IS THE DATA, so a second multiplicative dimmer flattens the chiaroscuro.
+   * Overlay 1 is the flavour's quiet grey and the same value `--color-border`
+   * carries — the identical choice `.theme-dracula-dark` makes for the same
+   * reason, and unlike the ramp it collides with nothing the gates grade. */
+  --color-film-glyph: #7f849c; /* Overlay 1 — the value `--color-border` carries */
+  /* FORWARD-DECLARED, and only two of the 22. See departure 3: Catppuccin
+   * publishes no ANSI table, the style guide GENERATES the brights from a formula
+   * over the named colours, so owning the set would mean shipping derived hexes.
+   * `--color-terminal-bg` is here because a paper must sit on this palette's
+   * ladder; `--color-terminal-bright-blue` is here because `@theme`'s
+   * `--color-icon-blue` aliases it and `text-icon-blue` paints markdown links and
+   * diff `@@` headers with it — and the style guide's Links colour is Blue. It is
+   * an ALIAS rather than the derived bright (the formula is Blue at lightness
+   * × 0.94 and hue + 2) so no invented hex enters the block. The other 20 stay
+   * inherited from `.dark`; nothing in this app renders them. */
+  --color-terminal-bright-blue: var(--color-blue);
+  /* The ramp — the six hues no structural or status token in this block wears.
+   * Ordered cool → hot by `hotness` (proximity to red): Teal 10.0, Sapphire 18.5,
+   * Lavender 51.9, Pink 136.5, Maroon 170.4. Adjacent hue separation 28.5° /
+   * 33.4° / 84.6° / 33.9° — every step tellable apart at 14px, which luminance
+   * alone would NOT show (a cool → hot ramp passes through the brightest hues
+   * there are). `caution` carries the context bar's percentage LABEL, so it takes
+   * the brightest of the six (9.92 on the page, 9.27 on the slab) and the 4.5 text
+   * floor rather than the 3:1 glyph floor. No level prints the same hex as any
+   * other UI-meaningful token this block declares. */
+  --color-caution: #fab387; /* Peach */
+  --color-thinking-low: #94e2d5; /* Teal     hue 170.0 */
+  --color-thinking-medium: #74c7ec; /* Sapphire hue 198.5 */
+  --color-thinking-high: #b4befe; /* Lavender hue 231.9 */
+  --color-thinking-xhigh: #f5c2e7; /* Pink     hue 316.5 */
+  --color-thinking-max: #eba0ac; /* Maroon   hue 350.4 — the hot end, and dimmer
+                                  * than -low, so the ramp ends saturated rather
+                                  * than washed out */
+
+  /* The 25 file-type DESCRIPTORS. OFF-SPEC ON PURPOSE — see departure 4:
+   * Catppuccin's 14 accents cannot name 25 file types, and the hue IS the
+   * signal, so the Identity-color rule (`CONTEXT.md`) outranks the style guide
+   * here and the 24 non-`file-css` values are allow-listed BY NAME in
+   * `src/lib/palettes/catppuccin.ts`. Copied from `.theme-default-dark` verbatim
+   * except `file-css`, which takes this palette's Purple for the same reason
+   * Dracula takes its own: the default `#7e57c2` is 2.41 on the raised
+   * `#313244`, under the 3:1 glyph floor. Every other descriptor clears 3:1 on
+   * every surface a descriptor is rendered on in this palette — the worst is
+   * `file-ts`/`file-py` at 3.26 on `#313244` — and MANDATORY restatement is not
+   * cosmetic: a DARK reading that omits one resolves through `.dark` to
+   * `@theme`'s light-safe hue, a different colour entirely. */
+  --color-file-ts: #0288d1;
+  --color-file-react: #00bcd4;
+  --color-file-js: #ffca28;
+  --color-file-json: #f9a825;
+  --color-file-html: #e65100;
+  --color-file-css: #cba6f7; /* Mauve — a published hue, so NOT allow-listed */
+  --color-file-sass: #ec407a;
+  --color-file-md: #42a5f5;
+  --color-file-rs: #ff7043;
+  --color-file-py: #0288d1;
+  --color-file-sh: #ff7043;
+  --color-file-yaml: #ff5252;
+  --color-file-toml: #cfd8dc;
+  --color-file-lock: #ffd54f;
+  --color-file-image: #26a69a;
+  --color-file-svg: #ffb300;
+  --color-file-archive: #afb42b;
+  --color-file-go: #00acc1;
+  --color-file-vue: #41b883;
+  --color-file-svelte: #ff5722;
+  --color-file-java: #f44336;
+  --color-file-php: #1e88e5;
+  --color-file-xml: #8bc34a;
+  --color-file-graphql: #ec407a;
+  --color-file-db: #ffca28;
+}
+
+.theme-catppuccin-light {
+  /* Latte. The flavour's own luminance order is
+   *   surface2 0.4354 < surface1 0.5275 < surface0 0.6301 < crust 0.7435 <
+   *   mantle   0.8133 < base   0.8785
+   * so its "deepest" neutral is a mid-tone and its `base` is the LIGHTEST value
+   * the flavour publishes. The header states the three consequences; the ladder
+   * below is ADR 0105's shape (non-decreasing, plateau allowed at the top group)
+   * and not the flavour's naming order.
+   *   #ccd0da  the chrome band, the tooltip, the inactive tab strip, menu hover
+   *   #dce0e8  RECESSED: the cards inside the slab, the popover header
+   *   #e6e9ef  the PAGE, the composer island, and THE SEAM
+   *   #eff1f5  the slab, every float, every form control, every card — the
+   *            plateau, because nothing in the flavour is lighter
+   */
+  --color-frame: #ccd0da; /* Surface 0: darker than the page, which is how a light chrome band reads */
+  --color-tab: #ccd0da;
+  --color-menu-hover: #ccd0da;
+  --color-tooltip: #ccd0da;
+  --color-tooltip-foreground: #4c4f69; /* Text on Surface 0: 5.17 */
+  /* RECESSED to Crust, below the Base slab — the cards INSIDE the slab and the
+   * code-block header. Consequence (c) in the header: in a light reading recess
+   * means DARKER, so the flavour's `crust` (0.7435) sits under `base` (0.8785),
+   * which is 1.17 of separation for a borderless card. NOTE that this is also the
+   * surface the file-type DESCRIPTORS render on (`AgentMarkdown`'s code-block
+   * header is a `bg-panel` band), and it is the tightest one in this reading —
+   * see the descriptor note at the foot of this block. */
+  --color-panel: #dce0e8; /* Crust */
+  --color-popover-header: #dce0e8;
+  --color-background-win-alt: #dce0e8;
+  --color-terminal-bg: #dce0e8;
+  /* THE PAGE PLANE is Mantle, one step below the slab — the island layout wants
+   * the slab to read as the lighter sheet the islands float on, and the flavour
+   * publishes exactly one neutral lighter than its page. */
+  --color-background: #e6e9ef; /* Mantle */
+  --color-composer: #e6e9ef;
+  /* THE SEAM, Latte's half of the property: the per-channel midpoint of the
+   * recessed Crust column (`#dce0e8`) and the Base slab (`#eff1f5`), rounded half
+   * up, is `#e6e9ef` — published as Mantle. The same construction ADR 0096 used
+   * for Dracula's `#21222c`, arriving from a different theme's table (the ties
+   * are spelled out in this file's header). MUST STAY A PUBLISHED HEX — the kit
+   * rejects any hex the flavour does not publish, so this may not be "improved"
+   * into the arithmetically-exact-but-unpublished `#e5e8ee`. */
+  --color-card-border: #e6e9ef;
+  /* THE PLATEAU. Base is the flavour's lightest published value, so the slab,
+   * every float, every form control and every card all wear it, and separation
+   * inside the group is carried by `--color-card-border` (Mantle, 1.08) and by
+   * the float's shadow — never by an invented `#f7f8fa`. ADR 0105: "no light
+   * theme publishes anything lighter than its own Base"; `default-light` answers
+   * the same ceiling with ten `#ffffff` tokens. */
+  --color-chat: #eff1f5; /* Base */
+  --color-inspector: #eff1f5;
+  --color-header: #eff1f5;
+  --color-card: #eff1f5;
+  --color-input: #eff1f5;
+  --color-input-focused: var(--color-input);
+  --color-menu: #eff1f5;
+  --color-popover: #eff1f5;
+  --color-tab-active: #eff1f5;
+  --color-tab-border: var(--color-border);
+  --color-toast: #eff1f5;
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-border: var(--color-border);
+  /* The selection state PLATEAUS on Base with the card: `at-or-above-card` is
+   * the rule ADR 0105 gives every light reading, and the published Selection
+   * Background (Overlay 2 at 20–30%) is a wash that composites to `#d2d5dd` —
+   * DARKER than the card it would mark, which that rule exists to forbid. The
+   * wash is not lost: it is `--color-selected` below, the token the row
+   * affordances actually paint with. */
+  --color-card-selected: #eff1f5;
+  --color-selected: color-mix(in oklab, #7c7f93 25%, transparent);
+  /* borders + text */
+  /* Overlay 2 — Latte's DARKEST overlay (the flavour's numbering runs the other
+   * way from its luminance). 3.49 on the Base plateau and 3.25 on the Mantle
+   * page, both clearing the 3:1 boundary floor; 2.99 on the Crust panel, 2.56 on
+   * the Surface 0 chrome band and 2.17 on the Surface 1 chip step, all recorded as
+   * the shortfalls they are — the flavour publishes nothing darker that is still a
+   * neutral, and `Text` at 5.17 on that band would read as a hard rule rather than
+   * a seam. Separation on those three planes is carried by the card seam and by a
+   * float's shadow, as in every other reading of this app. */
+  --color-border: #7c7f93; /* Overlay 2 */
+  --color-border-hover: var(--color-blue);
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-brand);
+  --color-foreground: #4c4f69; /* Text: 7.06 on Base, 6.57 on the page, 5.17 on the chrome band */
+  --color-foreground-subtle: #5c5f77; /* Subtext 1: 5.53 on Base, 4.05 on the chrome band — recorded */
+  --color-foreground-subtlest: #6c6f85; /* Subtext 0: 4.37 on Base, 3.20 on the chrome band — recorded */
+  --color-foreground-inverse: #eff1f5; /* Base — the flavour's lightest */
+  /* accent — Mauve, the flavour's accent hue and its focus ring. 4.45 on the page,
+   * 4.79 on the Base plateau (it is also `--color-brand`/`--color-primary`, where
+   * Base ink on it reads 4.79), so unlike `default-dark`'s `#001d3d` (1.07 on that
+   * reading's page) the one
+   * `text-accent` consumer is legible here without a special case. */
+  --color-brand: #8839ef;
+  --color-primary: #8839ef;
+  /* Base ink on a Latte accent too: Base on Mauve is 4.79 and Text on Mauve is
+   * 1.47, so the "On Accent: Base" rule survives the flavour flip. */
+  --color-primary-foreground: #eff1f5;
+  --color-accent: #dc8a78; /* Rosewater — see departure 2 in the header */
+  /* status — Latte's are DARK by design (it is a light flavour) and the style
+   * guide names exactly one hue for each role, so the walls below are published
+   * values against published values. Every number is the worst reading in its
+   * class, measured with the kit; the floors and their `expiresAt` ratchets live
+   * in `src/lib/palettes/catppuccin.ts`. */
+  --color-success: #40a02b; /* Green: 2.96 on Base, 2.17 on the chrome, 1.84 on a chip */
+  --color-success-foreground: #eff1f5;
+  --color-warning: #df8e1d; /* Yellow: 2.31 on Base, 1.70 on the chrome, 1.44 on a chip — the worst reading in the reading */
+  --color-warning-foreground: #eff1f5;
+  --color-destructive: #d20f39; /* Red: 4.80 on Base, 3.52 on the chrome, 2.99 on a chip */
+  --color-destructive-foreground: #eff1f5;
+  --color-idle-task: #8839ef; /* Mauve */
+  --color-idle-task-surface: color-mix(in oklab, #8839ef 12%, transparent);
+  --color-diff-added: #40a02b;
+  --color-diff-added-foreground: #eff1f5;
+  --color-diff-removed: #d20f39;
+  --color-diff-removed-foreground: #eff1f5;
+  --color-interaction-ask-surface: color-mix(
+    in oklab,
+    #1e66f5 12%,
+    transparent
+  );
+  --color-interaction-ask-foreground: #1e66f5; /* Blue: 4.34 on Base */
+  --color-interaction-ask-fill: color-mix(in oklab, #40a02b 20%, transparent);
+  --color-interaction-confirmation-surface: color-mix(
+    in oklab,
+    #40a02b 14%,
+    transparent
+  );
+  --color-interaction-confirmation-foreground: #40a02b;
+  --color-find-highlight: color-mix(in oklab, #04a5e5 40%, transparent);
+  --color-find-highlight-active: #04a5e5; /* Sky */
+  --color-plugin-paid-plan-badge: color-mix(in oklab, #fe640b 16%, transparent);
+  --color-plugin-paid-plan-badge-foreground: #fe640b; /* Peach */
+  --color-row-icon: var(--color-foreground-subtle);
+  --color-row-verb: var(--color-foreground-subtlest);
+  /* The film glyph (ADR 0071) — OPAQUE on purpose (the luminance bands are the
+   * film's only dimmer). Overlay 1 is Latte's mid grey, the flavour's own answer
+   * to `@theme`'s `neutral-500`, and it collides with nothing this block names. */
+  --color-film-glyph: #8c8fa1; /* Overlay 1 */
+  /* The context bar's track stays the ALIAS `.dark` and `@theme` carry, exactly
+   * as `.theme-default-light` leaves it: the track is a role-split text token
+   * (`--color-foreground-subtlest`), the kit's ladder names it an exemption
+   * rather than an elevation step, and Latte publishes no neutral that is both
+   * lighter than the pane it rides and darker than the plateau. */
+  --color-context-track: var(--color-foreground-subtlest);
+  --color-tooltip-tag: #bcc0cc; /* Surface 1: the recessed chip step — ADR 0105's group inversion */
+  --color-tooltip-tag-foreground: #4c4f69; /* Text on Surface 1: 4.39 */
+  --color-secondary: #bcc0cc;
+  --color-tag: #bcc0cc;
+  /* NO RAMP TOKENS HERE, on purpose, and it is the same reason
+   * `.theme-default-light` declares none: a light block that stated them would
+   * SHADOW `@theme`'s light-safe readings for a classless document. Latte's own
+   * accents are mid-tones that cannot clear the 3:1 glyph floor on its own Base
+   * (Peach 2.64, Sapphire 2.78, Sky 2.47), so there is nothing to re-hue TO. The
+   * six ramp tokens therefore stay out of this block AND out of the row's
+   * `extraBeyondDefault`, which is what keeps `themeTokens.test.ts`'s ramp gate
+   * from claiming a reading this Palette does not ship. */
+
+  /* THE DESCRIPTORS ARE INHERITED HERE, AND THAT IS A RECORDED WALL, not an
+   * oversight. This block declares NONE of the 25 `--color-file-*` hues (they are
+   * named in `inheritedFromDefault`), so they resolve to `@theme`'s light-safe
+   * readings — the same ones `.theme-default-light` renders. On THIS flavour's own
+   * planes those hues are worse than they are on default light's near-white,
+   * measured against the 3:1 non-text floor:
+   *
+   *   surface                        under 3:1   worst
+   *   `--color-chat` Base #eff1f5      0/25      svelte 3.20   ✓ clears
+   *   `--color-background` #e6e9ef     4/25      svelte 2.98
+   *   `--color-panel` Crust #dce0e8   19/25      svelte 2.74   ← the code-block header lands here
+   *   `--color-frame` Surface0 #ccd0da 20/25     svelte 2.35
+   *   the Surface 1 chip #bcc0cc      25/25      svelte 1.99
+   *
+   * `default-light` is clean on all four of its own planes (worst 3.18 on its
+   * `#f0f0f0` frame) because every one of them is lighter than Latte's. So this is
+   * a light-Catppuccin wall, not a transcription error — and nothing in the harness
+   * sees it: `fileIconContrast.test.ts` grades the `@theme` descriptors against ONE
+   * light background, `#f8f8f8`, which is default light's page, and it builds its
+   * per-surface table from the registry's DARK readings only. A light reading's own
+   * planes are therefore ungraded for descriptors, for every palette, and that is
+   * why the numbers above are written down instead of left to a gate.
+   *
+   * NOT FIXED here, with the reason: the honest fix is to move the code-block
+   * header off `bg-panel` or to re-hue the descriptors, and the second is exactly
+   * what the Identity-color rule forbids a Palette from doing, while the first is a
+   * COMPONENT change outside the three files this task owns (Dracula's header
+   * already moved to `bg-panel` once for this same floor). The plateau surface
+   * `base` clears all 25, so the wall is confined to the recessed and chrome greys
+   * this reading chose for its own elevation reasons. */
+}

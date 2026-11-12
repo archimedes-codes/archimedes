@@ -1,0 +1,826 @@
+/*
+ * The KANAGAWA PALETTE — wave (dark) and lotus (light). A colour scheme, not a
+ * light/dark mode: `src/lib/theme.ts` applies it as `.dark` +
+ * `.theme-kanagawa-dark`, so each block below is a PARTIAL diff over the shared
+ * tokens, exactly as `.theme-dracula-dark` is. Placement matters for the same
+ * reason: every palette block is a single-class selector of equal specificity, so
+ * source order alone would decide a tie (`theme.ts` toggles every theme class with
+ * explicit booleans, so exactly one is ever present).
+ *
+ * SOURCE OF TRUTH: the `rebelot/kanagawa.nvim` README's Name/Hex/Usage palette
+ * table (https://github.com/rebelot/kanagawa.nvim#color-palette) plus the two Lua
+ * files the README itself names as the record — `lua/kanagawa/colors.lua` (the
+ * `PaletteColors`, every literal hex) and `lua/kanagawa/themes.lua` (the `ThemeColors`,
+ * which palette colour each theme assigns to which FUNCTION). `dragon`, the third
+ * variant, is out of scope: the app ships two readings and `dragon` is a second
+ * dark, not a light.
+ *
+ * TWO THINGS THAT LOOK LIKE SOURCES AND ARE NOT.
+ *
+ * - The README's table numbers the background shades `sumiInk0`…`sumiInk4` with
+ *   FIVE entries (`#16161D`, `#1F1F28`, `#2A2A37`, `#363646`, `#54546D`), while
+ *   `colors.lua` publishes SEVEN (`sumiInk0 #16161D`, `sumiInk1 #181820`,
+ *   `sumiInk2 #1a1a22`, `sumiInk3 #1F1F28`, `sumiInk4 #2A2A37`, `sumiInk5 #363646`,
+ *   `sumiInk6 #54546D`). The table SKIPS `#181820` and `#1a1a22` and re-labels the
+ *   rest, so a value read out of the TABLE by name is not the value `themes.lua`
+ *   uses under that name. `themes.lua` wins, because it is the file that says what
+ *   each colour is FOR: `ui.bg_m3…bg_p2` is the ladder, and it is `sumiInk0`,
+ *   `sumiInk1`, `sumiInk2`, `sumiInk3`, `sumiInk4`, `sumiInk5`. The two rungs the
+ *   README omits are therefore the SECOND and THIRD steps of the scheme, not spare
+ *   values — dropping them would have flattened the ladder to four steps and lost
+ *   the recessed control plane.
+ * - Community ports and the repo's own `extras/` exports are TRANSCRIPTIONS and cannot
+ *   be the authority. Checked rather than assumed: `extras/gogh/Kanagawa.json` uses
+ *   `#1F1F28` as its terminal background and `#DCD7BA` as its foreground, and its 16-slot
+ *   palette is a faithful subset of `colors.lua` — but only TWO of the seven `sumiInk`
+ *   background rungs appear anywhere in it (`sumiInk0` as the palette's black and
+ *   `sumiInk3` as the background); `sumiInk1 #181820`, `sumiInk2 #1a1a22`,
+ *   `sumiInk4 #2a2a37`, `sumiInk5 #363646` and `sumiInk6 #54546d` are absent, because a
+ *   terminal profile has no reason to publish an editor's elevation ladder. So a port can
+ *   be CORRECT and still be the wrong source: it cannot tell you which rung is which.
+ *   `colors.lua` is where the theme reads its own values from and `themes.lua` says
+ *   what each one is FOR, so those two are what this block copies.
+ *
+ * THE PUBLISHED SET is every hex in `lua/kanagawa/colors.lua`'s palette table
+ * (103 names, 101 distinct values — `lotusRed3` and `samuraiRed` are both
+ * `#e82424`, `lotusGray` and `fujiWhite` are both `#dcd7ba`). Listed in
+ * `src/lib/palettes/kanagawa.ts`, which is where the gate reads it from. Every hex
+ * declared below is in that set or is allow-listed BY NAME there with a reason.
+ *
+ * THE SPEC PUBLISHES A CONTRAST CLAUSE, AND IT IS THE SAME SHAPE AS DRACULA'S.
+ * Verbatim, from the README's Accessibility section
+ * (https://github.com/rebelot/kanagawa.nvim#accessibility):
+ *
+ *   "The colors maintain a `4.5:1` contrast ratio, complying with
+ *   [WCAG 2.1 | Level AA](https://www.w3.org/TR/WCAG21/#contrast-minimum)."
+ *
+ * The repo wears a `WCAG_2.1_|_AA` badge in its header for the same claim. It is
+ * not scoped to body text and it names no exemption, so — exactly as with Dracula's
+ * "Maintain 4.5:1 minimum contrast ratio" — holding it for UI text is the reading
+ * this block adopts, and treating a syntax hue as exempt is OUR judgement rather
+ * than a quotation. Where a Kanagawa token cannot hold 4.5 on a surface this app
+ * actually paints it on, the number is MEASURED and recorded here and in the spec
+ * row's floor tables (each with `expiresAt: 4.5`, so an exemption dies the day the
+ * hue clears the floor). Nothing below has been re-hued to make a wall disappear.
+ * The walls, all of them measured with the kit's own `lumOf`/`contrast`:
+ *
+ *   WAVE  --color-foreground-subtlest  springViolet1 #938aa9  4.34 on the float step
+ *                                      #2a2a37, 3.64 on the raised #363646, 2.66 on
+ *                                      the selection #2d4f67
+ *   WAVE  --color-destructive          peachRed     #ff5d62  3.94 raised, 2.88 selected
+ *   WAVE  --color-success              springGreen  #98bb6c  3.98 selected
+ *   WAVE  --color-warning              roninYellow  #ff9e3b  4.21 selected
+ *   WAVE  --color-border               sumiInk6     #54546d  2.41 on the page #181820
+ *   LOTUS --color-foreground-subtle    lotusViolet2 #766b90  3.08 on the frame #d5cea3
+ *   LOTUS --color-foreground-subtlest  lotusGray3   #8a8980  2.21 on the frame #d5cea3
+ *   LOTUS --color-destructive          lotusRed     #c84053  3.06 on the frame
+ *   LOTUS --color-success              lotusGreen   #6f894e  2.46 on the frame
+ *   LOTUS --color-warning              lotusOrange  #cc6d00  2.29 on the frame
+ *   LOTUS --color-caution              @theme's #a16207 (inherited, NOT restated —
+ *                                      the ramp family owns it) 3.09 on the frame
+ *
+ * LOTUS IS WHERE THE 4.5 CLAUSE BREAKS, and the reason is structural rather than a
+ * bad pick. Lotus is not a white theme: its Base is `lotusWhite3 #f2ecbc` and its
+ * darkest published ladder rung is `lotusWhite0 #d5cea3` (relative luminance
+ * 0.6093 — where default-light's page is 0.9387). A mid-tone yellow ground costs a
+ * light theme roughly a point and a half of contrast against every dark ink, and the
+ * size of the shortfall is COUNTABLE rather than rhetorical. Of lotus's 40 published
+ * values, exactly three clear 4.5 on that binding `#d5cea3` ground: `lotusInk2
+ * #43436c` (5.84 — but DARKER than the foreground, so it would out-ink the body copy
+ * it is meant to sit under), `lotusInk1 #545464` (4.66, clearing the clause with 0.16
+ * to spare — and that value IS `--color-foreground`, the scheme's only published
+ * foreground) and `lotusViolet4 #624c83` (4.58 — but it is this block's own
+ * `--color-brand`/`--color-primary`, and it separates from the foreground by only
+ * 1.0183, so it is a de-emphasis tier that does not de-emphasise; the tier it would
+ * replace sits 1.5115 under the foreground). Every published value LIGHTER than
+ * `--color-foreground-subtle` tops out at 3.06 there. So the de-emphasis tier and the
+ * four status hues cannot reach 4.5 on lotus's own backgrounds at any value that would
+ * still read as de-emphasis: the brightest green it ships (`lotusGreen`, its own
+ * `diag.ok`) is 2.46 on `#d5cea3` and the brightest warning (`lotusOrange2`, its
+ * `diag.warning`) is 1.63 — WORSE than the ones chosen here. The clause holds for
+ * lotus's body text and fails for everything de-emphasised or coloured, and that is
+ * stated rather than fixed, because the fix is a different palette.
+ *
+ * SURFACES follow `themes.lua`'s `ui` ladder — `bg_m3 < bg_m2 < bg_m1 < bg <
+ * bg_p1 < bg_p2`, six steps, which is the range this plan takes — and the tokens
+ * that sit on each rung are this app's assignment (the island layout's, the same
+ * one ADR 0027 records for Dracula). WAVE, by luminance:
+ *
+ *   #16161d  sumiInk0  bg_m3. THE DEEPEST AND THE RECESSED PLANE: the chrome band
+ *                      (`--color-frame`), `--color-panel` (the borderless cards
+ *                      inside the slab — they sit BELOW their container because a
+ *                      card the colour of its slab is a patch of it), the terminal's
+ *                      own paper, and the popover header. `themes.lua` calls this
+ *                      `ui.float.bg` — the scheme's darkest value is its float
+ *                      background; this app puts floats a step ABOVE the slab
+ *                      instead, so the float step here is `#2a2a37` and `#16161d`
+ *                      stays the floor. Stated because it is a real departure and
+ *                      not an oversight: a float that equals the page cannot be
+ *                      seen, and the island layout carries floats with a shadow.
+ *   #181820  sumiInk1  bg_m2, the scheme's `bg_dim`. THE PAGE PLANE
+ *                      (`--color-background`) and the composer island.
+ *   #1a1a22  sumiInk2  bg_m1. The recessed CONTROLS (`--color-input`), one step
+ *                      above the page so a field reads as a well without a border.
+ *   #1f1f28  sumiInk3  bg, the scheme's own default background. THE CONTENT SLAB
+ *                      (`--color-chat`, `--color-inspector`) and the active tab,
+ *                      which is the sheet showing through the chrome.
+ *   #2a2a37  sumiInk4  bg_p1, "Lighter background (colorcolumn, folds)" per the
+ *                      README, and `themes.lua`'s `ui.bg_gutter`. EVERY FLOAT:
+ *                      header, tabs, menus, popovers, toasts, tooltips, and the
+ *                      window's alternate-background step.
+ *   #363646  sumiInk5  bg_p2, "Lighter background (cursorline)", `TabLineSel`.
+ *                      RAISED: card, badges, the inline-code chip, menu hover, and
+ *                      the context bar's track.
+ *   #2d4f67  waveBlue2  THE SELECTION STATE, off the ladder and above it. The
+ *                      README assigns waveBlue2 "Popup selection background, search
+ *                      background" and `themes.lua` maps it to `ui.bg_search` /
+ *                      `pmenu.bg_sel` — the scheme's own selected-item step. It is
+ *                      the only published value brighter than the raised rung that
+ *                      is not a foreground.
+ *
+ * `waveBlue1 #223249` — the README's "visual selection background" — is NOT the
+ * selected-state token here, and that is a measurement, not a preference: its
+ * luminance (0.0310) is BELOW the raised rung `#363646` (0.0386), so a selection
+ * that dimmer would sink under the card it sits on. It is the find-highlight and
+ * the ask-surface tint instead, which is where a recessed wash belongs.
+ *
+ * THE FIRST LADDER HOP IS 1.0203 AND IT STAYS. `#16161D → #181820` is the published
+ * gap between `sumiInk0` and `sumiInk1`, and the next one is barely wider
+ * (`#181820 → #1a1a22` is 1.0205). `src/lib/slabFloatSeparation.test.ts` grades
+ * slab/float separation against a floor its own comment says is 1.2, not 1.3, and
+ * these two hops fall under it. They are KEPT, with the number, because the rungs
+ * it fails between are the chrome band and the page plane — neither of which is the
+ * slab/float pair that floor exists to grade — and because the alternative is
+ * inventing a hex to clear a gate, which would no longer be Kanagawa. What the
+ * near-identical rungs actually mean, stated plainly: in wave, chrome-vs-page and
+ * page-vs-well separate by about two percent, so those three planes are carried by
+ * LAYOUT and by the shadow a float wears, not by fill. The pairs that must read by
+ * fill do clear: slab `#1f1f28` against the float `#2a2a37` is 1.1556, the raised
+ * card against the slab is 1.3798, and the context bar's track against the pane it
+ * rides is 1.3798 — over that gate's 1.2.
+ *
+ * DELIBERATE DEPARTURES FROM THE SCHEME — four, stated plainly.
+ *
+ * 1. STATUS TEXT TAKES THE BRIGHT SYNTAX HUES; THE DIAGNOSTIC HUES DRIVE FILLS.
+ *    Kanagawa's `diag` table is the semantic assignment — `diag.error = samuraiRed`,
+ *    `diag.ok = springGreen`, `diag.warning = roninYellow` — and `samuraiRed
+ *    #e82424` reaches only 3.17 on the float step and 2.66 on the raised one, while
+ *    `--color-destructive` is overwhelmingly consumed as TEXT. So the error TEXT
+ *    takes `peachRed #ff5d62`, which the README assigns to "Standout specials 2
+ *    (exception handling, return)" — the scheme's own alarm-adjacent bright red — and
+ *    reaches 4.71 on the float step instead of 3.17. `samuraiRed` is not discarded:
+ *    it is the terminal's bright red, exactly where `themes.lua`'s own `term` table
+ *    puts it. Same reasoning, same source: `--color-warning` takes `roninYellow`,
+ *    which IS `diag.warning` and clears everything except the selection state, and
+ *    `--color-success` takes `springGreen`, which IS `diag.ok`. Only the red moves.
+ * 2. `--color-foreground-subtle` and `-subtlest` take the scheme's OWN foreground
+ *    roles rather than alpha mixes. The README publishes three: fujiWhite "Default
+ *    foreground", oldWhite "Dark foreground (statuslines)", springViolet1 "Light
+ *    foreground". Those map onto foreground / subtle / subtlest one-for-one, which
+ *    is a better answer than Dracula's `color-mix` over one hue and needs no
+ *    invented percentage. The cost is springViolet1 at 4.34 on the float step — the
+ *    wall recorded above — and it is recorded rather than mixed away.
+ * 3. `--color-border` is `sumiInk6 #54546d`, which the README names as the float
+ *    border outright ("…non-text characters), float borders"). It is 2.41 on the
+ *    page, under the 3:1 floor for a non-text boundary. Kept, because it is the
+ *    value the scheme designates for exactly this job and because Dracula's border
+ *    is under that floor too — its `#6272a4` is 2.51 on its own raised card
+ *    `#343746` and 2.05 on its selection step (it CLEARS on its recessed panel, at
+ *    3.68, and on its page, at 3.36; an earlier cut of this comment said "2.51 on its
+ *    own panel", which mixed the two up). A boundary token drawn from the scheme's
+ *    quiet ink is a hairline by intent, and the elevation a float actually reads
+ *    comes from its shadow (see `slabFloatSeparation.test.ts`, which pins the
+ *    shadows for that reason).
+ * 4. THE 25 FILE-TYPE DESCRIPTOR HUES ARE OFF-SPEC ON PURPOSE. See the note on them
+ *    below and the allow-list in the spec row. This is the one place "use exact color
+ *    values from this specification" is knowingly not met.
+ *
+ * ALPHA, classified — ADR 0105 allows it on TEXT tokens and REFUSES it on SURFACE
+ * tokens, because a translucent surface is not an elevation step. Kanagawa publishes
+ * every colour as a plain hex, so unlike Ayu (8-digit foregrounds) or Rosé Pine
+ * (`#6e6a8633`) this block has no published alpha to carry: it declares ZERO 8-digit
+ * hexes and ZERO `rgb()`/`rgba()` values, counted rather than recalled. The only 14
+ * translucent declarations in the file are `color-mix(… transparent)`, and every one is
+ * a WASH or an OVERLAY that sits over something else — never a plane, never copy:
+ *   dark  find-highlight 60% · plugin-paid-plan-badge 24% · idle-task-surface 18% ·
+ *         interaction-ask-surface 40% · interaction-ask-fill 24% ·
+ *         interaction-confirmation-surface 16% · terminal-selection 55% ·
+ *         terminal-selection-inactive 12%
+ *   lotus find-highlight 70% · plugin-paid-plan-badge 24% · idle-task-surface 16% ·
+ *         interaction-ask-fill 24% · terminal-selection 55% ·
+ *         terminal-selection-inactive 12%
+ * Checked against the kit's own `SURFACE_TOKEN_PATTERN`: none of the 14 matches it, so
+ * no ladder member is translucent and `ladderExemptions` is legitimately EMPTY for both
+ * readings — there is nothing to exempt. And none is a TEXT token either: the three
+ * foreground roles, the four status hues and `caution` are all literal hexes, which is
+ * why `textUngradeable` is empty and every graded ratio is a real composite rather than
+ * a fallback. Selection stays off the ladder and out of every border, per Dracula's
+ * precedent; the two terminal-selection values are the only place the scheme's
+ * selection hues survive at alpha, and they paint nothing today.
+ *
+ * EVERY FILL TAKES DARK INK (`*-foreground: #16161d`, sumiInk0), the same rule
+ * Dracula states: Kanagawa's hues are bright enough that white is the worse reading
+ * on all of them — white on `carpYellow` is 1.68 while `#16161d` on it is 10.72,
+ * white on `oniViolet` 3.50 against dark ink 5.15, and the closest call is
+ * `peachRed` at 3.00 white against 6.00 dark.
+ *
+ * TOKEN COUNTS, per reading, because the two differ by design. `.theme-default-dark`
+ * declares 168 tokens. The DARK block restates 120 of them and deliberately inherits
+ * 54, and it declares 6 the reference does not (the ramp) — the same shape Dracula's
+ * block has. The LIGHT block restates 89 and inherits 79: the same 54, PLUS the 25
+ * file-type descriptors, which a light reading must not restate because it renders
+ * with no `.dark` class and so resolves them to `@theme`'s light-safe readings (see
+ * the note at the end of the light block). The inherited half is the **Identity
+ * color** rule (`CONTEXT.md`): a hue that encodes *what kind of thing this is* is not
+ * re-hued by a palette — the usage/heatmap scales, the context-breakdown steps, the
+ * git statuses, the transcript role chips, the privacy hint and the white overlays
+ * stay on `.dark`'s readings. `src/lib/palettes/kanagawa.ts` names every one of them
+ * and `paletteCompleteness.test.ts` pins each set in BOTH directions, so a token added
+ * to `.theme-default-dark` must be classified rather than silently dropped or silently
+ * inherited. The 22 `--color-terminal-*` tokens ARE owned in both readings, on
+ * Dracula's stated basis: `themes.lua` publishes a `term` table, so the 16 chromatic
+ * slots are a GIVEN mapping rather than an invention. Note `--color-icon-blue` is
+ * declared in `@theme` as `var(--color-terminal-bright-blue)`, so markdown links and
+ * diff `@@` hunks ride `springBlue #7fb4ca` under this palette — 7.80 on the page.
+ */
+.theme-kanagawa-dark {
+  /* ── surfaces — the six rungs of `themes.lua`'s `ui` ladder, plus the scheme's
+   *    selected-item step. Luminances, darkest first:
+   *      #16161d 0.0083   #181820 0.0095   #1a1a22 0.0107
+   *      #1f1f28 0.0142   #2a2a37 0.0242   #363646 0.0386   (selection #2d4f67 0.0713)
+   *    Every hop is published and every hop is tight: 1.0203 / 1.0205 / 1.0577 /
+   *    1.1556 / 1.1941. See the block comment for what that costs. */
+  --color-frame: #16161d; /* sumiInk0 — the chrome band the islands sit in */
+  /* RECESSED, THREE rungs below the slab (sumiInk0 against the slab's sumiInk3 — it
+   * shares the deepest rung with the chrome band, so this is not "one step down" the
+   * way Dracula's recessed panel is). The borderless cards inside the slab
+   * (`ToolCallCard`, the `SubagentDelegatingCard` body, the code-block header) carry
+   * no borders, so sitting BELOW their container is the only thing that makes them
+   * cards. Against the slab `#1f1f28` that is 1.1014 — the tightest fill separation in
+   * this block. NO GATE GRADES THIS PAIR (`slabFloatSeparation.test.ts`'s 1.2 floor is
+   * the track-against-the-pane-it-rides floor, a different pair), so it is recorded
+   * here as part of the same published-gap concession the block comment states: this
+   * scheme's three deepest rungs differ by about two percent, and a card inside the
+   * slab reads by its edges and its position, not by a 1.2 fill step. The raised card
+   * against the slab, one rung higher, is 1.3798. */
+  --color-panel: #16161d;
+  --color-terminal-bg: #16161d; /* `themes.lua` wave term[0] is sumiInk0 */
+  --color-popover-header: #16161d;
+  --color-background: #181820; /* sumiInk1 == `ui.bg_dim` — the page plane */
+  --color-composer: #181820; /* the composer island — its own plane, sharing this rung */
+  /* The recessed controls. One step above the page rather than below it, so a field
+   * reads as a field without a border doing the work: `--color-border` is 2.36 on
+   * this surface and would not carry one anyway. */
+  --color-input: #1a1a22; /* sumiInk2 */
+  --color-input-focused: var(--color-input);
+  /* THE CONTENT SLAB — the most-used surface in the app: transcript column, side
+   * pane and composer chat column all read `--color-chat`, so they cannot drift
+   * apart. `sumiInk3` is `themes.lua`'s `ui.bg`, the scheme's own default
+   * background, taken literally rather than mixed. */
+  --color-chat: #1f1f28;
+  --color-inspector: var(--color-chat); /* the right-hand pane: one plane with the transcript */
+  --color-tab-active: var(--color-chat); /* the active tab IS the sheet showing through the chrome */
+  /* EVERY FLOAT, and the window's alternate-background step. `sumiInk4` is
+   * `themes.lua`'s `ui.bg_gutter` and the README's "Lighter background (colorcolumn,
+   * folds)"; this app puts the floats here because the slab is two rungs below and
+   * a float has to read above what it opens over (1.1556 against the slab). What a
+   * float ALSO carries is its shadow — see `slabFloatSeparation.test.ts`. */
+  --color-header: #2a2a37;
+  --color-background-win-alt: #2a2a37;
+  --color-tab: #2a2a37;
+  --color-menu: #2a2a37;
+  --color-popover: #2a2a37;
+  --color-toast: #2a2a37;
+  --color-tooltip: #2a2a37;
+  /* RAISED — `sumiInk5`, the README's cursorline rung and `themes.lua`'s `bg_p2`.
+   * `secondary`/`tag`/`tooltip-tag` are here (not on the slab's own rung) because a
+   * `--color-secondary` badge lands INSIDE a `--color-menu` float and must read as
+   * raised over it; the badge-outshines-the-card inversion is the one ADR 0027
+   * records fixing. (Surfaces are named by TOKEN throughout this file, never by their
+   * utility-class spelling: the plan forbids naming a utility in prose because
+   * Tailwind v4 compiles one it finds quoted, and a token name carries no such risk —
+   * see the note at the foot of this file.) */
+  --color-card: #363646;
+  --color-secondary: #363646;
+  --color-tag: #363646;
+  --color-tooltip-tag: #363646;
+  --color-menu-hover: #363646;
+  /* The context bar's TRACK. It has two jobs that pull opposite ways: separate the
+   * band FILL from the unfilled remainder (wants dark), and be visible against the
+   * PANE it rides (wants light). Against `--color-inspector` `#1f1f28` this rung
+   * scores 1.3798, over the 1.2 floor `slabFloatSeparation.test.ts` states; the
+   * rung below it (`#2a2a37`) scores 1.1556 and would fail that floor. Text on it:
+   * foreground 8.16, subtle 6.44, subtlest 3.64 (the recorded wall). */
+  --color-context-track: #363646;
+  /* THE SELECTION STATE — waveBlue2, the README's "Popup selection background,
+   * search background" and `themes.lua`'s `bg_search`/`pmenu.bg_sel`. It is the
+   * scheme's selected-item step and the only published value that reads brighter
+   * than every resting rung (1.3682 over the raised card, 2.0379 over the page).
+   * `waveBlue1 #223249`, the "visual selection background", is LUMINANCE-BELOW the
+   * raised card (0.0310 vs 0.0386) and so cannot be the selected step here without
+   * sinking under it — it is the find-highlight and ask wash instead. No JSX reads
+   * `--color-card-selected` today, so this is a forward declaration; the `--color-selected`
+   * white overlay `.theme-default-dark` shares is what the sidebar rows paint with. */
+  --color-card-selected: #2d4f67;
+  /* The seam a resting board surface is outlined with. Aliased, as in both Default
+   * readings — Kanagawa's border is already the scheme's quietest published
+   * boundary (`sumiInk6`, the README's own float border), so unlike Dracula there is
+   * no opaque-border exception to make here. */
+  --color-card-border: var(--color-border);
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-border: var(--color-border);
+  --color-tab-border: var(--color-border);
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-brand);
+  /* THE SELECTION-ADJACENT TINTS. `waveBlue1 #223249` is the README's "visual
+   * selection background" — a recessed wash, which is where it belongs. The number to
+   * judge it by is the COMPOSITED one, since that is what paints: at the 60% declared
+   * below it lands on `#1e2839`, 1.1911 against the page `#181820` (the bare hue would
+   * be 1.3613, and an earlier cut of this comment quoted that instead of the mix). A
+   * wash is a tint and not a plane, so it is deliberately below the 1.2 fill floor —
+   * the mark inside it is what carries the match. `winterGreen/winterRed/winterYellow/winterBlue` are the
+   * scheme's own four DIFF BACKGROUNDS and go unused below only because this app
+   * tints diff rows with `color-mix` over the surface they land on rather than
+   * painting a fixed ground; the four are named here so a reader looking for them
+   * finds the reason rather than an absence. */
+  --color-find-highlight: color-mix(in oklab, #223249 60%, transparent);
+  --color-find-highlight-active: #ff9e3b; /* roninYellow, `diag.warning` */
+  --color-plugin-paid-plan-badge: color-mix(in oklab, #ff9e3b 24%, transparent);
+  --color-plugin-paid-plan-badge-foreground: #ff9e3b;
+
+  /* ── text — the scheme's three published foreground roles, one per rung of
+   *    de-emphasis (departure 2). Luminances 0.6736 / 0.5209 / 0.2724.
+   *    Ratios below are composited, measured with the kit's own `lumOf`/`contrast`. */
+  --color-foreground: #dcd7ba; /* fujiWhite, "Default foreground" — 9.75 worst resting */
+  --color-foreground-subtle: #c8c093; /* oldWhite, "Dark foreground" — 7.69 worst resting */
+  /* springViolet1, the README's "Light foreground". THE RECORDED WALL: 4.34 on the
+   * float step #2a2a37, 3.64 on the raised #363646, 2.66 on the selection #2d4f67,
+   * against a clause that asks 4.5. It is the scheme's OWN de-emphasis value, and
+   * unlike `--color-destructive` this one HAS a published alternative — springViolet2
+   * #9cabca clears 4.5 on every resting plane and on the raised one (6.12 on the
+   * float, 5.13 on the card) and fails only on the selection step (3.75). It is not
+   * taken because springViolet2 is this block's own `--color-thinking-medium`: a text
+   * token and a ramp LEVEL printing one hex is what `themeTokens.test.ts` convicts by
+   * name (verified — pointing this token at #9cabca reddens it), and the scheme has
+   * already spent that hue on "Brackets and punctuation". The separation argument is
+   * the weaker one and is given as a number rather than leaned on: this token sits
+   * 1.77 below `--color-foreground-subtle`, springViolet2 would sit 1.26 below it. So
+   * this is a reported wall and a CHOICE, pinned in the spec row with
+   * `expiresAt: 4.5` so it is revisable rather than permanent. */
+  --color-foreground-subtlest: #938aa9;
+  --color-foreground-inverse: #16161d;
+  --color-tooltip-foreground: #dcd7ba;
+  --color-tooltip-tag-foreground: #c8c093; /* 6.44 on the chip */
+  /* borders — `sumiInk6` is the README's float border verbatim. 2.41 on the page
+   * #181820, 2.46 on the recessed panel, 1.93 on the float step: under the 3:1 floor
+   * for a non-text boundary, and recorded as departure 3. */
+  --color-border: #54546d; /* sumiInk6 */
+  --color-border-hover: #7fb4ca; /* springBlue, "Specials and builtin functions" — 7.80 */
+  /* accent — oniViolet, the README's "Statements and Keywords", the scheme's
+   * signature violet. `brand` is load-bearing: `--color-input-border-focused`
+   * aliases it, so this is what puts the accent on the focus ring. */
+  --color-brand: #957fb8;
+  --color-primary: #957fb8;
+  --color-primary-foreground: #16161d; /* dark ink, 5.15; white on this fill is 3.50 */
+  --color-accent: #7e9cd8; /* crystalBlue, "Functions and Titles" — 6.41 as text */
+  --color-idle-task: #6a9589; /* waveAqua1 — the README's "Diagnostic Info", though themes.lua's wave `diag` puts info on dragonBlue and HINT on waveAqua1; either way it is this scheme's quiet aqua */
+  --color-idle-task-surface: color-mix(in oklab, #6a9589 18%, transparent);
+  /* status — departure 1. `--color-caution` carries a LABEL, so it is held to the
+   * text floor: carpYellow ("Identifiers") clears 4.5 on every graded surface
+   * (8.42 resting / 7.05 raised / 5.15 selected), which is why it needs no floor
+   * entry at all. Its hue sits between success and warning, which is the axis. */
+  --color-success: #98bb6c; /* springGreen, `diag.ok` and "Strings" — 6.51 / 5.45 / 3.98 */
+  --color-success-foreground: #16161d;
+  --color-warning: #ff9e3b; /* roninYellow, `diag.warning` — 6.87 / 5.76 / 4.21 */
+  --color-warning-foreground: #16161d;
+  --color-caution: #e6c384; /* carpYellow, "Identifiers" — 8.42 / 7.05 / 5.15 */
+  /* peachRed, not samuraiRed — departure 1, in one line: the diagnostic red is
+   * 3.17 on the float step and this token is overwhelmingly TEXT, so the scheme's
+   * own bright "exception handling" red carries it at 4.71 there. Still short on the
+   * raised rung (3.94) and the selection (2.88); `peachRed` IS the brightest
+   * red-leaning value the scheme puts to use for text, so no published value clears
+   * 4.5 on `#363646`, and both walls are pinned with `expiresAt: 4.5`. */
+  --color-destructive: #ff5d62;
+  --color-destructive-foreground: #16161d;
+  --color-diff-added: #98bb6c;
+  --color-diff-added-foreground: #16161d;
+  --color-diff-removed: #ff5d62;
+  --color-diff-removed-foreground: #16161d;
+  /* Interaction fills keep the `.dark` color-mix STRUCTURE, re-anchored on scheme
+   * hues. Foregrounds: springBlue (ask) and springGreen (confirmation), 6.25 and
+   * 6.51 on the float step. */
+  --color-interaction-ask-surface: color-mix(in oklab, #223249 40%, transparent);
+  --color-interaction-ask-foreground: #7fb4ca;
+  --color-interaction-ask-fill: color-mix(in oklab, #98bb6c 24%, transparent);
+  --color-interaction-confirmation-surface: color-mix(in oklab, #98bb6c 16%, transparent);
+  --color-interaction-confirmation-foreground: #98bb6c;
+  /* Row glyph + row verb (ADR 0062), aliased to this palette's own de-emphasis
+   * pair. `.theme-dracula-dark` is the one palette that gives them separate hues;
+   * Kanagawa does not, because its two published de-emphasis foregrounds ARE the
+   * two levels this family wants and re-huing the row glyph would collide with the
+   * status set the scheme already assigns (see `themeTokens.test.ts`, whose
+   * allow-list is empty and so fails a new collision by name). */
+  --color-row-icon: var(--color-foreground-subtle);
+  --color-row-verb: var(--color-foreground-subtlest);
+  /* The film glyph (ADR 0071) — OPAQUE on purpose: the film's glyph BRIGHTNESS is
+   * the data, so the luminance bands must be the only dimmer, and a
+   * `color-mix(… transparent)` token would multiply with the film's own fade and
+   * flatten the chiaroscuro. `sumiInk6` is the scheme's own `ui.nontext` /
+   * `ui.whitespace` value — its designated "drawn but not read" ink — and unlike
+   * the row family it collides with nothing the ramp uses. */
+  --color-film-glyph: #54546d;
+  /* FORWARD-DECLARED ANSI SET. This app has no terminal surface, so 21 of these 22
+   * paint nothing today; the reason to own them is that `themes.lua`'s `term` table
+   * publishes the mapping, so copying costs nothing and leaves no half-owned
+   * palette (ADR 0027's amendment 2, the same basis Dracula states). `--color-icon-blue`
+   * in `@theme` aliases `--color-terminal-bright-blue`, which is the one live
+   * consumer: markdown links and diff `@@` hunks ride springBlue, 7.80 on the page.
+   * The 16 chromatic slots below are wave's `term` entries in order, verbatim. */
+  --color-terminal-fg: #dcd7ba; /* fujiWhite, term[15] bright white */
+  --color-terminal-cursor: #dcd7ba;
+  --color-terminal-cursor-accent: #16161d; /* sumiInk0, term[0] black */
+  --color-terminal-selection: color-mix(in oklab, #2d4f67 55%, transparent);
+  --color-terminal-selection-inactive: color-mix(in oklab, #dcd7ba 12%, transparent);
+  --color-terminal-black: #16161d;
+  --color-terminal-red: #c34043; /* autumnRed, "Git Delete" */
+  --color-terminal-green: #76946a; /* autumnGreen, "Git Add" */
+  --color-terminal-yellow: #c0a36e; /* boatYellow2, "Operators, RegEx" */
+  --color-terminal-blue: #7e9cd8; /* crystalBlue, "Functions and Titles" */
+  --color-terminal-magenta: #957fb8; /* oniViolet, "Statements and Keywords" */
+  --color-terminal-cyan: #6a9589; /* waveAqua1, "Diagnostic Info" */
+  --color-terminal-white: #c8c093; /* oldWhite, "Dark foreground" */
+  --color-terminal-bright-black: #727169; /* fujiGray, "Comments" */
+  --color-terminal-bright-red: #e82424; /* samuraiRed, "Diagnostic Error" — departure 1's red, in the slot the scheme puts it */
+  --color-terminal-bright-green: #98bb6c;
+  --color-terminal-bright-yellow: #e6c384;
+  --color-terminal-bright-blue: #7fb4ca; /* springBlue — what `--color-icon-blue` rides */
+  --color-terminal-bright-magenta: #938aa9; /* springViolet1, "Light foreground" */
+  --color-terminal-bright-cyan: #7aa89f; /* waveAqua2, "Types" */
+  --color-terminal-bright-white: #dcd7ba;
+  /* THE RAMP (`caution` + `thinking-*`) — the six tokens `.theme-default-dark` does
+   * not declare, so this block owns them and `themeTokens.test.ts` grades them by
+   * value. They are IDENTITY tokens: the hue answers "which level is this", so the
+   * family may not be painted with the status palette (a max-effort model must not
+   * read as a failure). Every value below is a scheme hue that NO other UI token in
+   * this block prints, which is what keeps that gate's empty allow-list green:
+   *
+   *   low     #a3d4d5 lightBlue     hue 181.2  hotness   1.2  page 10.87
+   *   medium  #9cabca springViolet2 hue 220.4  hotness  40.4  page  7.64
+   *   high    #b8b4d0 oniViolet2    hue 248.6  hotness  68.6  page  8.80
+   *   xhigh   #d27e99 sakuraPink    hue 340.7  hotness 160.7  page  6.04
+   *   max     #e46876 waveRed       hue 353.2  hotness 173.2  page  5.49
+   *
+   * Ordered cool → hot by `hotness` (distance from cyan, the coolest hue there is),
+   * which is the measure `themeTokens.test.ts` uses — a naive "increasing hue angle"
+   * would be false of this ramp the same way it is false of Dracula's.
+   *
+   * `max` is `waveRed` ("Standout specials 1"), NOT `samuraiRed`. `samuraiRed` is
+   * the README's "Diagnostic Error" and the terminal's bright red, and painting the
+   * hottest thinking level with the error hue is the exact confusion this family's
+   * rationale forbids — even though the literal-hex gate could not see it, because
+   * `--color-destructive` carries peachRed and not samuraiRed. `lightBlue` is the
+   * README's own "Not used" entry, which makes it the one published hue here with no
+   * competing meaning at all. */
+  --color-thinking-low: #a3d4d5; /* lightBlue */
+  --color-thinking-medium: #9cabca; /* springViolet2, "Brackets and punctuation" */
+  --color-thinking-high: #b8b4d0; /* oniViolet2, `syn.parameter` */
+  --color-thinking-xhigh: #d27e99; /* sakuraPink, "Numbers" */
+  --color-thinking-max: #e46876; /* waveRed — deliberately NOT samuraiRed, the error hue */
+
+  /* The 25 file-type DESCRIPTORS. OFF-SPEC ON PURPOSE and allow-listed BY NAME in
+   * `src/lib/palettes/kanagawa.ts` — the one place this block knowingly breaks
+   * "use exact color values from this specification". The scheme publishes ~100
+   * hues and still cannot name 25 file types without making a `.py` chip
+   * indistinguishable from a `.json` one, and the hue IS the only thing
+   * distinguishing them, so the **Identity color** rule (`CONTEXT.md`) outranks the
+   * spec here. MANDATORY and easy to get wrong: they are declared in `@theme`
+   * (light-safe) and `.theme-default-dark` (vivid dark) but NOT in `.dark`, so a
+   * palette that omits one does not fail — it silently resolves through `.dark` to
+   * `@theme`'s light-safe reading, a different hue.
+   *
+   * Copied from `.theme-default-dark` verbatim except `file-css`, exactly as
+   * Dracula does, and for the measured reason: the default `#7e57c2` is 2.27 on this
+   * block's raised `#363646` — under the 3:1 glyph floor the descriptor gate enforces
+   * on the raised card, where the code-block header used to sit. Kanagawa already declares
+   * a violet, `oniViolet #957fb8`, which reads 3.39 there and 4.04 on the float step,
+   * so `file-css` takes the scheme's own value. That makes it the ONE descriptor
+   * needing no allow-list entry, and it keeps every descriptor above 3:1 on all four
+   * surfaces `fileIconContrast.test.ts` grades (worst in every case
+   * `file-ts`/`file-py`: 3.07 on the raised card, 4.24 on the slab, 4.57 on the page,
+   * 4.67 on the recessed panel). */
+  --color-file-ts: #0288d1;
+  --color-file-react: #00bcd4;
+  --color-file-js: #ffca28;
+  --color-file-json: #f9a825;
+  --color-file-html: #e65100;
+  --color-file-css: #957fb8; /* oniViolet — see the note above */
+  --color-file-sass: #ec407a;
+  --color-file-md: #42a5f5;
+  --color-file-rs: #ff7043;
+  --color-file-py: #0288d1;
+  --color-file-sh: #ff7043;
+  --color-file-yaml: #ff5252;
+  --color-file-toml: #cfd8dc;
+  --color-file-lock: #ffd54f;
+  --color-file-image: #26a69a;
+  --color-file-svg: #ffb300;
+  --color-file-archive: #afb42b;
+  --color-file-go: #00acc1;
+  --color-file-vue: #41b883;
+  --color-file-svelte: #ff5722;
+  --color-file-java: #f44336;
+  --color-file-php: #1e88e5;
+  --color-file-xml: #8bc34a;
+  --color-file-graphql: #ec407a;
+  --color-file-db: #ffca28;
+}
+
+/*
+ * KANAGAWA LOTUS — the light reading. `themes.lua`'s `lotus` theme, same
+ * `ui.bg_m3…bg_p2` ladder shape as wave, six published steps.
+ *
+ * THE LIGHT LADDER RUNS THE OTHER WAY and lotus is the case ADR 0105 was written
+ * for: no light theme publishes anything LIGHTER than its own Base, so nothing can
+ * sit above it and a Selection step cannot be the brightest rung the way Dracula's
+ * is. Lotus's own ladder makes this visible rather than theoretical — its two
+ * "Lighter background" steps are NOT lighter than its Base:
+ *
+ *   bg_m3 lotusWhite0 #d5cea3  L 0.6093     bg    lotusWhite3 #f2ecbc  L 0.8250
+ *   bg_m2 lotusWhite1 #dcd5ac  L 0.6578     bg_p1 lotusWhite4 #e7dba0  L 0.7019
+ *   bg_m1 lotusWhite2 #e5ddb0  L 0.7151     bg_p2 lotusWhite5 #e4d794  L 0.6723
+ *
+ * So `bg` (`#f2ecbc`) is the lightest value the scheme publishes and `bg_p1`/`bg_p2`
+ * are MID-tones between `bg_m1` and `bg`. This block therefore puts the PAGE on
+ * `bg_m2` — `themes.lua`'s own `ui.bg_dim`, the scheme's dimmed ground — and reserves
+ * `bg` for the top plateau, which is the same move `default-light` makes with its
+ * white plateau (ADR 0096) and the reason `--color-frame` here, as there, takes a
+ * DARKER published value than the surfaces it frames. Every group below strictly
+ * ascends; the plateau is the top group alone.
+ *
+ *   #b5cbd2 lotusBlue2  L 0.5719  the context bar's TRACK. Against the pane it rides
+ *                                 (`--color-inspector` #e5ddb0) 1.2302, over the 1.2
+ *                                 floor `slabFloatSeparation.test.ts` states; the
+ *                                 scheme's `bg_visual` #c9cbd1 would score 1.1819 and
+ *                                 fail it, which is why the track takes `bg_search`.
+ *   #d5cea3 lotusWhite0 L 0.6093  bg_m3. THE RECESSED PLANE and the chrome band:
+ *                                 `--color-frame`, `--color-panel`, the popover
+ *                                 header, the terminal's paper, and the RAISED CHIPS
+ *                                 (`secondary`/`tag`/`tooltip-tag`) — which in a light
+ *                                 reading are the DARKEST step, the exact inverse of
+ *                                 wave where they are the brightest. That inversion is
+ *                                 ADR 0105's measurement (in `default-light`,
+ *                                 `secondary #e6e6e6` sits BELOW `card #ffffff` while in
+ *                                 Dracula `secondary` IS `card`), which is why group
+ *                                 membership is per-reading data and not a shared table.
+ *   #dcd5ac lotusWhite1 L 0.6578  bg_m2 == `ui.bg_dim`. THE PAGE PLANE, the composer
+ *                                 island and the window's alternate step.
+ *   #e4d794 lotusWhite5 L 0.6723  bg_p2. Menu hover and the tooltip — a step above the
+ *                                 page, below the slab.
+ *   #e7dba0 lotusWhite4 L 0.7019  bg_p1, `ui.bg_gutter`. The tab strip.
+ *   #e5ddb0 lotusWhite2 L 0.7151  bg_m1. THE CONTENT SLAB (`--color-chat`,
+ *                                 `--color-inspector`) and the active tab.
+ *   #f2ecbc lotusWhite3 L 0.8250  bg, the scheme's Base. THE PLATEAU: card, header,
+ *                                 input, menu, popover, toast. Lotus publishes nothing
+ *                                 lighter, so separation on this rung is carried by
+ *                                 `--color-card-border` and the float's shadow, not by
+ *                                 fill. `--color-card-selected` is `var(--color-input)`,
+ *                                 i.e. the plateau itself, and the selection rule is
+ *                                 therefore "never dimmer than the card" — the property
+ *                                 that actually matters for a selected row — exactly as
+ *                                 in `default-light`. A selected row here reads by its
+ *                                 ring and its foreground, and that is stated rather
+ *                                 than dressed up as an elevation step.
+ *
+ * THE 4.5 CLAUSE HOLDS FOR LOTUS'S BODY TEXT AND FAILS FOR EVERYTHING ELSE, and the
+ * number that says why is `lotusInk1 #545464` at 4.66 on the darkest published ladder
+ * rung (`#d5cea3`) — the scheme's ONE foreground, clearing the clause with 0.16 of
+ * margin on its own darkest ground and 6.19 on its Base. Only THREE of lotus's 40
+ * published values clear 4.5 there at all: `lotusInk2` (5.84, but darker than the
+ * foreground, so it cannot sit under it), `lotusInk1` itself (which IS the foreground)
+ * and `lotusViolet4` (4.58, but this block's own brand/primary, and only 1.0183 under
+ * the foreground — see the note on `--color-foreground-subtle`). Every value lighter
+ * than the subtle tier tops out at 3.06. So the de-emphasis tier cannot reach 4.5 at
+ * any published value that still reads as de-emphasis, and the four
+ * status hues cannot either: the brightest green the scheme ships is `lotusGreen
+ * #6f894e` at 2.46 on `#d5cea3` (3.26 even on the Base) and the brightest warning is
+ * `lotusOrange2 #e98a00` at 1.63. The floors in the spec row are the measured worst
+ * reading per class, each with `expiresAt: 4.5`, and each names the value that would
+ * beat it — where one exists, this block takes it (`lotusRed` over `lotusRed2`/
+ * `lotusRed3` at 3.06, `lotusOrange` over `lotusOrange2` at 2.29). `--color-caution`
+ * is the exception and says so: it belongs to the ramp family, so this reading does
+ * not state it at all and inherits `@theme`'s light-safe `#a16207` (3.09 on the frame
+ * step) — the value `.theme-default-light` resolves too. Where the scheme's SEMANTIC
+ * assignment is the WORSE reading for text, the semantic value is recorded in the row
+ * rather than silently preferred: `diag.warning` is `lotusOrange2`, and it is 0.66
+ * weaker.
+ *
+ * `--color-terminal-bg` is `var(--color-background)` here rather than lotus's own
+ * `term[0]`, and that is a deliberate exception to "own the ANSI set": lotus's term
+ * table opens on `sumiInk3 #363646` — a WAVE value, the dark theme's background — so
+ * copying it literally would give a light reading a dark terminal paper. The paper
+ * follows the page, which is what both Default readings do. There is ONE further
+ * exception, and it is the same shape: `--color-terminal-black` takes `term[8]`
+ * (lotusGray3) instead of lotus's `term[0]`, for the same reason — a light terminal's
+ * "black" should be the light theme's own grey, not the dark theme's page. So 15 of the
+ * 16 chromatic slots are lotus's `term` table verbatim and one is not, which is stated
+ * here rather than left for the next reader to discover by diffing.
+ */
+.theme-kanagawa-light {
+  /* ── surfaces — the six lotus rungs plus the plateau, darkest first. See the
+   *    block comment for the luminances and for why `bg` is the ceiling. */
+  --color-context-track: #b5cbd2; /* lotusBlue2 == `ui.bg_search` — 1.2302 on the pane */
+  /* THE RECESSED PLANE AND THE CHROME BAND — `bg_m3`, the darkest published light
+   * step. `--color-frame` takes a DARKER value than the page it frames (ADR 0105),
+   * exactly as `default-light`'s `#f0f0f0` does against its `#f8f8f8`. */
+  --color-frame: #d5cea3; /* lotusWhite0 */
+  --color-panel: #d5cea3;
+  --color-popover-header: #d5cea3;
+  --color-terminal-bg: var(--color-background); /* see the block comment on term[0] */
+  /* The raised chips. In a LIGHT reading these are the DARKEST step — the inverse
+   * of the dark block — because a badge is a mark ON a surface rather than a plane
+   * above it. A `--color-secondary` badge inside a `--color-menu` float reads as recessed
+   * into it, which is the light reading's own answer and the case ADR 0105 records. */
+  --color-secondary: #d5cea3;
+  --color-tag: #d5cea3;
+  --color-tooltip-tag: #d5cea3;
+  --color-background: #dcd5ac; /* lotusWhite1 == `ui.bg_dim` — the page plane */
+  --color-composer: #dcd5ac;
+  --color-background-win-alt: #dcd5ac;
+  --color-menu-hover: #e4d794; /* lotusWhite5 == `bg_p2` */
+  --color-tooltip: #e4d794;
+  --color-tab: #e7dba0; /* lotusWhite4 == `bg_p1`, the scheme's `bg_gutter` rung */
+  /* THE CONTENT SLAB — `bg_m1`. Transcript column, side pane and active tab read one
+   * token, so they cannot drift apart. */
+  --color-chat: #e5ddb0; /* lotusWhite2 */
+  --color-inspector: var(--color-chat);
+  --color-tab-active: var(--color-chat); /* the active tab IS the sheet under the chrome */
+  /* THE PLATEAU — the scheme's Base, and the ceiling of everything a light palette can
+   * publish. Every surface here is #f2ecbc and separation is carried by the border and
+   * the shadow, not the fill (ADR 0096's designed collapse, which `default-light`
+   * answers the same way with its white plateau). */
+  --color-card: #f2ecbc; /* lotusWhite3 == `ui.bg` */
+  --color-header: #f2ecbc;
+  --color-input: #f2ecbc;
+  --color-input-focused: var(--color-input);
+  --color-menu: #f2ecbc;
+  --color-popover: #f2ecbc;
+  --color-toast: #f2ecbc;
+  /* The selection state, aliased onto the plateau — lotus publishes nothing lighter
+   * than its Base, so a selected row cannot read by fill here. Recorded, not hidden:
+   * the ring and the foreground carry the state, and `selectionRule` is
+   * "at-or-above-card" in the spec row precisely so this reads as a designed collapse
+   * rather than as a bug the ladder should have caught. */
+  --color-card-selected: var(--color-input);
+  --color-card-border: var(--color-border);
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-border: var(--color-border);
+  --color-tab-border: var(--color-border);
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-brand);
+  /* The scheme's own selection-family tints, kept in their selection-adjacent jobs:
+   * `ui.bg_visual` is a wash over whatever the cell painted, and `bg_search`'s bright
+   * partner is the active match. */
+  --color-find-highlight: color-mix(in oklab, #c9cbd1 70%, transparent); /* lotusViolet3 == `ui.bg_visual` */
+  --color-find-highlight-active: #e98a00; /* lotusOrange2 == `diag.warning` */
+  --color-plugin-paid-plan-badge: color-mix(in oklab, #e98a00 24%, transparent);
+  --color-plugin-paid-plan-badge-foreground: #43436c; /* lotusInk2 — dark ink on a light tint */
+
+  /* ── text. `lotusInk1` is the scheme's ONLY published foreground and the reason the
+   *    4.5 clause is a wall here rather than a floor: 4.66 on the darkest light step,
+   *    6.19 on the Base. */
+  --color-foreground: #545464; /* lotusInk1, themes.lua lotus `ui.fg` — the reading's default foreground; 4.66 worst resting */
+  /* lotusViolet2, the scheme's `ui.special` ("SpecialKey"). THE RECORDED WALL: 3.08 on
+   * the frame step #d5cea3, 4.09 on the Base. THE ALTERNATIVE IS NAMED, exactly as the
+   * dark block names its own: `lotusViolet4 #624c83` sits between this and `lotusInk1`
+   * and clears 4.5 on every resting ground (4.58 frame / 4.91 page / 5.31 slab / 6.07
+   * Base). It is not taken because it separates from `--color-foreground` by only
+   * 1.0183 — a de-emphasis tier that does not de-emphasise — and because it is this
+   * block's own `--color-brand`/`--color-primary`. `lotusViolet2` sits 1.5115 under the
+   * foreground, which is the property this token exists to buy. Pinned in the spec row
+   * with `expiresAt: 4.5`, so it is revisable rather than permanent. */
+  --color-foreground-subtle: #766b90;
+  /* lotusGray3 — the scheme's `syn.comment` and `syn.deprecated`, its designated quiet
+   * ink. 2.21 on the frame step, the worst text reading in this block, and pinned with
+   * `expiresAt: 4.5`. It is DIMMER than `--color-foreground-subtle` (luminance 0.2485
+   * against 0.1638), which is the ordering the two tokens exist to express. */
+  --color-foreground-subtlest: #8a8980;
+  --color-foreground-inverse: #f2ecbc;
+  --color-tooltip-foreground: #43436c; /* lotusInk2 */
+  --color-tooltip-tag-foreground: #545464; /* 4.66 on the chip */
+  /* borders — `lotusGray2` is `themes.lua`'s `ui.float.fg_border`, the scheme's float
+   * border for lotus, so unlike the dark block this one CLEARS the boundary floor:
+   * 3.45 on the page, 3.21 on the darkest light step, 4.26 on the Base. */
+  --color-border: #716e61;
+  --color-border-hover: #4d699b; /* lotusBlue4, themes.lua lotus `syn.fun` — 3.72 on the page */
+  --color-brand: #624c83; /* lotusViolet4, themes.lua lotus `syn.statement`/`syn.keyword` */
+  --color-primary: #624c83;
+  --color-primary-foreground: #f2ecbc; /* the scheme's lightest, 6.07 on the fill */
+  --color-accent: #4d699b; /* lotusBlue4, themes.lua lotus `syn.fun` — 4.02 on the slab, so the accent TEXT role reads */
+  --color-idle-task: #5a7785; /* lotusTeal3, `diag.info` */
+  --color-idle-task-surface: color-mix(in oklab, #5a7785 16%, transparent);
+  /* status — every one of these is a RECORDED WALL against the 4.5 clause, and each
+   * takes the brightest published value the scheme offers for its hue rather than the
+   * one its `diag` table names, where the two differ and the difference is legibility:
+   * `lotusRed #c84053` (3.06 worst) beats `lotusRed2` 2.70 and `lotusRed3` 2.80;
+   * `lotusOrange #cc6d00` (2.29) beats `diag.warning`'s `lotusOrange2` 1.63. The
+   * semantic value stays in the block where the scheme puts it — `lotusOrange2` is the
+   * active find match, `lotusRed2` is `vcs.removed` — and the shortfall is in the spec
+   * row with the number, not in a re-hue. */
+  --color-success: #6f894e; /* lotusGreen, `diag.ok` — 2.46 worst resting */
+  --color-success-foreground: #f2ecbc;
+  --color-warning: #cc6d00; /* lotusOrange — 2.29 worst resting */
+  --color-warning-foreground: #f2ecbc;
+  /* `--color-caution` is NOT declared here, and it is the one text token this reading
+   * inherits rather than states: it belongs to the RAMP family (see the note at the
+   * bottom of this block), so a light reading takes `@theme`'s light-safe `#a16207` —
+   * the same value `.theme-default-light` resolves, for the same reason. It is still
+   * GRADED (it is one of the kit's text tokens) and it is still a wall: 3.09 on the
+   * frame step #d5cea3, 4.10 on the Base. Pinned in the spec row with `expiresAt`. */
+  --color-destructive: #c84053; /* lotusRed — 3.06 worst resting */
+  --color-destructive-foreground: #f2ecbc;
+  --color-diff-added: #6f894e;
+  --color-diff-added-foreground: #f2ecbc;
+  --color-diff-removed: #c84053;
+  --color-diff-removed-foreground: #f2ecbc;
+  /* Interaction fills use the scheme's own published light tints rather than mixes
+   * where it publishes one: `lotusBlue1` is lotus's `pmenu.bg`, `lotusGreen3` is its
+   * `diff.add` ground, `lotusBlue5` its `syn.parameter`. */
+  --color-interaction-ask-surface: #c7d7e0; /* lotusBlue1 */
+  --color-interaction-ask-foreground: #5d57a3; /* lotusBlue5 — 4.22 on the page */
+  --color-interaction-ask-fill: color-mix(in oklab, #6e915f 24%, transparent); /* lotusGreen2, `vcs.added` */
+  --color-interaction-confirmation-surface: #b7d0ae; /* lotusGreen3, `diff.add` */
+  --color-interaction-confirmation-foreground: #6e915f;
+  /* Row glyph + row verb (ADR 0062) — aliased, as in both Default readings and as in
+   * the dark block above. `themeTokens.test.ts` pins this family per reading by VALUE
+   * and its collision allow-list is empty, so a new palette giving these its own hues
+   * is graded, not waved at. */
+  --color-row-icon: var(--color-foreground-subtle);
+  --color-row-verb: var(--color-foreground-subtlest);
+  /* The film glyph (ADR 0071) — OPAQUE on purpose (the luminance bands are the film's
+   * only dimmer). `lotusViolet1` is lotus's own `ui.nontext`/`ui.whitespace`: the
+   * scheme's designated "drawn but not read" ink, which is precisely the film's job. */
+  --color-film-glyph: #a09cac;
+  /* FORWARD-DECLARED ANSI SET — lotus's `term` table. 15 of its 16 chromatic slots are
+   * verbatim; the 16th, `--color-terminal-black`, is `term[8]` (lotusGray3) rather than
+   * `term[0]`, for the SAME reason the paper moves: lotus's `term[0]` is `sumiInk3
+   * #363646`, a WAVE hex, and a light terminal wants the light theme's own grey rather
+   * than the dark theme's background. Both departures are stated here because the block
+   * comment above claims "the `term` table verbatim" and only this sentence makes it
+   * exactly true. The paper is the page, not `term[0]`; see the block comment. */
+  --color-terminal-fg: #545464; /* lotusInk1, term[7] white */
+  --color-terminal-cursor: #545464;
+  --color-terminal-cursor-accent: #dcd5ac;
+  --color-terminal-selection: color-mix(in oklab, #c9cbd1 55%, transparent);
+  --color-terminal-selection-inactive: color-mix(in oklab, #43436c 12%, transparent);
+  --color-terminal-black: #8a8980; /* lotusGray3, term[8] bright black */
+  --color-terminal-red: #c84053; /* lotusRed */
+  --color-terminal-green: #6f894e; /* lotusGreen */
+  --color-terminal-yellow: #77713f; /* lotusYellow */
+  --color-terminal-blue: #4d699b; /* lotusBlue4 */
+  --color-terminal-magenta: #b35b79; /* lotusPink, themes.lua lotus `syn.number` */
+  --color-terminal-cyan: #597b75; /* lotusAqua, themes.lua lotus `syn.type` */
+  --color-terminal-white: #545464; /* lotusInk1 */
+  --color-terminal-bright-black: #8a8980;
+  --color-terminal-bright-red: #d7474b; /* lotusRed2, `vcs.removed` */
+  --color-terminal-bright-green: #6e915f; /* lotusGreen2, `vcs.added` */
+  --color-terminal-bright-yellow: #836f4a; /* lotusYellow2, themes.lua lotus `syn.operator`/`syn.regex` */
+  --color-terminal-bright-blue: #6693bf; /* lotusTeal2, `syn.special1` — what `--color-icon-blue` rides: 2.18 on the page, so markdown links lean on their underline here, not their hue */
+  --color-terminal-bright-magenta: #624c83; /* lotusViolet4 */
+  --color-terminal-bright-cyan: #5e857a; /* lotusAqua2, `diag.hint` */
+  --color-terminal-bright-white: #43436c; /* lotusInk2 */
+  /* THE RAMP (`caution` + `thinking-*`) IS NOT DECLARED HERE, and that is the same
+   * documented reason `.theme-default-light` gives: a light reading inherits the
+   * light-safe readings `@theme` carries, and restating the ramp here would shadow
+   * them for a classless document. `themeTokens.test.ts` asserts the ramp is absent
+   * from `.theme-default-light` for exactly that reason, and this block's
+   * `extraBeyondDefault` is empty to match. The dark block above DOES own the ramp —
+   * it is the third reading, and that is where the re-hue belongs. */
+
+  /* THE 25 FILE-TYPE DESCRIPTORS ARE DELIBERATELY ABSENT, and so are the 54 identity
+   * and overlay tokens. Both sets are named in `inheritedFromDefault` in
+   * `src/lib/palettes/kanagawa.ts` — a stated intent, checked in BOTH directions by
+   * `paletteCompleteness.test.ts`, never a silent omission. The reason is the light
+   * reading's, not the dark one's: a LIGHT reading resolves the descriptors through
+   * `.dark`… to nothing, because it renders with no `.dark` class, so it lands on
+   * `@theme`'s light-safe readings — which are light-safe precisely because they were
+   * chosen for a light page. Restating the vivid dark hues here would put a
+   * `#ff5252` glyph on a `#e5ddb0` slab (2.33) and shadow the value a classless
+   * document also depends on. `.theme-default-light` DECLARES none of the 25 and names
+   * all 25 as inherited in its own spec row for the same reason, and this block follows
+   * it. */
+
+  /* NO UTILITY-CLASS NAMES APPEAR IN PROSE anywhere in this file, which the plan asks
+   * for and which this file keeps by naming SURFACES BY TOKEN instead. Recording the
+   * measurement behind the rule, because the plan's stated reason does not hold for a
+   * .css file: scanning this repo's `src/` with Tailwind v4.3.3's own candidate scanner
+   * (`@tailwindcss/oxide`) yields 15,387 candidates and NOT ONE of them comes from a CSS
+   * comment. Three chrome/utility tokens that both `dracula.css` and this file name in
+   * prose — the toast, the header and the selected-card fills — are extracted NOWHERE,
+   * while a `.md` file naming a class in prose IS scanned (which is what `src/index.css`'s
+   * `@source not "../docs/css-theme-tokens.md"` exists for). The rule is followed anyway:
+   * it costs nothing, the token name is the more precise reference regardless, and if
+   * Tailwind's CSS handling ever changes this file is already safe. Even this note avoids
+   * spelling them out, so the rule holds of the file that states it. */
+}

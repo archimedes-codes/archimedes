@@ -186,6 +186,7 @@ stripped and declarations counted by balanced-brace parse (the same method
 | "`.dark` minus `.theme-zai-dark` is empty" | **not empty — exactly the 6 ramp tokens** (`color-caution`, `color-thinking-low/medium/high/xhigh/max`) | false. It became non-empty the moment the ramp pair was introduced, and `paletteCompleteness.test.ts` now pins that difference as exactly those six |
 | `.theme-zai-light` "declares exactly `.dark`'s set" | **143 declarations**; `.theme-zai-light` ⊆ `.dark`, and `.dark` minus it is the same 6 ramp tokens | still true in substance, stated exactly |
 | `.theme-dracula` is "83 + 25 + 6 (114)" | **115 declarations = 84 structural + 25 descriptors + 6 ramp**, inheriting **59** of `.theme-zai-dark`'s 168 | stale by one (the `--color-context-track` role split); the block's own test pins 115 |
+| *(the row above, re-measured)* | **120 declarations = 89 structural + 25 descriptors + 6 ramp**, inheriting **54** of `.theme-default-dark`'s 168 | **This correction supersedes the row directly above it**, which was accurate on the day it was written and is now itself the stale claim. It is kept verbatim because this table is the record of what was believed at each pass — and because, until this row, it was the only place outside a test that stated these numbers in the present tense. Measured by `paletteCompleteness.test.ts` → `is 120 declarations: 89 structural + 25 descriptors + 6 ramp`, which asserts each figure by name: `[...DRACULA].length === 120`, `diff(DARK, INHERITED).length === 95` (the 89 structural **plus** the 6 ramp, which `.theme-default-dark` leaves to `.dark`), `DEFAULT_DARK.size === 168`, `INHERITED.length === 54`; the 89 is `95 − 6`. The move from 115/84/59 to 120/89/54 is ADR 0062 (`--color-row-icon`/`--color-row-verb` added to every layer, five dead row-KIND tokens deleted) and ADR 0071 (`--color-film-glyph` added to every layer) landing after this table was written. `docs/features/palettes.md` and the header of `src/styles/dracula.css` were corrected to these figures on 2026-11-12; this file was the last one still asserting the old three. |
 | the 25 `--color-file-*` descriptors "exist ONLY in `.theme-zai-dark`" | **`@theme` declares all 25**, and so does `.theme-zai-dark`; `.dark` and `.theme-zai-light` declare only the three `file-node*` role chips | **false, and it was false when written.** The hazard is real but the mechanism is different: a palette that omits a descriptor does not fail, it resolves through `.dark` to `@theme`'s light-safe reading — and 5 of those 25 fall below 3:1 on `#282a36` (`file-ts`/`file-py` 2.97, `file-sass`/`file-graphql` 2.88, `file-css` 2.73). That is why the restatement is forced. |
 | `foreground-subtle` "gets a lightened reading (`#9aa4c4`, 5.75)" | `#9aa4c4` is gone; it is `color-mix(in oklab, #f8f8f2 70%, transparent)` — **7.34 on the page, 6.33 on `#343746`, 5.41 on `#424450`** | superseded by the spec audit (amendment 3 above), recorded here because the Consequences bullet still named the invented hex |
 | `destructive` "`#ff5555` passes on the page (4.53) but fails on a raised row (2.91)" | `destructive` is `#ff6e6e`: **5.23 page / 4.33 on `#343746` / 3.54 on `#424450`**. `#ff5555` was 4.53 / 3.75 / 3.07 | both numbers stale, and the 2.91 quoted was `#ff5555` on Selection `#44475a`, not on a raised row |
@@ -296,3 +297,94 @@ still spec-published (Selection) so its surviving use as the terminal's
 translucent overlay is legal. The gate's job was never "use the ladder in the
 order the spec prints it" — it was "use only the spec's published values," and
 this shift does that.
+
+**Amendment (the default Palette is renamed `zai` → `default`, and the class
+names are uniform)**
+
+Two renames, one commit, no migration and no Rust change. The DECISION below —
+two orthogonal axes, at most one `.theme-*` class on `<html>`, palette blocks
+restating palette-owned tokens — is untouched by both.
+
+1. **The default Palette's id, its two mode strings and its two CSS classes
+   lose the `zai` name.** The name came from the ZCode port and collided with a
+   live model-provider id, so `palette: "zai"` became
+   `palette: "default"`, `AppTheme` became `"default-light" | "default-dark"`,
+   and the blocks became `.theme-default-light` / `.theme-default-dark`.
+   **There is no alias for the stored value.** A `settings.json` that still
+   holds `"palette": "zai"` is simply unrecognised, which is safe rather than
+   broken: `resolveTheme` branches on `palette === "dracula"` and on nothing
+   else, so any other value resolves by mode exactly as `null` does and the
+   Default palette renders; `closedSelectValue` renders the Default label for it
+   rather than blanking the picker, and re-saves nothing. Both halves are pinned
+   by tests (`settings.test.ts`, `SettingsPage.test.tsx`). The stale key
+   survives in the file — the repo's precedent for folding a renamed persisted
+   value is ADR 0066's read-once fold plus `skip_serializing`, and `palette` has
+   never been validated in Rust (`Option<String>`, `#[serde(default)]`, zero
+   branches on its value).
+2. **The class naming is uniform: `theme-<palette>-<mode>`.** So
+   `.theme-dracula` became **`.theme-dracula-dark`**, sparing a third palette no
+   future edit — uniformity is worth more than one file's diff. These class names
+   are applied at runtime from `theme.ts` and are persisted nowhere, so neither
+   rename costs compatibility.
+
+**What this does NOT rename: the Z.AI model provider.** `src-tauri/src/config.rs`
+`KNOWN_PROVIDERS` still holds `id: "zai"` / `id: "zai-api"` and their
+`api.z.ai` base URLs, asserted in `commands/settings.rs` and mirrored in the
+frontend's provider fixtures. The provider id and the old Palette value were the
+same string; "remove the branding" meant the theme naming, never the provider
+catalog.
+
+Two consequences worth stating, because both were latent rather than obvious:
+
+- **The Palette picker's save handler stopped naming its own options.** It read
+  `onSave({ palette: value === "zai" ? null : "dracula" })`, which would have
+  written `"dracula"` for a third palette's selection — correct while the
+  vocabulary was two, a silent mis-save the moment it is three. It now passes
+  the chosen value through and writes `null` only for the default sentinel.
+- **"Dark-only" is per-Palette, not a property of the axis.** This ADR's row
+  description ("Dracula is dark-only — it overrides the Theme setting") was true
+  of the only alternative Palette, so it read as a rule about palettes. A Palette
+  that ships a light reading follows the mode; the wording now says so. That is
+  what the five further Palettes added after this amendment rely on.
+
+**Amendment (2026-11-12) — the axis became data, and two of this ADR's
+Dracula-shaped rules turned out not to be about axes at all**
+
+The registry landed (`src/lib/palettes.ts`, one entry per Palette;
+`src/lib/palettes/<id>.ts` the grading rows; `src/lib/paletteTestKit.ts` the
+predicates) and the five gates that used to name Dracula now enumerate it. That
+made two of this ADR's premises visible as data rather than as code, and one of
+them is now a decision in its own right rather than a clause here:
+
+- **ADR 0104** holds the per-mode reading, the pinning, and the `zai` → `default`
+  rename with no alias. The DECISION above is untouched — the axes are still
+  orthogonal, and `palette: "dracula"` still pins dark — but the pinning is now
+  `modes: ["dark"]` on Dracula's entry, resolved by `paletteModeFor`, instead of
+  the `palette === "dracula"` branch that ran *before* the mode was consulted.
+  That branch is why "dark-only" read as a law about palettes for as long as it
+  did. The amendment above already announced both renames; ADR 0104 records the
+  two things it could not — that the hard drop was **measured by execution**
+  before it was written as code (`palette="tokyonight"` → the default's class),
+  including the residue that the picker only *renders* the default label and
+  never re-saves, so a stale `"zai"` survives in `settings.json`; and that the
+  Z.AI provider collision is a **shared string**, not a similar one, so the
+  rename must never be "finished" in Rust.
+- **ADR 0105** holds the ladder, and narrows ADR 0096. This ADR's Consequences
+  reasoned about elevation entirely in Dracula's terms — four strictly ascending
+  steps, `secondary` on the raised rung — because Dracula was the only Palette the
+  ladder gate *graded*. Both of those turned out to be Dracula's properties and
+  not the ladder's: a light reading **plateaus at the top** (the default light
+  reading's `frame #f0f0f0` L 0.8714 → `background #f8f8f8` 0.9387 →
+  `card #ffffff` 1.0000, and then ten tokens at `#ffffff`, because no light theme
+  publishes anything lighter than its own Base), and `secondary` is the
+  **recessed** step there (`#e6e6e6`, L 0.7913, below `card` at 1.0000) while it
+  **is** `card` in Dracula. Ladder group membership is therefore per-Palette
+  spec-data, and alpha is allowed on text tokens and refused on surfaces — the
+  last of those forced by a resolver that threw on an 8-digit hex while Catppuccin,
+  Rosé Pine, Everforest and Ayu all publish key UI colours with alpha.
+
+The generalisation from this ADR's earlier "count it, do not recall it" lesson
+applies one level up: a rule stated while exactly one subject exists to test it
+is a hypothesis about that subject, not a rule about the axis. Both of these ADRs
+exist because the second and third subjects disagreed.
+

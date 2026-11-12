@@ -3,6 +3,13 @@ import { createHighlighter, type Highlighter } from "shiki";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import type { ToolCallUiStatus } from "../store/sessions";
 import { useSettings } from "../store/settings";
+import { modeOf } from "../lib/theme";
+import {
+  paletteFor,
+  paletteModeFor,
+  shikiThemeFor,
+  shikiThemesToLoad,
+} from "../lib/palettes";
 import { fileIconFor } from "../lib/fileIcons";
 import { useCopyButton } from "../hooks/useCopyButton";
 import { StatusIcon } from "./SubagentStatusIcon";
@@ -68,12 +75,18 @@ const CODE_BODY_CLASS = "overflow-x-auto p-3 font-mono text-sm";
  * the only difference from `MessageBubble`'s copy is that this is a second
  * instance of the SAME pattern with the SAME theme/lang set — no `package.json`
  * change, no new grammar (`javascript` is already in the allowlist).
+ *
+ * The `themes:` list is the SAME registry-derived list as `AgentMarkdown`'s, and
+ * that is the point: two singletons each carrying their own literal list is how a
+ * newly registered Palette highlights with `github-dark` while the suite stays
+ * green. `paletteCompleteness.test.ts` asserts BOTH files load the registry's
+ * ids, by reading both files' sources.
  */
 let highlighterPromise: Promise<Highlighter> | null = null;
 function getCodemodeHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighter({
-      themes: ["github-dark", "dracula"],
+      themes: shikiThemesToLoad(),
       langs: [
         "bash",
         "rust",
@@ -92,6 +105,21 @@ function getCodemodeHighlighter(): Promise<Highlighter> {
 }
 
 /**
+ * The themes THIS singleton actually loaded — the second half of the "every
+ * registry Shiki id is loaded" gate.
+ *
+ * EXPORTED FOR THAT GATE. Two singletons carried their own literal `themes:` list
+ * and had already drifted once, so a gate that checked only one file would let a
+ * Palette highlight correctly in the transcript and fall back to plain text in a
+ * codemode card. `getLoadedThemes()` reads the answer Shiki holds rather than
+ * re-deriving the argument, so the assertion cannot pass by comparing an
+ * expression with itself.
+ */
+export async function loadedCodemodeShikiThemes(): Promise<string[]> {
+  return (await getCodemodeHighlighter()).getLoadedThemes();
+}
+
+/**
  * The script body: header (glyph + `javascript` label + copy) above the
  * highlighted body. A named component because it holds hooks (mirroring
  * `MessageBubble`'s `CodeBlock`), and the header renders whether or not the
@@ -99,9 +127,20 @@ function getCodemodeHighlighter(): Promise<Highlighter> {
  */
 function ScriptBlock({ code }: { code: string }) {
   const [html, setHtml] = useState<string | null>(null);
-  // (ADR 0027) The syntax theme DERIVES from the palette, so an already-mounted
-  // card re-highlights when the settings UI changes it — no reload.
-  const palette = useSettings((s) => s.settings?.palette ?? "zai");
+  // (ADR 0027 → ADR 0104) The syntax theme DERIVES from the palette AND the mode,
+  // so an already-mounted card re-highlights when either changes in the settings
+  // UI — no reload. The stored default (`null`, or nothing loaded yet) is the
+  // Default palette. This file used to INLINE its own copy of
+  // `palette === "dracula" ? … : …`; it now imports `shikiThemeFor` from the
+  // registry, because an inlined second copy of the rule is a rule that can drift
+  // — and this one could not see the mode at all, so a card on a light bubble
+  // under the Default palette highlighted with dark paper.
+  const palette = useSettings((s) => s.settings?.palette ?? "default");
+  const theme = useSettings((s) => s.settings?.theme ?? "dark");
+  // The mode comes from the STORE, not from `documentElement.classList`: the
+  // latter is imperative and is not a React subscription, so a card that was
+  // already mounted would keep the previous mode's paper colour forever.
+  const shikiMode = paletteModeFor(paletteFor(palette), modeOf(theme));
   const { copied, copy: handleCopy } = useCopyButton(code);
   const descriptor = fileIconFor("x.javascript");
   const Icon = descriptor.icon;
@@ -114,7 +153,7 @@ function ScriptBlock({ code }: { code: string }) {
         setHtml(
           highlighter.codeToHtml(code, {
             lang: "javascript",
-            theme: palette === "dracula" ? "dracula" : "github-dark",
+            theme: shikiThemeFor(palette, shikiMode),
           }),
         );
       } catch {
@@ -124,9 +163,9 @@ function ScriptBlock({ code }: { code: string }) {
     return () => {
       cancelled = true;
     };
-    // `palette` is a dependency on purpose: it is what re-runs `codeToHtml` the
-    // instant the palette changes (both themes are already loaded).
-  }, [code, palette]);
+    // `palette` AND `shikiMode` are dependencies on purpose: they are what re-runs
+    // `codeToHtml` the instant either axis changes (the themes are already loaded).
+  }, [code, palette, shikiMode]);
 
   const header = (
     <div

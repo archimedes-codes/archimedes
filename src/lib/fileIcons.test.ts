@@ -10,7 +10,7 @@ import {
 /**
  * The file-type DESCRIPTOR colors (ZCode's DESIGN.md: "Keep file-type icons
  * on their own descriptor colors"). They are deliberately NOT the semantic
- * tokens: `--color-brand` is WHITE in zai-dark, so a `.tsx` chip painted with
+ * tokens: `--color-brand` is WHITE in default-dark, so a `.tsx` chip painted with
  * it rendered colorless, and `.rs`/`.py` painted with `--color-destructive`/
  * `--color-success` claimed a file had failed or been added. Each hue is the
  * fill of the Material Icon Theme SVG ZCode renders for that type.

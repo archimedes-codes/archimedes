@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { readResolvedIndexCss, stripCssComments } from "./cssSource";
+import { cssReader, listPaletteSpecs, readCssFile, stripComments } from "./paletteTestKit";
+import { paletteClass, themeClassNames } from "./palettes";
+import type { PaletteMode, PaletteSpec } from "./paletteSpec";
 
 /**
  * THE ONE COLLISION THE ISLAND LAYOUT BUYS ON PURPOSE (ADR 0027, option B).
@@ -49,14 +51,102 @@ const contrast = (a: string, b: string) => {
   return (hi + 0.05) / (lo + 0.05);
 };
 
-const dracula = (token: string): string => {
-  const css = stripCssComments(readResolvedIndexCss());
-  const body = css.match(/^\.theme-dracula\s*\{/m)!;
-  const start = css.indexOf(body[0]!);
-  const block = css.slice(start, css.indexOf("}", start));
-  const v = block.match(new RegExp(`--color-${token}\\s*:\\s*([^;]+);`))![1]!;
-  return v.trim().toLowerCase();
+/**
+ * THE PALETTE BLOCKS, READ FROM EACH PALETTE'S OWN CSS FILE.
+ *
+ * This used to read the RESOLVED `index.css` with a reader that cut the block at
+ * the FIRST `}`. Both halves were wrong for the same reason, and the second was
+ * the quieter bug:
+ *
+ * (1) THE RESOLVED SHEET DOES NOT CONTINUE TO EXIST FOR A PALETTE THAT HAS NOT
+ *     LANDED. `readResolvedIndexCss()` inlines only the `@import`s that are
+ *     present, so a gate reading it either goes red for a Palette whose import
+ *     has not landed yet or has to skip it — and skipping makes the gate vacuous
+ *     for exactly the Palettes it exists to grade. Reading `spec.cssFile` grades
+ *     the Palette before its import exists, which is what lets Wave 3 add four
+ *     Palettes in parallel. See the kit's header for the full statement.
+ * (2) THE FIRST-`}` READER TRUNCATED. A block containing any nested rule (an
+ *     `@media` inside a selector) was cut short, so a token declared after it
+ *     read as UNDECLARED — and this file's reader throws on undeclared, so the
+ *     failure message named the wrong thing. `cssReader`'s `block()` counts brace
+ *     depth instead. Verified equivalent on today's tree: every token this file
+ *     reads resolves to the same lowercase value under both readers in all three
+ *     palette blocks, so this is a strengthening, not a re-grade.
+ *
+ * The block set is DERIVED FROM THE REGISTRY (`themeClassNames()`), not written
+ * out: a hardcoded three-name list is the instrument that missed the default-dark
+ * pill collision in the first place, and a fourth Palette added to it by hand is
+ * a Palette this file does not look at.
+ */
+const SPECS = await listPaletteSpecs();
+
+/** Look up a spec row by id. Throws rather than returning `undefined`: a missing
+ *  row would turn the loop below into a silent skip of that Palette. */
+const specFor = (id: string): PaletteSpec => {
+  const found = SPECS.find((spec) => spec.id === id);
+  if (!found) throw new Error(`no spec row for "${id}" in src/lib/palettes/`);
+  return found;
 };
+
+const escapeRegExp = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** A palette class name → the reader of the FILE that declares its block.
+ *  KEYED BY THE CSS SELECTOR (`.theme-…`), because `paletteClass()` answers with
+ *  the bare class (`theme-dracula-dark`) while every selector this file matches —
+ *  and every test title it prints — carries the leading dot. */
+type PaletteReader = ReturnType<typeof cssReader>;
+
+const selectorFor = (className: string): string => `.${className}`;
+
+const readerByClass = new Map<string, PaletteReader>();
+for (const className of themeClassNames()) {
+  const owner = SPECS.find((spec) =>
+    (["light", "dark"] as const).some(
+      (mode) => paletteClass(spec.id, mode) === className,
+    ),
+  );
+  if (!owner) {
+    throw new Error(
+      `${className} is in the registry but no row in src/lib/palettes/ grades it, so this gate cannot know which CSS file declares it`,
+    );
+  }
+  readerByClass.set(selectorFor(className), cssReader(stripComments(readCssFile(owner.cssFile))));
+}
+
+/** Every `--color-*` a palette block declares in its OWN right — no cascade
+ *  fallback, deliberately: the assertions below compare tokens WITHIN one block
+ *  (a fill against the card it sits on), and merging `.dark`/`@theme` in would
+ *  let a token that only exists in the base read as if the palette stated it. */
+const ownTokensOf = (className: string): Record<string, string> => {
+  const reader = readerByClass.get(className);
+  if (!reader) {
+    throw new Error(
+      `${className} has no reader — it is not a class the registry can produce`,
+    );
+  }
+  return reader.values(
+    reader.block(new RegExp(`^${escapeRegExp(className)}\\s*\\{`, "m")),
+  );
+};
+
+/** Read one token out of one palette block, as the lowercase value the file
+ *  states. Throws with both names, because a token that is merely absent must
+ *  never read as "the assertion passed". */
+const themeVar = (className: string, token: string): string => {
+  const value = ownTokensOf(className)[`color-${token}`];
+  if (value === undefined) {
+    throw new Error(`--color-${token} is not declared in ${className}`);
+  }
+  return value.trim().toLowerCase();
+};
+
+/** The Dracula reading's class, from the registry rather than spelled here — the
+ *  collision this file's first describe grades is Dracula's own (ADR 0027), so it
+ *  stays palette-specific ON PURPOSE; only its READ moved to the spec row. */
+const DRACULA_CLASS = selectorFor(paletteClass(specFor("dracula").id, "dark" satisfies PaletteMode));
+
+const dracula = (token: string): string => themeVar(DRACULA_CLASS, token);
 
 /**
  * A component's source with its COMMENTS removed — the only safe reader for
@@ -187,7 +277,7 @@ describe("floats over the content slab (the accepted collision)", () => {
  * The three small pills on the Task board (the `T{n}` number, the spec chip, the
  * column count) originally shipped on `bg-chat`, justified by a comment that
  * measured ONE palette: "`bg-chat` is the one token that reads on BOTH surfaces
- * it can sit near (1.22 / 1.21)". Those are Dracula figures. In `.theme-zai-dark`
+ * it can sit near (1.22 / 1.21)". Those are Dracula figures. In `.theme-default-dark`
  * the same token is not merely weaker, it is EXACTLY the card — not 1.0X, 1.00 —
  * by algebra, not by a colour-space approximation:
  *
@@ -199,50 +289,71 @@ describe("floats over the content slab (the accepted collision)", () => {
  *
  * A pill is a fill on a surface it must not be. The fill therefore has to differ
  * from BOTH surfaces it can land on — the column (`bg-panel`) and the card
- * (`bg-card`) — in EVERY palette, and `bg-chat` fails that in zai-dark.
+ * (`bg-card`) — in EVERY palette, and `bg-chat` fails that in default-dark.
  * `bg-background` (the page step) clears both everywhere: 1.10 / 1.34 Dracula,
- * 1.11 / 1.28 zai-dark, 1.06 / 1.06 zai-light. Its ink
+ * 1.11 / 1.28 default-dark, 1.06 / 1.06 default-light. Its ink
  * (`text-foreground-subtle`) stays readable on it in all three: 7.04 / 5.78 / 4.70.
  *
- * WHY THE SHAPE OF THESE ASSERTIONS IS SPLIT. `--color-chat` and, in the zai
+ * WHY THE SHAPE OF THESE ASSERTIONS IS SPLIT. `--color-chat` and, in the default
  * palettes, `--color-background` too are `color-mix(…)` / `var(…)` expressions
- * that this file's own docblock already refuses to treat as a hex, so the zai
+ * that this file's own docblock already refuses to treat as a hex, so the default
  * palettes are graded STRUCTURALLY (the fill token must not resolve to either
  * surface it lands on) and Dracula — literal hexes — is graded NUMERICALLY. And
- * the zai-dark collision is asserted as a FACT the way the float/slab collision
+ * the default-dark collision is asserted as a FACT the way the float/slab collision
  * above is: this file's job is to count the price, not to hope it away.
  *
  * WHY `bg-panel` / `bg-input` / `bg-secondary` / `bg-frame` are NOT the fix: each
  * of them also hits 1.00 somewhere (`input` and `secondary` are literally the
- * card in zai-dark; `panel` and `frame` are `#ffffff` in zai-light; `panel` is
- * `#191a21` = `frame` = `input` in Dracula). The 1.00s are a property of the zai
+ * card in default-dark; `panel` and `frame` are `#ffffff` in default-light; `panel` is
+ * `#191a21` = `frame` = `input` in Dracula). The 1.00s are a property of the default
  * collapses, not of one bad token — so the gate below is an INVARIANT (the fill
  * must not equal either surface), never a banned-token list.
  */
-describe("the board pills' fill, per palette (the zai-dark collision)", () => {
-  /** Read one token out of one palette block of the RESOLVED stylesheet — the
-   *  same reader shape as `dracula()` above, parameterised by selector, because
-   *  a single-palette reader is precisely the instrument that missed this. */
-  const themeVar = (selector: string, token: string): string => {
-    const css = stripCssComments(readResolvedIndexCss());
-    const head = css.match(new RegExp(`^\\${selector}\\s*\\{`, "m"));
-    if (!head) {
-      throw new Error(`${selector} is not in the resolved stylesheet`);
-    }
-    const start = css.indexOf(head[0]);
-    const block = css.slice(start, css.indexOf("}", start));
-    const value = block.match(new RegExp(`--color-${token}\\s*:\\s*([^;]+);`));
-    if (!value) {
-      throw new Error(`--color-${token} is not declared in ${selector}`);
-    }
-    return value[1]!.trim().toLowerCase();
-  };
+describe("the board pills' fill, per palette (the default-dark collision)", () => {
+  /**
+   * Every reading the registry can produce, derived rather than listed.
+   *
+   * `themeVar` and this list both used to be inside this `describe`, and the list
+   * was three hardcoded class names — which is exactly the shape that let the
+   * bug this describe grades survive: the pill fill was chosen from Dracula's
+   * arithmetic and the gate enumerated palettes by hand, so the palette that
+   * actually collapsed (`default-dark`) was in the list only because someone had
+   * remembered it. A Palette registered without a name appearing here is a
+   * Palette whose pill collision is ungraded, so the list comes from
+   * `themeClassNames()`.
+   *
+   * This is a WIDENING, not a loosening: the three names it produced by hand are
+   * precisely the three the registry produces today (`default` ships light +
+   * dark, `dracula` ships dark), so the assertions below run on the same set —
+   * and on every future Palette's, for free.
+   */
+  const PALETTES = themeClassNames().map(selectorFor);
 
-  const PALETTES = [
-    ".theme-dracula",
-    ".theme-zai-dark",
-    ".theme-zai-light",
-  ] as const;
+  /** Non-vacuity, before any assertion reads it: the derived table is the set
+   *  this gate was written against. A registry that lost a reading would shrink
+   *  the loop below to nothing and stay green. */
+  it("grades every reading the registry offers", () => {
+    // Derived from `themeClassNames()`, pinned so a registry that silently lost a
+    // reading shrinks the loop below to nothing and is caught. Task 7b registered
+    // Everforest; the closeout registered the other four Palettes, so all thirteen
+    // readings the registry can now produce are graded here — seven Palettes × two
+    // readings, minus Dracula's missing light one.
+    expect([...PALETTES].sort()).toEqual([
+      ".theme-ayu-dark",
+      ".theme-ayu-light",
+      ".theme-catppuccin-dark",
+      ".theme-catppuccin-light",
+      ".theme-default-dark",
+      ".theme-default-light",
+      ".theme-dracula-dark",
+      ".theme-everforest-dark",
+      ".theme-everforest-light",
+      ".theme-kanagawa-dark",
+      ".theme-kanagawa-light",
+      ".theme-rose-pine-dark",
+      ".theme-rose-pine-light",
+    ]);
+  });
 
   for (const palette of PALETTES) {
     it(`${palette}: the pill fill is neither surface it can land on`, () => {
@@ -274,19 +385,19 @@ describe("the board pills' fill, per palette (the zai-dark collision)", () => {
     ).toBeGreaterThan(1.05);
   });
 
-  it("measures the zai-dark collision at exactly 1.00 — the bug is real, not a rumour", () => {
+  it("measures the default-dark collision at exactly 1.00 — the bug is real, not a rumour", () => {
     // Mirrors `measures the collision at exactly 1.00` above: the failure mode
     // gets ASSERTED, so a future change that breaks the algebra (giving `chat`
-    // its own step in zai-dark) reddens this and points at the prose.
-    const chat = themeVar(".theme-zai-dark", "chat");
-    const card = themeVar(".theme-zai-dark", "card");
+    // its own step in default-dark) reddens this and points at the prose.
+    const chat = themeVar(".theme-default-dark", "chat");
+    const card = themeVar(".theme-default-dark", "card");
     // `--color-chat` is a `color-mix(…)` — compare it STRUCTURALLY, as the
     // docblock above insists, by resolving its base token inside the same block.
     const base = chat.match(/var\(--color-([a-z-]+)\)/);
     const percent = chat.match(/(\d+)%/);
-    expect(base, `--color-chat in zai-dark is not a color-mix over a token: ${chat}`).toBeTruthy();
+    expect(base, `--color-chat in default-dark is not a color-mix over a token: ${chat}`).toBeTruthy();
     expect(percent, `--color-chat carries no percentage: ${chat}`).toBeTruthy();
-    const baseValue = themeVar(".theme-zai-dark", base![1]!);
+    const baseValue = themeVar(".theme-default-dark", base![1]!);
     // THE collision, as algebra: the mix's base token IS the card token.
     expect(baseValue, "--color-background-win-alt vs --color-card").toBe(card);
     // Compositing `chat` over `card`: 0.6·base + 0.4·card, and base === card, so
@@ -303,7 +414,7 @@ describe("the board pills' fill, per palette (the zai-dark collision)", () => {
     };
     const composited = mixOver(baseValue, card, Number(percent![1]) / 100);
     expect(composited, "chat composited over card must BE the card").toBe(card);
-    expect(contrast(composited, card), "zai-dark pill fill vs card").toBeCloseTo(1, 5);
+    expect(contrast(composited, card), "default-dark pill fill vs card").toBeCloseTo(1, 5);
   });
 
   /** The pills, named by the class shape that identifies them, read from the
@@ -345,7 +456,7 @@ describe("the board pills' fill, per palette (the zai-dark collision)", () => {
       for (const literal of literals) {
         // `bg-chat` is the island plane: inside the board it is the COLUMN the
         // pill's own card sits on, so a pill wearing it is a pill wearing the
-        // surface under it (1.00 in zai-dark, and 1.00 against `bg-card` there).
+        // surface under it (1.00 in default-dark, and 1.00 against `bg-card` there).
         expect(literal, `${pill.label} fell back to the island plane`).not.toMatch(
           /(^|\s)bg-chat(\s|$)/,
         );

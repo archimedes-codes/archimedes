@@ -64,7 +64,7 @@ cost of keeping them is near-zero and deleting them would force a re-derivation)
   /`text-terminal-*` classes). They are kept because the values are the **published
   16-colour ANSI table** — copying it is free and leaves no half-owned palette, whereas
   a future terminal that inherits `.dark`'s generic UI greys would have to be re-tuned
-  from scratch. `.theme-dracula` already owns all 22 (`TERMINAL_ANSI`) for this reason.
+  from scratch. `.theme-dracula-dark` already owns all 22 (`TERMINAL_ANSI`) for this reason.
   The 22nd — the one not on the unconsumed list — is read today, by CSS:
   `--color-icon-blue: var(--color-terminal-bright-blue)`.
 
@@ -102,7 +102,7 @@ only to keep this change scoped to deletions that `tsc` can police):
 ## The completeness tests keep enforcing them meanwhile
 
 None of this is a licence to let the palettes drift. `paletteCompleteness.test.ts` asserts
-set-equality **in both directions** across `.theme-zai-dark` and `.theme-dracula`, so a
+set-equality **in both directions** across `.theme-default-dark` and `.theme-dracula-dark`, so a
 token silently dropped from one palette fails by name; the 54-token `INHERITED` list is the
 existing, already-enforced record of which of these are **intentionally** inherited rather
 than restated. `themeTokens.test.ts` grades the per-layer table the same way. So an

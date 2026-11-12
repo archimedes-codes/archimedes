@@ -1,0 +1,625 @@
+/*
+ * The Rosé Pine PALETTE (ADR 0027) — a color scheme, not a light/dark mode.
+ * `.theme-rose-pine-dark` is Rosé Pine's `main` variant, `.theme-rose-pine-light`
+ * is its `dawn` variant. `src/lib/theme.ts` applies the dark reading as `.dark` +
+ * `.theme-rose-pine-dark` and the light reading with NO `.dark` class, so each
+ * block is a PARTIAL diff over the shared base layers: dark restates 114 of
+ * `.theme-default-dark`'s 168 tokens and inherits 54, light restates 89 and
+ * inherits 79 (the same 54 plus the 25 file-type descriptors, whose light-safe
+ * `@theme` readings are already the right ones for a light page).
+ *
+ * SOURCE OF TRUTH: https://rosepinetheme.com/palette and the `rose-pine/palette`
+ * repository. `source/index.ts` there is the machine-readable master the site's
+ * own generated code blocks are built from, and `dist/css/rose-pine-media.css` is
+ * the file that EMITS CSS VARIABLES — 15 roles per variant. That same file also
+ * settles the pairing: it serves `dawn` at `:root` and `main` under
+ * `prefers-color-scheme: dark`, so dark = main / light = dawn is Rosé Pine's own
+ * mapping and not this app's invention. `moon` is deliberately not shipped: the
+ * registry has one dark slot and one light slot per Palette, and moon is a second
+ * dark.
+ *
+ * WHAT WAS REJECTED, AND WHY. Three shortcuts were available; all three are
+ * refused, and each refusal is a failure this repository has already paid for.
+ *
+ * - A community port's value set. The Dracula block's first version was
+ *   transcribed from a legacy port that mislabelled Selection as Current Line,
+ *   and reading that label literally made the selection colour the app's border
+ *   colour at 1.56 on the page. Every hex here is from `source/index.ts` / the
+ *   site's own generated output, and where those two DISAGREE the divergence is
+ *   recorded below rather than resolved silently.
+ * - Rosé Pine's `alpha` variants of the three highlight roles. They are real
+ *   published values — `highlightMed.alpha.hex` is `6e6a8633`, i.e. `muted` at
+ *   20%, and the README's role table assigns `highlightMed` as "selection
+ *   background (paired with text foreground)". They are used exactly ONCE, as the
+ *   terminal's translucent selection overlay, for the same reason Dracula keeps
+ *   its Selection `#44475a` only there: SELECTION IS NEVER A BORDER AND NEVER A
+ *   RESTING SURFACE. ADR 0105 allows alpha on TEXT tokens and refuses it on
+ *   SURFACE tokens, so the app's selected-state token carries the OPAQUE
+ *   `highlightMed` hex and `#6e6a8633` sits over whatever the terminal cell
+ *   painted, where it is not a surface at all.
+ * - Inventing hues to widen the ladder. Rosé Pine publishes six dark neutrals
+ *   and six light ones; both readings below use only those, which is why the dark
+ *   ladder's first three hops are small (see THE PRICE below) rather than
+ *   comfortably spaced with a made-up step in the middle.
+ *
+ * ONE DIVERGENCE IN THE SOURCE ITSELF, recorded rather than silently picked.
+ * Dawn's `text` role is `575279` in `source/index.ts` and in `dist/json/*`, but
+ * rosepinetheme.com's own generated dawn blocks (CSS, JSON and TOML alike) publish
+ * `464261`. Both are Rosé Pine's. This block takes `#575279`, the repository's
+ * machine-readable master. It is also the WEAKER of the two on dawn's base, so it
+ * is the conservative choice: the light walls below are recorded against the ink
+ * that forces them, not the one that hides them.
+ *
+ * SURFACES follow the specification's own vocabulary, which is why the
+ * `LadderGroup` labels in `src/lib/palettes/rose-pine.ts` quote Rosé Pine's role
+ * names verbatim: `base` ("primary background … main application panels"),
+ * `surface` ("low contrast background ATOP base"), `overlay` ("medium contrast
+ * background atop surface"), `highlightLow` ("cursor line"), `highlightMed`
+ * ("selection background"), `highlightHigh` ("cursor background, borders"). The
+ * USAGE column of that table, not taste, decides which token sits on which rung.
+ *
+ * ── `.theme-rose-pine-dark` (main). FOUR resting rungs plus the selection
+ *    state, and that is the whole ladder Rosé Pine offers. Luminances are the kit's `lumOf`, measured not recalled:
+ *      #191724  base          L 0.0095  the page, the chrome band, the tab strip
+ *      #1f1d2e  surface       L 0.0137  the recessed step: form controls, popover
+ *                                        header, the cards inside the slab, the
+ *                                        composer island
+ *      #21202e  highlightLow  L 0.0155  the content slab and every float
+ *      #26233a  overlay       L 0.0192  RAISED: cards, badges, menu hover
+ *      #403d52  highlightMed  L 0.0504  the SELECTION state — off the ladder,
+ *                                        above every resting rung
+ *    `highlightHigh #524f67` (L 0.0837) is NOT a resting surface. The spec
+ *    assigns it to "cursor background, borders", so it is `--color-border` and the
+ *    context bar's track; promoting it to a sixth resting step would also put a
+ *    resting plane ABOVE the selection state, which inverts what the role table
+ *    says `highlightMed` is for.
+ *    THE PRICE OF A FOUR-RUNG DARK LADDER, stated plainly: the adjacent hops are
+ *    1.071 / 1.029 / 1.056. Rosé Pine's three dark neutrals and its low highlight
+ *    sit within 0.01 luminance of one another, so the first three rungs are barely
+ *    separable BY FILL alone. Measured against Dracula with the same function
+ *    rather than recalled from its doc-comment (whose figures are one rung
+ *    optimistic for exactly that reason), Dracula's four hops are 1.098 / 1.109 /
+ *    1.208 / 1.221 — so Rosé Pine's smallest hop is not far off Dracula's smallest,
+ *    but Dracula never goes below 1.09 and Rosé Pine goes to 1.029, and Dracula's
+ *    top two hops are a third wider. This is a property of the specification, not
+ *    of the assignment: the dark neutrals are
+ *    `#191724 #1f1d2e #21202e #26233a #403d52 #524f67` and any four-rung use of
+ *    them walks the same three small hops. What carries separation here is the
+ *    border (`highlightHigh`, 2.04 on the slab) and the float shadows, and
+ *    `slabFloatSeparation.test.ts` pins those shadows for exactly this reason.
+ *
+ * ── `.theme-rose-pine-light` (dawn). Six rungs, strictly ascending — and this is
+ *    where Rosé Pine does NOT hit the ADR 0105 plateau a light reading usually
+ *    hits, because dawn publishes TWO neutrals above its own base: `surface` is
+ *    defined as "atop base", so there is somewhere to put the raised planes.
+ *      #cecacd  highlightHigh L 0.5977  the context bar's track (the darkest step)
+ *      #dfdad9  highlightMed  L 0.7084  the recessed chip step: badge, inline-code
+ *                                        chip, menu hover
+ *      #f2e9e1  overlay       L 0.8259  the chrome band, the tab strip, tooltip
+ *      #f4ede8  highlightLow  L 0.8563  the content slab, the popover header
+ *      #faf4ed  base          L 0.9114  THE PAGE
+ *      #fffaf3  surface       L 0.9610  every raised plane — card, input, menu,
+ *                                        popover, panel, header, toast, composer
+ *    Hops 1.171 / 1.155 / 1.035 / 1.061 / 1.052. `--color-frame` takes `overlay`,
+ *    a DARKER published value than the page, because a chrome band must sit below
+ *    the planes it frames; dawn's `highlightHigh` at 1.48 from the page would read
+ *    as a fourth surface rather than as the frame. The ONE plateau dawn does have
+ *    is the selection state: `--color-card-selected` is `#fffaf3`, i.e. `card`
+ *    itself, because nothing in a light palette is lighter than its own `surface`.
+ *    That is the `at-or-above-card` rule and the same designed collapse ADR 0096
+ *    records for `default-light` — separation there is carried by
+ *    `--color-card-border`, not by fill.
+ *
+ * THE CONTRAST WALLS. Every figure is the kit's `contrast()` over `resolveToHex`
+ * output, composited against the surface named. None is recalled from another
+ * palette, and none is rounded down.
+ *
+ * DARK: NO exemption on the resting or raised class. All seven graded text tokens
+ * clear 4.5 on every resting plane (worst 4.68 — `foreground-subtlest` on the
+ * `#21202e` slab) and on the raised step (worst 4.52, the same token on
+ * `#26233a`). Both walls are on the SELECTION state `#403d52`:
+ *   `--color-foreground-subtlest` 3.63   `--color-destructive` 3.60
+ * Both carry `expiresAt: 4.5` in the spec row, so neither exemption can outlive
+ * its reason. They are walls and not defects for the same reason Dracula's are:
+ * `highlightMed` is the brightest step Rosé Pine publishes, and raising a
+ * de-emphasis token until it clears 4.5 there collapses it into `foreground-subtle`
+ * (which is only 4.83 there), i.e. a de-emphasis token that does not de-emphasise.
+ *
+ * LIGHT: dawn is the lightest reading in this plan and its darkest published ink
+ * is 6.66 on its own base, so a de-emphasis tier has almost no headroom and the
+ * status hues have less. Grading the CHROME BAND (`--color-frame`, `#f2e9e1`)
+ * rather than only the page matters because it is the WORST resting plane for all
+ * seven graded tokens. Ten walls in total — four resting, six raised — each with
+ * its measured floor and `expiresAt: 4.5`, are in the spec row; the headline is that
+ * `--color-warning` is `gold`, the only amber dawn publishes, and it reaches 1.87
+ * resting / 1.62 raised — the worst token in the palette, and the one place a
+ * reader should expect a documented failure rather than a fix.
+ *
+ * `--color-border` does not clear 3:1 in the DARK reading: `highlightHigh` is what
+ * the role table assigns to borders and it is 2.25 from `base`, 2.04 from the slab.
+ * Recorded, not fixed, because the alternative is a hue Rosé Pine does not publish
+ * — and because the Default palette's own light border measures 1.23 on its page
+ * by the same maths, so a hairline that quiet is existing house behaviour. The
+ * LIGHT reading does clear it, at 4.02, and that is a deliberate departure from the
+ * role table: dawn's `highlightHigh` at 1.48 is unusable as a boundary, so the
+ * light border takes `subtle`, the nearest published neutral that clears 3:1.
+ *
+ * DELIBERATE DEPARTURES FROM THE SPECIFICATION — four, stated plainly.
+ *
+ * 1. THE TWO DE-EMPHASIS TIERS ARE `text` AT AN ALPHA, NOT the published neutral
+ *    roles. Rosé Pine publishes `muted` ("low contrast foreground") and `subtle`
+ *    ("medium contrast foreground"), and they cannot be used for these two tokens:
+ *    `muted #6e6a86` is 3.42 on the page and 3.10 on the slab, i.e. below the 4.5
+ *    text floor everywhere copy lands, and `subtle #908caa` clears it (4.97 on the
+ *    slab) but then sits only 1.06 above this block's `foreground-subtlest`, which
+ *    defeats the point of shipping two tiers. Both de-emphasis tokens are therefore
+ *    `text` at 70% and 55% — on-palette at every elevation rather than one hand-
+ *    picked grey tuned to one surface, and the same derivation Dracula uses. The
+ *    two tiers separate by 1.42 on the slab.
+ * 2. `--color-border` IN THE LIGHT READING TAKES `subtle`, not `highlightHigh`
+ *    (above).
+ * 3. THE ANSI SET IS THE SPEC'S OWN ROLE TABLE, AND THERE IS NO BRIGHT ROW. The
+ *    README assigns `love` = terminal red, `gold` = terminal yellow, `rose` =
+ *    terminal cyan, `pine` = terminal green, `foam` = terminal blue, `iris` =
+ *    terminal magenta; those six are used verbatim. Rosé Pine publishes NO
+ *    intensified ANSI row, so `bright-*` repeats its normal counterpart rather
+ *    than being tinted toward white — an invented tint would be a hue the source
+ *    does not publish, which is the one thing the spec gate exists to refuse.
+ *    One consequence is live today: `--color-icon-blue` is `@theme`'s alias to
+ *    `--color-terminal-bright-blue`, so markdown links and diff `@@` hunks ride
+ *    `foam #9ccfd8` in the dark reading (10.37 on the page, 9.41 on the slab,
+ *    8.91 on a card) instead of `.dark`'s sky reading.
+ * 4. THE 25 FILE-TYPE DESCRIPTOR HUES ARE OFF-SPEC ON PURPOSE. They are IDENTITY
+ *    colors (`CONTEXT.md`): the hue encodes what KIND of file a chip is, so a
+ *    palette must not re-hue them, and Rosé Pine's twelve roles cannot name
+ *    twenty-five file types without making a `.py` chip indistinguishable from a
+ *    `.json` one. They are copied from `.theme-default-dark` verbatim except
+ *    `file-css`, which the default palette reads `#7e57c2` — 2.91 on this block's
+ *    raised step, under the 3:1 glyph floor, and this is a palette that already
+ *    publishes a purple, so CSS reads `iris #c4a7e7` (7.25 there). The other 24
+ *    are allow-listed BY NAME in the spec row, one reason each, never as a family.
+ *
+ * WHY 114 OF 168 AND NOT ALL OF THEM: the same **Identity color** rule. The usage
+ * and heatmap scales, the context-breakdown steps, the git statuses, the transcript
+ * role chips, the white overlays and the wordmark gradient all encode WHAT a thing
+ * is rather than how a palette dresses it, so they stay on `.dark`'s readings and
+ * are named in the spec row's `inheritedFromDefault` — asserted as a SET EQUALITY
+ * IN BOTH DIRECTIONS by the kit, so a token added to `.theme-default-dark` must be
+ * classified rather than silently dropped or silently inherited.
+ *
+ * The six ramp tokens (`--color-caution` and `--color-thinking-*`) are NOT
+ * declared by either block and NOT named in `inheritedFromDefault`, because they
+ * are not in `.theme-default-dark`'s set at all — they live in `@theme` and
+ * `.dark`. Rosé Pine publishes no five-step severity ramp, and inventing one would
+ * mean six hues the source does not publish, so both readings take the shared
+ * dark/light-safe readings. The dark reading's inherited `caution` clears 4.5 on
+ * every dark plane it can land on (worst 5.46 on the selection step); the light
+ * reading's inherited one is a recorded wall at 4.11 on the chrome band.
+ */
+.theme-rose-pine-dark {
+  /* surfaces — the specification's five dark steps. THE PLANES, in luminance
+   * order, with the Rosé Pine role that supplies each one: */
+  --color-background: #191724; /* base: the page plane */
+  --color-background-win-alt: #21202e; /* highlightLow: the secondary window plane */
+  /* THE CONTENT SLAB — the transcript column, the side pane and (through
+   * `--color-inspector` below) the right-hand pane all read this one token, so
+   * they cannot drift apart. It is `highlightLow`, which the role table assigns to
+   * the cursor line: the reading surface, one step above the page and one below
+   * the raised cards. See THE PRICE OF A FOUR-RUNG DARK LADDER above for what this
+   * buys — 1.029 from the step below it, so the slab is separated from the chrome
+   * more by the border than by the fill. */
+  --color-chat: #21202e;
+  --color-inspector: var(--color-chat); /* the right-hand pane: one plane with the transcript */
+  --color-composer: #1f1d2e; /* the composer island — recessed, a well in the page */
+  --color-brand: #c4a7e7; /* iris: the spec's link/hint accent, and the focus ring */
+  --color-accent: #ebbcba; /* rose */
+  --color-find-highlight: #403d52; /* highlightMed: a band, not a hue of its own */
+  --color-find-highlight-active: #f6c177; /* gold */
+  /* THE SEAM-FAMILY SOURCE. `highlightHigh`, and the specification's own word for
+   * it is "borders" — so this one line is the spec's border rule applied literally.
+   * It is 2.25 on the page and 2.04 on the slab, UNDER the 3:1 floor for a non-text
+   * boundary: a recorded wall, not a defect (see the header). It reaches the input,
+   * popover and tab borders through the aliases below, and `--color-card-border`
+   * deliberately does NOT alias it — an outline that dominates the fills it
+   * separates inverts the ladder it is supposed to sit under, and this palette's
+   * ladder steps are 1.03 to 1.07. */
+  --color-border: #524f67;
+  --color-border-hover: #908caa; /* subtle: a hover boundary may be loud, it is transient */
+  --color-header: #21202e; /* highlightLow: a chrome float, one plane with the slab */
+  /* RECESSED, `surface`. The cards that live INSIDE the slab carry no borders, so
+   * sitting BELOW the slab is the only thing that makes them cards rather than a
+   * patch of it. Direction note: inside the slab, content sits LOWER than its
+   * background — the slab is a high plane, so the only way to separate from it is
+   * downward. */
+  --color-panel: #1f1d2e;
+  /* THE CHROME BAND — the gaps and the titlebar band the islands sit in. `base`,
+   * the same step as the page: a frame reads as the void around the islands, and
+   * Rosé Pine publishes nothing darker to put it on. */
+  --color-frame: #191724;
+  --color-card: #26233a; /* overlay: the raised step, "medium contrast background atop surface" */
+  /* Spec `highlightMed`, and the role table's own words for it are "selection
+   * background (paired with text foreground)" — so this is the one place the
+   * specification names a selection step and this block obeys it literally. It is
+   * the brightest value in the palette (L 0.0504 against the raised step's
+   * 0.0192), which is what `selectionRule: "strictly-above-all"` grades.
+   * `#6e6a8633` — the published `highlightMed.alpha` — survives ONLY as the
+   * terminal's translucent overlay below; it is not a resting surface and not a
+   * border anywhere in this file. */
+  --color-card-selected: #403d52;
+  /* The seam a resting surface is outlined with: `base`, the darkest published
+   * step, so between the recessed column `#1f1d2e` and the slab `#21202e` it reads
+   * as neither highlight nor shadow. MUST STAY A PUBLISHED HEX: the spec gate in
+   * `paletteCompleteness.test.ts` rejects any hex here the source does not
+   * publish, so this value may not be "improved" into an invented hue. */
+  --color-card-border: #191724;
+  --color-popover: #21202e; /* one step with the slab: a float's shadow carries it, not its fill */
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-header: #1f1d2e;
+  --color-popover-border: var(--color-border);
+  --color-input: #1f1d2e; /* surface: "text inputs, panels" is the role table's own usage line */
+  --color-input-focused: var(--color-input);
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-brand);
+  --color-terminal-bg: #191724; /* base: the terminal's own paper */
+  --color-terminal-fg: #e0def4; /* text */
+  --color-terminal-cursor: #e0def4;
+  --color-terminal-cursor-accent: #191724; /* the cell under the cursor reads as a hole */
+  /* THE ONE ALPHA IN THIS FILE, and it is the specification's own value:
+   * `highlightMed.alpha.hex = 6e6a8633` (`muted` at 20%). Selection at alpha sits
+   * OVER whatever the cell painted, so it is not a resting surface — which is the
+   * only way ADR 0105 permits alpha on a surface-shaped token, and it is exactly
+   * the rule Dracula sets with its `#44475a`. */
+  --color-terminal-selection: #6e6a8633;
+  --color-terminal-selection-inactive: color-mix(in oklab, #e0def4 12%, transparent);
+  --color-terminal-black: #1f1d2e; /* surface */
+  --color-terminal-red: #eb6f92; /* love — "terminal red" is the role table's usage */
+  --color-terminal-green: #31748f; /* pine */
+  --color-terminal-yellow: #f6c177; /* gold */
+  --color-terminal-blue: #9ccfd8; /* foam */
+  --color-terminal-magenta: #c4a7e7; /* iris */
+  --color-terminal-cyan: #ebbcba; /* rose */
+  --color-terminal-white: #e0def4; /* text */
+  --color-terminal-bright-black: #6e6a86; /* muted */
+  /* THE BRIGHT ROW REPEATS THE NORMAL ONE, and that is a fact about the source,
+   * not a shortcut: Rosé Pine publishes twelve roles and no intensified ANSI row,
+   * so a brighter red would be an invented hue. See departure 3 in the header. */
+  --color-terminal-bright-red: #eb6f92;
+  --color-terminal-bright-green: #31748f;
+  --color-terminal-bright-yellow: #f6c177;
+  --color-terminal-bright-blue: #9ccfd8; /* live via `--color-icon-blue` */
+  --color-terminal-bright-magenta: #c4a7e7;
+  --color-terminal-bright-cyan: #ebbcba;
+  --color-terminal-bright-white: #e0def4;
+  --color-tab: #191724; /* base: the strip is chrome, so it wears the band */
+  --color-tab-active: var(--color-chat); /* the active tab IS the content sheet showing through */
+  --color-tab-border: var(--color-border);
+  --color-menu: #21202e;
+  --color-menu-hover: #26233a; /* overlay: a hover must read as raised above its own float */
+  --color-primary: #c4a7e7; /* iris: the send button, switch, badges */
+  /* DARK ink here, and Rosé Pine's hues are bright enough that it is the only
+   * legible choice: `#191724` on iris is 8.43 while `text #e0def4` on iris is
+   * 1.59. The same reasoning holds for every fill in this block. */
+  --color-primary-foreground: #191724;
+  --color-secondary: #26233a; /* overlay: a badge lands inside a float and must be raised above it */
+  --color-interaction-ask-surface: color-mix(in oklab, #c4a7e7 14%, transparent);
+  --color-interaction-ask-foreground: #c4a7e7; /* iris — the spec's "hints" */
+  --color-interaction-ask-fill: color-mix(in oklab, #31748f 24%, transparent);
+  --color-interaction-confirmation-surface: color-mix(in oklab, #31748f 16%, transparent);
+  --color-interaction-confirmation-foreground: #9ccfd8; /* foam — the spec's "info" / "git add" */
+  --color-foreground: #e0def4; /* text: 13.39 on the page */
+  /* `text` AT 70%, not `subtle` — departure 1. 7.08 on the page, 6.66 on the slab,
+   * 6.39 on the raised step, 4.83 on the selection state: on-palette at every
+   * elevation instead of one grey tuned to one surface. */
+  --color-foreground-subtle: color-mix(in oklab, #e0def4 70%, transparent);
+  /* DE-EMPHASIS TEXT ONLY. It is not the context bar's track and must never be
+   * again: the text wants contrast against the surface, the track wants contrast
+   * against the BAR'S FILL, and one token cannot do both (the role split
+   * `paletteCompleteness.test.ts` documents at length). 55% rather than 60% so it
+   * stays visibly DIMMER than `foreground-subtle`: at 60% the two separate by only
+   * 1.26 on the slab, at 55% by 1.42. 60% also buys nothing — it reaches 4.97 on
+   * the slab, so both values clear the floor and only the separation differs. */
+  --color-foreground-subtlest: color-mix(in oklab, #e0def4 55%, transparent);
+  /* Row glyph + row verb (ADR 0062), ALIASED. Rosé Pine has no opinion about what
+   * a tool glyph looks like and the family exists to be palette-neutral; only
+   * Dracula gives it its own hues. SIBLINGS. */
+  --color-row-icon: var(--color-foreground-subtle);
+  --color-row-verb: var(--color-foreground-subtlest);
+  /* The film glyph (ADR 0071) — OPAQUE on purpose, because the glyph's luminance
+   * IS the data and a `color-mix(… transparent)` reading would multiply with the
+   * film's own dimming and flatten the chiaroscuro. `subtle` is published, opaque,
+   * and matches no other UI-meaningful hex in this block. */
+  --color-film-glyph: #908caa;
+  /* The context bar's TRACK, and the reason it is its own token rather than the
+   * text token above: the track must separate the band FILL from the unfilled
+   * remainder AND be visible itself. Against the `#21202e` pane it rides it scores
+   * 2.04; the two published steps below it score 1.53 (`highlightMed`) and 1.00
+   * (a track that IS the pane). `highlightHigh` is the published value furthest
+   * from the pane that is not the selection state — and the selection state is not
+   * a resting surface, so it is not a candidate. */
+  --color-context-track: #524f67;
+  --color-foreground-inverse: #191724;
+  /* status — the accent roles carry the TEXT, because the specification publishes
+   * no separate functional set the way Dracula does. `pine` is the spec's green
+   * and it is 3.07 on the slab, so it dresses the FILLS while `foam` — the spec's
+   * "info / git add" role, 9.41 on the slab — carries the copy. */
+  --color-success: #9ccfd8; /* foam */
+  --color-success-foreground: #191724;
+  --color-idle-task: #c4a7e7;
+  --color-idle-task-surface: color-mix(in oklab, #c4a7e7 18%, transparent);
+  /* love, and the brightest red Rosé Pine publishes: `pine`-adjacent hues do not
+   * read as error, and there is no bright row to fall back on. 6.07 on the page,
+   * 5.51 on the slab and every float, 5.22 on the raised step — all clear 4.5. The
+   * one wall is the selection state at 3.60, recorded in the spec row with
+   * `expiresAt: 4.5`. */
+  --color-destructive: #eb6f92;
+  --color-destructive-foreground: #191724;
+  --color-warning: #f6c177; /* gold — "strings, warnings" is the role table's usage */
+  --color-warning-foreground: #191724;
+  --color-diff-added: #9ccfd8;
+  --color-diff-added-foreground: #191724;
+  --color-diff-removed: #eb6f92;
+  --color-diff-removed-foreground: #191724;
+  --color-toast: #21202e;
+  --color-tooltip: #21202e;
+  --color-tooltip-foreground: #e0def4;
+  --color-tooltip-tag: #26233a;
+  --color-tooltip-tag-foreground: #e0def4; /* 11.51 on the chip */
+  --color-tag: #26233a;
+  --color-plugin-paid-plan-badge: color-mix(in oklab, #f6c177 24%, transparent);
+  --color-plugin-paid-plan-badge-foreground: #f6c177;
+
+  /* The 25 file-type DESCRIPTORS. OFF-SPEC ON PURPOSE, and this is the one place
+   * either block knowingly breaks "use the published values". They are IDENTITY
+   * colors (CONTEXT.md): the hue answers what KIND of file this is, Rosé Pine's
+   * twelve roles cannot name twenty-five file types, and re-huing them would make
+   * a `.py` chip indistinguishable from a `.json` one. Copied from
+   * `.theme-default-dark` verbatim except `file-css`, whose default reading
+   * `#7e57c2` is 2.91 on this block's raised `#26233a` step — under the 3:1 glyph
+   * floor — so CSS takes iris `#c4a7e7` (5.42 there). 24 of the 25 are allow-listed
+   * BY NAME in `src/lib/palettes/rose-pine.ts`; `file-css` needs no exemption
+   * because iris IS a published value.
+   *
+   * MANDATORY and easy to get wrong: these are declared in `@theme` (light-safe)
+   * AND here (vivid dark) but NOT in `.dark`, so a palette that omits one does not
+   * fail — it silently resolves through `.dark` to `@theme`'s light-safe reading,
+   * a different hue entirely. The completeness gate forces the restatement. */
+  --color-file-ts: #0288d1;
+  --color-file-react: #00bcd4;
+  --color-file-js: #ffca28;
+  --color-file-json: #f9a825;
+  --color-file-html: #e65100;
+  --color-file-css: #c4a7e7; /* iris — the one descriptor this palette re-reads */
+  --color-file-sass: #ec407a;
+  --color-file-md: #42a5f5;
+  --color-file-rs: #ff7043;
+  --color-file-py: #0288d1;
+  --color-file-sh: #ff7043;
+  --color-file-yaml: #ff5252;
+  --color-file-toml: #cfd8dc;
+  --color-file-lock: #ffd54f;
+  --color-file-image: #26a69a;
+  --color-file-svg: #ffb300;
+  --color-file-archive: #afb42b;
+  --color-file-go: #00acc1;
+  --color-file-vue: #41b883;
+  --color-file-svelte: #ff5722;
+  --color-file-java: #f44336;
+  --color-file-php: #1e88e5;
+  --color-file-xml: #8bc34a;
+  --color-file-graphql: #ec407a;
+  --color-file-db: #ffca28;
+}
+
+/*
+ * The LIGHT reading: Rosé Pine Dawn, the variant `dist/css/rose-pine-media.css`
+ * serves at `:root` — i.e. Rosé Pine's own answer to "the light one". It renders
+ * with NO `.dark` class, so this block cannot inherit anything `.dark` states and
+ * must name every token its own surfaces paint; that is why it restates 89 of
+ * `.theme-default-dark`'s 168 and names 79 as inherited (the 54 Identity-color
+ * families plus the 25 file-type descriptors, whose `@theme` readings are already
+ * the light-safe ones — restating them here would shadow that value for a
+ * classless document).
+ *
+ * THE LIGHT LADDER DOES NOT PLATEAU, and that is the interesting thing about this
+ * palette. ADR 0105's plateau exists because nothing in a light theme publishes
+ * anything lighter than its own Base; dawn publishes TWO neutrals above its base,
+ * because `surface` is defined as "low contrast background ATOP base". So the
+ * raised planes get a real step and the ladder strictly ascends end to end:
+ *   #cecacd  highlightHigh L 0.5977  the context bar's track (the darkest step)
+ *   #dfdad9  highlightMed  L 0.7084  the recessed chip step: badge, inline-code
+ *                                     chip, menu hover
+ *   #f2e9e1  overlay       L 0.8259  the chrome band, the tab strip, the tooltip
+ *   #f4ede8  highlightLow  L 0.8563  the content slab, the popover header
+ *   #faf4ed  base          L 0.9114  THE PAGE
+ *   #fffaf3  surface       L 0.9610  every raised plane: card, input, menu,
+ *                                     popover, panel, header, toast, composer
+ * Hops 1.171 / 1.155 / 1.035 / 1.061 / 1.052. The ONE collapse dawn still has is
+ * the selection state: `--color-card-selected` is `#fffaf3` — `card` at
+ * exactly 1.00 — because `surface` is the lightest value the variant publishes. That is the
+ * `at-or-above-card` rule, and separation there is carried by
+ * `--color-card-border`, not by fill — ADR 0096's designed collapse, in a new
+ * palette, with new numbers.
+ *
+ * `--color-frame` takes `overlay`, a DARKER published value than the page, because
+ * a chrome band must sit below the planes it frames. Dawn's `highlightHigh` is
+ * available and 1.48 from the page, but a band that far down reads as a fourth
+ * surface rather than as the frame, and `highlightHigh` is the step the role table
+ * reserves for the track and for borders.
+ *
+ * DAWN IS THE LIGHTEST READING IN THIS PLAN AND ITS INK IS ONLY 6.66 ON ITS OWN
+ * BASE, so a de-emphasis tier has almost no headroom and the status hues have
+ * less. Every shortfall is a recorded floor in the spec row with the measured
+ * number and `expiresAt: 4.5`; none is hidden by dropping a surface from the
+ * graded set — the chrome band `#f2e9e1` is graded precisely because it carries
+ * copy and it is the worst resting plane for all seven graded tokens.
+ */
+.theme-rose-pine-light {
+  /* surfaces — dawn's six steps, darkest first in the ladder the spec row states. */
+  --color-background: #faf4ed; /* base: the page plane */
+  --color-background-win-alt: #f2e9e1; /* overlay: the secondary window plane */
+  /* THE CONTENT SLAB. `highlightLow` — the cursor-line step — one step BELOW the
+   * page here, which is the light inversion of the dark reading: in a light
+   * palette the reading surface has to be quieter than the paper around it, or the
+   * raised `surface` planes and the slab compete for the same attention. */
+  --color-chat: #f4ede8;
+  --color-inspector: var(--color-chat); /* the right-hand pane: one plane with the transcript */
+  --color-composer: #fffaf3; /* the composer island — a raised plane, as `surface` says */
+  --color-brand: #907aa9; /* iris: the spec's link/hint accent, and the focus ring (4.02 as a boundary) */
+  --color-accent: #f4ede8; /* highlightLow, the pale hover-ish step (default light's analogue) */
+  --color-find-highlight: color-mix(in oklab, #ea9d34 30%, transparent);
+  --color-find-highlight-active: #ea9d34; /* gold */
+  /* DEPARTURE 2, and the reason is a measurement: the role table says borders take
+   * `highlightHigh`, but `#cecacd` is 1.48 from dawn's base and 1.56 from its
+   * `surface` — invisible as a boundary. `subtle` ("medium contrast foreground")
+   * is the nearest published neutral that clears the 3:1 non-text floor: 4.02 on
+   * the page, 3.79 on the slab, 4.23 on a float. THE DARK READING COULD CLEAR THE
+   * SAME FLOOR THE SAME WAY (`subtle` is 5.48 on its page) and deliberately does
+   * not, because there the role table's own value reaches 2.25 and a border that
+   * loud would out-shine a ladder whose rungs step 1.03. Same rule, opposite
+   * outcome, because the two variants' neutral spacings are opposite. */
+  --color-border: #797593; /* subtle */
+  --color-border-hover: #575279; /* text: a hover boundary may be loud, it is transient */
+  --color-header: #fffaf3; /* surface: chrome as a raised plane, as default light does */
+  --color-panel: #fffaf3;
+  --color-frame: #f2e9e1; /* overlay: the chrome band, one step below the page */
+  --color-card: #fffaf3; /* surface: the raised step, "atop base" */
+  /* The selection state PLATEAUS with the card on `surface`, because nothing in
+   * dawn is lighter than `surface`. It is not dimmer than the card, which is the
+   * property `selectionRule: "at-or-above-card"` actually enforces, and it is the
+   * same collapse ADR 0096 records for default light. `#dfdad9` — dawn's opaque
+   * `highlightMed`, the role table's literal "selection background" — is NOT used
+   * for it: it is the recessed chip step here, and a selected row that sank below
+   * its own surface would be the inversion that ADR records as already fixed. */
+  --color-card-selected: #fffaf3;
+  --color-card-border: #dfdad9; /* highlightMed: the seam that carries the plateau */
+  --color-popover: #fffaf3;
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-header: #f4ede8;
+  --color-popover-border: var(--color-border);
+  --color-input: #fffaf3; /* surface: "text inputs, panels" */
+  --color-input-focused: var(--color-input);
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-brand);
+  --color-terminal-bg: #f4ede8;
+  --color-terminal-fg: #575279; /* text */
+  --color-terminal-cursor: #575279;
+  --color-terminal-cursor-accent: #f4ede8;
+  /* The one alpha in this block, and again the specification's own: dawn's
+   * `highlightMed.alpha.hex` is `6e6a8614` (`muted` at 8%). A translucent
+   * selection over whatever the cell painted, so not a resting surface — the
+   * Dracula rule, with Rosé Pine's value. ADR 0105 refuses alpha on a SURFACE
+   * token and this is not one. */
+  --color-terminal-selection: #6e6a8614;
+  --color-terminal-selection-inactive: color-mix(in oklab, #575279 12%, transparent);
+  --color-terminal-black: #575279;
+  --color-terminal-red: #b4637a; /* love — "terminal red", the role table */
+  --color-terminal-green: #286983; /* pine */
+  --color-terminal-yellow: #ea9d34; /* gold */
+  --color-terminal-blue: #56949f; /* foam */
+  --color-terminal-magenta: #907aa9; /* iris */
+  --color-terminal-cyan: #d7827e; /* rose */
+  --color-terminal-white: #797593; /* subtle */
+  --color-terminal-bright-black: #9893a5; /* muted */
+  /* Bright repeats normal: dawn publishes no intensified row (departure 3). */
+  --color-terminal-bright-red: #b4637a;
+  --color-terminal-bright-green: #286983;
+  --color-terminal-bright-yellow: #ea9d34;
+  /* A RECORDED WALL ON A LIVE TOKEN, and the reason it is recorded rather than
+   * fixed. `--color-icon-blue` is `@theme`'s `var(--color-terminal-bright-blue)`,
+   * so markdown LINKS (`AgentMarkdown.tsx`, `text-icon-blue`) and diff `@@` hunks
+   * (`DiffBlock.tsx`) render in this hex — 3.14 on the page, 2.96 on the slab,
+   * 3.30 on a float, i.e. under the 4.5 text floor and under the 3:1 floor for a
+   * glyph on the slab. It is not in `GRADED_TEXT_TOKENS`, so no gate sees it; that
+   * is stated rather than relied on.
+   *
+   * The two published alternatives were measured and both are worse as decisions:
+   * `pine #286983` clears everything (5.59 / 5.27 / 5.88) but the README assigns
+   * pine to "terminal green, functions", so making it ANSI blue is a hue the spec
+   * points somewhere else — and `foam` is what that same table calls "terminal
+   * blue". `iris #907aa9` is barely better (3.47 / 3.27 / 3.65) and is already
+   * `--color-brand` and the ask-foreground in this block. So the ANSI table stays
+   * the specification's and the link contrast is the palette's honest limit;
+   * default light's own link token measures 5.01 on its page, so this is a real
+   * regression against the shipped light reading, not a house norm. */
+  --color-terminal-bright-blue: #56949f;
+  --color-terminal-bright-magenta: #907aa9;
+  --color-terminal-bright-cyan: #d7827e;
+  --color-terminal-bright-white: #575279;
+  --color-tab: #f2e9e1;
+  --color-tab-active: #fffaf3; /* the active tab is a raised plane, as default light's is */
+  --color-tab-border: var(--color-border);
+  --color-menu: #fffaf3;
+  --color-menu-hover: #dfdad9; /* highlightMed: dawn's own cursor-line direction */
+  --color-primary: #286983;
+  /* `pine` and NOT `iris` for the primary FILL, on a measurement: white-family ink
+   * on iris is 3.65, on pine it is 5.88. A button label is body copy, so the fill
+   * takes the hue that carries it; iris stays `--color-brand`, where it is a hue
+   * rather than a fill and 4.02 as a boundary is enough. */
+  --color-primary-foreground: #fffaf3; /* surface: the lightest published ink */
+  --color-secondary: #dfdad9; /* highlightMed: the RECESSED chip step — the light inversion of the dark reading, where these are the raised step */
+  --color-interaction-ask-surface: color-mix(in oklab, #907aa9 14%, transparent);
+  --color-interaction-ask-foreground: #907aa9; /* iris — "hints" */
+  --color-interaction-ask-fill: color-mix(in oklab, #286983 24%, transparent);
+  --color-interaction-confirmation-surface: color-mix(in oklab, #286983 16%, transparent);
+  --color-interaction-confirmation-foreground: #286983; /* pine — 5.59 on the page */
+  --color-foreground: #575279; /* text: 6.66 on the page, 7.00 on a float */
+  /* `text` AT 90%, not `muted`: dawn's `muted #9893a5` is 2.73 on the page and
+   * 2.57 on the slab, i.e. no good as copy on any plane (departure 1, and the wall
+   * is worse here than in main because the page is brighter). 90% clears 4.5 on all
+   * four graded resting planes — 5.25 on the page, 4.96 on the slab, 4.85 on the
+   * chrome band, 5.45 on a float — with room to spend on the tier separation below. */
+  --color-foreground-subtle: color-mix(in oklab, #575279 90%, transparent);
+  /* De-emphasis text, and the reason 75% rather than 85%: the two tiers must be
+   * visibly different, and 90/85 separates by only 1.12 on the page — which
+   * defeats having two. 90/75 separates by 1.42, the same ratio the dark reading
+   * buys. The cost is a recorded wall: 3.70 on the page, 3.51 on the chrome band,
+   * 3.21 on the chip step. Raising it until it clears 4.5 would put it within 1.18
+   * of `foreground-subtle`, trading a legibility floor for a de-emphasis tier that
+   * does not de-emphasise. */
+  --color-foreground-subtlest: color-mix(in oklab, #575279 75%, transparent);
+  --color-row-icon: var(--color-foreground-subtle);
+  --color-row-verb: var(--color-foreground-subtlest);
+  /* The film glyph (ADR 0071), OPAQUE on purpose — the glyph's luminance is the
+   * data. `muted` is published, opaque, and collides with no UI-meaningful hex. */
+  --color-film-glyph: #9893a5;
+  /* The context bar's track: `highlightHigh`, the darkest published step and the
+   * one furthest from the `#f4ede8` pane it rides (1.40). Every published step
+   * above it is closer to the pane; `#dfdad9` scores 1.19, i.e. barely a track. */
+  --color-context-track: #cecacd;
+  --color-foreground-inverse: #fffaf3;
+  /* status — dawn's accents as TEXT, with every shortfall recorded in the spec row
+   * rather than fixed by inventing a darker hue the variant does not publish. */
+  --color-success: #286983; /* pine — 5.59 on the page, 5.27 on the slab */
+  --color-success-foreground: #fffaf3;
+  --color-idle-task: #907aa9;
+  --color-idle-task-surface: color-mix(in oklab, #907aa9 14%, transparent);
+  /* love. 3.84 on the page, 3.50 on the chrome band, 3.03 on the chip step — all
+   * recorded. `#b4637a` is the only red dawn publishes, so no published alternative
+   * reaches 4.5 on the band; the nearest is `text #575279` at 6.07, which is the
+   * FOREGROUND — an error that renders indistinguishable from copy. */
+  --color-destructive: #b4637a;
+  --color-destructive-foreground: #fffaf3;
+  /* gold, the spec's own warning role, and the worst token in the palette: 1.87
+   * resting, 1.62 raised. Stated plainly rather than softened — dawn publishes one
+   * amber and it is this. `--color-caution` (the shared ramp token) is the legible
+   * amber at 4.51 on the page, and it is what a label must use. */
+  --color-warning: #ea9d34;
+  /* Dark ink on gold is the better of the two readings — `text #575279` is 3.24
+   * on gold where `surface #fffaf3` is 2.16 — and both are poor, because dawn
+   * publishes no darker amber and no lighter ink to pair with it. */
+  --color-warning-foreground: #575279;
+  --color-diff-added: #286983;
+  --color-diff-added-foreground: #fffaf3;
+  --color-diff-removed: #b4637a;
+  --color-diff-removed-foreground: #fffaf3;
+  --color-toast: #fffaf3;
+  --color-tooltip: #f2e9e1;
+  --color-tooltip-foreground: #575279;
+  --color-tooltip-tag: #dfdad9;
+  --color-tooltip-tag-foreground: #575279; /* 5.25 on the chip */
+  --color-tag: #dfdad9;
+  --color-plugin-paid-plan-badge: color-mix(in oklab, #ea9d34 24%, transparent);
+  --color-plugin-paid-plan-badge-foreground: #575279;
+}

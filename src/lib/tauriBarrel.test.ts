@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createSourceSweep } from "./sourceSweep";
 
 /**
  * THE `lib/tauri` BARREL GUARD (finding 12a, Task D1) — a source scanner, not a
@@ -46,13 +47,26 @@ import { describe, expect, it } from "vitest";
 // a bare `import "node:fs"` does not typecheck. The idiom `cssSource.ts`,
 // `themeTokens.test.ts` and `classNameConvention.test.ts` use.
 const NODE_FS = "node:" + "fs";
-const { readFileSync, readdirSync, existsSync } = (await import(NODE_FS)) as {
-  readFileSync: (path: string, encoding: string) => string;
+const { readdirSync, existsSync } = (await import(NODE_FS)) as {
   readdirSync: (
     path: string,
     options: { recursive: true; encoding: string },
   ) => string[];
   existsSync: (path: string) => boolean;
+};
+// Reads go through the SWEEP READER, not `readFileSync`: this file lists `src/`
+// and then opens every path in a later loop, and vitest runs test files
+// concurrently, so a path can be deleted between the two. See `sourceSweep.ts`
+// for why skipping a vanished path is the true answer and what stays loud.
+const sweep = createSourceSweep();
+
+/** The module, for the non-vacuity probe below — it CREATES and DELETES a scratch
+ *  file so the skip branch can be driven on purpose instead of waited for.
+ *  Reached through the same COMPUTED specifier (no `@types/node` in this app). */
+const NODE_FS_MODULE = (await import(NODE_FS)) as unknown as {
+  writeFileSync: (path: string, data: string) => void;
+  rmSync: (path: string, options?: { force?: boolean; recursive?: boolean }) => void;
+  mkdirSync: (path: string, options?: { recursive?: boolean }) => void;
 };
 
 const BARREL = "src/lib/tauri.ts";
@@ -112,12 +126,21 @@ const resolve = (importer: string, spec: string): string | null => {
   return `${base} (unresolved)`;
 };
 
-/** Every edge that reaches INTO `src/lib/tauri/` from outside the allowed set. */
-const directDomainImports = (): string[] => {
+/** Every edge that reaches INTO `src/lib/tauri/` from outside the allowed set.
+ *  A path that vanished between the `SOURCES` listing and this read is skipped
+ *  and recorded (see `sourceSweep.ts`); it is not an offender, it is gone.
+ *
+ *  `files` is a parameter rather than a read of `SOURCES` inside the loop, so the
+ *  non-vacuity test below can drive THIS predicate — the one the guard runs, not
+ *  a copy of it — over a listing it controls. Defaulting to `SOURCES` keeps every
+ *  real call site unchanged. */
+const directDomainImports = (files: readonly string[] = SOURCES): string[] => {
   const offenders: string[] = [];
-  for (const file of SOURCES) {
+  for (const file of files) {
     if (file === BARREL || file.startsWith(`${DIR}/`)) continue;
-    const src = stripJsComments(readFileSync(file, "utf8"));
+    const text = sweep.listed(file);
+    if (text === null) continue;
+    const src = stripJsComments(text);
     for (const match of src.matchAll(SPECIFIER)) {
       const resolved = resolve(file, match[2]!);
       if (resolved && resolved.startsWith(`${DIR}/`)) {
@@ -129,9 +152,16 @@ const directDomainImports = (): string[] => {
   return offenders.sort();
 };
 
-/** The names a file declares as exports (the scanner's view of a module's API). */
-const exportedNames = (file: string): string[] =>
-  readFileSync(file, "utf8")
+/** How a name-scan helper reads: `sweep.named` for a path a literal names,
+ *  `sweep.listed` for one that came out of `domainModules()`. */
+type SweepRead = (file: string) => string | null;
+
+/** The names a file declares as exports (the scanner's view of a module's API).
+ *  Returns `[]` for a listed file that vanished — see `sourceSweep.ts`. */
+const exportedNames = (file: string, read: SweepRead = (f) => sweep.named(f)): string[] => {
+  const text = read(file);
+  if (text === null) return [];
+  return text
     .split("\n")
     .flatMap((line) => {
       const m = line.match(
@@ -139,11 +169,17 @@ const exportedNames = (file: string): string[] =>
       );
       return m ? [m[1]!] : [];
     });
+};
 
 /** The names a file RE-EXPORTS: `export { a, b as c } from "…"` and
  *  `export type { a } from "…"` and `export * from "…"`. */
-const reexportedNames = (file: string): string[] => {
-  const src = stripJsComments(readFileSync(file, "utf8"));
+const reexportedNames = (
+  file: string,
+  read: SweepRead = (f) => sweep.named(f),
+): string[] => {
+  const text = read(file);
+  if (text === null) return [];
+  const src = stripJsComments(text);
   const names: string[] = [];
   for (const m of src.matchAll(
     /\bexport\s+(?:type\s+)?\{([^}]*)\}\s*from/g,
@@ -579,7 +615,7 @@ describe("the scanner actually reads the tree", () => {
       (f) =>
         /\.test\.tsx?$/.test(f) &&
         /^\s*vi\.mock\(\s*["'][^"']*lib\/tauri["']/m.test(
-          stripJsComments(readFileSync(f, "utf8")),
+          stripJsComments(sweep.listed(f) ?? ""),
         ),
     );
     // SET SIZE, pinned: 48 files mock the barrel by path. The number may only
@@ -725,7 +761,7 @@ describe("the scanner actually reads the tree", () => {
     // assertion below covers.
     expect(
       mockers.filter((f) =>
-        /vi\.importActual/.test(readFileSync(f, "utf8")),
+        /vi\.importActual/.test(sweep.listed(f) ?? ""),
       ).length,
 ).toBe(55);
   });
@@ -761,7 +797,11 @@ describe("nothing bypasses the lib/tauri barrel (D1's mock seam)", () => {
     const seen = new Map<string, string>();
     const clashes: string[] = [];
     for (const mod of domainModules()) {
-      for (const name of [...exportedNames(mod), ...reexportedNames(mod)]) {
+      // `domainModules()` is a LISTING, so these reads are `listed` reads.
+      for (const name of [
+        ...exportedNames(mod, (f) => sweep.listed(f)),
+        ...reexportedNames(mod, (f) => sweep.listed(f)),
+      ]) {
         if (seen.has(name)) clashes.push(`${name}: ${seen.get(name)} / ${mod}`);
         else seen.set(name, mod);
       }
@@ -775,7 +815,7 @@ describe("nothing bypasses the lib/tauri barrel (D1's mock seam)", () => {
     // split failed to place would otherwise drift back here silently, and because
     // a barrel holding logic is a barrel that can no longer be read as a list of
     // the domains it forwards.
-    const src = stripJsComments(readFileSync(BARREL, "utf8"));
+    const src = stripJsComments(sweep.named(BARREL));
     expect(src).not.toMatch(/\binvoke\s*[<(]/);
     expect(src).not.toMatch(/\blisten\s*[<(]/);
     // A DECLARED function / interface / const. `export { … } from` and
@@ -796,11 +836,108 @@ describe("nothing bypasses the lib/tauri barrel (D1's mock seam)", () => {
     const declared = new Set(exportedNames(BARREL));
     const dupes: string[] = [];
     for (const mod of domainModules()) {
-      for (const name of [...exportedNames(mod), ...reexportedNames(mod)]) {
+      // `domainModules()` is a LISTING, so these reads are `listed` reads.
+      for (const name of [
+        ...exportedNames(mod, (f) => sweep.listed(f)),
+        ...reexportedNames(mod, (f) => sweep.listed(f)),
+      ]) {
         if (declared.has(name)) dupes.push(`${name} (also declared in ${BARREL})`);
       }
     }
     expect(dupes).toEqual([]);
+  });
+});
+
+describe("the sweep survives a file that vanishes between listing and reading", () => {
+  // THE SKIP BRANCH, PROVEN REACHABLE — not a race attempt. The full suite is the
+  // only thing that reproduces the original ENOENT (the palette guard deletes
+  // `src/lib/palettes/guardprobe.ts` from another worker), and a test that "hopes
+  // for" a scheduling accident is not a test. So this drives the REAL predicate
+  // over a listing this file controls: a path that is present when listed and
+  // gone when read. `.tmp/` is gitignored and outside `src/`, so the probe cannot
+  // become a fake source file in the tree the other sweeps grade.
+  const probe = ".tmp/tauriBarrelSweep";
+  const fs = NODE_FS_MODULE;
+
+  /** THE PROBE'S IMPORT, BUILT BY CONCATENATION — and the one thing in this
+   *  describe block that is not decoration. This file's own rule is that TESTS
+   *  are in scope, so the moment a probe spells `from "@/lib/tauri/…"` as a
+   *  literal, THIS FILE becomes an offender to its own guard and the header's
+   *  documented trap (it once reported 35 mockers where the tree held 33, for
+   *  exactly this reason) springs on the new test. Same remedy
+   *  `themeTokens.test.ts` uses for the dead row-kind family it gates: split the
+   *  word so the scanner cannot read prose as a consumer. `stripJsComments` drops
+   *  the comment lines below, but NOT the string literals inside the planted
+   *  source, so the split is what keeps the probe invisible here. */
+  const PROBE_SPEC = "@/lib/" + "tauri/" + "events";
+  const PROBE_TARGET = "src/lib/" + "tauri/" + "events.ts";
+  const bypassSource = (): string =>
+    `import { listSessions } from "${PROBE_SPEC}";\n`;
+
+  it("skips a listed file that disappears mid-sweep, and says it did", () => {
+    fs.mkdirSync(probe, { recursive: true });
+    // A real bypass, planted so the predicate has something to convict, and a
+    // second path that is deleted before the sweep reaches it. If the skip branch
+    // were a plain `catch { continue }` this test could not tell the two apart —
+    // so the offender is asserted to SURVIVE the skip.
+    const real = `${probe}/bypass.ts`;
+    const doomed = `${probe}/doomed.ts`;
+    fs.writeFileSync(real, bypassSource());
+    fs.writeFileSync(doomed, bypassSource());
+    sweep.resetSkipped();
+    try {
+      // Pass 1 proves the listing sees both, and the predicate convicts both —
+      // which is what makes pass 2 a measurement of the SKIP and not of a
+      // predicate that never found anything.
+      expect(directDomainImports([real, doomed])).toEqual([
+        `${real}:1 → ${PROBE_TARGET}`,
+        `${doomed}:1 → ${PROBE_TARGET}`,
+      ]);
+      expect(sweep.skipped(), "nothing has vanished yet").toEqual([]);
+
+      // Pass 2: the file is deleted, then the SAME listing is swept again — the
+      // exact sequence the guard produces from another worker.
+      fs.rmSync(`${probe}/doomed.ts`, { force: true });
+      const offenders = directDomainImports([real, doomed]);
+      expect(offenders, "the vanished file is gone, the real one is still convicted").toEqual([
+        `${real}:1 → ${PROBE_TARGET}`,
+      ]);
+      // And the skip is RECORDED, so the branch can never be silently
+      // always-empty: this is the assertion that separates a correct skip from a
+      // swallowed error.
+      expect(sweep.skipped()).toEqual([{ file: doomed, code: "ENOENT" }]);
+      expect(sweep.skipped()[0]!.code).toBe("ENOENT");
+    } finally {
+      fs.rmSync(probe, { force: true, recursive: true });
+      sweep.resetSkipped();
+    }
+  });
+
+  it("does NOT skip a listed file that is present (the leaked-artifact case)", () => {
+    // The failure mode the guard exists for: a `guardprobe.ts` LEFT behind is
+    // present, so it must be opened and graded. Tolerance for a vanishing file
+    // must not become tolerance for a stray one.
+    fs.mkdirSync(probe, { recursive: true });
+    const leaked = `${probe}/leaked.ts`;
+    fs.writeFileSync(leaked, bypassSource());
+    sweep.resetSkipped();
+    try {
+      expect(directDomainImports([leaked])).toEqual([
+        `${leaked}:1 → ${PROBE_TARGET}`,
+      ]);
+      expect(sweep.skipped(), "a present file is never skipped").toEqual([]);
+    } finally {
+      fs.rmSync(leaked, { force: true });
+      fs.rmSync(probe, { force: true, recursive: true });
+    }
+  });
+
+  it("still throws on a named path that is missing (tolerance does not leak to literals)", () => {
+    // `src/lib/tauri.ts` and `src/lib/ipcError.ts` are named by literals. If the
+    // sweep grew tolerant of THOSE, the pinned-API and ipcError-contract guards
+    // below would go green while reading nothing.
+    expect(() => sweep.named("src/lib/not-a-real-barrel.ts")).toThrow(/ENOENT|no such file/);
+    expect(sweep.named(BARREL), "the real barrel still reads").toContain("export");
   });
 });
 
@@ -809,7 +946,7 @@ describe("lib/ipcError.ts stays free of lib/tauri (its documented contract)", ()
     // `ipcError.ts:21` states the rule in prose: it is used by Settings
     // components that never touch `lib/tauri`, and a formatting helper must not
     // drag `@tauri-apps/api` in. The split must not become the reason it does.
-    const src = stripJsComments(readFileSync("src/lib/ipcError.ts", "utf8"));
+    const src = stripJsComments(sweep.named("src/lib/ipcError.ts"));
     expect(src).not.toMatch(/\bfrom\s+["']/);
     expect(src).not.toMatch(/\bimport\s*\(/);
   });

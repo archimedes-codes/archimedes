@@ -4,6 +4,13 @@ import MessageBubble from "./MessageBubble";
 import { shikiThemeFor } from "./AgentMarkdown";
 import type { Message } from "../store/sessions";
 import { useSettings } from "../store/settings";
+import {
+  PALETTES,
+  SHIKI_FALLBACK_THEME,
+  paletteModeFor,
+  shikiThemesToLoad,
+  type PaletteId,
+} from "../lib/palettes";
 import type { AppSettings } from "../lib/tauri";
 import { makeSettings } from "../test/fixtures";
 import { resetStores } from "../test/resetStores";
@@ -52,7 +59,7 @@ afterEach(() => {
   // halfway through or the later groups in this file would inherit them.
   vi.useRealTimers();
   // The palette tests seed the settings store; the OTHER tests in this file
-  // assert the default (zai / `github-dark`) paper, so the store MUST go back
+  // assert the Default palette's (`github-dark`) paper, so the store MUST go back
   // to "nothing loaded" between tests or they would inherit Dracula and pass
   // for the wrong reason. `resetStores()` installs each store's own captured
   // initial state (settings: null, loaded: false) with replace=true, so the
@@ -273,26 +280,85 @@ describe("CodeBlock language casing (a ```TypeScript fence is highlighted)", () 
 });
 
 /**
- * (ADR 0027) The palette axis decides the SYNTAX theme — there is
- * deliberately no user-facing code-theme picker, so the derivation rule is
- * pinned here in two layers: the pure mapper (no DOM), and the paper colour
+ * (ADR 0027 → ADR 0104) The palette axis AND the mode decide the SYNTAX theme —
+ * there is deliberately no user-facing code-theme picker, so the derivation rule
+ * is pinned here in two layers: the pure mapper (no DOM), and the paper colour
  * Shiki actually paints on the `<pre>`.
+ *
+ * The mapper is enumerated over the REGISTRY rather than over two hand-written
+ * cases. It used to be a two-arm ternary that named Dracula, so a third Palette
+ * answered `github-dark` and the two tests here could not see it; every id × mode
+ * pair the registry declares is now a case, which is what makes adding a Palette
+ * extend the gate instead of leaving it behind.
  */
-describe("shikiThemeFor — the syntax theme derives from the palette (ADR 0027)", () => {
+describe("shikiThemeFor — the syntax theme derives from the palette AND the mode (ADR 0104)", () => {
+  for (const palette of PALETTES) {
+    for (const mode of ["light", "dark"] as const) {
+      // A Palette that ships only one reading must answer that reading's theme for
+      // BOTH requested modes — the same pin the CSS class applies.
+      const expected = palette.shiki[paletteModeFor(palette, mode)];
+      it(`maps ${palette.id} × ${mode} to ${expected ?? SHIKI_FALLBACK_THEME}`, () => {
+        expect(shikiThemeFor(palette.id as PaletteId, mode)).toBe(
+          expected ?? SHIKI_FALLBACK_THEME,
+        );
+      });
+    }
+  }
+
   it("maps the dracula palette to Shiki's `dracula` theme", () => {
-    expect(shikiThemeFor("dracula")).toBe("dracula");
+    expect(shikiThemeFor("dracula", "dark")).toBe("dracula");
   });
 
-  it("maps the zai palette to `github-dark` (the unchanged existing behaviour)", () => {
-    expect(shikiThemeFor("zai")).toBe("github-dark");
+  it("maps the default palette's DARK mode to `github-dark` (the unchanged existing behaviour)", () => {
+    expect(shikiThemeFor("default", "dark")).toBe("github-dark");
   });
 
-  it("treats an unloaded (`null`) settings palette as zai → `github-dark`", () => {
-    expect(shikiThemeFor(null)).toBe("github-dark");
+  it("maps the default palette's LIGHT mode to a LIGHT theme (the mode half is not inert)", () => {
+    // The half the two-arm ternary could not express: under the Default palette a
+    // light bubble was painted with dark paper. A light reading must not answer
+    // with a dark theme, and it must not answer with the same id as its dark
+    // sibling — otherwise the mode argument is decoration.
+    const light = shikiThemeFor("default", "light");
+    expect(light).toBe("github-light");
+    expect(light).not.toBe(shikiThemeFor("default", "dark"));
   });
 
-  it("treats an absent (`undefined`) palette as zai → `github-dark`", () => {
-    expect(shikiThemeFor(undefined)).toBe("github-dark");
+  it("ignores a mode a Palette does not ship (the pin, from the Palette's own modes)", () => {
+    // Dracula publishes no light reading, so asking for light must not produce a
+    // theme the highlighter was never asked to load.
+    expect(shikiThemeFor("dracula", "light")).toBe("dracula");
+  });
+
+  it("treats an unloaded (`null`) settings palette as the Default palette → `github-dark`", () => {
+    expect(shikiThemeFor(null, "dark")).toBe("github-dark");
+  });
+
+  it("treats an absent (`undefined`) palette as the Default palette → `github-dark`", () => {
+    expect(shikiThemeFor(undefined, "dark")).toBe("github-dark");
+  });
+
+  it("routes an out-of-vocabulary palette to the Default palette's theme, per mode", () => {
+    // `palette` is an unvalidated string on disk (ADR 0104), so this is the
+    // runtime shape a hand-edited settings.json actually produces.
+    expect(shikiThemeFor("solarized", "dark")).toBe(shikiThemeFor("default", "dark"));
+    expect(shikiThemeFor("solarized", "light")).toBe(shikiThemeFor("default", "light"));
+  });
+
+  it("answers with a LOADED theme for every palette × mode the registry declares", () => {
+    // The mapper is only correct if the theme it names is one the singleton
+    // actually holds: `codeToHtml` throws on an unloaded id, the call site's bare
+    // `catch` renders the plain fallback, and the suite stays green. This is the
+    // same subset relation the source-level gate in
+    // `paletteCompleteness.test.ts` asserts, checked on the function's OUTPUTS.
+    const loaded = new Set(shikiThemesToLoad());
+    for (const palette of PALETTES) {
+      for (const mode of ["light", "dark"] as const) {
+        expect(
+          loaded.has(shikiThemeFor(palette.id as PaletteId, mode)),
+          `${palette.id} × ${mode}`,
+        ).toBe(true);
+      }
+    }
   });
 });
 
@@ -322,9 +388,9 @@ describe("the syntax theme follows the palette", () => {
     expect(pre!.querySelector("span")).not.toBeNull();
   });
 
-  it("paints GitHub dark's paper when the palette is unset (the zai default)", async () => {
-    // `null` is what the backend stores for "zai" — the default must not need
-    // an explicit `"zai"` to keep the paper it has always had.
+  it("paints GitHub dark's paper when the palette is unset (the Default palette)", async () => {
+    // `null` is what the backend stores for the Default palette — the paper must
+    // not need an explicit `"default"` to keep the colour it has always had.
     seedPalette(null);
     renderAgentText("```tsx\nexport const flag: boolean = true;\n```");
 

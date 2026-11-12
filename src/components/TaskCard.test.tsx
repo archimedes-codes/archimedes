@@ -244,11 +244,11 @@ describe("TaskCard — what it renders", () => {
     expect(tokens).toContain("rounded-full");
     // The fill must differ from BOTH surfaces a chip can land on — the column's
     // `bg-panel` and this card's `bg-card` — IN EVERY PALETTE, and `bg-chat` fails
-    // that: its zai-dark `color-mix` base (`--color-background-win-alt`, `#2b2b2b`)
+    // that: its default-dark `color-mix` base (`--color-background-win-alt`, `#2b2b2b`)
     // IS `--color-card`, so a chip wearing it over a card composites to the card —
     // contrast 1.00, invisible. The 1.22 / 1.21 figures that justified it were
     // Dracula-only (ADR 0096's single-palette-check error). `bg-background`
-    // measures 1.10/1.34 Dracula, 1.11/1.28 zai-dark, 1.06/1.06 zai-light; the
+    // measures 1.10/1.34 Dracula, 1.11/1.28 default-dark, 1.06/1.06 default-light; the
     // per-palette census is `src/lib/slabFloatSeparation.test.ts`.
     expect(tokens).toContain("bg-background");
     // The path itself is not the chip's text — it is a pointer, not a title, and
@@ -300,7 +300,7 @@ describe("TaskCard — the artifact key chips (issue #180)", () => {
       expect(tokens).toContain("rounded-full");
       // The fill is the card's ONE pill recipe — the page step, because a chip has
       // to differ from both surfaces it can land on (`bg-panel` column, `bg-card`
-      // card) in every palette, and `bg-chat` is exactly `bg-card` in zai-dark.
+      // card) in every palette, and `bg-chat` is exactly `bg-card` in default-dark.
       expect(tokens).toContain("bg-background");
       expect(tokens).not.toContain("bg-chat");
       expect(chip.tagName).toBe("SPAN");
@@ -612,7 +612,7 @@ describe("TaskCard — the primary-next-step pill (issue #179 §7.1)", () => {
     // The class tokens are asserted because the recipe is a measured decision, not a
     // taste one: `bg-background` is the only fill that differs from BOTH the column's
     // `bg-panel` and the card's `bg-card` in every palette (`bg-chat` is EXACTLY
-    // `bg-card` in zai-dark — contrast 1.00, an invisible pill), and
+    // `bg-card` in default-dark — contrast 1.00, an invisible pill), and
     // `slabFloatSeparation.test.ts` censuses this literal. `transition-*` is absent on
     // the `FileChip` reasoning that file records.
     render(<TaskCard task={task()} {...NO_LINKS} launchStep={launchStep()} />);
@@ -787,7 +787,7 @@ describe("TaskCard — the surface ladder (ADR 0097: raise)", () => {
     const tokens = classTokens(screen.getByTestId("task-card"));
     expect(tokens).toContain("bg-card");
     expect(tokens).not.toContain("bg-surface");
-    // The seam is what carries the card in zai-light, where the recessed and the
+    // The seam is what carries the card in default-light, where the recessed and the
     // raised tokens are both `#ffffff` — and the seam is the SEAM token now, not
     // the generic border (see the matching case in `TasksBoard.test.tsx`). The
     // four quiet palettes keep `--color-card-border` aliasing `--color-border`
@@ -806,7 +806,7 @@ describe("TaskCard — the surface ladder (ADR 0097: raise)", () => {
     // 3.68 against the column fill it rests on) while its elevation ladder steps
     // 1.22 / 1.47 — so a card outline drawn in that token out-shone the two fills
     // it was meant to sit between. The palette already declares a seam token for
-    // this job (`--color-card-border`, retuned in `.theme-dracula` alone), so the
+    // this job (`--color-card-border`, retuned in `.theme-dracula-dark` alone), so the
     // card consumes THAT and the generic border is GONE rather than merely joined:
     // two border-colour utilities on one node is a tie CSS resolves by stylesheet
     // order, so a half-migrated card would still paint the loud ink on Dracula.
@@ -1053,7 +1053,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
     // the column count, now with a THIRD carrier: the fill has to differ from BOTH
     // surfaces it can sit on — the column's `bg-panel` and this card's `bg-card` —
     // in EVERY palette. `bg-chat` is the island plane and is exactly `bg-card` in
-    // zai-dark (its `color-mix` base is `--color-background-win-alt` `#2b2b2b`,
+    // default-dark (its `color-mix` base is `--color-background-win-alt` `#2b2b2b`,
     // which IS `--color-card` there), so a chip wearing it over a card composites
     // to the card: 1.00, invisible. The per-palette census is
     // `src/lib/slabFloatSeparation.test.ts`, whose pill count this chip moves from

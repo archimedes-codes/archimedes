@@ -731,7 +731,7 @@ describe("TasksBoard — the surface ladder (ADR 0097: island, then recess)", ()
     // one of the two. A column sits ON the island, so it goes DOWN a rung
     // (`bg-panel`), which is what `MessageBubble` / `ToolCallCard` already do
     // inside the transcript for the same reason. `border border-border` stays: in
-    // zai-light `bg-panel` and `bg-card` are both `#ffffff`, so there the border is
+    // default-light `bg-panel` and `bg-card` are both `#ffffff`, so there the border is
     // the only thing separating a column from the island under it.
     seeded();
     const tokens = classTokens(screen.getByTestId("task-column-backlog"));
@@ -739,7 +739,7 @@ describe("TasksBoard — the surface ladder (ADR 0097: island, then recess)", ()
     expect(tokens).not.toContain("bg-surface");
     // The seam is the SEAM token now, not the generic border. The reasoning in the
     // comment above still holds, it just applies to `--color-card-border`: in
-    // zai-light `bg-panel` and `bg-card` are both `#ffffff`, so there the seam is
+    // default-light `bg-panel` and `bg-card` are both `#ffffff`, so there the seam is
     // the only thing separating a column from the island under it — and the four
     // quiet palettes keep that token aliasing `--color-border` (10% alpha) exactly
     // so this sentence stays true.
@@ -847,12 +847,12 @@ describe("TasksBoard — the surface ladder (ADR 0097: island, then recess)", ()
     // `bg-panel` and the card's `bg-card` — IN EVERY PALETTE. The claim this
     // replaces read "`bg-chat` is the one token that reads on BOTH surfaces
     // (1.22 / 1.21)": those were Dracula-only figures, and that single-palette
-    // check is exactly what shipped the bug — in `.theme-zai-dark` `--color-chat`
+    // check is exactly what shipped the bug — in `.theme-default-dark` `--color-chat`
     // is `color-mix(… var(--color-background-win-alt) 60%, transparent)` and
     // `--color-background-win-alt` IS `--color-card` (`#2b2b2b`), so compositing
     // the pill over a card gives the card back: 1.00, invisible. `bg-background`
-    // measures 1.10 (panel) / 1.34 (card) in Dracula, 1.11 / 1.28 in zai-dark and
-    // 1.06 / 1.06 in zai-light, and its ink stays readable in all three. The
+    // measures 1.10 (panel) / 1.34 (card) in Dracula, 1.11 / 1.28 in default-dark and
+    // 1.06 / 1.06 in default-light, and its ink stays readable in all three. The
     // per-palette census lives in `src/lib/slabFloatSeparation.test.ts`.
     seeded();
     const count = within(screen.getByTestId("task-column-backlog")).getByText("1");

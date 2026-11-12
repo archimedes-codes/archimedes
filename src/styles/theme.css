@@ -95,7 +95,7 @@
   --color-context-breakdown-5: var(--color-sky-200);
   --color-context-breakdown-6: var(--color-sky-100);
   --color-context-breakdown-7: color-mix(in oklab, var(--color-sky-100) 72%, var(--color-white));
-  /*  热力图之前复用 brand 色，Zai 主题下 brand 是黑/白，无法保持 sky 语义。 */
+  /*  热力图之前复用 brand 色，默认主题下 brand 是黑/白，无法保持 sky 语义。 */
   --color-usage-heatmap-0: color-mix(in oklab, var(--color-sky-500) 0%, var(--color-surface));
   --color-usage-heatmap-1: color-mix(in oklab, var(--color-sky-500) 18%, var(--color-surface));
   --color-usage-heatmap-2: color-mix(in oklab, var(--color-sky-500) 36%, var(--color-surface));
@@ -125,7 +125,7 @@
    * decoration, and decoration is what a Palette re-hues. SIBLING:
    * `--color-row-verb` is the other half; paint a glyph with this and a verb
    * with that, never the reverse. Aliased to today's readings here, so no
-   * palette but `.theme-dracula` re-hues a row — but NOT "so every other
+   * palette but `.theme-dracula-dark` re-hues a row — but NOT "so every other
    * palette renders byte-identically": the three glyphs did not already agree
    * with each other (`Thought`'s brain was `foreground-subtlest` where the
    * other two icons were `foreground-subtle`), so unifying them lifts that one
@@ -157,7 +157,7 @@
    * colours, while `--color-foreground-subtlest` is TEXT whose job is to be
    * readable — two roles that need opposite values, and which shared one token
    * until the Dracula audit. Aliased here (rather than restated per palette) so
-   * every reading keeps the track it has always had; `.theme-dracula` is the one
+   * every reading keeps the track it has always had; `.theme-dracula-dark` is the one
    * block that overrides it. See that block for the measured band separation. */
   --color-context-track: var(--color-foreground-subtlest);
   --color-foreground-inverse: var(--color-white);
@@ -346,7 +346,7 @@
   --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-200) 60%, transparent);
   --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-200) 30%, transparent);
   /* Row glyph + row verb (ADR 0062) — see `@theme` for the family, its axis and
-   * the `--color-warning` collision Dracula accepts. `.dark` is what BOTH zai
+   * the `--color-warning` collision Dracula accepts. `.dark` is what BOTH the default
    * dark and any `.dark`-only surface read, so the alias is the "renders
    * unchanged" half of that ADR. SIBLING: `--color-row-verb` below. */
   --color-row-icon: var(--color-foreground-subtle);
@@ -433,7 +433,7 @@
   --color-thinking-max: #ef4444;
 }
 
-.theme-zai-light {
+.theme-default-light {
   --animated-gradient-text-strong: rgba(13, 13, 13, 1);
   --animated-gradient-text-soft: rgba(13, 13, 13, 0.22);
   --color-background: #f8f8f8;
@@ -445,7 +445,7 @@
   --color-workflow-rule: rgba(13, 13, 13, 0.055);
   --color-workflow-trace: rgba(13, 13, 13, 0.3);
   --color-workflow-trace-strong: rgba(13, 13, 13, 0.55);
-  --color-accent: #ebf4ff;
+  --color-accent: #bd93f9;
   --color-find-highlight: #fff4eb;
   --color-find-highlight-active: #ffb26b;
   --color-border: rgba(13, 13, 13, 0.1);
@@ -528,7 +528,7 @@
   /* Row glyph + row verb (ADR 0062), aliased to the readings this palette had
    * before the tokens existed — see `@theme` for the family and for why the
    * alias rather than a value. SIBLING: `--color-row-verb` below. Unlike the
-   * ramp tokens, these DO belong in `.theme-zai-light`: `.theme-zai-light`
+   * ramp tokens, these DO belong in `.theme-default-light`: `.theme-default-light`
    * renders with no `.dark` class, so it must state every token a row paints. */
   --color-row-icon: var(--color-foreground-subtle);
   /* SIBLING of `--color-row-icon` above; the settled verb (a pending tool call
@@ -539,7 +539,7 @@
    * `--color-foreground-subtlest` was rejected. Aliased to the `@theme` reading
    * (the row family does exactly this) so this palette renders byte-identically.
    * It DOES belong here even though the ramp tokens deliberately do not:
-   * `.theme-zai-light` renders with no `.dark` class, so it must state every
+   * `.theme-default-light` renders with no `.dark` class, so it must state every
    * token its surfaces paint. */
   --color-film-glyph: var(--color-neutral-500);
   --color-context-track: var(--color-foreground-subtlest); /* see @theme */
@@ -593,7 +593,7 @@
   --color-plugin-paid-plan-badge-foreground: #4b280f;
 }
 
-.theme-zai-dark {
+.theme-default-dark {
   --animated-gradient-text-strong: rgba(255, 255, 255, 1);
   --animated-gradient-text-soft: rgba(255, 255, 255, 0.22);
   --color-background: #161616;
@@ -605,7 +605,7 @@
   --color-workflow-rule: rgba(255, 255, 255, 0.065);
   --color-workflow-trace: rgba(255, 255, 255, 0.35);
   --color-workflow-trace-strong: rgba(255, 255, 255, 0.6);
-  --color-accent: #001d3d;
+  --color-accent: #bd93f9;
   --color-find-highlight: #542500;
   --color-find-highlight-active: #ff8a30;
   --color-border: rgba(255, 255, 255, 0.1);
@@ -686,7 +686,7 @@
   --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-300) 60%, transparent);
   --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-300) 30%, transparent);
   /* Row glyph + row verb (ADR 0062) — aliased to this palette's existing
-   * readings; `.theme-dracula` is the one palette that gives them its own hues.
+   * readings; `.theme-dracula-dark` is the one palette that gives them its own hues.
    * See `@theme` for the family's axis and the accepted `--color-warning`
    * collision. Note the alias does NOT mean every row renders untouched: the
    * `Thought` glyph used `foreground-subtlest` while its two siblings in the
@@ -699,7 +699,7 @@
   --color-row-verb: var(--color-foreground-subtlest);
   /* The film glyph (ADR 0071) — OPAQUE on purpose (the luminance bands are the
    * film's only dimming mechanism), aliased to the `.dark` reading, which is
-   * what both zai dark and any `.dark`-only surface already read, so zai renders
+   * what both default dark and any `.dark`-only surface already read, so the default renders
    * byte-identically. See `@theme` for the rejected `--color-foreground-subtlest`
    * and `themeTokens.test.ts` for the per-layer gate that keeps it. */
   --color-film-glyph: var(--color-neutral-400);
@@ -710,7 +710,7 @@
   --color-idle-task: #7b5ce5;
   --color-idle-task-surface: #160d38;
   --color-destructive: #ff5c5c;
-  /* Zai Dark 曾把 destructive 前景设为黑色，与红色危险按钮的固定白字设计冲突。 */
+  /* Default Dark 曾把 destructive 前景设为黑色，与红色危险按钮的固定白字设计冲突。 */
   --color-destructive-foreground: #ffffff;
   --color-warning: #ff8a30;
   --color-feedback-privacy-hint: var(--color-yellow-300);

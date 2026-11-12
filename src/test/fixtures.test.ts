@@ -123,7 +123,7 @@ describe("makeSettings — the one place AppSettings is spelled", () => {
     // Each of these is the value the BACKEND serves on a fresh install, so a
     // fixture that drifted would make a test describe a settings document no
     // user can have.
-    expect(settings.palette).toBeNull(); // `null` = "zai" (ADR 0027)
+    expect(settings.palette).toBeNull(); // `null` = "default" (ADR 0027)
     expect(settings.filePolicy).toEqual({
       reads: "allow",
       writes: "allow",

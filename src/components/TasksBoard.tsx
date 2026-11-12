@@ -649,7 +649,7 @@ function TaskColumn({
             `bg-panel` and the card's `bg-card`) in EVERY palette, which is the
             check `slabFloatSeparation.test.ts` now runs per palette. `bg-chat`
             passed that in Dracula (1.22 / 1.21) and is 1.00 — invisible — against
-            `bg-card` in zai-dark by construction, so the pill takes the page step:
+            `bg-card` in default-dark by construction, so the pill takes the page step:
             `bg-background` measures 1.10/1.34, 1.11/1.28, 1.06/1.06. */}
         <span className="shrink-0 rounded-full bg-background px-2 py-0.5 font-mono text-ui-xs text-foreground-subtle">
           {column.tasks.length}

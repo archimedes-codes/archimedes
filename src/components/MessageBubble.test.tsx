@@ -149,8 +149,8 @@ describe("MessageBubble", () => {
     expect(band.className).not.toContain("max-w");
     // NO border: the user asked for the plain fill. The cost, MEASURED from
     // rendered pixels in a real browser: fill vs chat column is 1.11 (Dracula),
-    // 1.12 (zai dark), 1.08 (zai light — `#ffffff` on a `#f6f6f6` column). All
-    // faint, zai light faintest. Accepted knowingly; do not "fix" it by
+    // 1.12 (default dark), 1.08 (default light — `#ffffff` on a `#f6f6f6` column). All
+    // faint, default light faintest. Accepted knowingly; do not "fix" it by
     // re-adding a border without asking.
     expect(band.className).not.toContain("border");
     // The corners STAY: the user asked to lose the border and the width cap,
@@ -198,7 +198,7 @@ describe("MessageBubble", () => {
     const { container } = render(<MessageBubble message={message} />);
     const band = screen.getByTestId("user-band");
     expect(screen.getByText("Agent")).toBeTruthy();
-    // The chip row is a SIBLING of the band, never a descendant: in the zai
+    // The chip row is a SIBLING of the band, never a descendant: in the default
     // palettes `--color-input` == `--color-composer`, so a `bg-input` card
     // inside the band would have an edge of exactly the band's colour.
     expect(band.textContent).toBe("ping @scout");

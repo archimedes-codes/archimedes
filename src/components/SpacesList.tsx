@@ -117,7 +117,7 @@ function spaceNameFor(cwd: string, spaces: { path: string }[]): string {
  *
  * NOT in the wall, because the row string spells it and comes LAST, so the row
  * already wins it: `hover:bg-surface-hover` (the ghost arm's `hover:bg-hover`
- * is a DIFFERENT colour in three palettes — zai-dark and Dracula read 5%
+ * is a DIFFERENT colour in three palettes — default-dark and Dracula read 5%
  * against surface-hover's 10% — so this is exactly the conflict the recipe
  * exists for, and the row resolves it).
  *
@@ -150,7 +150,7 @@ const SIDEBAR_COMMAND_BUTTON =
  * `Button`'s base and the `default` size — that ordering is what makes the swap
  * paint-neutral, and it is why this string is kept whole rather than folded
  * into the constant above. `hover:bg-surface-hover` is one of them: the ghost
- * arm's `hover:bg-hover` is a DIFFERENT colour in three palettes (zai-dark and
+ * arm's `hover:bg-hover` is a DIFFERENT colour in three palettes (default-dark and
  * Dracula read 5% where `--color-surface-hover` reads 10%), so letting the arm
  * win that group would repaint the hover fill.
  *
@@ -186,7 +186,7 @@ const PANE_COMMAND_ROW =
  *
  * What the row itself wins by being LAST, and why that matters here:
  *  - `hover:bg-surface-hover` over the ghost arm's `hover:bg-hover` (different
- *    colours in zai-dark and Dracula — 5% vs 10%);
+ *    colours in default-dark and Dracula — 5% vs 10%);
  *  - `hidden` + `group-hover:flex` over the base's `inline-flex` — the
  *    hover-reveal mechanism is the whole design of this affordance and it has
  *    to survive;

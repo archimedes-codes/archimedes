@@ -26,6 +26,9 @@
  */
 
 import type { InteractiveEventName } from "../ipc/events";
+// The palette vocabulary, type-only. See `AppSettings.palette` for why the wire
+// shape derives from the registry instead of restating it.
+import type { PaletteId } from "../palettes";
 
 // ---------------------------------------------------------------------------
 // Types mirroring the Rust side
@@ -956,8 +959,20 @@ export interface WebSettings {
 export interface AppSettings {
   /** "system" follows the OS scheme live (the `matchMedia` listener in theme.ts). */
   theme: "system" | "dark" | "light";
-  /** (ADR 0027) The color scheme; `null` = `"zai"` (a pre-feature file). Orthogonal to `theme` — `"dracula"` is dark-only and PINS dark, so the mode is ignored. */
-  palette: "zai" | "dracula" | null;
+  /** (ADR 0027) The color scheme; `null` = the Default palette (a pre-feature file). Orthogonal to `theme` — `"dracula"` is the one scheme that is dark-only and PINS dark, so the mode is ignored under it.
+   *
+   *  DERIVED FROM THE REGISTRY rather than spelled out. It used to read
+   *  `"default" | "dracula" | null` — a hand-maintained third copy of the palette
+   *  vocabulary, and the last one left standing after `AppPalette` was retired. It
+   *  stayed green through three widenings because nothing assigns a new palette
+   *  literal to an `AppSettings` in production code (the picker casts at the Radix
+   *  boundary), which is exactly the shape of a type that cannot fail: it looked
+   *  like a constraint and enforced nothing, and a reader comparing it to the
+   *  registry would have concluded the app shipped two palettes.
+   *
+   *  A TYPE-ONLY EDGE, so this costs the barrel no runtime dependency — `palettes.ts`
+   *  is already in the shipped graph and imports no Node (see its header). */
+  palette: PaletteId | null;
   paneLayout: Record<string, unknown>;
   defaultTrustNewSpaces: boolean;
   defaultModel: string | null;

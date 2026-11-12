@@ -253,11 +253,11 @@ export default function TaskCard({
         {/* The number is a PILL now, and its fill is the PAGE step: it has to
             differ from BOTH surfaces it can land on — the column's `bg-panel` and
             this card's `bg-card` — in EVERY palette. `bg-chat` looked fine in
-            Dracula (1.22 / 1.21) and is EXACTLY the card in zai-dark: its
+            Dracula (1.22 / 1.21) and is EXACTLY the card in default-dark: its
             `color-mix` base is `--color-background-win-alt` `#2b2b2b`, which IS
             `--color-card` there, so 0.6·base + 0.4·card = the card. 1.00. Measured
             per palette in `slabFloatSeparation.test.ts`; `bg-background` is
-            1.10/1.34 Dracula, 1.11/1.28 zai-dark, 1.06/1.06 zai-light. It stays its
+            1.10/1.34 Dracula, 1.11/1.28 default-dark, 1.06/1.06 default-light. It stays its
             OWN text node — `T3` is the label a person says out loud and both board
             test files resolve a card through `getByText("T3")`. */}
         <span className="shrink-0 rounded-full bg-background px-2 py-0.5 font-mono text-ui-xs text-foreground-subtle">
@@ -318,7 +318,7 @@ export default function TaskCard({
           The fill and geometry are the card's ONE pill recipe (see the `T{n}` pill):
           `bg-background` because a pill has to differ from BOTH surfaces it can sit
           on (`bg-panel` column, `bg-card` card) in EVERY palette, and `bg-chat` is
-          exactly `bg-card` in zai-dark (contrast 1.00). ONE literal serves every key
+          exactly `bg-card` in default-dark (contrast 1.00). ONE literal serves every key
           in the list, so the `slabFloatSeparation.test.ts` census moves by exactly
           ONE, not by the number of chips a card happens to render. */}
       {artifactKeys.length > 0 &&
@@ -365,7 +365,7 @@ export default function TaskCard({
           the quiet mark it is. The fill is the page step (`bg-background`) for the
           same reason as the `T{n}` pill above — it has to differ from BOTH surfaces
           it can sit on (`bg-panel` column, `bg-card` card) in EVERY palette, and
-          `bg-chat` is exactly `bg-card` in zai-dark. The ink-only hover is the
+          `bg-chat` is exactly `bg-card` in default-dark. The ink-only hover is the
           `FileChip` idiom: an affordance that says "clickable" without gaining a
           second fill. */}
       {newest !== undefined && (
@@ -435,7 +435,7 @@ export default function TaskCard({
           above): `self-start` because the card is a `flex-col` and without it the
           button stretches to full width, and `bg-background` because the fill has to
           differ from BOTH surfaces it can sit on (`bg-panel` column, `bg-card` card) in
-          EVERY palette — `bg-chat` is exactly `bg-card` in zai-dark. Ink-only hover, no
+          EVERY palette — `bg-chat` is exactly `bg-card` in default-dark. Ink-only hover, no
           `transition-*`, the `FileChip` idiom. */}
       {launchStep !== undefined && launchStep.launchReady && (
         <button

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createSourceSweep } from "./sourceSweep";
 
 /**
  * THE IPC BOUNDARY GUARD (finding 12) — a source scanner, in the shape this repo
@@ -73,13 +74,36 @@ import { describe, expect, it } from "vitest";
 // a bare `import "node:fs"` does not typecheck. The idiom `cssSource.ts`,
 // `themeTokens.test.ts` and `tauriBarrel.test.ts` use.
 const NODE_FS = "node:" + "fs";
-const { readFileSync, readdirSync } = (await import(NODE_FS)) as {
-  readFileSync: (path: string, encoding: string) => string;
+const { readdirSync } = (await import(NODE_FS)) as {
   readdirSync: (
     path: string,
     options: { recursive: true; encoding: string },
   ) => string[];
 };
+// Reads go through the SWEEP READER (see `sourceSweep.ts`): this file lists
+// `src/` and opens every path in later loops, and vitest runs test files
+// concurrently across workers, so a listed path can be deleted before the open.
+const sweep = createSourceSweep();
+
+/** The module, for the non-vacuity probe below — it CREATES and DELETES a scratch
+ *  file so the skip branch can be driven on purpose instead of waited for.
+ *  Reached through the same COMPUTED specifier (this app ships no `@types/node`). */
+const NODE_FS_MODULE = (await import(NODE_FS)) as unknown as {
+  writeFileSync: (path: string, data: string) => void;
+  rmSync: (path: string, options?: { force?: boolean; recursive?: boolean }) => void;
+  mkdirSync: (path: string, options?: { recursive?: boolean }) => void;
+};
+const fs = NODE_FS_MODULE;
+
+/** `@tauri-apps/api/core`, SPLIT — and that is load-bearing, not style. This
+ *  file's own `unmockedIpcTests` census scans TEST files for an `import`/`from`
+ *  of the wire packages, and it does not care that the occurrence is inside a
+ *  string literal. A probe source that spelled the specifier whole would make
+ *  THIS FILE the offender its own guard reports, which is the exact trap
+ *  `tauriBarrel.test.ts` records falling into (it counted 35 mockers where the
+ *  tree held 33). Splitting the name keeps the probe invisible to the scanner
+ *  that would otherwise convict the probe's author. */
+const WIRE_PACKAGE = "@tauri-apps/api/" + "core";
 
 /** Normalise a `readdirSync` result to `/`-spelled repo-relative paths. On
  *  Windows `readdirSync` returns BACKSLASH paths, which would break every
@@ -164,12 +188,22 @@ const PARALLEL_IPC_MODULES = [
   "src/lib/version.ts",
 ];
 
-/** Files that import an IPC package, tests excluded (they have their own rule). */
-const productionIpcImporters = (): string[] =>
-  SOURCES.filter(
+/** Read a LISTED file, or `""` for one that vanished between the listing and
+ *  this read. An empty text matches no predicate below, so the file drops out of
+ *  the census — which is the true answer (it does not exist), and `sweep.listed`
+ *  has already put the path in the skip ledger, so the drop is recorded rather
+ *  than silent. See `sourceSweep.ts`. */
+const readListed = (file: string): string => sweep.listed(file) ?? "";
+
+/** Files that import an IPC package, tests excluded (they have their own rule).
+ *  `files` defaults to the real listing and is a parameter so the non-vacuity
+ *  test below can drive THIS predicate over a listing it controls — a vanished
+ *  path, created and deleted on purpose — rather than hoping two workers collide. */
+const productionIpcImporters = (files: readonly string[] = SOURCES): string[] =>
+  files.filter(
     (f) =>
       !/\.test\.tsx?$/.test(f) &&
-      IPC_PACKAGES.test(stripJsComments(readFileSync(f, "utf8"))),
+      IPC_PACKAGES.test(stripJsComments(readListed(f))),
   ).sort();
 
 /** Tests that import an IPC package WITHOUT mocking that path in the same file.
@@ -178,11 +212,85 @@ const productionIpcImporters = (): string[] =>
 const unmockedIpcTests = (): string[] =>
   SOURCES.filter((f) => {
     if (!/\.test\.tsx?$/.test(f)) return false;
-    const src = stripJsComments(readFileSync(f, "utf8"));
+    const src = stripJsComments(readListed(f));
     if (!IPC_PACKAGES.test(src)) return false;
     // Mocked at the IPC package path, at any depth of quoting.
     return !/vi\.mock\(\s*["']@tauri-apps\/api\/(?:core|event)["']/.test(src);
   }).sort();
+
+describe("the sweep survives a file that vanishes between listing and reading", () => {
+  // THE SKIP BRANCH, DRIVEN ON PURPOSE — not a race attempt. The real ENOENT
+  // needs two workers to collide (the palette guard in
+  // `paletteCompleteness.test.ts` deletes `src/lib/palettes/guardprobe.ts` from
+  // another process), which the full suite reproduces occasionally and a single
+  // file never can. So this hands `productionIpcImporters` a listing it controls
+  // and removes one of the paths from under it. `.tmp/` is gitignored and outside
+  // `src/`, so a probe can never become a fake source file in the tree the other
+  // sweeps grade.
+  const probe = ".tmp/tauriBoundarySweep";
+
+  it("skips a listed file that disappears mid-sweep, and records it", () => {
+    fs.mkdirSync(probe, { recursive: true });
+    // The offender is planted alongside the doomed path so the SECOND pass proves
+    // a SKIP and not a predicate that simply found nothing: the real offender
+    // must survive.
+    const real = `${probe}/wire.ts`;
+    const doomed = `${probe}/doomed.ts`;
+    const wireSource = (): string =>
+      `import { invoke } from "${WIRE_PACKAGE}";\nexport const call = () => invoke("x");\n`;
+    fs.writeFileSync(real, wireSource());
+    fs.writeFileSync(doomed, wireSource());
+    sweep.resetSkipped();
+    try {
+      // Pass 1 — both exist, both are convicted. Without this, pass 2's empty
+      // list would be indistinguishable from a blind predicate.
+      expect(productionIpcImporters([real, doomed])).toEqual([doomed, real].sort());
+      expect(sweep.skipped(), "nothing has vanished yet").toEqual([]);
+
+      // Pass 2 — one path is deleted, the SAME listing is swept again.
+      fs.rmSync(`${probe}/doomed.ts`, { force: true });
+      expect(
+        productionIpcImporters([real, doomed]),
+        "the vanished file is gone (it does not exist); the real one is still an offender",
+      ).toEqual([real]);
+      expect(sweep.skipped(), "the skip is recorded, never silent").toEqual([
+        { file: doomed, code: "ENOENT" },
+      ]);
+    } finally {
+      fs.rmSync(probe, { force: true, recursive: true });
+      sweep.resetSkipped();
+    }
+  });
+
+  it("reads a listed file that is PRESENT, so a leaked artifact is still caught", () => {
+    // The failure everyone cares about: a stray file left in the tree by a killed
+    // run is PRESENT, so it is opened and convicted. Tolerating a vanishing path
+    // must not become tolerating a stray one.
+    fs.mkdirSync(probe, { recursive: true });
+    const leaked = `${probe}/leaked.ts`;
+    fs.writeFileSync(
+      leaked,
+      `import { invoke } from "${WIRE_PACKAGE}";\nexport const call = () => invoke("x");\n`,
+    );
+    sweep.resetSkipped();
+    try {
+      expect(productionIpcImporters([leaked])).toEqual([leaked]);
+      expect(sweep.skipped(), "a present file is never skipped").toEqual([]);
+    } finally {
+      fs.rmSync(leaked, { force: true });
+      fs.rmSync(probe, { force: true, recursive: true });
+    }
+  });
+
+  it("a NAMED path that is missing still throws (tolerance does not leak to literals)", () => {
+    // `BARREL` and the `PARALLEL_IPC_MODULES` allowlist entries are named by
+    // literals. If the sweep went tolerant of those, the allowlist's
+    // stale-entry test and the barrel-imports-nothing test would go green while
+    // reading nothing.
+    expect(() => sweep.named("src/lib/not-a-real-barrel.ts")).toThrow(/ENOENT|no such file/);
+    expect(sweep.named(BARREL), "the real barrel still reads").toContain("export");
+  });
+});
 
 describe("the Tauri IPC boundary (finding 12)", () => {
   it("the scanner actually reads the tree", () => {
@@ -228,7 +336,7 @@ describe("the Tauri IPC boundary (finding 12)", () => {
     // `export { … } from "./tauri/…"` lines, so "no `from`" reddens on a healthy
     // barrel (it matched 11 re-exports when this was written). The rule is about
     // `import`, which a re-export surface never needs.
-    const src = stripJsComments(readFileSync(BARREL, "utf8"));
+    const src = stripJsComments(sweep.named(BARREL));
     expect(src).not.toMatch(/^\s*import\s/m);
     expect(src).not.toMatch(/\bimport\s*\(/);
     // And the wire packages specifically, wherever they appear — the barrel must
@@ -270,7 +378,7 @@ describe("the boundary holds against the shapes a reader would not notice", () =
     // `@tauri-apps/api/window` is removed first (see the scope test below) so
     // that the two components legitimately importing it do not make this red.
     const namesWirePackages = (file: string): boolean =>
-      stripJsComments(readFileSync(file, "utf8"))
+      stripJsComments(readListed(file))
         .replace(/@tauri-apps\/api\/window|@tauri-apps\/plugin-[a-z-]+/g, "")
         .includes("@tauri-apps/api/");
 
@@ -307,7 +415,7 @@ describe("the boundary's declared scope (so its silence is not an accident)", ()
       (f) =>
         !/\.test\.tsx?$/.test(f) &&
         /(?:\bfrom|\bimport)\s*\(?\s*["']@tauri-apps\/api\/window["']/.test(
-          stripJsComments(readFileSync(f, "utf8")),
+          stripJsComments(readListed(f)),
         ),
     );
     expect(windowShell.sort()).toEqual([

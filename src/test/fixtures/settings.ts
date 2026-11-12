@@ -38,7 +38,7 @@ import type { AppSettings } from "../../lib/tauri";
  * Defaults are the values a FRESH INSTALL gets from the backend (the fields
  * whose serde defaults differ from the zero value are the ones that matter:
  * `sessionNamingEnabled` is `true`, `mcpMentionsEnabled` is `false`,
- * `filePolicy` is all-`allow`, `palette` is `null` meaning `"zai"`), so a test
+ * `filePolicy` is all-`allow`, `palette` is `null` meaning `"default"`), so a test
  * seeded with the default is describing a document a user can actually have.
  *
  * Every nested object is REBUILT per call — a `{ ...DEFAULT_SETTINGS }` spread
@@ -69,7 +69,7 @@ export function makeSettings(overrides: Partial<AppSettings> = {}): AppSettings 
  */
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
-  // `null` = "zai" — a pre-ADR-0027 document reads exactly like this.
+  // `null` = "default" — a pre-ADR-0027 document reads exactly like this.
   palette: null,
   paneLayout: {},
   defaultTrustNewSpaces: false,
