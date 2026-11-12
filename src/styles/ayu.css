@@ -71,13 +71,20 @@
  * The point stands but the number was wrong, and a per-variant value cannot be
  * quoted as a constant.
  *
- * So the code-block paper MUST come from `getTheme(<id>).bg` at runtime (ADR
- * 0104 / plan decision 8) — never from the spec page, never from
- * `editor.background`, and never from a hardcoded `#0d1017` on the theory that
- * one value covers every Ayu reading. `#0d1017` IS legitimately
- * `surface.base`, which is why it is the PAGE token here; that is a coincidence
- * of values, not a licence to treat it as the code surface. No surface token in
- * this file was set to `#0B0E14` or `#10141c` as the code-block colour.
+ * So the code-block paper is whatever SHIKI says it is, and that happens by
+ * construction rather than by any code here: `codeToHtml({ theme })` writes the
+ * theme's own normalised `bg` as an INLINE `background-color` on its `<pre>`,
+ * which outranks every Tailwind class in the cascade, so the CSS in this file
+ * cannot set the code surface even if it tries (`AgentMarkdown.tsx`'s code-block
+ * comment records the same finding for the component side). What follows is the
+ * consequence for anyone reading these hexes: the paper is never the spec page
+ * (`#0B0E14`), never `editor.background` (`#10141c`), and never a hardcoded
+ * `#0d1017` on the theory that one value covers every Ayu reading — those three
+ * are three different numbers, and two of them are what the paper LOOKS like it
+ * should be. `#0d1017` IS legitimately `surface.base`, which is why it is the
+ * PAGE token here; that is a coincidence of values, not a licence to treat it as
+ * the code surface. No surface token in this file was set to `#0B0E14` or
+ * `#10141c` as the code-block colour.
  *
  * THE ALPHA IS KEPT, AND IT IS THE DEFINING CONSTRAINT. Ayu's foregrounds are
  * published as 8-digit alpha (`editor.fg: FCF8EC A0.74` → `#fcf8ecbd`) and its own
