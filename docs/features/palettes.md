@@ -69,6 +69,13 @@ The registry plus the spec-data row is the whole contract, and the gates were re
 
 The gates fail on the real omission before the code exists — that observation is what makes them gates. A new Palette needs: `src/styles/<id>.css` (dark and light blocks, with the header record), `src/lib/palettes/<id>.ts` (published hexes, ladder groups, allow-lists, floors with `expiresAt`), one registry entry, and one `@import` in `src/index.css`. No shared gate is edited, and no Rust changes — `palette` is an unvalidated `Option<String>` that nothing branches on.
 
+**Those four edits do not land at once, and the suite must survive the gap.** Authoring a Palette is two states, not one: first the spec row and its CSS file exist with NEITHER the registry entry NOR the `@import` (that is how a scheme gets authored and graded before it is wired, and how several can be authored in parallel without editing a shared file), then registration and the import arrive together. The two kinds of gate read different sources and must not be conflated:
+
+- **Per-Palette grading** reads that Palette's OWN CSS file and enumerates the **spec directory** — a row is what says "grade me". An unregistered row must be GRADED here, never skipped.
+- **Cross-Palette wiring** enumerates the **registry**, because only a registered class can ever be applied and only a registered Palette is `@import`ed. An unregistered row must be ABSENT here, legitimately.
+
+Conflating them means an in-flight Palette reddens the whole shared suite, and the tempting "fix" — skip specs that are not imported — makes the wiring checks vacuous for exactly the Palettes they exist to guard. `src/test/fixtures/palettes/wave3probe.{ts,css}` is the fixture that pins the intermediate state, and `paletteCompleteness.test.ts`'s Wave-3 block is the gate that keeps it honest.
+
 **Do not "finish" the default Palette's rename in Rust.** The default Palette's former id and the Z.AI **model provider's** id were the same string. The provider catalog in `src-tauri/src/config.rs` (`id: "zai"`, `base_url: "https://api.z.ai/api/anthropic"`, and the `zai-api` sibling) is a live model endpoint, asserted in `commands/settings.rs`; a repo-wide find-and-replace would break model access while looking like a completed rename.
 
 ## Open follow-ups

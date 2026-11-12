@@ -2609,11 +2609,12 @@ const declaredPaletteClassesSweptFrom = (rows: readonly PaletteSpec[]): string[]
 /**
  * ══ WAVE 3: AN UNREGISTERED, UN-IMPORTED SPEC ROW IS GRADED, NOT SKIPPED ══
  *
- * THE STATE. Tasks 3–6 of `docs/roadmap/more-palettes.md` each add
- * `src/styles/<id>.css` + `src/lib/palettes/<id>.ts` and touch NEITHER
- * `src/index.css` NOR `src/lib/palettes.ts`; registration is Task 7. Mid-plan, a
- * spec row exists, its CSS file exists, and neither the registry entry nor the
- * `@import` exists. NOTHING in this suite asserted that state, so three gates here
+ * THE STATE. Authoring a Palette is two states, and `docs/features/palettes.md`
+ * ("Those four edits do not land at once") records why the suite must survive the
+ * gap: a task adds `src/styles/<id>.css` + `src/lib/palettes/<id>.ts` and touches
+ * NEITHER `src/index.css` NOR `src/lib/palettes.ts`, and registration is a later
+ * edit. In that window a spec row exists, its CSS file exists, and neither the
+ * registry entry nor the `@import` does. NOTHING in this suite asserted that state, so three gates here
  * were free to conflate the two kinds Task 2 separated:
  *
  *   (a) PER-Palette grading — reads that Palette's OWN CSS file, enumerates the

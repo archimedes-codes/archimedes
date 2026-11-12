@@ -4,15 +4,16 @@
  * WHAT IT IS. A third Palette reading, present on disk and GRADED by
  * `src/lib/paletteCompleteness.test.ts`, that is deliberately absent from the
  * registry (`src/lib/palettes.ts`) and from `src/index.css`. That is exactly the
- * state Tasks 3-6 of `docs/roadmap/more-palettes.md` leave behind: a spec row and
- * its CSS file land together, the `@import` and the registration are the closeout.
+ * in-flight authoring state `docs/features/palettes.md` records under "Those four
+ * edits do not land at once": a spec row and its CSS file land together, the
+ * `@import` and the registration are a separate later edit.
  * Before the (a)/(b) split, that state reddened three gates of the shared suite,
  * because NAMES came from the SPEC DIRECTORY while OFFSETS and CLASS LISTS came
  * from the RESOLVED SHEET and the REGISTRY.
  *
  * WHY THE BLOCK IS A RENAME OF `.theme-default-dark`. `gradePalette` must return
  * ZERO failures for this row: a fixture that already fails cannot distinguish
- * "graded and clean" from "skipped", which is the failure mode the plan calls out
+ * "graded and clean" from "skipped", which is the vacuity trap `docs/features/palettes.md` calls out
  * ("the gate must skip unimported specs, which makes the checks vacuous for
  * exactly the Palettes they exist to grade"). A second dark reading over the same
  * base, with the same 168 tokens, is the smallest thing that can satisfy every

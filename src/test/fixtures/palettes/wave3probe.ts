@@ -4,7 +4,7 @@ import type { PaletteSpec } from "../../../lib/paletteSpec";
 /**
  * ══ THE WAVE-3 FIXTURE: a THIRD Palette row that is graded and NOT registered ══
  *
- * THE STATE IT ENCODES. `docs/roadmap/more-palettes.md` Tasks 3–6 each add
+ * THE STATE IT ENCODES. `docs/features/palettes.md` ("Those four edits do not land at once") describes
  * `src/styles/<id>.css` + `src/lib/palettes/<id>.ts` and touch NEITHER
  * `src/index.css` NOR `src/lib/palettes.ts` — registration is Task 7. So mid-plan
  * there is a spec row, there is a CSS file, and there is no registry entry and no
@@ -28,7 +28,7 @@ import type { PaletteSpec } from "../../../lib/paletteSpec";
  * WHY THE BLOCK IS A RENAME OF `.theme-default-dark` RATHER THAN AN INVENTION.
  * `gradePalette` must return ZERO failures for this row. A fixture that already
  * fails cannot tell "graded and clean" apart from "skipped", and skipping is the
- * exact failure mode the plan names: "the gate must skip unimported specs, which
+ * exact failure mode `docs/features/palettes.md` names: "the gate must skip unimported specs, which
  * makes the checks vacuous for exactly the Palettes they exist to grade." So the
  * fixture is byte-identical to Default's dark reading modulo the selector, and the
  * row below is that reading — the completeness reference, the ladder, the floors and
