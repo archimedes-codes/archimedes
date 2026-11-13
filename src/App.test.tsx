@@ -2283,14 +2283,15 @@ describe("App (the Task board view)", () => {
 
   /** Render, let the boot trio land, then give the app an ACTIVE Session.
    *
-   *  WHY THE SEED IS NEEDED rather than reading as ceremony: `App` hands
-   *  `TasksBoard` the SAME `spaceCwd` the `SpaceCwdProvider` uses, and that is
-   *  `useActiveSpaceCwd()` — the ACTIVE SESSION's `cwd`, `null` with no active
-   *  Session. This file's boot mocks resolve `[]` for Spaces and Sessions, so a bare
-   *  render leaves `spaceCwd` `null`, and `TasksBoard` correctly refuses to call
-   *  `get_board(null)`. Every case below that asserts a board FETCH therefore needs a
-   *  live Session; the cases that do not assert a fetch use the bare render and are
-   *  pinning the no-Space arm. */
+   *  WHY THE SEED IS NEEDED rather than reading as ceremony: this file's boot mocks
+   *  resolve `[]` for Spaces and Sessions, so a bare render leaves the store with NO
+   *  Space selected at all — and since the board began reading the **Selected Space**
+   *  (`activeSpacePath`) out of the store rather than a folder `App` handed it, that
+   *  is what decides whether `get_board` runs. The helper therefore seeds BOTH halves
+   *  by hand: the live Session (a row on screen to click, which the exit cases need)
+   *  and the Space selection the board fetches for. Every case below that asserts a
+   *  fetch or a live Session needs it; the cases that do not use the bare render and
+   *  are pinning the no-Space arm. */
   async function bootedWithActiveSession(): Promise<void> {
     render(<App />);
     await act(async () => {
@@ -2309,6 +2310,35 @@ describe("App (the Task board view)", () => {
         activeSessionId: "s1",
         activeSpacePath: "/tmp/ws",
       });
+    });
+  }
+
+  /** Back to the empty-boot shape, by hand.
+   *
+   *  This file calls no `resetStores()` (its standing pattern is hand-written per-test
+   *  key lists), so whatever the previous case left in the module singleton survives
+   *  into the next. The mechanism that makes that worth guarding here: `setSpaces`
+   *  runs `autoSelectActive` ONLY when `activeSessionId` is already `null`, so a
+   *  Session left behind by another case would pin the Landing Session on that case
+   *  rather than on this one's boot payload — and both cases below are ABOUT the
+   *  landing. Measured, though: the neighbour as it stands today leaves
+   *  `activeSessionId: null`, so the LEADING call is a guard rather than the reason
+   *  these two are green — it earns its place by making each case self-contained
+   *  (a case that fails before its own trailing clear would otherwise hand the next
+   *  one its selection, and a reordering is free to change which case that is). The
+   *  key list is the nine fields the neighbouring `describe`s clear for the same
+   *  reason. */
+  function clearStoreForBoot(): void {
+    useSessions.setState({
+      sessions: [],
+      historySessions: [],
+      archivedSessions: [],
+      spaces: [],
+      activeSessionId: null,
+      activeSpacePath: null,
+      messages: {},
+      sessionRecency: {},
+      sessionOrder: {},
     });
   }
 
@@ -2655,11 +2685,27 @@ describe("App (the Task board view)", () => {
   });
 
   it("the board renders for a Space with no stages without calling any write command", async () => {
-    // `getBoard` resolves `[]` (the mock's default): the board shows its empty line
-    // and writes NOTHING. `createTask`/`editTask`/`moveTask`/`reorderTasks`/
-    // `linkSession` are mocked for the cases above; naming them here is what makes
-    // "opening a board has no write side effect beyond the lazy stage seed" a checked
-    // claim rather than an assumed one.
+    // A Space with NO Sessions at all, so no stage has ever been created for it:
+    // `getBoard` resolves `[]` (the mock's default) and the board shows its empty
+    // line. Opening that board DOES write one thing — `get_board` runs the lazy
+    // stage seed (ADR 0090) — and that single read-with-a-side-effect is the whole
+    // story, which is exactly why the five write verbs below are named rather than
+    // assumed: `createTask`/`editTask`/`moveTask`/`reorderTasks`/`linkSession` are
+    // mocked for the cases above, and "opening a board has no write side effect
+    // beyond the lazy stage seed" is a claim only they can check.
+    //
+    // THE SPACE IS SEEDED, AND THAT IS THE POINT. `getBoard` is called exactly
+    // once — the assertion whose absence hid the fact that this case never reached
+    // a Space at all: with the factory's `listSpaces` resolving `[]` the Selected
+    // Space was `null`, the board correctly refused to fetch, and all five
+    // `not.toHaveBeenCalled()` lines were satisfied by the board having done
+    // NOTHING. A green that proves nothing is worse than a red, so the fetch is
+    // now pinned too, and `Once` keeps the answer to this case (there is no
+    // file-scope `clearAllMocks` here).
+    clearStoreForBoot();
+    vi.mocked(listSpaces).mockResolvedValueOnce([
+      { path: "/tmp/alpha", createdAt: 0, lastOpenedAt: 1, trusted: false },
+    ]);
     render(<App />);
     await act(async () => {
       await Promise.resolve();
@@ -2669,10 +2715,82 @@ describe("App (the Task board view)", () => {
       await Promise.resolve();
     });
     expect(screen.getByTestId("tasks-board")).toBeTruthy();
+    // The board FETCHED — for the Space it is showing.
+    expect(getBoard).toHaveBeenCalledTimes(1);
+    expect(getBoard).toHaveBeenCalledWith("/tmp/alpha");
     expect(createTask).not.toHaveBeenCalled();
     expect(editTask).not.toHaveBeenCalled();
     expect(moveTask).not.toHaveBeenCalled();
     expect(reorderTasks).not.toHaveBeenCalled();
     expect(linkSession).not.toHaveBeenCalled();
+    // Back to the empty-boot shape: the `listSpaces` arm needs no re-arm (a
+    // consumed `Once` falls back to the factory default by itself — the idiom
+    // every other `Once` user in this file relies on), but the Space it SELECTED
+    // is store state and survives the case, so the store is what gets cleared.
+    clearStoreForBoot();
+  });
+
+  it("the board loads for the selected Space when every Session is archived", async () => {
+    // The reported bug (issue #185), at App level. An install whose every Session
+    // is archived used to boot with NO active Session, which took the board's Space
+    // with it: the sidebar showed a tab, the board said no Space was open. Two fixes
+    // meet in this one render — the board reads the **Selected Space** from the
+    // store rather than a folder `App` handed it, and the Landing Session falls back
+    // to the most recent ARCHIVED row as a last resort.
+    //
+    // ALL THREE BOOT MOCKS ARE `Once`, AND THE FIRST TWO ARE THE ONES THAT DECIDE.
+    // Boot is `Promise.all([listSessions(true), listSpaces(), sessionRecency()])`,
+    // and the factory's default `listSessions` resolves `[]` — so with only
+    // `listSpaces` armed the store would hold no archived row at all,
+    // `autoSelectActive`'s new archived arm would find nothing to land on, and the
+    // case would be measuring the board's Selected-Space derivation (the first fix)
+    // while claiming to measure the archived landing (the second). Measured: with
+    // the `listSessions` arm removed this case fails `expected null to be 'a1'`.
+    // `activeSessionId === "a1"` below is the line that tells the two fixes apart.
+    // The `sessionRecency` arm is the third for FAITHFULNESS rather than for that
+    // assertion — one archived row is picked even on the evidence-less fallback, so
+    // dropping it alone leaves this case green — but the landing this case
+    // reproduces is decided from that map in production, and a boot shape that omits
+    // it is not the boot being described. Same `Once` boot idiom as the
+    // `sessionRecency` case above (which arms two of the three, and re-arms nothing
+    // when it finishes), for the same reason: `Once` leaves every other test in this
+    // file on the factory's empty answers.
+    clearStoreForBoot();
+    vi.mocked(listSpaces).mockResolvedValueOnce([
+      { path: "/tmp/alpha", createdAt: 0, lastOpenedAt: 1, trusted: false },
+    ]);
+    vi.mocked(listSessions).mockResolvedValueOnce([
+      {
+        sessionId: "a1",
+        cwd: "/tmp/alpha",
+        capabilities: {},
+        archived: true,
+        title: "Archived work",
+      },
+    ]);
+    vi.mocked(sessionRecency).mockResolvedValueOnce([
+      { sessionId: "a1", lastActiveAt: 9_000_000_000_000, sortOrder: 0 },
+    ]);
+    render(<App />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // The Space was selected…
+    expect(useSessions.getState().activeSpacePath).toBe("/tmp/alpha");
+    // …AND the archived row is the Session on screen. Without this line the case
+    // cannot distinguish the archived landing from a bare Space selection.
+    expect(useSessions.getState().activeSessionId).toBe("a1");
+    fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("tasks-board")).toBeTruthy();
+    expect(getBoard).toHaveBeenCalledWith("/tmp/alpha");
+    // Back to the empty-boot shape. The three `Once` arms need no re-arm — a
+    // consumed `Once` falls back to the factory default on its own, which is why
+    // every other `Once` user in this file leaves them alone; what does survive is
+    // the SELECTED Space and the archived `activeSessionId`, and those are the
+    // store's, so the store is what gets cleared (see `clearStoreForBoot`).
+    clearStoreForBoot();
   });
 });

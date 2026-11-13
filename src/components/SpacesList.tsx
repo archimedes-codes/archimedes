@@ -933,9 +933,10 @@ function SessionRow({
 /**
  * The **active Space's** Archived section: the archived rows whose `cwd` is the
  * selected Space, rendered AFTER that Space's groups and scrolling with the
- * list. COLLAPSED by default; the header (icon + "Archived" + count + chevron)
- * toggles it. The count is the SAME array the rows render, so it is the Space's
- * count and never the app-wide total.
+ * list. COLLAPSED by default — EXCEPT when it holds the active Session, in which
+ * case it mounts open (see the `useState` below); the header (icon + "Archived" +
+ * count + chevron) toggles it either way. The count is the SAME array the rows
+ * render, so it is the Space's count and never the app-wide total.
  *
  * The ORDER is explicit recency, and the two filters below are `archivedInSpace`'s
  * rather than this component's — one call, so the badge, the rows and the sort
@@ -967,7 +968,6 @@ function ArchivedSection({
   onOpen: (sessionId: string) => void;
   onDelete: (session: SessionInfo) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const archived = useSessions((s) => s.archivedSessions);
   const sessions = useSessions((s) => s.sessions);
   const activeSpacePath = useSessions((s) => s.activeSpacePath);
@@ -986,6 +986,28 @@ function ArchivedSection({
   const visible = archivedInSpace(activeSpacePath, archived, sessions, {
     recency: sessionRecency,
   });
+  // Collapsed by default, because the section is secondary. The initialiser is
+  // LAZY: React reads the initial value on the FIRST render only and discards
+  // whatever later renders hand it, so the lazy form is the one that says what is
+  // happening — an eager `visible.some(…)` would recompute on every re-render of
+  // the section (and it re-renders on any `sessions` / `archivedSessions` /
+  // recency change) only to throw the answer away. (Measured: the eager form
+  // passes this file's 70 cases too, because it is discarded rather than wrong —
+  // the two forms differ in wasted work, not in behaviour. The lazy form is also
+  // the one that cannot be turned into a derived value by the next editor, which
+  // is the shape that WOULD break the manual collapse.)
+  //
+  // The one exception, and the reason this is not a bare `useState(false)`: the
+  // Landing Session can now be an ARCHIVED one (ADR 0075's amendment), and
+  // `activeView.sessionIds` is `mergeSessionOrder`'s output, which by
+  // construction never contains an archived id — so the Space group can never
+  // carry the highlight and THIS section is the only place that row lives. Left
+  // collapsed, the app would boot with a transcript on screen and nothing in the
+  // sidebar pointing at it. Opening the section does not select anything: it
+  // reveals the row that is already selected.
+  const [open, setOpen] = useState(() =>
+    visible.some((s) => s.sessionId === activeSessionId),
+  );
   return (
     <div className="px-2.5 py-1">
       <RowButton

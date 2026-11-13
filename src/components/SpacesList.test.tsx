@@ -774,10 +774,25 @@ describe("SpacesList — the Skills button and empty-state modal", () => {
 
 describe("SpacesList (archive, ADR 0016)", () => {
   /** Seed an archived (flag-on) stored session in the `alpha` space.
-   * `messages` (when given) makes the row's title message-derived. */
+   * `messages` (when given) makes the row's title message-derived.
+   *
+   * This helper's job is ONE fact: "this Space has archived rows". It used to
+   * also set `activeSessionId: id`, which quietly made all of its call sites mean
+   * "…and one of them is the Session on screen" — a SECOND fact. That stopped
+   * being free the moment the section began opening by default when it holds the
+   * active Session (ADR 0075's amendment): under that rule every call site would
+   * render open on mount, and the cases that pin collapsed → click → rows would
+   * be clicking the section SHUT. The fixture was over-specified, not the
+   * component wrong, so the default is now `null` and the cases that genuinely
+   * need an active archived row say `active: true`. */
   function seedArchived(
     id: string = "a1",
-    opts: { live?: boolean; messages?: { text: string; at: number } } = {},
+    opts: {
+      live?: boolean;
+      messages?: { text: string; at: number };
+      /** Also make this archived row the ACTIVE Session (the Landing-Session case). */
+      active?: boolean;
+    } = {},
   ): void {
     const row = makeSessionRow({
       sessionId: id,
@@ -787,7 +802,7 @@ describe("SpacesList (archive, ADR 0016)", () => {
     useSessions.setState({
       sessions: opts.live ? [row] : [],
       archivedSessions: [row],
-      activeSessionId: id,
+      activeSessionId: opts.active ? id : null,
       ...(opts.messages
         ? { messages: { [id]: [makeMessage("user", opts.messages)] } }
         : {}),
@@ -973,6 +988,49 @@ describe("SpacesList (archive, ADR 0016)", () => {
     // gone now that the section is Space-scoped, but the assertion still reads.)
     expect(screen.queryByText(/^Archive the logs/)).toBeNull();
     // Expanding the section (clicking the header) reveals the row.
+    fireEvent.click(screen.getByText("Archived"));
+    expect(screen.getByText(/^Archive the logs/)).toBeTruthy();
+  });
+
+  it("the Archived section is OPEN by default when it holds the active Session", () => {
+    // ADR 0075's amendment (spec D4): the Landing Session can now be an ARCHIVED
+    // one, and `activeView.sessionIds` comes from `mergeSessionOrder`, which by
+    // construction never contains an archived id — so the Space group can never
+    // mark that row and THIS section is the only place it lives. Collapsed by
+    // default it would ship a new symptom: a transcript on screen and nothing in
+    // the sidebar pointing at it. The row is therefore on screen with NO click.
+    seedArchived("a1", {
+      active: true,
+      messages: { text: "Archive the logs", at: Date.now() - 3_600_000 },
+    });
+    render(<SpacesList />);
+    // The header is still the header (the section did not replace itself)…
+    expect(screen.getByText("Archived")).toBeTruthy();
+    // …and its row is ALREADY rendered — no `fireEvent.click(getByText("Archived"))`
+    // between the render and this line, which is the whole claim.
+    expect(screen.getByText(/^Archive the logs/)).toBeTruthy();
+    // THE OTHER HALF OF THE DECISION: opening is the INITIAL value, not a lock.
+    // The user can still collapse the section by hand and it stays collapsed —
+    // which is what the lazy initialiser (rather than a derived value) buys.
+    fireEvent.click(screen.getByText("Archived"));
+    expect(screen.queryByText(/^Archive the logs/)).toBeNull();
+  });
+
+  it("the Archived section stays collapsed by default when the active Session is elsewhere", () => {
+    // The other arm, and the one that keeps the initialiser honest: the section
+    // opens for the row ON SCREEN, not whenever archived rows exist. Here the
+    // active Session is the fixture's LIVE `s1`, so the predicate is false at
+    // mount and the archived row is hidden until the header is clicked — exactly
+    // the behaviour the case above documents as the default.
+    seedArchived("a1", {
+      messages: { text: "Archive the logs", at: Date.now() - 3_600_000 },
+    });
+    // The LIVE `s1` from the file's `seed()` fixture is what's on screen. Said
+    // out loud rather than inherited, so this case reads as the OTHER arm of the
+    // one above whatever the shared helper defaults to.
+    useSessions.setState({ activeSessionId: "s1" });
+    render(<SpacesList />);
+    expect(screen.queryByText(/^Archive the logs/)).toBeNull();
     fireEvent.click(screen.getByText("Archived"));
     expect(screen.getByText(/^Archive the logs/)).toBeTruthy();
   });
@@ -1206,7 +1264,12 @@ describe("SpacesList (archive, ADR 0016)", () => {
   });
 
   it("New Session with an archived session active starts a conversation in that space (not the New Space dialog)", async () => {
-    seedArchived();
+    // `active: true` is this case's PREMISE, not decoration — its title says
+    // "with an archived session active", and the hook branch it pins
+    // (`activeView` matching via `archivedSessionIds`) only runs for an ACTIVE
+    // archived Session. Without the flag it would still pass, but by the other
+    // route (a bare Space selection), so it would be pinning something else.
+    seedArchived("a1", { active: true });
     render(<SpacesList />);
     fireEvent.click(screen.getByRole("button", { name: /New Session/ }));
     // The `activeView` predicate matches via `archivedSessionIds` → the
@@ -1221,7 +1284,11 @@ describe("SpacesList (archive, ADR 0016)", () => {
   });
 
   it("an archived-only active session still resolves its space for the skill catalog", async () => {
-    seedArchived();
+    // `active: true` again IS the premise: the catalog path it pins reads
+    // `activeSession ? undefined : activeHistory ?? archivedSessions.find(…)`,
+    // and only an ACTIVE archived row distinguishes the first arm from the
+    // fallback it must not take.
+    seedArchived("a1", { active: true });
     render(<SpacesList />);
     // The `useSkillCatalog` input path (`activeSession ? undefined :
     // activeHistory ?? archivedSessions.find(…)`): the active session's
