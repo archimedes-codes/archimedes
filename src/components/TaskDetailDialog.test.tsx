@@ -1298,15 +1298,39 @@ describe("TaskDetailDialog — the artifact rail and pane", () => {
     expect(narrow).not.toContain("sm:max-w-4xl");
   });
 
-  it("the rail is 176px, sticky, opaque, and is not its own scroll container", () => {
+  it("the rail is 176px above the dialog's breakpoint, and full-width below it", () => {
     renderDialog({ artifactKeys: ["plan"] });
     const rail = within(dialog()).getByTestId("artifact-rail");
     const cls = Array.from(rail.classList);
-    expect(cls).toContain("w-44"); // 11rem = 176px at the 16px root — the spec's width
-    expect(cls).toContain("sticky");
-    expect(cls).toContain("top-0");
+    // 11rem = 176px at the 16px root — the spec's width, and now the `sm:` arm of it.
+    expect(cls).toContain("sm:w-44");
+    // THE NARROW WINDOW. `w-44` + `shrink-0` was an unconditional 176px, and the app
+    // has NO minimum window width (`tauri.conf.json`'s window block carries no
+    // `minWidth`), so a squeezed window is reachable: at a 400px viewport the dialog
+    // runs `max-w-[calc(100%-2rem)]` = 368px, and 32px of `p-4` + 176px of rail + 8px
+    // of `gap-2` + the pane's own `px-3` left ~126px for DOCUMENT TEXT — headings,
+    // tables and code columns crushed into a gutter. So below the breakpoint the rail
+    // takes the row's full width and the document gets all of it. `w-full` and
+    // `sm:w-44` are different tailwind-merge GROUPS (the modifier splits them), so both
+    // reach CSS and `sm:` wins above 640px — the same mechanism `ui/dialog.tsx` records
+    // for `sm:max-w-*`, and the reason a bare `w-44` here would have silently won.
+    expect(cls).toContain("w-full");
+    expect(cls).not.toContain("w-44");
+    // The rail still refuses to be COMPRESSED horizontally, which is the reason it was
+    // `shrink-0` in the first place; stacking does not change that claim.
+    expect(cls).toContain("shrink-0");
+    // Stickiness is a property OF THE TWO-COLUMN LAYOUT, so it rides the `sm:` arm with
+    // the width instead of staying unconditional: `sticky` + `bg-popover` means the rail
+    // is PAINTED OVER whatever sits at its stuck position, so a rail stacked ABOVE the
+    // document on a narrow window would cover the document's first lines for the whole
+    // scroll — the stencil this class exists to prevent, wearing a different hat.
+    expect(cls).toContain("sm:sticky");
+    expect(cls).toContain("sm:top-0");
+    expect(cls).not.toContain("sticky");
+    expect(cls).not.toContain("top-0");
     // `self-start` is what stops the rail stretching to the row's full height — and a
     // stretched sticky element has nowhere to stick, so without it `sticky` does nothing.
+    // Unconditional, because it is the cross-axis start in BOTH flex directions.
     expect(cls).toContain("self-start");
     // LOAD-BEARING, not cosmetic: `sticky` floats the rail OVER the scrolling content
     // and `DialogContent`'s own surface is `bg-popover`, so a transparent rail is a
@@ -1314,6 +1338,23 @@ describe("TaskDetailDialog — the artifact rail and pane", () => {
     expect(cls).toContain("bg-popover");
     expect(cls).not.toContain("overflow-y-auto");
     expect(cls.some((c) => c.startsWith("max-h-"))).toBe(false);
+
+    // THE ROW THAT HOLDS THE RAIL stacks below the same breakpoint the rail switches at
+    // — a full-width rail beside a pane is a nonsense pair, so the two must flip
+    // together. `flex-col` + `sm:flex-row` is this repo's own idiom for it
+    // (`ui/dialog.tsx:107` and `ui/alert-dialog.tsx:71` both spell a footer that way).
+    const row = Array.from(rail.parentElement!.classList);
+    expect(row).toContain("flex-col");
+    expect(row).toContain("sm:flex-row");
+    // AND THE CROSS-AXIS TOKEN MUST FLIP WITH IT. `align-items` is the CROSS axis, which
+    // changes axis when a row becomes a column: `items-start` stops the rail stretching
+    // to the row's height above the breakpoint (what keeps `sticky` meaningful), but the
+    // SAME token below it would shrink-wrap the document to its content width — crushing
+    // the measure the way the fixed rail did, and hiding the pane's border. So the narrow
+    // arm is `items-stretch` and only the wide arm is `items-start`.
+    expect(row).toContain("items-stretch");
+    expect(row).toContain("sm:items-start");
+    expect(row).not.toContain("items-start");
   });
 
   it("the pane carries no height cap and no scroller of its own, and its section refuses to compress", async () => {
@@ -1327,6 +1368,18 @@ describe("TaskDetailDialog — the artifact rail and pane", () => {
     // The pane's height IS its content's height: no cap, no second scrollbar.
     expect(paneCls.some((c) => c.startsWith("max-h-"))).toBe(false);
     expect(paneCls).not.toContain("overflow-y-auto");
+
+    // THE PANE'S WRAPPER grows along the MAIN axis, which is horizontal above the
+    // breakpoint and VERTICAL below it. `flex-1` is `flex: 1 1 0%`, so in a stacked
+    // column the `0%` basis lands on HEIGHT — a layout that then depends on whether the
+    // percentage resolves against an indefinite container height. It happens to resolve
+    // to content size there, but that is a spec subtlety no reader should have to prove
+    // while fixing something else, so the grow rides the `sm:` arm with the row that
+    // needs it and the narrow arm is left with plain content height.
+    const paneWrap = Array.from(pane.parentElement!.classList);
+    expect(paneWrap).toContain("sm:flex-1");
+    expect(paneWrap).not.toContain("flex-1");
+    expect(paneWrap).toContain("min-w-0");
 
     // THE POSITIVE CONTROL for the half above. A case that asserts only token ABSENCE
     // passes happily on markup that still compresses, so the section is pinned for what

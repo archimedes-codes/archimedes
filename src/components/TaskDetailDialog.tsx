@@ -495,20 +495,59 @@ export default function TaskDetailDialog({
             className="flex shrink-0 flex-col gap-1"
           >
             <MutedCaption className="shrink-0">Artifacts</MutedCaption>
-            {/* TWO COLUMNS, INSIDE THE ONE SCROLLER. The rail is `sticky top-0
-                self-start` so it survives scrolling a long document; `self-start` is
-                what stops it stretching to the row's full height, because a stretched
-                sticky element has nowhere to stick. */}
-            <div className="flex min-w-0 items-start gap-2">
+            {/* TWO COLUMNS above the dialog's breakpoint, ONE STACK below it, inside the
+                ONE scroller.
+
+                The rail is `sm:sticky sm:top-0 self-start` so it survives scrolling a
+                long document; `self-start` is what stops it stretching to the row's full
+                height, because a stretched sticky element has nowhere to stick.
+
+                WHY IT STACKS: `w-44` + `shrink-0` was an unconditional 176px, and the
+                app declares NO minimum window width (`tauri.conf.json`'s window block
+                has no `minWidth`), so a squeezed window is reachable, not hypothetical.
+                At a 400px viewport the dialog runs `max-w-[calc(100%-2rem)]` = 368px and
+                32px of `p-4` + 176px of rail + 8px of `gap-2` + the pane's own `px-3`
+                left ~126px for DOCUMENT TEXT — headings, list indents and code columns
+                crushed into a gutter, with tables scrolling sideways. So below the
+                breakpoint the rail takes the row's full width and the document gets all
+                of it. Both arms reach CSS because they are DIFFERENT variants — `w-full`
+                is unconditional and `sm:w-44` lives inside a `min-width: 40rem` media
+                query that Tailwind emits after the base utilities, so the wide arm wins
+                above 640px and the narrow arm below it. (Verified against `twMerge` too,
+                even though this `className` is a plain literal and no `cn()` is involved:
+                the modifier puts the two in different groups, so a future caller passing
+                this through `cn()` could not silently drop one — the trap `ui/dialog.tsx`
+                records for a bare `max-w-*` losing to `sm:max-w-md`.)
+
+                `sticky` moves to the `sm:` arm with the width rather than staying
+                unconditional, because stickiness is a property OF THE TWO-COLUMN LAYOUT:
+                a stuck element is PAINTED over whatever sits at its stuck position, so a
+                sticky rail stacked ABOVE a document would cover the document's first
+                lines for the whole scroll.
+
+                CROSS-AXIS ALIGNMENT FLIPS AXES when a row becomes a column, so both
+                alignment tokens are conditional. Above the breakpoint `items-start` on
+                the row + `self-start` on the rail stop the rail stretching to the row's
+                height — and a stretched sticky element has nowhere to stick, so without
+                them `sticky` does nothing. Below it, that same `items-start` would
+                shrink-wrap the DOCUMENT to its content width, crushing the measure the
+                same way the fixed rail did and hiding the pane's own border; so the
+                narrow arm asks for `items-stretch` (the CSS default, spelled out so the
+                pin can see it) and only the wide arm asks for `items-start`. The rail's
+                `self-start` is safe unconditionally — it beats the row's stretch, and a
+                full-width rail is 100% of the row either way. `shrink-0` stays
+                unconditional too: it refuses compression along the MAIN axis, which is
+                horizontal above the breakpoint and vertical below it. */}
+            <div className="flex min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:items-start">
               <div
                 data-testid="artifact-rail"
                 // `bg-popover` is LOAD-BEARING, not decoration. `sticky` floats the rail
                 // OVER the scrolling content and `DialogContent`'s own surface is
                 // `bg-popover` (`ui/dialog.tsx:66`), so a transparent rail is a stencil:
                 // a long document scrolls visibly THROUGH the key rows. `rounded-md`
-                // keeps its corners off the pane's border. `w-44` is 11rem = 176px at the
-                // 16px root — the rail width spec §3 names.
-                className="sticky top-0 flex w-44 shrink-0 flex-col gap-1 self-start rounded-md bg-popover"
+                // keeps its corners off the pane's border. `sm:w-44` is 11rem = 176px at
+                // the 16px root — the rail width spec §3 names, now the wide-window arm.
+                className="flex w-full shrink-0 flex-col gap-1 self-start rounded-md bg-popover sm:sticky sm:top-0 sm:w-44"
               >
             {artifactKeys.map((key) => (
               // THE CLICKABLE GRAMMAR (spec §2): leading glyph → key → trailing
@@ -571,7 +610,17 @@ export default function TaskDetailDialog({
                 // no placeholder pane" state true AND what keeps the `null`-is-an-answer
                 // pin green: a key that answers `null` must render NO document node at all,
                 // and an always-present pane would break that test.
-                <div className="min-w-0 flex-1">
+                //
+                // `sm:flex-1` and not `flex-1`: the grow is for the TWO-COLUMN row, where
+                // the main axis is horizontal and this is what gives the document the width
+                // the rail leaves. Below the breakpoint the row stacks, the main axis turns
+                // vertical, and `flex: 1 1 0%` would put a `0%` basis on HEIGHT — a layout
+                // resting on whether a percentage resolves against an indefinite height.
+                // Stretched cross-axis already gives it the full width there, so the narrow
+                // arm is left at plain content height. `min-w-0` stays unconditional: above
+                // the breakpoint it lets a long code line shrink instead of pushing the rail
+                // out, and below it it stops one unbreakable word widening the dialog.
+                <div className="min-w-0 sm:flex-1">
                   {selectedArtifact !== null && (
                     <div
                       data-testid="artifact-body"
