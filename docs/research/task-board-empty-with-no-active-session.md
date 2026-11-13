@@ -179,6 +179,20 @@ So the store already knows the Sessions exist; the two Landing-Session selectors
 and `SpaceTabs` then renders a tab strip in which **no tab reports `aria-selected="true"`**
 (`SpaceTabs.tsx:371`, `:510`) while the tabs are all present and clickable.
 
+> **Corrected 2026-11-13 — that tab-strip sub-claim is false, and the sentence above is left standing
+> as the record of the error.** `SpaceTabs` does not read the active Session at all: it subscribes
+> with `const activeSpacePath = useSessions((s) => s.activeSpacePath)` and marks each tab from
+> `const active = s.path === activeSpacePath` (the value reaching `aria-selected`). In the reported
+> state that store field holds a real path — only `activeSessionId` is `null` — so the strip **does**
+> mark the clicked tab selected. ADR 0106's Consequences say it correctly ("the strip marks its tab
+> from `activeSpacePath`, which was already correct in the reported state"), so the tree held two
+> accounts of one state; this is the one that was wrong. What survives the correction is the rest of
+> this section: the boot-with-no-Landing-Session half is real, and the archived arm of ADR 0075's
+> amendment does fix it. And the sub-claim's falsity does not touch the report's root cause — the
+> board was blank because it was keyed on a **Session** projection where its data is keyed on a
+> **Space**, which is a naming collision at a call site and has nothing to do with how a tab is
+> marked.
+
 **This is a decision, not a bug fix.** Teaching the Landing Session to fall back to archived rows
 changes what the app opens on boot and on a tab click, and it interacts with ADR 0075 ("position is
 not evidence", recency is the only rule) and with the sticky-archived semantics of ADR 0016. It is

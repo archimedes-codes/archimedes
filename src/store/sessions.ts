@@ -214,17 +214,30 @@ export function mostRecentLiveInSpace(
   return liveSessionsInSpace(sessions, path)[0] ?? null;
 }
 
+/**
+ * Which Session boot LANDS on: the FIRST Space in manual order that owns any
+ * Session, and within it a LIVE one, else the most RECENT stored one, else the
+ * most recent ARCHIVED one.
+ *
+ * Spaces are in the user's MANUAL ORDER, so the FIRST Space that owns any
+ * session is the leftmost tab with something to show — that is the meaning
+ * boot wants, and it is unchanged. What changed is the WITHIN-Space choice:
+ * the most RECENT stored Session by `recencyOf`, not the head of the
+ * subsequence (ADR 0075).
+ *
+ * The ARCHIVED arm is a THIRD arm and a LAST resort, never a max over stored ∪
+ * archived: it fires only when the Space owns no live and no stored Session. It
+ * exists because an archived-only Space is not an empty Space — before it, an
+ * install whose every Session was archived booted with NO active Session at
+ * all (issue #185), which took the Task board's Space derivation down with it.
+ */
 export function autoSelectActive(
   spaces: SpaceRow[],
   sessions: SessionInfo[],
   historySessions: SessionInfo[],
+  archivedSessions: SessionInfo[],
   evidence: RecencyEvidence,
 ): string | null {
-  // Spaces are in the user's MANUAL ORDER, so the FIRST Space that owns any
-  // session is the leftmost tab with something to show — that is the meaning
-  // boot wants, and it is unchanged. What changed is the WITHIN-Space choice:
-  // the most RECENT stored Session by `recencyOf`, not the head of the
-  // subsequence (ADR 0075).
   for (const space of spaces) {
     // A space may hold MORE than one live session (the one-live cap is
     // lifted): `mostRecentLiveInSpace` picks the
@@ -236,6 +249,14 @@ export function autoSelectActive(
       .map((s) => s.sessionId);
     const recent = mostRecentByRecency(stored, evidence);
     if (recent !== null) return recent;
+    // The last resort, AFTER the stored arm (the ordering is the rule — see the
+    // doc comment): a Space whose only Sessions are archived still has one to
+    // land on.
+    const archived = archivedSessions
+      .filter((s) => s.cwd === space.path)
+      .map((s) => s.sessionId);
+    const lastResort = mostRecentByRecency(archived, evidence);
+    if (lastResort !== null) return lastResort;
   }
   return null;
 }
@@ -645,8 +666,13 @@ export interface SessionsState {
    * **Landing Session** opens — a LIVE session first (the most-recently
    * started one, the one-live-cap-lifted rule), then the most RECENT stored
    * one (`recencyOf`, which is NOT necessarily the first row of the Space's
-   * manual order), then NOTHING (an empty space lands on the chat's empty
-   * state). A no-op for an unknown path.
+   * manual order), then the most RECENT ARCHIVED one, then NOTHING (an empty
+   * space lands on the chat's empty state). The archived arm is a LAST resort
+   * — it fires only when the Space owns no live and no stored Session, and it
+   * is never a max over stored ∪ archived (ADR 0075's amendment; ADR 0016's
+   * sticky membership, which landing on an archived row does not disturb). It
+   * exists because an archived-only Space is not an empty Space (issue #185).
+   * A no-op for an unknown path.
    */
   selectSpace: (path: string) => void;
   /**
@@ -1159,10 +1185,13 @@ export const useSessions = create<SessionsState>((set, get) => ({
     const state = get();
     const selectedId =
       state.activeSessionId === null
-        ? autoSelectActive(rows, state.sessions, state.historySessions, {
-            recency: state.sessionRecency,
-            messages: state.messages,
-          })
+        ? autoSelectActive(
+            rows,
+            state.sessions,
+            state.historySessions,
+            state.archivedSessions,
+            { recency: state.sessionRecency, messages: state.messages },
+          )
         : state.activeSessionId;
     // The selected session's space (matched by `cwd` — the session's `cwd`
     // IS the Space's folder); when nothing is selected, the LEFTMOST tab (the
@@ -1233,8 +1262,11 @@ export const useSessions = create<SessionsState>((set, get) => ({
     if (!state.spaces.some((s) => s.path === path)) return;
     // Live first (the most-recently-started one — the one-live-cap-lifted
     // rule), then the most RECENT stored Session (ADR 0075 — NOT the first row
-    // of the Space's manual order), then nothing (an empty space → the chat's
-    // empty state). Both maps go in because this action reads state
+    // of the Space's manual order), then the most RECENT ARCHIVED Session
+    // (ADR 0075's `## Amendment (2026-11-12)`: an archived-only Space is not an
+    // empty Space), and only then nothing — which now means a Space with no
+    // row in ANY of the three lists, not merely no live/stored one (→ the
+    // chat's empty state). Both maps go in because this action reads state
     // imperatively: there is no subscription here, so none of the re-render
     // cost that keeps `messages` out of the sidebar's call site applies.
     const live = mostRecentLiveInSpace(state.sessions, path);
@@ -1246,7 +1278,14 @@ export const useSessions = create<SessionsState>((set, get) => ({
       state.historySessions.filter((s) => s.cwd === path).map((s) => s.sessionId),
       evidence,
     );
-    const id = live ?? stored;
+    // The last resort, AFTER the stored arm (the ordering is the rule — see the
+    // action's doc comment): a Space whose only Sessions are archived still has
+    // one to land on (issue #185).
+    const archived = mostRecentByRecency(
+      state.archivedSessions.filter((s) => s.cwd === path).map((s) => s.sessionId),
+      evidence,
+    );
+    const id = live ?? stored ?? archived;
     set({ activeSpacePath: path, activeSessionId: id });
     // Load the opened session's transcript (a no-op when already loaded —
     // `openSession` self-guards a mid-flight switch too).
@@ -2457,9 +2496,15 @@ export const useSessions = create<SessionsState>((set, get) => ({
         // figure is refreshed (see the note above).
         archivedSessions,
         // A close is a PAUSE, not a discard: the conversation moves to the
-        // history list but STAYS the displayed one, so `ChatStream` renders
-        // its stored/paused banner instead of the `No active session` empty
-        // state. (Required for the Task 6 `Pause` behavior.)
+        // history list but STAYS the displayed one, so `ChatStream` keeps
+        // rendering that Session's transcript and composer. There is NO banner
+        // component for a stored Session — the only banner `ChatStream` mounts
+        // is `SessionStalledBanner` (a dead Worker), and the `isHistoryOnly`
+        // derivation that once gated one here "had no consumer left in this
+        // component". So a closing Session leaves the transcript on screen in its
+        // stored state and the first send resumes it; the `No active session`
+        // empty belongs to a DIFFERENT state (nothing active at all), and is not
+        // what a close lands on. (Origination: the Task 6 `Pause` behavior.)
         activeSessionId: state.activeSessionId,
         // Merge-only: a close reason outlives its event (never delete keys).
         closeReasons: { ...state.closeReasons, [sessionId]: reason },

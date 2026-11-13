@@ -894,7 +894,7 @@ describe("spaceViewFor (per-space grouping, pure)", () => {
       info("second", "/workspaces/alpha"),
     ];
     expect(
-      autoSelectActive(spaces, twoLive, historySessions, recencyEvidence()),
+      autoSelectActive(spaces, twoLive, historySessions, [], recencyEvidence()),
     ).toBe("second");
   });
 
@@ -1020,8 +1020,8 @@ describe("autoSelectActive (boot auto-select, pure)", () => {
   ];
 
   it("returns null when there is nothing at all", () => {
-    expect(autoSelectActive([], [], [], recencyEvidence())).toBeNull();
-    expect(autoSelectActive(spaces, [], [], recencyEvidence())).toBeNull();
+    expect(autoSelectActive([], [], [], [], recencyEvidence())).toBeNull();
+    expect(autoSelectActive(spaces, [], [], [], recencyEvidence())).toBeNull();
   });
 
   it("prefers the first space's live session", () => {
@@ -1033,7 +1033,7 @@ describe("autoSelectActive (boot auto-select, pure)", () => {
     // Even if the other space's stored session is older/newer, the live
     // session in the most recent space wins.
     expect(
-      autoSelectActive(spaces, live, stored, recencyEvidence()),
+      autoSelectActive(spaces, live, stored, [], recencyEvidence()),
     ).toBe("live-1");
   });
 
@@ -1043,7 +1043,7 @@ describe("autoSelectActive (boot auto-select, pure)", () => {
       info("older-2", "/a/space-two"),
     ];
     expect(
-      autoSelectActive(spaces, [], stored, recencyEvidence()),
+      autoSelectActive(spaces, [], stored, [], recencyEvidence()),
     ).toBe("newest-2");
   });
 
@@ -1061,7 +1061,7 @@ describe("autoSelectActive (boot auto-select, pure)", () => {
     ];
     const live = [info("live-two", "/a/space-two")];
     expect(
-      autoSelectActive(spaces, live, stored, recencyEvidence({ "live-two": 9_000_000_000_000 })),
+      autoSelectActive(spaces, live, stored, [], recencyEvidence({ "live-two": 9_000_000_000_000 })),
     ).toBe("newest-1");
   });
 
@@ -1081,9 +1081,63 @@ describe("autoSelectActive (boot auto-select, pure)", () => {
         spaces,
         [],
         stored,
+        [],
         recencyEvidence({ "brand-new-2": 9_000_000_000_000, "head-1": 1_000 }),
       ),
     ).toBe("head-1");
+  });
+
+  it("lands on the most recent ARCHIVED Session of the first Space when no stored or live Session exists", () => {
+    // issue #185, the boot half: an archived-only Space is NOT an empty Space.
+    // TWO COMPETING ANSWERS, mirroring the existing within-Space pin's
+    // technique: the head of the archived subsequence is `arch_head`, max
+    // `recencyOf` is `arch_recent` — which is deliberately placed LAST in input
+    // order and given the LARGER stamp, so a re-inheritance of position answers
+    // "arch_head" and goes red.
+    expect(
+      autoSelectActive(
+        spaces,
+        [],
+        [],
+        [
+          { ...info("arch_head", "/a/space-one"), archived: true },
+          { ...info("arch_recent", "/a/space-one"), archived: true },
+        ],
+        recencyEvidence({ arch_head: 1_000, arch_recent: 9_000_000_000_000 }),
+      ),
+    ).toBe("arch_recent");
+  });
+
+  it("the archived arm is a LAST RESORT: a stored Session in the same Space wins over a more recent archived one", () => {
+    // Not a max over stored ∪ archived (the same rule
+    // `"spaceViewFor falls back to the most recent ARCHIVED Session only when
+    // the Space has no stored one"` pins for the banner). The archived row
+    // carries the FAR-FUTURE stamp, so a flattened max answers "arch_newer" and
+    // the per-arm rule answers "stored-1".
+    expect(
+      autoSelectActive(
+        spaces,
+        [],
+        [info("stored-1", "/a/space-one")],
+        [{ ...info("arch_newer", "/a/space-one"), archived: true }],
+        recencyEvidence({ "stored-1": 1_000, arch_newer: 9_000_000_000_000 }),
+      ),
+    ).toBe("stored-1");
+  });
+
+  it("skips a Space with nothing at all and reaches a later Space's archived Session", () => {
+    // The SPACE-level precedence is unchanged by the new arm: the walk still
+    // advances past a Space that owns nothing (live, stored or archived) and
+    // the first Space that owns ANY Session — there an archived one — wins.
+    expect(
+      autoSelectActive(
+        spaces,
+        [],
+        [],
+        [{ ...info("arch-two", "/a/space-two"), archived: true }],
+        recencyEvidence(),
+      ),
+    ).toBe("arch-two");
   });
 });
 
@@ -1124,6 +1178,7 @@ describe("Landing Session (ADR 0075: recency decides, position never does)", () 
         [space("/a/space-one"), space("/a/space-two")],
         [],
         [info("head", "/a/space-one"), info("tail", "/a/space-one")],
+        [],
         recencyEvidence({ head: 1_000, tail: 9_000_000_000_000 }),
       ),
     ).toBe("tail");
@@ -3871,6 +3926,112 @@ describe("activeSpacePath (the selected Space — the top tabs' state)", () => {
     useSessions.getState().selectSpace("/a");
     expect(useSessions.getState().activeSpacePath).toBe("/a");
     expect(useSessions.getState().activeSessionId).toBeNull();
+  });
+
+  it("selectSpace on an archived-only Space lands on its most recent archived Session", () => {
+    // issue #185, the tab-click half. The archived arm is LAST (live → stored →
+    // archived) and the within-arm choice is recency, not position:
+    // `arch_head` is the head of the subsequence, `arch_recent` carries the
+    // far-future stamp and sits LAST in input order.
+    vi.clearAllMocks();
+    useSessions.setState({
+      spaces: [space("/a"), space("/b")],
+      activeSpacePath: "/a",
+      archivedSessions: [
+        { ...info("arch_head", "/b"), archived: true },
+        { ...info("arch_recent", "/b"), archived: true },
+      ],
+      sessionRecency: { arch_head: 1_000, arch_recent: 9_000_000_000_000 },
+    });
+    useSessions.getState().selectSpace("/b");
+    const s = useSessions.getState();
+    expect(s.activeSpacePath).toBe("/b");
+    expect(s.activeSessionId).toBe("arch_recent");
+    // The landing is real and not merely a pointer: the transcript is fetched
+    // (`openSession` reached), which is what makes the chat show content.
+    expect(loadHistory).toHaveBeenCalledWith("arch_recent", {
+      limit: INITIAL_HISTORY_PAGE,
+    });
+  });
+
+  it("closeSpace onto an archived-only neighbour lands on its most recent archived Session", async () => {
+    // The COMPOSITION of two pinned rules, pinned once on its own. `closeSpace`
+    // routes its landing Space through `selectSpace` — deliberately, so a close and
+    // a click on that tab can never disagree — and `selectSpace` carries the
+    // live → stored → archived arm the case above pins. Each half is green alone;
+    // NOTHING here said what happens when the Space you close is the selected one
+    // and the surviving neighbour holds ONLY archived Sessions. That is the route a
+    // silent refactor takes out: "simplify" `closeSpace` to
+    // `set({ activeSpacePath: landing })` and this goes red, because
+    // `removeSpace` deliberately leaves `activeSessionId` alone and it would still
+    // point at the CLOSED Space's live row — a transcript with no tab, the exact
+    // state `closeSpace`'s own comment says must not ship.
+    //
+    // Two Spaces, the selected one (`/a`) holds the live row the user is looking at,
+    // `/b` (the leftmost survivor) holds two archived rows and nothing else:
+    // `historySessions` stays empty, so the stored arm cannot answer and only the
+    // archived arm can. Recency picks `arch_recent`, which sits LAST in input order
+    // and carries the far-future stamp — so a positional pick (`[0]`) is a
+    // different answer and gets caught here too.
+    vi.clearAllMocks();
+    useSessions.setState({
+      spaces: [space("/a"), space("/b")],
+      activeSpacePath: "/a",
+      activeSessionId: "live-a",
+      sessions: [info("live-a", "/a")],
+      archivedSessions: [
+        { ...info("arch_head", "/b"), archived: true },
+        { ...info("arch_recent", "/b"), archived: true },
+      ],
+      sessionRecency: { arch_head: 1_000, arch_recent: 9_000_000_000_000 },
+    });
+    await useSessions.getState().closeSpace("/a");
+    const s = useSessions.getState();
+    // The survivor — the leftmost remaining tab, which is `removeSpace`'s fallback.
+    expect(s.activeSpacePath).toBe("/b");
+    // And not merely the path: the archived row the neighbour's tab would land on.
+    // `null` here means the archived arm was skipped; `"live-a"` means the pointer
+    // was left on the closed Space's Session.
+    expect(s.activeSessionId).toBe("arch_recent");
+    // The landing is real, not just a pointer: the transcript load was reached
+    // (`openSession` → `loadHistory`), which is what puts content on screen.
+    expect(loadHistory).toHaveBeenCalledWith("arch_recent", {
+      limit: INITIAL_HISTORY_PAGE,
+    });
+  });
+
+  it("boot with every Session archived selects the leftmost Space and lands on its most recent archived Session", () => {
+    // issue #185's reported state, reached the production way: `setHistorySessions`
+    // splits by the `archived` flag, so an all-archived boot leaves
+    // `historySessions` GENUINELY empty — the state the reporter's install is in.
+    vi.clearAllMocks();
+    useSessions.getState().setHistorySessions([
+      { ...info("arch_head", "/a"), archived: true },
+      { ...info("arch_recent", "/a"), archived: true },
+      { ...info("arch_b", "/b"), archived: true },
+    ]);
+    useSessions.getState().setSessionRecency([
+      { sessionId: "arch_head", lastActiveAt: 1_000, sortOrder: 0 },
+      { sessionId: "arch_recent", lastActiveAt: 9_000_000_000_000, sortOrder: 1 },
+      { sessionId: "arch_b", lastActiveAt: 5_000_000_000_000, sortOrder: 2 },
+    ]);
+    useSessions.getState().setSpaces([space("/a"), space("/b")]);
+    const s = useSessions.getState();
+    // The stored arm really is empty — this is an archived-only Space, not a
+    // Space whose rows merely happen to be filed elsewhere.
+    expect(s.historySessions).toEqual([]);
+    expect(s.activeSpacePath).toBe("/a");
+    expect(s.activeSessionId).toBe("arch_recent");
+    expect(loadHistory).toHaveBeenCalledWith("arch_recent", {
+      limit: INITIAL_HISTORY_PAGE,
+    });
+    // Landing on an archived row does not disturb its sticky membership
+    // (ADR 0016): the row stays in `archivedSessions`, un-sticky-ing nothing.
+    expect(s.archivedSessions.map((r) => r.sessionId)).toEqual([
+      "arch_head",
+      "arch_recent",
+      "arch_b",
+    ]);
   });
 
   it("selectSpace is a no-op for an unknown path", () => {
