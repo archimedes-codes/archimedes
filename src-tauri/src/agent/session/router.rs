@@ -1668,7 +1668,8 @@ mod tests {
         let dir = crate::test_support::ScratchDir::in_env_temp(prefix, "db");
         let db = Arc::new(Db::open(&dir.join("db.sqlite")).expect("a temp db opens"));
         let space = "/router/task-call";
-        db.get_board(space).expect("get_board seeds the six stages");
+        db.get_board(space)
+            .expect("get_board seeds the five stages");
         let task = db
             .create_task(space, "a card", Some("the body"), None)
             .expect("create_task");
