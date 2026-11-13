@@ -128,11 +128,24 @@ substitution cannot be reintroduced at a call site by someone who wires "the obv
   its header now names the near-miss, because a contract that silently gains a third consumer is how
   this was shipped once. Its "ONE place that derivation lives" claim still holds; what the ADR adds
   is the rule about who is *allowed* to consume it.
-- **The store-level divergence is deliberate and stays.** `selectSpace` sets `activeSpacePath` and
-  `activeSessionId: null` in one `set`, and `src/store/sessions.test.ts` pins that pair as intended
-  behaviour ("An empty space: no session (the chat's empty state)"). This decision does **not**
-  reconcile the two fields; it says which one a per-Space surface reads. A future change that "makes
-  them agree" would be re-opening this ADR.
+- **The store-level divergence is deliberate and stays.** `selectSpace` sets `activeSpacePath`
+  unconditionally in one `set` while `activeSessionId` may land `null` — that asymmetry is the
+  divergence, and `src/store/sessions.test.ts`'s
+  `"selectSpace: live session preferred, then the most RECENT stored, then nothing"` pins it as
+  intended behaviour, its last beat asserting both halves under the comment "An empty space: no
+  session (the chat's empty state)".
+  **Corrected 2026-11-13 — the `null` got narrower, the divergence did not go away.** This bullet
+  used to state that the action set `activeSessionId: null` outright, and that stopped being true on
+  this branch: `selectSpace` now resolves `const id = live ?? stored ?? archived` and passes that `id`
+  to the same `set`, so `activeSessionId` is `null` there only for a Space with **no rows in any of
+  the three lists** — the "then nothing" of ADR 0075's amendment of the same date and of the
+  **Landing Session** glossary entry, and pinned as such by
+  `"selectSpace on an archived-only Space lands on its most recent archived Session"`. An
+  archived-only Space therefore has a Session to land on and is not the empty case this bullet
+  described. What is unchanged is the bullet's actual point: `activeSpacePath` is set whatever the
+  Space holds, `activeSessionId` is not, and this decision does **not** reconcile the two fields — it
+  says which one a per-Space surface reads. A future change that "makes them agree" would be
+  re-opening this ADR.
 - **The sibling symptoms the report enumerated are not all closed here.** `SidePane` (above) and the
   relative-path refusal (above) are the two that remain, both recorded rather than folded in. The
   report's other listed symptom — a **Space** tab strip in which nothing reads as selected, and a boot
