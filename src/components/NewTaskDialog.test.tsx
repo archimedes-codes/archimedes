@@ -36,9 +36,9 @@ import {
 /**
  * `NewTaskDialog` — the board's creation point, now TEXT ONLY.
  *
- * THE CONTRACT, and the change: one textarea, three buttons. **Backlog** saves the
- * card and opens nothing; **Discuss** and **Research** save it and then open it as a
- * Session through `store/taskLaunch`. NO LLM RUNS AT CREATION TIME — the previous
+ * THE CONTRACT, and the change: two fields, two buttons. **Backlog** saves the card
+ * and opens nothing; **Research** saves it and then opens it as a Session through
+ * `store/taskLaunch`. NO LLM RUNS AT CREATION TIME — the previous
  * version was a full chat surface whose FIRST SEND did the creating, which meant a
  * person who just wanted a card on the board had to start a Session to get one.
  *
@@ -208,7 +208,7 @@ beforeEach(() => {
   clearSkillCatalogCache();
   clearMentionCatalogsCache();
   vi.clearAllMocks();
-  vi.mocked(listSkills).mockResolvedValue([skill("discuss"), skill("research")]);
+  vi.mocked(listSkills).mockResolvedValue([skill("research")]);
   vi.mocked(listAgentDefinitionsForSpace).mockResolvedValue([]);
   vi.mocked(listMcpServersEffective).mockResolvedValue([]);
   vi.mocked(listSpaceListing).mockResolvedValue({ entries: [], truncated: false });
@@ -233,7 +233,7 @@ describe("NewTaskDialog — the shape (no LLM at creation time)", () => {
   /// silently invented a heading from it, and a short title with a long body was
   /// impossible without a newline you did not mean to type. The form now asks for
   /// both, and nothing is inferred between them.
-  it("is a title field, a body field, and three buttons", () => {
+  it("is a title field, a body field, and two buttons", () => {
     renderDialog();
     expect(titleField()).toBeTruthy();
     expect(bodyField()).toBeTruthy();
@@ -241,8 +241,14 @@ describe("NewTaskDialog — the shape (no LLM at creation time)", () => {
     // paste back into the field the split used to guess at.
     expect(titleField().tagName).toBe("INPUT");
     expect(button("Backlog")).toBeTruthy();
-    expect(button("Discuss")).toBeTruthy();
     expect(button("Research")).toBeTruthy();
+    // The third button is GONE rather than merely disabled (ADR 0107). It was not
+    // cosmetically retired: its `onEnterSkill: "discuss"` can never satisfy the
+    // store's skill gate on a seeded board, so it rendered permanently disabled
+    // behind a tooltip that was false about the Space's future. A button that offers
+    // a launch this create refuses is the two-owners-on-one-fact defect this file's
+    // header already argues against, so its ABSENCE is the pin.
+    expect(within(dialog()).queryByRole("button", { name: "Discuss" })).toBeNull();
   });
 
   it("writes the two fields to the two columns, with no split anywhere", async () => {
@@ -274,7 +280,7 @@ describe("NewTaskDialog — the shape (no LLM at creation time)", () => {
   it("stays disabled with a body but no title", () => {
     renderDialog();
     typeBody("A long explanation with no title anywhere.");
-    for (const name of ["Backlog", "Discuss", "Research"] as const) {
+    for (const name of ["Backlog", "Research"] as const) {
       expect(button(name).disabled).toBe(true);
     }
   });
@@ -414,7 +420,7 @@ describe("NewTaskDialog — Backlog", () => {
     // `taskLaunch.test.ts` rather than here.
     const { onClose } = renderDialog();
     typeDraft("   ");
-    for (const name of ["Backlog", "Discuss", "Research"] as const) {
+    for (const name of ["Backlog", "Research"] as const) {
       expect(button(name).disabled).toBe(true);
     }
     fireEvent.click(button("Backlog"));
@@ -463,11 +469,11 @@ describe("NewTaskDialog — Backlog", () => {
   });
 });
 
-describe("NewTaskDialog — Discuss and Research", () => {
-  it("Discuss creates the card, then starts a linked session", async () => {
+describe("NewTaskDialog — Research", () => {
+  it("Research creates the card, then starts a linked session", async () => {
     renderDialog();
     typeDraft("Why does the parser drop quotes?");
-    fireEvent.click(await ready("Discuss"));
+    fireEvent.click(await ready("Research"));
     await waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
     expect(createTask).toHaveBeenCalledTimes(1);
     expect(startTaskSession).toHaveBeenCalledTimes(1);
@@ -486,10 +492,10 @@ describe("NewTaskDialog — Discuss and Research", () => {
     );
   });
 
-  it("Discuss loads the discuss skill and appends the task block", async () => {
+  it("Research loads the research skill and appends the task block", async () => {
     renderDialog();
     typeDraft("Why does the parser drop quotes?");
-    fireEvent.click(await ready("Discuss"));
+    fireEvent.click(await ready("Research"));
     await waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
     const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
     // The token, not the body — see `taskLaunch.shouldInlineSkill`. The block-order
@@ -497,7 +503,12 @@ describe("NewTaskDialog — Discuss and Research", () => {
     // `<task>` block trailing the appended `<skill>` block makes
     // `splitMentionBlocks` refuse to parse, so the bubble rendered the entire skill
     // as literal text.
-    expect(sent).toContain("$discuss");
+    //
+    // THIS is the create-surface ordering pin `lib/taskPrompt`'s header cites: the
+    // `$skill` token precedes the `<task ` block, which is what keeps an expanded
+    // `<skill>` block AHEAD of the task block rather than trailing it.
+    expect(sent).toContain("$research");
+    expect(sent.indexOf("$research")).toBeLessThan(sent.indexOf("<task "));
     expect(sent).not.toContain("<skill");
     expect(sent).toContain("<task ");
     expect(sent.trimEnd().endsWith("</task>")).toBe(true);
@@ -518,14 +529,14 @@ describe("NewTaskDialog — Discuss and Research", () => {
     expect(sent).not.toContain("$discuss");
   });
 
-  /// The rule that REPLACED the newline split, pinned for all three buttons: each
+  /// The rule that REPLACED the newline split, pinned for both buttons: each
   /// button files the SAME two fields, so which button you click never changes what
   /// lands in which column. That is the invariant the old "one rule, three buttons"
   /// case was really defending — it just could only express it through a split.
-  it("passes the same two fields for all three buttons", async () => {
-    for (const name of ["Backlog", "Discuss", "Research"] as const) {
+  it("passes the same two fields for both buttons", async () => {
+    for (const name of ["Backlog", "Research"] as const) {
       vi.clearAllMocks();
-      vi.mocked(listSkills).mockResolvedValue([skill("discuss"), skill("research")]);
+      vi.mocked(listSkills).mockResolvedValue([skill("research")]);
       vi.mocked(createTask).mockResolvedValue(taskRow());
       const view = renderDialog();
       typeDraft("First line");
@@ -543,7 +554,7 @@ describe("NewTaskDialog — Discuss and Research", () => {
     const onCreated = vi.fn();
     renderDialog({ onCreated });
     typeDraft("Discuss this please");
-    fireEvent.click(await ready("Discuss"));
+    fireEvent.click(await ready("Research"));
     await waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
     // The modal reports the launch through `onCreated` with the Session id, and the
     // BOARD turns that into the view switch — the modal has never owned a view.
@@ -569,7 +580,7 @@ describe("NewTaskDialog — Discuss and Research", () => {
     vi.mocked(startTaskSession).mockRejectedValue(new Error("no provider configured"));
     renderDialog();
     typeDraft("Discuss this please");
-    fireEvent.click(await ready("Discuss"));
+    fireEvent.click(await ready("Research"));
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toContain(
         "no provider configured",
@@ -585,25 +596,57 @@ describe("NewTaskDialog — Discuss and Research", () => {
 
   it("disables each button whose skill the catalog does not have", async () => {
     // The same race the detail modal pins: the catalog is an async fetch that starts
-    // EMPTY, so an enabled button clicked before it lands fails with a sentence that is
-    // false two frames later.
+    // EMPTY, so an enabled button clicked before it lands fails with a sentence that
+    // is false two frames later. Gating on the SAME predicate `store/taskLaunch`
+    // refuses on removes the race rather than narrowing it.
+    //
+    // WHY THIS CASE IS NOW TWO PHASES. Its old shape was "wait for Research to enable,
+    // then assert Discuss is disabled" — the enabling side and the refusing side in one
+    // breath. With one launch button left there is no second button to assert on, and
+    // a lone `Research is disabled` would pass VACUOUSLY on the first paint, which is
+    // exactly the frame this case exists to talk about. So both halves are kept, in
+    // sequence, over ONE difference: the catalog's contents.
+    //
+    // Phase 1 — the catalog HAS `research`: the button enables.
     vi.mocked(listSkills).mockResolvedValue([skill("research")]);
-    renderDialog();
-    // A DRAFT IS REQUIRED FIRST, and not as a fixture courtesy: with nothing typed
-    // every button is disabled because there is no card to create, which would make
-    // this case pass for the wrong reason.
+    const first = renderDialog();
     typeDraft("Something to gate on");
     await waitFor(() => expect(button("Research").disabled).toBe(false));
-    expect(button("Discuss").disabled).toBe(true);
+    first.unmount();
+
+    // Phase 2 — the SAME dialog over a catalog WITHOUT `research`. The skill cache is
+    // module-level and per-Space, so it is cleared and the call count is taken BEFORE
+    // mounting: the mount must really re-read the catalog rather than inherit phase 1's
+    // rows, which would leave this phase asserting nothing about catalog contents.
+    //
+    // Note what this phase CANNOT show: a disabled-before and disabled-after pair would
+    // be identical frames here, since a catalog that lacks the Skill disables the button
+    // either way. The observable half of the race — the frame that flips — is phase 1.
+    clearSkillCatalogCache();
+    clearMentionCatalogsCache();
+    const callsBefore = vi.mocked(listSkills).mock.calls.length;
+    vi.mocked(listSkills).mockResolvedValue([skill("other")]);
+    renderDialog();
+    typeDraft("Something to gate on");
+    await waitFor(() =>
+      expect(vi.mocked(listSkills).mock.calls.length).toBeGreaterThan(callsBefore),
+    );
+    await waitFor(() => expect(button("Research").disabled).toBe(true));
+    // And the refusal SAYS which Skill it wants — the sentence the module header
+    // documents, templated on the destination's own `onEnterSkill`.
+    expect(button("Research").title).toContain("This Space has no `research` skill");
+    // `Backlog` needs no Skill, so it stays enabled: the control that proves this is
+    // the Skill gate and not the title or the missing-Space gate.
+    expect(button("Backlog").disabled).toBe(false);
   });
 
-  it("disables all three with no Space, rather than creating a card nowhere", async () => {
+  it("disables both buttons with no Space, rather than creating a card nowhere", async () => {
     // `createTask(null, …)` is not a thing. The board already disables its own New task
     // affordance for this reason; the modal refuses too, so a keyboard path cannot get
     // past the disabled button.
     renderDialog({ spacePath: null });
     typeDraft("Anything");
-    for (const name of ["Backlog", "Discuss", "Research"] as const) {
+    for (const name of ["Backlog", "Research"] as const) {
       expect(button(name).disabled).toBe(true);
     }
     fireEvent.click(button("Backlog"));
@@ -621,8 +664,8 @@ describe("NewTaskDialog — closing", () => {
     expect(createTask).not.toHaveBeenCalled();
   });
 
-  it("disables all three buttons while one is in flight", async () => {
-    // Three buttons over ONE create: clicking Backlog then Research mid-flight would
+  it("disables both buttons while one is in flight", async () => {
+    // Two buttons over ONE create: clicking Backlog then Research mid-flight would
     // file two cards for one sentence.
     const slots: { resolve?: (v: TaskRow) => void } = {};
     vi.mocked(createTask).mockReturnValue(
@@ -634,7 +677,6 @@ describe("NewTaskDialog — closing", () => {
     typeDraft("Slow card");
     fireEvent.click(button("Backlog"));
     await waitFor(() => expect(button("Backlog").disabled).toBe(true));
-    expect(button("Discuss").disabled).toBe(true);
     expect(button("Research").disabled).toBe(true);
     slots.resolve?.(taskRow());
   });

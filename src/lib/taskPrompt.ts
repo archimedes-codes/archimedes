@@ -46,8 +46,9 @@
  *    the task block rather than after it;
  *  - the task block is appended AFTER expansion, never before. A Task title is free
  *    text and a title containing `$some-skill` would otherwise be expanded into a
- *    skill block by a card a harness tool created. `NewTaskDialog.test.tsx` pins the
- *    `$discuss`-before-`<task ` ordering for the create surface and this module is
+ *    skill block by a card a harness tool created. `NewTaskDialog.test.tsx`'s case
+ *    *"Research loads the research skill and appends the task block"* pins the
+ *    `$research`-before-`<task ` ordering for the create surface and this module is
  *    what makes it true for every surface.
  *
  * Note what is NOT pinned any more: `3ebab9e2` deleted the older assertion that
