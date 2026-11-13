@@ -1044,6 +1044,81 @@ describe("SpacesList (archive, ADR 0016)", () => {
     expect(screen.getByText(/^Archive the logs/)).toBeTruthy();
   });
 
+  it("an explicit COLLAPSE made before the Landing Session arrives survives its arrival", () => {
+    // THE MIRROR OF THE COLLAPSE THE OTHER CASE PINNED, and the direction that
+    // actually discriminates. The pinned direction is "collapse while the row is
+    // held". This one is: the user has already chosen, and THEN the Landing row
+    // arrives. Same `render` first, `act` the row in later shape as the boot-order
+    // case above — because that is the order the app runs in.
+    //
+    // The naive shape of this test is vacuous, and the reason is worth keeping:
+    // opening the section on the first frame and then landing the row asserts
+    // NOTHING, because `userChoice === true` and `holdsActiveRow === true` give the
+    // same answer. So the choice has to be a COLLAPSE, and a collapse is only
+    // reachable from an open section — hence the two clicks: the first opens (the
+    // empty section, "No archived sessions."), the second records the explicit
+    // `userChoice: false`. The row then arrives with the section shut by hand.
+    //
+    // What this catches that the other case does not: any re-shaping of the rule
+    // where the DERIVATION outranks the click — `holdsActiveRow || userChoice`, or
+    // the derivation moved into an effect keyed on it — keeps this green-looking
+    // until the row arrives, and then re-opens a section the user shut. Measured
+    // red under `const open = holdsActiveRow || userChoice === true;`.
+    render(<SpacesList />);
+    // First frame: nothing archived, nothing active, section collapsed by derivation.
+    expect(screen.queryByText("No archived sessions.")).toBeNull();
+    fireEvent.click(screen.getByText("Archived")); // userChoice: true
+    expect(screen.getByText("No archived sessions.")).toBeTruthy();
+    fireEvent.click(screen.getByText("Archived")); // userChoice: false — an EXPLICIT shut
+    expect(screen.queryByText("No archived sessions.")).toBeNull();
+    // The Landing Session arrives (the boot's `setSpaces`, or a tab click).
+    act(() => {
+      seedArchived("a1", {
+        active: true,
+        messages: { text: "Archive the logs", at: Date.now() - 3_600_000 },
+      });
+    });
+    // And the section is STILL where the user left it: shut. The row is on screen
+    // nowhere, even though the section now holds the selected Session.
+    expect(screen.queryByText(/^Archive the logs/)).toBeNull();
+    // The user can still get to it — the click is the way back in, and it is the
+    // only thing that opens it now.
+    fireEvent.click(screen.getByText("Archived"));
+    expect(screen.getByText(/^Archive the logs/)).toBeTruthy();
+  });
+
+  it("the Archived section collapses while a PEER view is up, even holding the Landing Session", () => {
+    // The peer-view half of the same rule, pinned rather than assumed. The call
+    // site hands `ArchivedSection` an `activeSessionId` of `null` whenever
+    // `currentView` is not `"workspace"`, so `holdsActiveRow` is false and the
+    // derived default is COLLAPSED — with the same archived row seeded that the
+    // case above says must be visible. That is the intended reading, not an
+    // oversight: while the board (or Settings) is on screen the sidebar renders no
+    // transcript at all, so the row is not "on screen" in the sense the derivation
+    // means, and there is nothing for the section to point at. The user's own click
+    // still outranks it — `userChoice` is per-mount, and the nulling changes only
+    // what the DERIVATION says, never what the user chose.
+    seedArchived("a1", {
+      active: true,
+      messages: { text: "Archive the logs", at: Date.now() - 3_600_000 },
+    });
+    const { rerender } = render(<SpacesList currentView="workspace" />);
+    // The workspace arm, so the difference below cannot be blamed on the fixture:
+    // the held row IS rendered while the workspace view is up…
+    expect(screen.getByText(/^Archive the logs/)).toBeTruthy();
+    rerender(<SpacesList currentView="board" />);
+    // …and gone the moment the board takes the pane — the header is still there
+    // (with its count badge, which the nulling does not touch: it counts rows, not
+    // the selection), only the rows are hidden.
+    expect(screen.getByText("Archived")).toBeTruthy();
+    expect(screen.getByText("1")).toBeTruthy();
+    expect(screen.queryByText(/^Archive the logs/)).toBeNull();
+    // Back to the workspace and the derivation answers again — the nulling is a
+    // per-render argument, not a latch.
+    rerender(<SpacesList currentView="workspace" />);
+    expect(screen.getByText(/^Archive the logs/)).toBeTruthy();
+  });
+
   it("the Archived section stays collapsed by default when the active Session is elsewhere", () => {
     // The other arm, and the one that keeps the derivation honest: the section
     // opens for the row ON SCREEN, not whenever archived rows exist. Here the
@@ -1292,16 +1367,25 @@ describe("SpacesList (archive, ADR 0016)", () => {
   });
 
   it("New Session with an archived session active starts a conversation in that space (not the New Space dialog)", async () => {
-    // `active: true` is this case's PREMISE, not decoration — its title says
-    // "with an archived session active", and the hook branch it pins
-    // (`activeView` matching via `archivedSessionIds`) only runs for an ACTIVE
-    // archived Session. Without the flag it would still pass, but by the other
-    // route (a bare Space selection), so it would be pinning something else.
+    // WHAT THIS CASE PINS TODAY: the New-Session target is the SELECTED Space path.
+    // `SpacesList`'s `+` calls `handleNewSession`, which is a thin `void` over the
+    // store's `startSessionInActiveSpace()`, and that action reads `activeSpacePath`
+    // and nothing else — no active-Session lookup, no archived walk. So the claim
+    // this case makes is that the route keeps working when the only Session in the
+    // fixture is an archived one: `startSession` is still called with the Selected
+    // Space's path rather than the call being skipped or re-targeted, and the
+    // dialog-escape arm (`activeSpacePath === null`, or a path with no Space row)
+    // is NOT taken.
+    //
+    // It does NOT discriminate the projection-vs-selection bug — nothing here reads
+    // a projection, so a "most recent Session" derivation swapped in or out is
+    // invisible to it. That is `TasksBoard.test.tsx`'s subject. `active: true` stays
+    // because the title says "with an archived session active" and the fixture
+    // should say so; the assertions do not depend on the flag.
     seedArchived("a1", { active: true });
     render(<SpacesList />);
     fireEvent.click(screen.getByRole("button", { name: /New Session/ }));
-    // The `activeView` predicate matches via `archivedSessionIds` → the
-    // hook starts a native session in that space.
+    // The store's `startSessionInActiveSpace` → a native session in the Selected Space.
     await waitFor(() =>
       expect(mockedStartSession).toHaveBeenCalledWith("/tmp/alpha"),
     );
@@ -1312,16 +1396,27 @@ describe("SpacesList (archive, ADR 0016)", () => {
   });
 
   it("an archived-only active session still resolves its space for the skill catalog", async () => {
-    // `active: true` again IS the premise: the catalog path it pins reads
-    // `activeSession ? undefined : activeHistory ?? archivedSessions.find(…)`,
-    // and only an ACTIVE archived row distinguishes the first arm from the
-    // fallback it must not take.
+    // WHAT THIS CASE PINS TODAY: the catalog's fetch key is the SELECTED Space path
+    // (`SpacesList.tsx` passes `activeSpacePath` to `useSkillCatalog`, which caches
+    // by `spacePath ?? "__global__"`), and that key stays the Space's path — never
+    // `null` — even when the ONLY Session the fixture holds is an archived one. A
+    // `null` key is the silent failure: the catalog degrades to user-level skills
+    // with no error anywhere. So the case goes red if anyone re-keys the catalog on
+    // a projection that walks live/stored rows for the active Session — with no
+    // archived arm there, an archived-only fixture yields `null` and `listSkills`
+    // is then called with `null` (the `__global__` cache key) instead of the path.
+    //
+    // It does NOT discriminate the projection-vs-selection bug (a surface reading
+    // "the most recent Session" off a projection instead of the Selected Space).
+    // That is `TasksBoard.test.tsx`'s subject; here the selection and the archived
+    // row's `cwd` are the same path, so the case cannot tell the two apart.
+    // `active: true` stays because the title says "active session" and the fixture
+    // should be honest about it.
     seedArchived("a1", { active: true });
     render(<SpacesList />);
-    // The `useSkillCatalog` input path (`activeSession ? undefined :
-    // activeHistory ?? archivedSessions.find(…)`): the active session's
-    // Space path, NOT `null` (which would silently degrade the catalog
-    // to user-level skills). `listSkills` is called with the fetch key.
+    // The `useSkillCatalog` key is the Selected Space path, NOT `null` (which would
+    // silently degrade the catalog to user-level skills). `listSkills` is called
+    // with the fetch key.
     await waitFor(() =>
       expect(mockedListSkills).toHaveBeenCalledWith("/tmp/alpha"),
     );

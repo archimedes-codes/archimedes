@@ -100,8 +100,9 @@ and be wrong in every real one.
 in ADR 0016 (which decides what archiving *is*), and not in `CONTEXT.md`, whose **Landing Session**
 entry named the three *moments* the pick runs — boot, a tab click, the selected tab closing — without
 ever saying that a Space might contain only archived rows. So the behaviour was undefined rather than
-decided, and two implementations of "the most recent Session" disagreed about whether archived counted,
-which is precisely the failure `src/lib/sessionLookup.ts` warns about in its own header.
+decided, and two implementations of "the most recent Session" disagreed about whether archived counted
+— a disagreement about which LIST is in scope, not this ADR's question of which ROW inside a list
+counts — precisely the failure `src/lib/sessionLookup.ts` warns about in its own header.
 
 **An archived-only Space is not an empty Space, and the store already knew that in two places.**
 `SpaceView.archivedSessionIds` exists precisely "so a space whose only sessions are archived still

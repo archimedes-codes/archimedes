@@ -2804,8 +2804,17 @@ describe("App (the Task board view)", () => {
     // The bare `setState` inside `clearStoreForBoot` lands on still-mounted
     // subscribers (`SpaceTabs`, `ArchivedSection`, `SpacesList`, `App`,
     // `SubagentModals`, `TasksBoard`) outside any `act`, which is the shape React
-    // warns about — measured: 28 "not wrapped in act" lines for this case alone
-    // with a bare teardown, 0 with both wraps. The second `await act` is the one
+    // warns about. THE INSTRUMENT MATTERS HERE, so it is spelled out: both numbers
+    // this note quotes come from running THIS CASE ALONE —
+    // `npx vitest run src/App.test.tsx -t "the board loads for the selected Space
+    // when every Session is archived"` — and count 28 "not wrapped in act" lines
+    // with the two wraps taken back out to a bare `clearStoreForBoot()`, and 0 as
+    // the case stands. Grep the same run without `-t` and
+    // you get 2679 such lines for the file, and none of that background belongs to
+    // this case: it is the other 57 cases, which this one does not own. Someone
+    // checking this claim by grepping the whole-file run will therefore find a
+    // number that neither matches 28 nor goes to 0 with the wraps, and would
+    // rightly call the comment unreproducible. The second `await act` is the one
     // that catches the LATE half: clearing the selection changes the catalog
     // hooks' key, `useCatalogRow` fires a fresh fetch, and its `.then` settles
     // into a `setState` a tick later — a post-`await` update outside `act`, i.e.

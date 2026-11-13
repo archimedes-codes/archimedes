@@ -235,6 +235,13 @@ beforeEach(() => {
   // handed in as a prop), and `resetStores()` replays the store's initial state,
   // where `activeSpacePath` is `null`. Seed it ONCE here rather than in every case
   // below: without this, every render in this file takes the "no Space" arm.
+  //
+  // The `An update to … was not wrapped in act` background this file prints is
+  // PRE-EXISTING and measured UNCHANGED by that subscription — 170 such lines at
+  // this tip (this tree) and 170 at `main` (a throwaway detached worktree), both
+  // from `npx vitest run src/components/TasksBoard.test.tsx`, and the single
+  // `act(...)` wrap in this file is there because that case drives the store
+  // mid-test, not to fix this background.
   useSessions.setState({ activeSpacePath: SPACE });
   vi.mocked(getBoard).mockReset();
   vi.mocked(moveTask).mockReset();

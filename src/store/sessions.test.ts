@@ -3954,6 +3954,52 @@ describe("activeSpacePath (the selected Space — the top tabs' state)", () => {
     });
   });
 
+  it("closeSpace onto an archived-only neighbour lands on its most recent archived Session", async () => {
+    // The COMPOSITION of two pinned rules, pinned once on its own. `closeSpace`
+    // routes its landing Space through `selectSpace` — deliberately, so a close and
+    // a click on that tab can never disagree — and `selectSpace` carries the
+    // live → stored → archived arm the case above pins. Each half is green alone;
+    // NOTHING here said what happens when the Space you close is the selected one
+    // and the surviving neighbour holds ONLY archived Sessions. That is the route a
+    // silent refactor takes out: "simplify" `closeSpace` to
+    // `set({ activeSpacePath: landing })` and this goes red, because
+    // `removeSpace` deliberately leaves `activeSessionId` alone and it would still
+    // point at the CLOSED Space's live row — a transcript with no tab, the exact
+    // state `closeSpace`'s own comment says must not ship.
+    //
+    // Two Spaces, the selected one (`/a`) holds the live row the user is looking at,
+    // `/b` (the leftmost survivor) holds two archived rows and nothing else:
+    // `historySessions` stays empty, so the stored arm cannot answer and only the
+    // archived arm can. Recency picks `arch_recent`, which sits LAST in input order
+    // and carries the far-future stamp — so a positional pick (`[0]`) is a
+    // different answer and gets caught here too.
+    vi.clearAllMocks();
+    useSessions.setState({
+      spaces: [space("/a"), space("/b")],
+      activeSpacePath: "/a",
+      activeSessionId: "live-a",
+      sessions: [info("live-a", "/a")],
+      archivedSessions: [
+        { ...info("arch_head", "/b"), archived: true },
+        { ...info("arch_recent", "/b"), archived: true },
+      ],
+      sessionRecency: { arch_head: 1_000, arch_recent: 9_000_000_000_000 },
+    });
+    await useSessions.getState().closeSpace("/a");
+    const s = useSessions.getState();
+    // The survivor — the leftmost remaining tab, which is `removeSpace`'s fallback.
+    expect(s.activeSpacePath).toBe("/b");
+    // And not merely the path: the archived row the neighbour's tab would land on.
+    // `null` here means the archived arm was skipped; `"live-a"` means the pointer
+    // was left on the closed Space's Session.
+    expect(s.activeSessionId).toBe("arch_recent");
+    // The landing is real, not just a pointer: the transcript load was reached
+    // (`openSession` → `loadHistory`), which is what puts content on screen.
+    expect(loadHistory).toHaveBeenCalledWith("arch_recent", {
+      limit: INITIAL_HISTORY_PAGE,
+    });
+  });
+
   it("boot with every Session archived selects the leftmost Space and lands on its most recent archived Session", () => {
     // issue #185's reported state, reached the production way: `setHistorySessions`
     // splits by the `archived` flag, so an all-archived boot leaves
