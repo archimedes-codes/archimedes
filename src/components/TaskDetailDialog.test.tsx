@@ -6,9 +6,12 @@ import { resetTaskLaunchInFlight } from "../store/taskLaunch";
 import { useSessions } from "../store/sessions";
 import { useTasks } from "../store/tasks";
 import { resetStores } from "../test/resetStores";
+import { makeMessage, makeSessionRow } from "../test/fixtures";
+import { fileIconFor } from "../lib/fileIcons";
 import { clearSkillCatalogCache } from "../hooks/useSkillCatalog";
 import { clearMentionCatalogsCache } from "../hooks/useMentionCatalogs";
 import {
+  externalOpen,
   getArtifact,
   listAgentDefinitionsForSpace,
   listCompletionEntries,
@@ -63,6 +66,12 @@ vi.mock("../lib/tauri", async () => {
     // is what that passthrough reaches, so the case exercises the real action (its
     // `null`-is-an-answer rule and its rethrow) rather than a stubbed one.
     getArtifact: vi.fn(),
+    // MOCKED because the real wrapper `invoke`s Tauri in jsdom. It matters for the
+    // BODY's links: `AgentMarkdown` renders them through `OpenAnchor`, whose click
+    // handler calls `externalOpen`. Left real, the wrapper swallows the refusal into
+    // a `console.warn` and never rejects, so the click would look like it worked
+    // while nothing could assert where the link went.
+    externalOpen: vi.fn(),
     reorderTasks: vi.fn(),
     loadHistory: vi.fn(),
     listSkills: vi.fn(),
@@ -929,7 +938,7 @@ describe("TaskDetailDialog — the modal scrolls (issue #180 follow-up)", () => 
       sessions: [link("sess_a"), link("sess_b")],
     });
     const scroller = within(dialog()).getByTestId("detail-scroll");
-    expect(scroller.querySelector(".whitespace-pre-wrap")).not.toBeNull();
+    expect(within(scroller).getByTestId("task-body")).toBeTruthy();
     expect(within(scroller).getAllByTestId("task-session-row")).toHaveLength(2);
     expect(scroller.textContent).toContain("/w/alpha/spec.md");
     // The id row too — it is quiet, and a scroller that skipped it would clip it.
@@ -965,5 +974,539 @@ describe("TaskDetailDialog — the modal scrolls (issue #180 follow-up)", () => 
     // The base primitive is a `grid`; the cap only bounds a FLEX column the way this
     // component assumes, so the override has to survive `cn()`'s merge.
     expect(cls).not.toContain("grid");
+  });
+});
+
+describe("TaskDetailDialog — the body renders as markdown", () => {
+  /**
+   * Spec §1. The body is the ONE field the card clamps to two lines, and until this
+   * pass the modal printed it through a `whitespace-pre-wrap` `<p>` — so a link a
+   * person wrote in a Task body was inert text and no GFM construct rendered.
+   * `AgentMarkdown` is the transcript's renderer (extracted verbatim in issue #180
+   * for exactly this), and reusing it is what keeps the URL policy (`safeUrlTransform`,
+   * ADR 0051) and the External-open routing (`OpenAnchor`) in ONE place rather than
+   * re-spelled here.
+   *
+   * Every assertion is on the RENDERED DOM, not on the file's text: a comment may
+   * name a class without wearing it, and it is the wearing the spec forbids.
+   */
+  it("renders the body through AgentMarkdown, so a heading is a heading", () => {
+    const first = renderDialog({ task: taskRow({ body: "# The plan\n\n- one\n- two" }) });
+    // Throws while the body is still a `<p>` — that is the red state this describe
+    // exists to close.
+    const body = within(dialog()).getByTestId("task-body");
+    expect(within(body).getByRole("heading", { level: 1 }).textContent).toBe(
+      "The plan",
+    );
+    expect(within(body).getAllByRole("listitem")).toHaveLength(2);
+    // DIALOG-WIDE, not scoped to the body node: the criterion is that NOTHING in the
+    // rendered dialog wears the prose class, and a query scoped to `body` would let a
+    // `whitespace-pre-wrap` wrapper anywhere else pass.
+    expect(dialog().querySelectorAll(".whitespace-pre-wrap")).toHaveLength(0);
+    first.unmount();
+
+    // ADR 0101's ACCEPTED COST, pinned. `remark-breaks` was considered and rejected,
+    // so a single newline collapses to a space. There is no `.remark-breaks`-style
+    // class to grep for in the DOM — the `<br>` it would emit is the only observable
+    // trace, which is why the criterion is phrased as its ABSENCE.
+    renderDialog({ task: taskRow({ body: "line one\nline two" }) });
+    const soft = within(dialog()).getByTestId("task-body");
+    expect(soft.querySelectorAll("br")).toHaveLength(0);
+    expect(soft.textContent).toContain("line one");
+    expect(soft.textContent).toContain("line two");
+  });
+
+  it("renders GFM: a table, a strikethrough and a task list", () => {
+    // `remark-gfm` is already mounted inside `AgentMarkdown`, so all three constructs
+    // come free with the swap — and each is a construct the `<p>` printed verbatim.
+    renderDialog({
+      task: taskRow({
+        body: "| a | b |\n|---|---|\n| 1 | 2 |\n\n~~gone~~\n\n- [ ] todo",
+      }),
+    });
+    const body = within(dialog()).getByTestId("task-body");
+    expect(body.querySelector("table")).not.toBeNull();
+    expect(within(body).getAllByRole("columnheader")).toHaveLength(2);
+    expect(body.querySelector("del")?.textContent).toBe("gone");
+    // A `- [ ]` item is a real checkbox, not the literal text `[ ]`.
+    expect(body.querySelector('input[type="checkbox"]')).not.toBeNull();
+  });
+
+  it("a body link is an anchor that External-opens rather than navigating", () => {
+    // A bare `<a href>` in the Client's webview NAVIGATES it — the navigation guard
+    // then refuses, so the click used to do nothing at all. `OpenAnchor` cancels the
+    // default and hands the href to `external_open` instead.
+    renderDialog({ task: taskRow({ body: "[docs](https://x.test/a)" }) });
+    const body = within(dialog()).getByTestId("task-body");
+    const a = body.querySelector("a");
+    expect(a).not.toBeNull();
+    // The href SURVIVES to the DOM (hover target, focus and copy-link all need it) —
+    // read off the ATTRIBUTE, since the `href` property resolves against jsdom's base.
+    expect(a!.getAttribute("href")).toBe("https://x.test/a");
+    // `false` is RTL's signal that the handler called `preventDefault`, i.e. the
+    // webview would NOT have navigated.
+    expect(fireEvent.click(a!)).toBe(false);
+    expect(externalOpen).toHaveBeenCalledTimes(1);
+    expect(externalOpen).toHaveBeenCalledWith("https://x.test/a", null);
+  });
+
+  it("a RELATIVE body link hands a null cwd to external_open without a SpaceCwdProvider", () => {
+    // This is the PINNED half of the `relative-without-cwd` refusal, and only that
+    // half. The refusal STRING is produced in Rust and swallowed into a
+    // `console.warn` by `lib/tauri/commands/external.ts`, so jsdom cannot observe it
+    // and no TS-side union names the code. What IS assertable is that the cwd went
+    // out as `null` rather than as a guess.
+    //
+    // This file mounts NO `SpaceCwdProvider` at all, which is also the real
+    // no-active-Session case (`useActiveSpaceCwd` answers `null` there) — so the
+    // behaviour is PINNED here, not fixed. Do NOT wrap this render in a provider to
+    // make the link "work".
+    renderDialog({ task: taskRow({ body: "[spec](docs/roadmap/x.md)" }) });
+    const body = within(dialog()).getByTestId("task-body");
+    const a = body.querySelector("a");
+    expect(a).not.toBeNull();
+    expect(a!.getAttribute("href")).toBe("docs/roadmap/x.md");
+    expect(fireEvent.click(a!)).toBe(false);
+    expect(externalOpen).toHaveBeenCalledTimes(1);
+    expect(externalOpen).toHaveBeenCalledWith("docs/roadmap/x.md", null);
+  });
+
+  it("a javascript: link in a body renders an empty href and does not throw", () => {
+    // ADR 0051's denylist, and the reason reusing `AgentMarkdown` adds no new
+    // security code: `safeUrlTransform` refuses `javascript` / `data` / `vbscript` /
+    // `blob` / `filesystem`, so no script-bearing href ever reaches the DOM.
+    renderDialog({ task: taskRow({ body: "[x](javascript:alert(1))" }) });
+    const body = within(dialog()).getByTestId("task-body");
+    const a = body.querySelector("a");
+    expect(a).not.toBeNull();
+    expect(a!.getAttribute("href")).toBe("");
+    // A refused scheme must not be a broken control: the click is swallowed by the
+    // wrapper's `console.warn`, never thrown into the click handler.
+    expect(() => fireEvent.click(a!)).not.toThrow();
+  });
+
+  it("a card with no body renders no body region at all", () => {
+    // The ABSENCE assertion needs its positive control in the SAME case, because
+    // `task-body` does not exist anywhere today: a bare `queryByTestId(…) === null`
+    // would pass against the unmodified component and pin nothing. Sequence is
+    // render → assert present → re-render → assert absent, so the case is red for the
+    // right reason (the control throws while the body is a `<p>`) and the absence half
+    // is proven to measure a real conditional render.
+    const first = renderDialog({ task: taskRow({ body: "A body" }) });
+    expect(within(dialog()).getByTestId("task-body")).toBeTruthy();
+    first.unmount();
+    renderDialog({ task: taskRow({ body: null }) });
+    expect(within(dialog()).queryByTestId("task-body")).toBeNull();
+  });
+});
+
+describe("TaskDetailDialog — the clickable grammar", () => {
+  /**
+   * Spec §2. The defect was a MEASUREMENT, not a feeling: the artifact key row and
+   * the read-only `id` row wore the same font family, size and ink, differing only by
+   * `hover:bg-surface-hover` — a 5% wash. So a clickable row and an inert row were
+   * indistinguishable until the pointer was over one, and the session rows printed a
+   * raw `sessionId` where the sidebar three inches away printed a title.
+   *
+   * The fix reuses grammar the user has already learned elsewhere rather than
+   * inventing a new component or a new token: leading glyph + trailing chevron +
+   * `bg-selected` for the actionable rows, and NOTHING leading on the read-only ones.
+   * The asymmetry is the whole signal — a rule that painted every row alike would
+   * restore the defect while looking tidier.
+   */
+  it("an artifact key row carries the md glyph as an <svg>, in text-file-md", () => {
+    renderDialog({ artifactKeys: ["plan"] });
+    const row = within(dialog()).getByTestId("artifact-key");
+    const glyph = row.querySelector('[data-testid="artifact-key-glyph"]');
+    expect(glyph).not.toBeNull();
+    // The `LucideIcon` renders the `<svg>` ITSELF, so a wrapper element here would be
+    // a different shape than the transcript's `FileChip` draws for a `.md` fence.
+    expect(glyph!.tagName).toBe("svg");
+    // The token is asserted as a LITERAL, not read back from `fileIconFor("x.md")`:
+    // deriving the expected value from the same constant the row was built from makes
+    // the assertion self-referential — it would pass for any descriptor, including a
+    // neutral default. `"text-file-md"` is the fact the spec states (the `md` /
+    // `markdown` arms of `BY_EXTENSION`).
+    expect(glyph!.classList.contains("text-file-md")).toBe(true);
+    expect(glyph!.classList.contains("size-3.5")).toBe(true);
+    // This line pins the DESCRIPTOR the component is claimed to reuse; the assertions
+    // above pin the RENDERING. Two different claims, and only the second one would
+    // catch a component that read a different arm of the table.
+    expect(fileIconFor("x.md").className).toBe("text-file-md");
+
+    // THE OTHER HALF OF THE SAME CLAIM, and the reason the glyph means anything at all:
+    // "has a leading glyph" ⇒ "clickable" is only a rule while the READ-ONLY rows carry
+    // none. These are the two rows the spec's defect table is made of — same font
+    // family, same size, same ink as the key row above, and now provably no `<svg>`, so
+    // a future rule that paints every row alike reddens HERE instead of quietly
+    // restoring the ambiguity. (`MetaRow` carries `data-meta-label` for exactly this
+    // query.)
+    const scroller = within(dialog()).getByTestId("detail-scroll");
+    for (const label of ["spec", "id"]) {
+      const row = scroller.querySelector(`[data-meta-label="${label}"]`);
+      expect(row, `[data-meta-label="${label}"] must exist to be measured`).not.toBeNull();
+      expect(row!.querySelector("svg")).toBeNull();
+    }
+  });
+
+  it("an artifact key row carries a trailing ChevronRightIcon", () => {
+    renderDialog({ artifactKeys: ["plan"] });
+    const row = within(dialog()).getByTestId("artifact-key");
+    const chevron = row.querySelector('[data-testid="artifact-key-chevron"]');
+    expect(chevron).not.toBeNull();
+    // POSITION carries the meaning: `ChevronRightIcon` is already this app's "this
+    // goes somewhere" mark in `Reasoning`, `ChangesGroupCard`, `ToolCallCardHeader`
+    // and `SpacesList`. A chevron in the middle of a row says nothing.
+    expect(row.lastElementChild).toBe(chevron);
+  });
+
+  it("a SELECTED artifact key row wears bg-selected, not the hover wash", async () => {
+    vi.mocked(getArtifact).mockResolvedValue({
+      taskId: "tsk_1",
+      key: "plan",
+      markdown: "# Spec",
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_600_000,
+    });
+    renderDialog({ artifactKeys: ["plan"] });
+    const row = within(dialog()).getByTestId("artifact-key");
+    expect(row.classList.contains("bg-selected")).toBe(false);
+    fireEvent.click(row);
+    await waitFor(() =>
+      expect(row.classList.contains("bg-selected")).toBe(true),
+    );
+    // `bg-selected` is the token the SIDEBAR uses for its active row, so the dialog
+    // borrows a selection language the user already reads. The 5% hover wash must be
+    // ABSENT, not merely outranked: `cn()`'s ternary means exactly one of the two
+    // reaches the class list, which also stops a selected row's hover from replacing
+    // its own fill.
+    expect(row.classList.contains("bg-surface-hover")).toBe(false);
+  });
+
+  it("every session row carries a SessionStatusMark, and the state comes from the store", () => {
+    // The mark is `SessionStatusMark` — the ONE session-state glyph the sidebar row
+    // and the Space tab already draw — and the state comes from `useSessionStatuses`,
+    // never from a value this component invents.
+    useSessions.setState({
+      sessions: [makeSessionRow({ sessionId: "sess_a", cwd: SPACE })],
+      inTurn: {},
+    });
+    const first = renderDialog({ sessions: [link("sess_a")] });
+    const row = within(dialog()).getByTestId("task-session-row");
+    expect(within(row).getByTestId("session-status-mark")).toBeTruthy();
+    // Live and NOT in a turn ⇒ `live` ⇒ the filled ring.
+    expect(row.querySelector('[data-dot="live"]')).toBeTruthy();
+
+    // SECOND ARM, same case: the claim is "the state is DERIVED, not painted", and one
+    // state cannot prove that. Put the same Session in a turn and the very same row
+    // draws the spinner instead of the ring — no prop changed, only the store.
+    first.unmount();
+    useSessions.setState({
+      sessions: [makeSessionRow({ sessionId: "sess_a", cwd: SPACE })],
+      inTurn: { sess_a: true },
+    });
+    renderDialog({ sessions: [link("sess_a")] });
+    const busy = within(dialog()).getByTestId("task-session-row");
+    expect(within(busy).getByTestId("session-status-mark")).toBeTruthy();
+    // `Spinner` carries its own `role="status"`. (`waiting`/`running` outrank `live`,
+    // so the ring is gone — and nothing else in this render is a `status` node,
+    // because the launch note only exists after a launch.)
+    expect(busy.querySelector('[role="status"]')).toBeTruthy();
+    expect(busy.querySelector('[data-dot="live"]')).toBeNull();
+  });
+
+  it("a session row prints the TITLE and demotes the id out of the text flow", () => {
+    // `titleFor` is the ONE label rule (title → first user message → Space folder),
+    // shared with the sidebar row, so the two surfaces cannot name one Session
+    // differently. The id is DEMOTED, not deleted — a card discussed across two
+    // windows is named by a session id, so it stays reachable on hover and by copy.
+    useSessions.setState({
+      sessions: [
+        makeSessionRow({
+          sessionId: "sess_a",
+          cwd: SPACE,
+          title: "Fix the login bug",
+        }),
+      ],
+    });
+    renderDialog({ sessions: [link("sess_a")] });
+    const row = within(dialog()).getByTestId("task-session-row");
+    expect(row.textContent).toContain("Fix the login bug");
+    expect(row.textContent).not.toContain("sess_a");
+    expect(row.getAttribute("title")).toBe("sess_a");
+    // And still addressable by the attribute the board's own test clicks through.
+    expect(row.getAttribute("data-session-id")).toBe("sess_a");
+  });
+
+  it("a session row with no title falls back to the transcript's first user message", () => {
+    // The SECOND arm of `titleFor`, and the case that proves the dialog reads that ONE
+    // rule rather than printing `SessionInfo.title` directly — a dialog that did the
+    // latter would render the Space folder name here (`alpha`).
+    useSessions.setState({
+      sessions: [makeSessionRow({ sessionId: "sess_a", cwd: SPACE })],
+      messages: { sess_a: [makeMessage("user", { text: "Refactor the parser" })] },
+    });
+    renderDialog({ sessions: [link("sess_a")] });
+    const row = within(dialog()).getByTestId("task-session-row");
+    expect(row.textContent).toContain("Refactor the parser");
+  });
+});
+
+describe("TaskDetailDialog — the artifact rail and pane", () => {
+  /**
+   * Spec §3 + §4. One subject: **this region has exactly one scroller.**
+   *
+   * The old reader was a `max-h-72` box nested inside the dialog's own scroller —
+   * two scrollbars in one wheel gesture, the kind that steals the wheel — at 672px.
+   * The replacement is a sticky key rail beside an UNBOUNDED document pane, inside
+   * the single `detail-scroll` container #181 built. `max-h-[80vh]`, the pinned header
+   * and footer and the scroller's `min-h-0` all survive: that commit's fix was a
+   * missing `min-h-0` on the SCROLLER, and the clip must not come back.
+   *
+   * Cases 4 and 5 are dialog-wide on purpose — "only one scrollbar" is a property of
+   * the whole dialog and cannot be asserted from inside the artifact region.
+   *
+   * jsdom runs NO layout, so width and stickiness are pinned as CLASS TOKENS, the same
+   * instrument `the modal scrolls` describe already uses for the same reason.
+   */
+  const scroller = (): HTMLElement => within(dialog()).getByTestId("detail-scroll");
+
+  const artifact = (key: string, markdown: string) => ({
+    taskId: "tsk_1",
+    key,
+    markdown,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_600_000,
+  });
+
+  it("a card WITH artifacts opens wide, and one without opens exactly as before", () => {
+    const first = renderDialog({ artifactKeys: ["plan"] });
+    const wide = Array.from(dialog().classList);
+    expect(wide).toContain("sm:max-w-4xl");
+    expect(wide).not.toContain("sm:max-w-2xl");
+    first.unmount();
+
+    // REGRESSION GUARD, not a red case: with no artifacts the shell already carries
+    // `sm:max-w-2xl` today, so this arm passes before the implementation BY DESIGN. It
+    // is spec §3's "the common case is untouched" claim, and width is decided at OPEN
+    // from the keys the board read already delivered — never from the current
+    // selection, because a dialog that widened when you clicked a key would resize
+    // under the pointer.
+    renderDialog({ artifactKeys: [] });
+    const narrow = Array.from(dialog().classList);
+    expect(narrow).toContain("sm:max-w-2xl");
+    expect(narrow).not.toContain("sm:max-w-4xl");
+  });
+
+  it("the rail is 176px, sticky, opaque, and is not its own scroll container", () => {
+    renderDialog({ artifactKeys: ["plan"] });
+    const rail = within(dialog()).getByTestId("artifact-rail");
+    const cls = Array.from(rail.classList);
+    expect(cls).toContain("w-44"); // 11rem = 176px at the 16px root — the spec's width
+    expect(cls).toContain("sticky");
+    expect(cls).toContain("top-0");
+    // `self-start` is what stops the rail stretching to the row's full height — and a
+    // stretched sticky element has nowhere to stick, so without it `sticky` does nothing.
+    expect(cls).toContain("self-start");
+    // LOAD-BEARING, not cosmetic: `sticky` floats the rail OVER the scrolling content
+    // and `DialogContent`'s own surface is `bg-popover`, so a transparent rail is a
+    // STENCIL — a long document scrolls visibly THROUGH the key rows.
+    expect(cls).toContain("bg-popover");
+    expect(cls).not.toContain("overflow-y-auto");
+    expect(cls.some((c) => c.startsWith("max-h-"))).toBe(false);
+  });
+
+  it("the pane carries no height cap and no scroller of its own, and its section refuses to compress", async () => {
+    vi.mocked(getArtifact).mockResolvedValue(artifact("plan", "# The spec"));
+    renderDialog({ artifactKeys: ["plan"] });
+    fireEvent.click(within(dialog()).getByTestId("artifact-key"));
+    const pane = await within(dialog()).findByTestId("artifact-body");
+    const paneCls = Array.from(pane.classList);
+    expect(paneCls).toContain("rounded-lg");
+    expect(paneCls).toContain("border-border");
+    // The pane's height IS its content's height: no cap, no second scrollbar.
+    expect(paneCls.some((c) => c.startsWith("max-h-"))).toBe(false);
+    expect(paneCls).not.toContain("overflow-y-auto");
+
+    // THE POSITIVE CONTROL for the half above. A case that asserts only token ABSENCE
+    // passes happily on markup that still compresses, so the section is pinned for what
+    // it must CARRY. `detail-scroll` is a definite-height column flex box, so a section
+    // with `min-h-0` and the default `flex-shrink: 1` is squeezed below its content the
+    // moment the unbounded pane is tall — and with `overflow: visible` it then PAINTS
+    // OVER the Sessions and Meta rows instead of contributing a clean scroll height.
+    // #181's clip was the missing `min-h-0` on the SCROLLER, never a missing
+    // `shrink-0` on a child; the child rule runs the other way.
+    const section = within(dialog()).getByTestId("artifact-section");
+    const sectionCls = Array.from(section.classList);
+    expect(sectionCls).toContain("shrink-0");
+    expect(sectionCls).not.toContain("min-h-0");
+  });
+
+  it("detail-scroll is the ONLY scroll container in the dialog, and the rail and pane resolve to it", async () => {
+    // DIALOG-WIDE, because the spec's own sentence is "`detail-scroll` is the only
+    // scrollbar". Scoping this walk to the artifact region would assert less than the
+    // spec claims: the sessions wrapper also used to be a scroller, and the case below
+    // is what measures it.
+    vi.mocked(getArtifact).mockResolvedValue(artifact("plan", "# The spec"));
+    renderDialog({
+      task: taskRow({ body: "A body, so the first region exists" }),
+      artifactKeys: ["plan", "research"],
+      sessions: [link("sess_a"), link("sess_b")],
+    });
+    fireEvent.click(within(scroller()).getAllByTestId("artifact-key")[0]!);
+    await within(dialog()).findByTestId("artifact-body");
+
+    const scrollers = Array.from(dialog().querySelectorAll(".overflow-y-auto"));
+    expect(scrollers).toHaveLength(1);
+    expect(scrollers[0]!.getAttribute("data-testid")).toBe("detail-scroll");
+    // Both halves of the new region resolve to that ONE scroller — which is what makes
+    // `sticky` mean something (a sticky element sticks inside its nearest scroll
+    // ancestor, so a second ancestor would silently re-create the nested scroll).
+    expect(within(scroller()).getByTestId("artifact-rail").closest(".overflow-y-auto")).toBe(scroller());
+    expect(within(scroller()).getByTestId("artifact-body").closest(".overflow-y-auto")).toBe(scroller());
+    // And the premise #181 established is still true — the scroller itself is unchanged.
+    expect(scroller().classList.contains("min-h-0")).toBe(true);
+    expect(scroller().classList.contains("flex-1")).toBe(true);
+  });
+
+  it("the sessions section is not a scroll container and does not shrink", () => {
+    // Change (9)'s pin, and the one case here that is RED against the old file for a
+    // reason other than the missing rail: the wrapper spelled all three of these
+    // tokens the wrong way round.
+    //
+    // THE ARITHMETIC: `detail-scroll` is a column flex container whose height IS
+    // definite (`flex-1` inside the `max-h-[80vh]` shell), so when its children's
+    // combined height exceeds it the free space is NEGATIVE and every child still
+    // holding `flex-shrink: 1` is compressed. The floor that normally refuses that is a
+    // flex item's initial `min-height: auto` — and `min-h-0` is exactly the token that
+    // removes it. So `min-h-0` + `overflow-y-auto` + no `shrink-0` = a real SECOND
+    // scrollbar as soon as anything else in the scroller is tall. That was latent only
+    // while the artifact reader was capped at `max-h-72` + `shrink-0`; this task makes
+    // an unbounded pane the common case, which turns the latent defect into the visible
+    // one — the exact defect spec §3 exists to remove.
+    renderDialog({
+      task: taskRow({ body: "A body" }),
+      sessions: [link("sess_a"), link("sess_b")],
+    });
+    const wrapper = within(scroller()).getByText("Sessions on this task")
+      .parentElement!;
+    const cls = Array.from(wrapper.classList);
+    expect(cls).toContain("shrink-0");
+    expect(cls).not.toContain("overflow-y-auto");
+    expect(cls).not.toContain("min-h-0");
+  });
+
+  it("artifacts with nothing selected render the rail only — no pane and no fetch", () => {
+    // Spec §3's state table: "Artifacts, none selected → Rail only. No placeholder
+    // pane, nothing fetched." The board read carries NAMES, so a document fetched for a
+    // key nobody asked to read is exactly the wire cost the keys-only payload exists to
+    // avoid — and an always-present empty pane would also break the `null`-is-an-answer
+    // pin in the reader describe.
+    renderDialog({ artifactKeys: ["plan", "research"] });
+    expect(within(dialog()).getByTestId("artifact-rail")).toBeTruthy();
+    expect(within(dialog()).queryByTestId("artifact-body")).toBeNull();
+    expect(getArtifact).not.toHaveBeenCalled();
+  });
+
+  it("the RAIL keeps BOTH keys reachable while a read is in flight", () => {
+    // THE RAIL-DRIVEN VARIANT of the out-of-order pin in the artifact describe —
+    // retained deliberately alongside it; the two measure different things
+    // (reachability vs. the drop). That case drives two reads from the flat pre-rail
+    // list and pins the DROP of a late answer; THIS one drives them from the rail and
+    // pins that the rail leaves both keys clickable mid-flight. It matters here because
+    // the rail makes the race MORE reachable, not less: one gesture can have two reads
+    // in flight and the older one can answer last, which is why the two locks in
+    // `selectArtifact` must survive this change byte-identical.
+    const slots: Array<(v: ReturnType<typeof artifact> | null) => void> = [];
+    vi.mocked(getArtifact).mockImplementation(
+      () => new Promise((resolve) => slots.push(resolve)),
+    );
+    renderDialog({ artifactKeys: ["plan", "research"] });
+    // BOTH reads are driven from the RAIL, so the rows are addressed through it — that
+    // scoping is what makes this the rail-driven variant and not a restatement of the
+    // flat-list case in the reader describe (and what makes it red before the rail
+    // exists).
+    const rail = within(dialog()).getByTestId("artifact-rail");
+    fireEvent.click(within(rail).getAllByTestId("artifact-key")[0]!);
+    // The rail is still a rail mid-flight: both keys present, both still clickable.
+    expect(within(rail).getAllByTestId("artifact-key")).toHaveLength(2);
+    fireEvent.click(within(rail).getAllByTestId("artifact-key")[1]!);
+    expect(getArtifact).toHaveBeenCalledTimes(2);
+    expect(getArtifact).toHaveBeenLastCalledWith("tsk_1", "research");
+    // Neither read is answered yet — nothing is on screen, and nothing has to be.
+    expect(within(dialog()).queryByTestId("artifact-body")).toBeNull();
+  });
+
+  it("the scroller reads Body, then Artifacts, then Sessions, then Meta", () => {
+    // Spec §4. Today `id` and `spec` sit ABOVE the artifacts, so a task id outranks the
+    // spec document. `compareDocumentPosition` is the idiom `SpacesList.test.tsx` uses
+    // for the same claim — it reads the DOM, not a class list.
+    vi.mocked(getArtifact).mockResolvedValue(artifact("plan", "# The spec"));
+    renderDialog({
+      task: taskRow({ body: "A body" }),
+      artifactKeys: ["plan"],
+      sessions: [link("sess_a")],
+    });
+    fireEvent.click(within(dialog()).getByTestId("artifact-key"));
+    const sc = scroller();
+    const before = (a: Node, b: Node): boolean =>
+      !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const body = within(sc).getByTestId("task-body");
+    const rail = within(sc).getByTestId("artifact-rail");
+    const sessions = within(sc).getByText("Sessions on this task");
+    const specRow = sc.querySelector('[data-meta-label="spec"]')!;
+    const idRow = sc.querySelector('[data-meta-label="id"]')!;
+    expect(specRow).not.toBeNull();
+    expect(idRow).not.toBeNull();
+    expect(before(body, rail)).toBe(true);
+    expect(before(rail, sessions)).toBe(true);
+    expect(before(sessions, specRow)).toBe(true);
+    expect(before(specRow, idRow)).toBe(true);
+    // The spec's actual claim, pinned directly rather than inferred from the chain:
+    // a task id no longer outranks the spec document.
+    expect(before(body, specRow)).toBe(true);
+  });
+});
+
+describe("TaskDetailDialog — the session's Stage label", () => {
+  /**
+   * Spec §2's one correctness fix. `stageSlug` is what the wire carries; printing it on
+   * a session row while this dialog's OWN header prints the Stage's `label` three lines
+   * above puts two answers to one question in one modal. The dialog already holds the
+   * `columns` slice it resolved the header's label from, so resolving the link's slug
+   * through the same lookup is free — one read, one source.
+   */
+  it("a session row prints the Stage LABEL, not its slug", () => {
+    // RED until the fix lands: the row prints `from doing`.
+    //
+    // BOTH columns are seeded on purpose. `backlog` is what the HEADER resolves, so a
+    // fixture carrying only `doing` would leave the header printing a slug and this case
+    // would be measuring two things instead of one.
+    renderDialog({
+      boards: [column("backlog", "Backlog"), column("doing", "In Progress")],
+      sessions: [link("sess_a", "doing")],
+    });
+    const row = within(dialog()).getByTestId("task-session-row");
+    expect(row.textContent).toContain("from In Progress");
+    expect(row.textContent).not.toContain("doing");
+  });
+
+  it("falls back to the slug when the board slice cannot name that Stage", () => {
+    // REGRESSION GUARD — this PASSES before the fix, because the slug fallback is
+    // today's behaviour and the fix must not lose it. "We could not name it" is a
+    // different claim from "it has no Stage", which is the same argument the header's
+    // `stageLabel` carries.
+    renderDialog({ sessions: [link("sess_a", "archived-later")] });
+    const row = within(dialog()).getByTestId("task-session-row");
+    expect(row.textContent).toContain("from archived-later");
+  });
+
+  it("a session row with no Stage prints no from-caption", () => {
+    // REGRESSION GUARD — passes before the fix. `stageSlug: null` is "this link names no
+    // Stage", which is not the same claim as "a Stage we could not name", so printing
+    // `from ` with nothing after it would invent a Stage.
+    renderDialog({ sessions: [link("sess_a", null)] });
+    const row = within(dialog()).getByTestId("task-session-row");
+    expect(row.textContent).not.toContain("from ");
   });
 });
