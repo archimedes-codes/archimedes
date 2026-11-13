@@ -72,22 +72,31 @@ import type { StageWithTasks, TaskRow } from "../lib/tauri";
  * board-level `Back` would be a third way out that only this surface offered, and
  * it invited a reader to re-add a control the design retired.
  *
- * IT READS TWO STORES, AND ONLY SUBSCRIBES TO ONE. `useTasks` is the board's own
- * slice and is read through selectors. `useSessions` (issue #174) is read through
- * `getState()` for ONE action, `openSession`, and forwarded to every card's chip —
- * no subscription, because the board renders nothing derived from the sessions
- * store and a subscription would re-render it for nothing. The card takes the
- * action as a prop rather than reading it itself: `TaskCard` is presentational with
- * no store of its own, and `openSession` (not `setActiveSession`) is the call that
- * resolves a linked Session's owner Space by `cwd` and loads its transcript, closed
- * and archived Sessions included.
+ * IT READS TWO STORES AND SUBSCRIBES TO BOTH. `useTasks` is the board's own slice
+ * and is read through selectors. `useSessions` is subscribed to for exactly ONE
+ * primitive — `activeSpacePath`, the **Selected Space**, the tab strip's own state —
+ * and that is the key this whole surface turns on: a Task board is PER-**SPACE**
+ * (`CONTEXT.md`: "It is PER-SPACE, one board per Space") and ADR 0090 keys stages
+ * and tasks on a `space_path` STRING with no foreign key to a Session, so a Space
+ * with no Session running in it is a board with lanes, not a board that is out of
+ * input. Everything else it needs from that store is the `openSession` ACTION, read
+ * through `getState()` — which is not a subscription — and forwarded to every card's
+ * chip. The card takes the action as a prop rather than reading it itself:
+ * `TaskCard` is presentational with no store of its own, and `openSession` (not
+ * `setActiveSession`) is the call that resolves a linked Session's owner Space by
+ * `cwd` and loads its transcript, closed and archived Sessions included.
+ *
+ * THE PROP THAT USED TO CARRY THE KEY IS GONE, and issue #185 is why. `App` used to
+ * hand this board `useActiveSpaceCwd()` — the ACTIVE SESSION'S `cwd` — under this
+ * same prop name. One derivation with a lifecycle the board does not have: the
+ * moment no Session was active (every Session archived, the last one deleted, a tab
+ * clicked that owns no live Session) it became `null`, and every per-Space surface
+ * behind that value went inert at once — no `get_board`, no columns, `New task` and
+ * `Configure` dead — while the Session list beside the board read the store field,
+ * named the same folder, and looked perfectly healthy. A per-Space view cannot take
+ * its Space from a per-Session projection; it reads the selection.
  */
 export interface TasksBoardProps {
-  /** The active **Space**'s folder — the SAME derivation `SidePane` and the
-   *  mention-picker catalogs use (`useActiveSpaceCwd`). `null` when no Session is
-   *  active: the board renders its header and an empty line rather than calling
-   *  `get_board(null)`. */
-  activeSpacePath: string | null;
   /** Leave the board view: a **Session** is now open and the chat column is behind
    *  this board.
    *
@@ -107,10 +116,19 @@ export interface TasksBoardProps {
   onReturnToWorkspace?: () => void;
 }
 
-export default function TasksBoard({
-  activeSpacePath,
-  onReturnToWorkspace,
-}: TasksBoardProps) {
+export default function TasksBoard({ onReturnToWorkspace }: TasksBoardProps) {
+  // The board's Space — the SELECTED one, the same field the Session list and the
+  // tab strip read. Read BEFORE the `useTasks` selectors below and not after them,
+  // because zustand runs a selector synchronously inside `useSyncExternalStore`
+  // during the render: a `useTasks` selector that closes over this name would read
+  // it while it is still in its temporal dead zone and throw on the first render
+  // (measured — it reddens every case in the file, and `tsc` calls it too).
+  //
+  // A PRIMITIVE selector, returning `string | null` directly and never an object or
+  // an array: a selector whose result is a fresh reference on every call makes
+  // zustand re-render forever (the rule at `useActiveSpaceCwd.ts`'s header and
+  // `lib/sessionLookup.ts`'s), which hangs the suite rather than failing it.
+  const activeSpacePath = useSessions((s) => s.activeSpacePath);
   const columns = useTasks((s) =>
     activeSpacePath ? s.boardsBySpace[activeSpacePath] : undefined,
   );

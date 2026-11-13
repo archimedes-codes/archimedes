@@ -411,6 +411,10 @@ function App() {
   // shell — and do NOT "optimise" it with a memo wrapper: that would trade a
   // render that does not happen for a second store subscription, plus a
   // component that cannot see the context it exists to provide.
+  //
+  // This value is the TRANSCRIPT's folder. It is deliberately NOT the Task board's
+  // Space: the board reads the Selected Space from the sessions store, since a board
+  // is per-Space and survives a frame in which no Session is active (issue #185).
   const spaceCwd = useActiveSpaceCwd();
 
   return (
@@ -560,21 +564,20 @@ function App() {
             // the Session list sits above this ternary now, so its own `Tasks`
             // door stays on screen and IS the board's exit (toggled off, or left
             // by any Session row) — the board carries no exit control of its own.
-            // `activeSpacePath` is the
-            // SAME derivation the `SpaceCwdProvider` above and `SidePane` use, so
-            // the board and the transcript cannot disagree about which folder is
-            // showing; `null` (no active Session) is a value `TasksBoard` renders
-            // rather than one it sends to `get_board`.
+            // The board takes NO Space prop (issue #185): it reads the **Selected
+            // Space** from the sessions store itself — the field the Session list and
+            // the tab strip already read — because a Task board is per-Space and a
+            // per-Session projection cannot be its key. The hook above is therefore
+            // only what `SpaceCwdProvider` consumes: the folder the TRANSCRIPT resolves
+            // relative paths against, deliberately not this board's Space, and `null`
+            // whenever no Session is active.
             // `onReturnToWorkspace` is what makes a card's sessions reachable. The
             // board renders IN PLACE OF `ChatStream`, so `openSession` alone selects a
             // Session in the store and leaves its transcript behind this section — the
             // click reads as a visible nothing. The board is handed the SAME
             // `setView("workspace")` a Session row and the `Tasks` door already use; it
             // owns no view of its own (ADR 0095), so it is told rather than wired.
-            <TasksBoard
-              activeSpacePath={spaceCwd}
-              onReturnToWorkspace={() => setView("workspace")}
-            />
+            <TasksBoard onReturnToWorkspace={() => setView("workspace")} />
           ) : (
             <>
               {/* The center column: the chat (the Spaces are the chrome

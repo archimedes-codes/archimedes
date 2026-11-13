@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import TasksBoard from "./TasksBoard";
 import { useTasks } from "../store/tasks";
@@ -231,6 +231,11 @@ const classTokens = (el: Element): string[] => classOf(el).split(/\s+/);
 beforeEach(() => {
   resetStores();
   useTasks.getState().reset();
+  // The board reads its Space from the sessions store (issue #185 — it used to be
+  // handed in as a prop), and `resetStores()` replays the store's initial state,
+  // where `activeSpacePath` is `null`. Seed it ONCE here rather than in every case
+  // below: without this, every render in this file takes the "no Space" arm.
+  useSessions.setState({ activeSpacePath: SPACE });
   vi.mocked(getBoard).mockReset();
   vi.mocked(moveTask).mockReset();
   vi.mocked(reorderTasks).mockReset();
@@ -276,7 +281,7 @@ beforeEach(() => {
 
 describe("TasksBoard — the header (and the absence of a way back)", () => {
   it("renders NO exit control of its own (the Session list's doors are the only way out)", () => {
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     // The board is a view the strip switches out of: the pressed `Tasks` door
     // toggles it off and any Session row leaves it, so a board-level `Back` was a
     // third exit only this surface offered. Pinned by the ABSENCE of the control,
@@ -285,7 +290,7 @@ describe("TasksBoard — the header (and the absence of a way back)", () => {
   });
 
   it("titles the surface Tasks", () => {
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     // The heading, not the sidebar's button (this file renders no sidebar). The
     // board replaces the chat column AND the Side pane, so it has to say what it is.
     expect(
@@ -296,7 +301,7 @@ describe("TasksBoard — the header (and the absence of a way back)", () => {
 
 describe("TasksBoard — what it draws from the store", () => {
   it("loads the board on MOUNT, for the Space it was given", () => {
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     // MOUNT, not boot: `App`'s boot `Promise.all` gains no fetch, so
     // `App.test.tsx`'s boot mocks stay as they are and a Space that never opens the
     // board never pays for `get_board` — which WRITES (it seeds the five default
@@ -305,15 +310,19 @@ describe("TasksBoard — what it draws from the store", () => {
   });
 
   it("re-loads when the active Space changes", () => {
-    const { rerender } = render(<TasksBoard activeSpacePath={SPACE} />);
-    rerender(<TasksBoard activeSpacePath="/w/beta" />);
+    const { rerender } = render(<TasksBoard />);
+    // The Space is the store's SELECTION now, so the case drives the store rather
+    // than passing a new prop. `act` because the update arrives from outside a
+    // render — the same reason a `fireEvent` wraps one.
+    act(() => useSessions.setState({ activeSpacePath: "/w/beta" }));
+    rerender(<TasksBoard />);
     expect(getBoard).toHaveBeenLastCalledWith("/w/beta");
     expect(getBoard).toHaveBeenCalledTimes(2);
   });
 
   it("renders one column per stage, labelled from board.stage.label", async () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     // THE NESTED-SHAPE PIN. A board read as `{ slug, label, tasks }` (the original
     // draft's flat shape) renders THREE EMPTY COLUMNS here and typechecks if the
     // value is spread loosely — so the label assertion is the loud version of a
@@ -326,7 +335,7 @@ describe("TasksBoard — what it draws from the store", () => {
 
   it("renders the cards inside their own column, with the number label", () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     const backlog = screen.getByTestId("task-column-backlog");
     const doing = screen.getByTestId("task-column-doing");
     expect(within(backlog).getByText("T1")).toBeTruthy();
@@ -347,7 +356,7 @@ describe("TasksBoard — what it draws from the store", () => {
     // board is FIVE columns with no cards. Dropping empty columns would make a fresh
     // board look like the fetch failed.
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     const done = screen.getByTestId("task-column-done");
     expect(within(done).queryAllByTestId("task-card")).toHaveLength(0);
     expect(done.textContent).toContain("Done");
@@ -360,7 +369,7 @@ describe("TasksBoard — what it draws from the store", () => {
         release = resolve;
       }),
     );
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     expect(screen.getByRole("status")).toBeTruthy();
     expect(screen.queryAllByTestId("task-column")).toHaveLength(0);
     release(SEED);
@@ -371,7 +380,7 @@ describe("TasksBoard — what it draws from the store", () => {
       kind: "not_a_space",
       message: "that folder is not a Space",
     });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     // `role="alert"` is the repo's inline IPC-error line (`IpcErrorLine`), so a
     // screen reader hears the failure rather than seeing red text appear.
     expect(await screen.findByRole("alert")).toBeTruthy();
@@ -381,9 +390,12 @@ describe("TasksBoard — what it draws from the store", () => {
   });
 
   it("renders nothing but the header when there is no active Space", () => {
-    // `useActiveSpaceCwd()` is `null` with no active Session, and the board arm is
-    // reachable from the sidebar then. `get_board(null)` is not a thing.
-    render(<TasksBoard activeSpacePath={null} />);
+    // `activeSpacePath` is `null` only when NO Space is selected at all — no Space
+    // has ever been opened, or the last tab was closed (`setSpaces` with no rows,
+    // `removeSpace` on the last tab). The board arm is reachable from the sidebar
+    // then, and `get_board(null)` is not a thing.
+    useSessions.setState({ activeSpacePath: null });
+    render(<TasksBoard />);
     expect(getBoard).not.toHaveBeenCalled();
     // The header still renders — and its one remaining control is the creation
     // affordance, correctly dead with no Space to file a Task in. (The `Back`
@@ -393,12 +405,39 @@ describe("TasksBoard — what it draws from the store", () => {
     ).toBe(true);
     expect(screen.getAllByRole("heading", { name: "Tasks" })).toHaveLength(1);
   });
+
+  it("renders the board for a SELECTED Space with no active Session (the board is per-Space)", async () => {
+    // Issue #185. The state the reporter hit: a Space IS selected (the tab strip
+    // and the Session list beside the board both read `activeSpacePath` and look
+    // healthy) while NO Session is active. A Task board is keyed on a Space and
+    // nothing else — `CONTEXT.md` calls it PER-SPACE and ADR 0090 keys stages and
+    // tasks on a `space_path` string with no foreign key — so this state must
+    // render lanes, not refuse.
+    useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
+    useSessions.setState({
+      activeSpacePath: SPACE,
+      activeSessionId: null,
+      sessions: [],
+      historySessions: [],
+    });
+    render(<TasksBoard />);
+    await waitFor(() => expect(getBoard).toHaveBeenCalledWith(SPACE));
+    expect(
+      (screen.getByRole("button", { name: "New task" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(
+      (screen.getByRole("button", { name: "Configure" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(
+      screen.queryByText("No Space is open, so there is no Task board to show."),
+    ).toBeNull();
+  });
 });
 
 describe("TasksBoard — the cross-column drag", () => {
   it("a card dropped in another column calls moveTask once", async () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     layOutColumns();
     const card = within(screen.getByTestId("task-column-backlog")).getByTestId(
       "task-card",
@@ -441,7 +480,7 @@ describe("TasksBoard — the cross-column drag", () => {
     // board that never launched on its own drop.
     vi.mocked(startTaskSession).mockClear();
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     layOutColumns();
     const card = within(screen.getByTestId("task-column-backlog")).getByTestId(
       "task-card",
@@ -466,7 +505,7 @@ describe("TasksBoard — the cross-column drag", () => {
 
   it("the column a drop would land in is marked while the card is over it", () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     layOutColumns();
     const card = within(screen.getByTestId("task-column-backlog")).getByTestId(
       "task-card",
@@ -490,7 +529,7 @@ describe("TasksBoard — the boostNote warning (spec §5's caveat 2)", () => {
       boostNote: "no live session to compact",
     });
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     layOutColumns();
     const card = within(screen.getByTestId("task-column-backlog")).getByTestId(
       "task-card",
@@ -512,7 +551,7 @@ describe("TasksBoard — the boostNote warning (spec §5's caveat 2)", () => {
 
   it("renders nothing when the outcome carries no note", async () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     layOutColumns();
     const card = within(screen.getByTestId("task-column-backlog")).getByTestId(
       "task-card",
@@ -531,7 +570,7 @@ describe("TasksBoard — the boostNote warning (spec §5's caveat 2)", () => {
       boostNote: "no live session to compact",
     });
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     layOutColumns();
     const card = within(screen.getByTestId("task-column-backlog")).getByTestId(
       "task-card",
@@ -549,7 +588,7 @@ describe("TasksBoard — the boostNote warning (spec §5's caveat 2)", () => {
 describe("TasksBoard — the within-column drag", () => {
   it("a card dropped on a sibling in its OWN column persists with ONE reorderTasks call", async () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     layOutColumns();
     layOutCards("doing");
     const doing = screen.getByTestId("task-column-doing");
@@ -570,7 +609,7 @@ describe("TasksBoard — the within-column drag", () => {
 
   it("the drop edge paints on the row the pointer is in, and only there", () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     layOutColumns();
     layOutCards("doing");
     const doing = screen.getByTestId("task-column-doing");
@@ -595,12 +634,15 @@ describe("TasksBoard — the New Task modal's render site (A5)", () => {
   // columns would file a card in a stage the user never chose). What the modal
   // itself does on send is `NewTaskDialog.test.tsx`'s subject.
   it("the header carries a New task affordance", () => {
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     expect(screen.getByRole("button", { name: "New task" })).toBeTruthy();
   });
 
   it("the affordance is disabled with no active Space (createTask(null, …) is not a thing)", () => {
-    render(<TasksBoard activeSpacePath={null} />);
+    // No Space selected at all (see the header case above) — the one state where the
+    // creation affordance has nowhere to file a Task.
+    useSessions.setState({ activeSpacePath: null });
+    render(<TasksBoard />);
     const button = screen.getByRole("button", {
       name: "New task",
     }) as HTMLButtonElement;
@@ -609,7 +651,7 @@ describe("TasksBoard — the New Task modal's render site (A5)", () => {
 
   it("clicking it opens the modal; closing it leaves the board", async () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     expect(screen.queryByRole("heading", { name: "New task" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
@@ -650,7 +692,7 @@ describe("TasksBoard — the New Task modal's render site (A5)", () => {
       updatedAt: 1,
     });
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} onReturnToWorkspace={vi.fn()} />);
+    render(<TasksBoard onReturnToWorkspace={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
     // Named, not bare: the modal now has a Title `<input>` AND a Body `<textarea>`,
     // and BOTH carry ARIA role `textbox`, so an unnamed query is an ambiguous match.
@@ -690,7 +732,7 @@ describe("TasksBoard — the surface ladder (ADR 0097: island, then recess)", ()
   // pass on a broken board.
   const seeded = () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
   };
 
   it("the board is an island", () => {
@@ -911,7 +953,7 @@ describe("TasksBoard — the sessions chip's wiring (issue #174)", () => {
     // the file's default `SEED` (whose cards carry no links) mid-case.
     vi.mocked(getBoard).mockResolvedValue(board);
     useTasks.setState({ boardsBySpace: { [SPACE]: board } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
 
     // The chip renders from the board's OWN card view — the board passes
     // `sessions` and `costUsd` through rather than re-deriving them (the cost is
@@ -967,7 +1009,7 @@ describe("TasksBoard — opening a card (PR #178)", () => {
     // The board owns the modal's open flag and the id it names, exactly as it owns
     // the New Task modal's flag: the columns the modal needs are already here.
     seedLinkedBoard();
-    render(<TasksBoard activeSpacePath={SPACE} onReturnToWorkspace={vi.fn()} />);
+    render(<TasksBoard onReturnToWorkspace={vi.fn()} />);
     expect(screen.queryByRole("dialog")).toBeNull();
     // Clicked through the COLUMN, because the modal renders the same title text the
     // card does — an unscoped `getByText("Card 1")` would be a multiple-match throw
@@ -991,7 +1033,7 @@ describe("TasksBoard — opening a card (PR #178)", () => {
     ];
     vi.mocked(getBoard).mockResolvedValue(board);
     useTasks.setState({ boardsBySpace: { [SPACE]: board } });
-    render(<TasksBoard activeSpacePath={SPACE} onReturnToWorkspace={vi.fn()} />);
+    render(<TasksBoard onReturnToWorkspace={vi.fn()} />);
     fireEvent.click(cardIn("backlog", 1));
     const dialogs = screen.getAllByRole("dialog");
     expect(dialogs).toHaveLength(1);
@@ -1000,7 +1042,7 @@ describe("TasksBoard — opening a card (PR #178)", () => {
 
   it("closing the modal leaves the board", async () => {
     seedLinkedBoard();
-    render(<TasksBoard activeSpacePath={SPACE} onReturnToWorkspace={vi.fn()} />);
+    render(<TasksBoard onReturnToWorkspace={vi.fn()} />);
     fireEvent.click(cardIn("backlog", 0));
     expect(screen.getByRole("dialog")).toBeTruthy();
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
@@ -1014,9 +1056,7 @@ describe("TasksBoard — opening a card (PR #178)", () => {
     // because moving the flag to `App` for convenience would put a Task dialog over
     // the Settings page, where the card it names is not even visible.
     seedLinkedBoard();
-    const { unmount } = render(
-      <TasksBoard activeSpacePath={SPACE} onReturnToWorkspace={vi.fn()} />,
-    );
+    const { unmount } = render(<TasksBoard onReturnToWorkspace={vi.fn()} />);
     fireEvent.click(cardIn("backlog", 0));
     expect(screen.getByRole("dialog")).toBeTruthy();
     unmount();
@@ -1033,12 +1073,7 @@ describe("TasksBoard — opening a card (PR #178)", () => {
     useSessions.setState({ openSession });
     const onReturnToWorkspace = vi.fn();
     seedLinkedBoard();
-    render(
-      <TasksBoard
-        activeSpacePath={SPACE}
-        onReturnToWorkspace={onReturnToWorkspace}
-      />,
-    );
+    render(<TasksBoard onReturnToWorkspace={onReturnToWorkspace} />);
     fireEvent.click(screen.getByText("1 session · $0.50"));
     expect(openSession).toHaveBeenCalledWith("sess_1");
     expect(onReturnToWorkspace).toHaveBeenCalledTimes(1);
@@ -1076,12 +1111,7 @@ describe("TasksBoard — opening a card (PR #178)", () => {
     clearSkillCatalogCache();
     const onReturnToWorkspace = vi.fn();
     seedLinkedBoard();
-    render(
-      <TasksBoard
-        activeSpacePath={SPACE}
-        onReturnToWorkspace={onReturnToWorkspace}
-      />,
-    );
+    render(<TasksBoard onReturnToWorkspace={onReturnToWorkspace} />);
     fireEvent.click(cardIn("backlog", 0));
     // Wait for ENABLED, not merely for the button to exist: each button is gated on
     // the skill it needs, and the catalog is an async fetch that starts empty. Clicking
@@ -1104,12 +1134,7 @@ describe("TasksBoard — opening a card (PR #178)", () => {
     // same `openSession`.
     const onReturnToWorkspace = vi.fn();
     seedLinkedBoard();
-    render(
-      <TasksBoard
-        activeSpacePath={SPACE}
-        onReturnToWorkspace={onReturnToWorkspace}
-      />,
-    );
+    render(<TasksBoard onReturnToWorkspace={onReturnToWorkspace} />);
     fireEvent.click(cardIn("backlog", 0));
     fireEvent.click(within(screen.getByRole("dialog")).getByTestId("task-session-row"));
     expect(onReturnToWorkspace).toHaveBeenCalledTimes(1);
@@ -1122,7 +1147,7 @@ describe("TasksBoard — the Stage editor's render site (T3)", () => {
   // board owns the open flag; what the editor does inside its rows is
   // `StageEditor.test.tsx`'s subject, and nothing here re-pins it.
   it("the header carries a Configure affordance beside New task", () => {
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     expect(screen.getByRole("button", { name: "Configure" })).toBeTruthy();
     // Beside, and AFTER. The header band is one flex row (`<header>` inside the
     // board's `<section>` — note it carries NO `banner` role, because a `<header>`
@@ -1135,7 +1160,10 @@ describe("TasksBoard — the Stage editor's render site (T3)", () => {
   });
 
   it("Configure is disabled with no active Space (there is no board to configure)", () => {
-    render(<TasksBoard activeSpacePath={null} />);
+    // No Space selected at all — there is genuinely no board to configure here, so
+    // the affordance is dead rather than opening a dialog that cannot write.
+    useSessions.setState({ activeSpacePath: null });
+    render(<TasksBoard />);
     const button = screen.getByRole("button", {
       name: "Configure",
     }) as HTMLButtonElement;
@@ -1150,7 +1178,7 @@ describe("TasksBoard — the Stage editor's render site (T3)", () => {
 
   it("clicking Configure opens the Stage editor over the board", async () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     expect(screen.queryByRole("dialog")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Configure" }));
@@ -1172,7 +1200,7 @@ describe("TasksBoard — the Stage editor's render site (T3)", () => {
 
   it("closing the editor leaves the board (the flag has one owner)", async () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     fireEvent.click(screen.getByRole("button", { name: "Configure" }));
     await screen.findByRole("dialog");
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
@@ -1184,7 +1212,7 @@ describe("TasksBoard — the Stage editor's render site (T3)", () => {
 
   it("the editor is mounted only while open (a closed editor is an idle catalog read)", async () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard activeSpacePath={SPACE} />);
+    render(<TasksBoard />);
     // The Strict flag read happens on the editor's mount, so its call count IS the
     // mount count: a dialog that stayed mounted while closed would keep re-reading
     // the flag and keep a form alive behind the board, exactly the idle-surface
