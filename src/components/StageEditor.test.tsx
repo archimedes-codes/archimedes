@@ -325,9 +325,12 @@ const stageOf = (slug: string): StageRow | undefined =>
 describe("StageEditor — the dialog's shape", () => {
   it("renders nothing without a Space (there is no board to configure)", () => {
     renderEditor(null);
-    // The board's `Configure` control is disabled in this state, so this is the
-    // second half of that rule rather than a live path — but a dialog that mounted
-    // with no Space would be calling `get_board(null)` behind the disabled button.
+    // The state this models is NO Space open at all — the board's `Configure`
+    // control is disabled in that state (it is enabled for a Space with zero
+    // Sessions ever since issue #185 made the board read the Selected Space), so
+    // this is the second half of that rule rather than a live path — but a dialog
+    // that mounted with no Space would be calling `get_board(null)` behind the
+    // disabled button.
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 

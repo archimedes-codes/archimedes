@@ -1,7 +1,7 @@
 ---
 status: live
-last-verified: 2026-11-11
-verified-by: re-measured at the tip of the task-board-and-artifacts run (a docs-only commit — this edit touches no code, so no test can show it). `grep -rln "TaskStore" src-tauri/src` gives **4 files** and `storage/db.rs` carries `impl TaskStore for Db`, the published `fulcrum-harness-0.2.0` extract gives **8** and `fulcrum-harness-0.1.0` still gives 0. An `awk` over `pub fn tool_specs` in the published 0.2.0 counts **26** specs of which **7** are the task verbs and the same `awk` on 0.1.0 counts **19**. `grep -rn "on_enter ==" src-tauri/src src` gives **exactly 1** hit and it is `commands/tasks.rs`'s `"compact"` arm, and `grep -rn "UPDATE stages SET on_enter = " src-tauri/src` gives **2** hits both inside `storage/db/tests/mod.rs`. `grep -rn "DELETE FROM tasks" src-tauri/src` gives **2** lines, one the test and one a prose comment, so §1 stays latent. `grep -c "tauri::command" src-tauri/src/commands/tasks.rs` gives **18**. The daemon refusal is the single production `task-unsupported` frame arm in the fulcrum member's `serve.rs`. `npx vitest run src/lib/subagentSheetLayout.test.ts` gives **4 passed** and that file reads the BODY of `subagent-sessions.md`, so it is not evidence about this edit — the commands quoted here are. Sections 1 4 5 and 6 were re-opened and read rather than trusted — sections 5 and 6 were FALSE about this tree and section 1 carried a stale hit-count. Kept to one line and free of interior colons so this front-matter parses as strict YAML, which nine other files in this directory do not.
+last-verified: 2026-11-13
+verified-by: re-measured at the tip of the task-board-selected-space run (a docs-and-comments commit — the only code edits are comment text in `src/components/SessionConfigBlock.tsx`, `src/hooks/useActiveSpaceCwd.ts`, `src/components/StageEditor.test.tsx` and `src/store/sessions.ts`, so no test can show them). New for §7 — `grep -rn "useActiveSpaceCwd()" src/App.tsx src/components/ChatStream.tsx` gives **2** (the two production consumers and no third), `grep -rn "activeSpacePath=" src/App.tsx` gives **0** (the board's prop is gone) and `grep -c "useSessions((s) => s.activeSpacePath)" src/components/TasksBoard.tsx` gives **1**, `grep -rn "the board is only reachable while a Session IS active" src/` gives **0**, `grep -n "stored/paused banner" src/store/sessions.ts` gives **0**, `grep -n "disabled={activeSpacePath === null}" src/components/TasksBoard.tsx` gives **2** (so `New task` and `Configure` now gate on NO Space open rather than on no active Session), and `npx vitest run src/components/SessionConfigBlock.test.tsx src/components/StageEditor.test.tsx` gives **49 passed** with `pnpm build` green. Carried claims re-checked — `grep -rn "on_enter ==" src-tauri/src src` still gives **exactly 1** hit and it is `commands/tasks.rs`'s "compact" arm, `grep -rn "UPDATE stages SET on_enter = " src-tauri/src` still gives **2** hits both inside `storage/db/tests/mod.rs`, `grep -rn "DELETE FROM tasks" src-tauri/src` still gives **2** lines (one test and one prose comment) so §1 stays latent, and `grep -c "tauri::command" src-tauri/src/commands/tasks.rs` still gives **18**. ONE carried claim was FALSE and is corrected in §2 — `grep -rln "TaskStore" src-tauri/src` gives **5 files** and not 4, and it gave 5 at the commit that wrote 4. §5's seed sites were re-read rather than executed — `seed_default_stages` runs inside `get_board` before the stage SELECT and again inside `create_task`. Rust read, not executed; `cargo test` and `cargo clippy` deliberately not run here. Kept to one line and free of interior colons so this front-matter parses as strict YAML, which seven other files in this directory do not.
 ---
 
 # Task board — known gaps
@@ -66,6 +66,12 @@ assumed:
 - `grep -rln "TaskStore" src-tauri/src` → **4 files**, and `storage/db.rs` carries
   `impl TaskStore for Db`. The published crate tells the same story: the same grep over the
   `fulcrum-harness-0.2.0` extract gives **8** files, over `fulcrum-harness-0.1.0` it gives **0**.
+  **Corrected 2026-11-12 — the desktop count is 5, not 4, and it was 5 the day this line was
+  written.** The two extra files are `agent/errors.rs` (a prose comment naming the `TaskStore`
+  backstop, from the D2 fix) and `commands/tasks/tests/artifacts.rs`; `agent/session/router.rs` was
+  already in the count. The number is a byproduct of the claim and not the claim — `storage/db.rs`
+  carrying `impl TaskStore for Db` is the load-bearing half, and it still holds — but this file's
+  whole value is that its numbers are measured, so the number is fixed rather than re-explained.
 - An `awk` over `pub fn tool_specs` in the published 0.2.0 counts **26** specs, **7** of them the
   task verbs; the same `awk` on 0.1.0 counts **19**. `tool_specs_advertises_twenty_six_tools` pins
   that number in the crate and says out loud that its two sibling censuses are SUBSET-shaped and
@@ -287,3 +293,46 @@ in `slabFloatSeparation.test.ts` counts literals, not chips, and a new chip move
 exactly one. Do not confuse a **Task artifact** with the attachments this section still lacks: an
 artifact is markdown a Session wrote, in `task_artifacts`, and it is NOT a file, has no table
 linking it to a Task's composer payload, and does not close this gap.
+
+## 7. What the Selected-Space fix settled, and the three things it left on purpose
+
+**Added 2026-11-12 with ADR 0106 (issue #185).** The board used to be handed the ACTIVE
+**Session**'s `cwd` under a prop named `activeSpacePath`, so a Space with zero active Sessions —
+every Session archived, the last one deleted, a tab clicked that owns no live Session — rendered
+"No Space is open" while the **Session list** beside it named that same folder and counted its
+archived rows. `TasksBoard` now reads `useSessions((s) => s.activeSpacePath)` itself and takes no
+Space prop at all, so the substitution cannot be re-made at a call site.
+
+**Settled.** The board answers for the **Selected Space**: lanes, cards, `New task` and `Configure`
+are live for a Space with no Session running in it, and the launch-pill gate and `store/taskLaunch`'s
+refusal can no longer say "This Space has no `x` skill to load" about the Space the user selected
+while reading the **user-level** catalog under the `__global__` cache key. That second half is the
+part most likely to be mistaken for a cosmetic change — the wrong key produced a confident,
+well-formed *false claim about the Space*, not merely missing data. The same key change also stops
+the catalog cache from being evicted on every session ↔ session-less flip.
+
+Note the knock-on for §2's third item. `store/tasks.ts`'s `load` still has exactly one call site,
+`TasksBoard`'s mount effect — but the value it is keyed on is now the **Selected Space** rather than a
+Session projection, so the repaint boundary moved with it: a model-written card appears when the
+Selected Space changes, and the board now mounts and loads in states where it used to early-return.
+The gap itself (nothing subscribes to a task tool's result) is unchanged.
+
+**Left, deliberately.** Three things, none of them an oversight:
+
+- **A session-less Space still cannot serve a relative-path External open.** `SpaceCwdProvider` in
+  `src/App.tsx` is fed `useActiveSpaceCwd()`, and that is by design: a relative path in a transcript
+  is a path in the folder *that transcript was written in*, so re-keying the provider on the Selected
+  Space would resolve a Session's paths against a folder that never produced them — a wrong path that
+  still opens something, which is worse than `external_open`'s refusal. `useSpaceCwd()` returns `null`
+  rather than throwing, and `App.tsx` says so above the provider — "the safe direction, but a dead
+  surface". `useActiveSpaceCwd()` has exactly two production consumers today (`App.tsx` and
+  `ChatStream.tsx`) and its header states that two is the contract, not a head-count.
+- **`SidePane` still renders nothing with no active Session** — no title element at all, an empty
+  `SessionCostLine`, no `ChecklistPanel`, and the Model stub in the config block. It is keyed on a
+  **Session** and should be, and while the board is up the board's arm of `App`'s view ternary
+  replaces the chat column AND the Side pane, so nothing on screen in the reported state.
+- **Opening the board for a Space with zero Sessions is a WRITE.** `get_board` seeds stages on read
+  (ADR 0090, and §5 above for the shape of that seed), so a read path now creates rows where it used
+  to refuse — the intended consequence of "a Space that never opens the board pays nothing", recorded
+  because it is surprising and because it widens *who reaches* the seed to a Space that has never had
+  a Session in it.
