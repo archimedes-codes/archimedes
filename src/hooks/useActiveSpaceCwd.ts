@@ -16,6 +16,14 @@ import { sessionFieldOf } from "../lib/sessionLookup";
  * consumer re-deriving it is how the two silently disagree, so the rule is one
  * module, not one selector per component.
  *
+ * The NEAR-MISS this note exists for: a third surface was at one point fed this
+ * value because its prop carried the same name as the store's Selected-Space
+ * field (`TasksBoard`'s `activeSpacePath`, issue #185) — and every surface whose
+ * data is keyed on a **Space** must read `useSessions((s) => s.activeSpacePath)`
+ * instead, because this value is `null` whenever no Session is active and a
+ * **Space** can be selected with zero Sessions (ADR 0106). Two consumers is the
+ * contract, not just the current head-count.
+ *
  * The WALK itself (live → stored → archived, live winning over a stored row with
  * the same id, and BOTH stored lists covered) belongs to
  * `lib/sessionLookup.ts` now — the same rule five other call sites needed. It

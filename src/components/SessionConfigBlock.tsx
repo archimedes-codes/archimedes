@@ -161,12 +161,19 @@ export default function SessionConfigBlock({
    *  WHY `null` IS NOT THE DEFAULT. `sessionId ?? activeSessionId` — the obvious
    *  reading of "defaults to the active session" — makes `null` mean "use the
    *  global one", and inside the modal that is the exact hazard this prop exists
-   *  to remove: the board is only reachable while a Session IS active (the
-   *  board's own Space is `useActiveSpaceCwd()`, i.e. derived from
-   *  `activeSessionId`), so a pre-send footer written with `??` would print and
-   *  WRITE the workspace Session's model while the user picks a model for a Task
-   *  that has no Session yet. Omission and `null` therefore mean different
-   *  things. Pinned in `SessionConfigBlock.test.tsx` in both directions — read
+   *  to remove. The board IS reachable with no active Session (issue #185 — the
+   *  `Tasks` door has carried no `disabled` and no Session guard on any commit
+   *  since ADR 0095 moved it into the Session list; only the board's own
+   *  inertness made it look unreachable, and ADR 0106 is what made it answer),
+   *  and even before that the premise was the wrong one to lean on:
+   *  `activeSessionId` is a workspace-wide field, so it can name a Session in a
+   *  DIFFERENT **Space** from the one the board is showing — a Task board is
+   *  per-Space and reads the **Selected Space** (ADR 0106), while the Session the
+   *  workspace last opened lives wherever its own `cwd` says. A pre-send footer
+   *  written with `??` would therefore print and WRITE some other Session's
+   *  model while the user picks a model for a Task that has no Session yet.
+   *  Omission and `null` therefore mean different things. Pinned in
+   *  `SessionConfigBlock.test.tsx` in both directions — read
    *  and WRITE — because a picker that reads the right Session but writes the
    *  wrong one is the half that loses data. */
   sessionId?: string | null;

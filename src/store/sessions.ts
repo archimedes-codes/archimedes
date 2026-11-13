@@ -2493,9 +2493,15 @@ export const useSessions = create<SessionsState>((set, get) => ({
         // figure is refreshed (see the note above).
         archivedSessions,
         // A close is a PAUSE, not a discard: the conversation moves to the
-        // history list but STAYS the displayed one, so `ChatStream` renders
-        // its stored/paused banner instead of the `No active session` empty
-        // state. (Required for the Task 6 `Pause` behavior.)
+        // history list but STAYS the displayed one, so `ChatStream` keeps
+        // rendering that Session's transcript and composer. There is NO banner
+        // component for a stored Session — the only banner `ChatStream` mounts
+        // is `SessionStalledBanner` (a dead Worker), and the `isHistoryOnly`
+        // derivation that once gated one here "had no consumer left in this
+        // component". So a closing Session leaves the transcript on screen in its
+        // stored state and the first send resumes it; the `No active session`
+        // empty belongs to a DIFFERENT state (nothing active at all), and is not
+        // what a close lands on. (Origination: the Task 6 `Pause` behavior.)
         activeSessionId: state.activeSessionId,
         // Merge-only: a close reason outlives its event (never delete keys).
         closeReasons: { ...state.closeReasons, [sessionId]: reason },
