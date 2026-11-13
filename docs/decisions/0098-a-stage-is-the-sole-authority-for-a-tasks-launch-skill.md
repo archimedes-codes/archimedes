@@ -1,7 +1,7 @@
 ---
 status: accepted
 date: 2026-11-10
-superseded-by:
+superseded-by: 0107-a-deleted-skill-is-a-breaking-change-against-every-stage-that-names-it.md
 ---
 
 # A **Stage** is the sole authority for a **Task**'s launch skill, and `on_enter_skill` is a second column beside `on_enter`
