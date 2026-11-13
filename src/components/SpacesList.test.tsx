@@ -1009,15 +1009,43 @@ describe("SpacesList (archive, ADR 0016)", () => {
     // …and its row is ALREADY rendered — no `fireEvent.click(getByText("Archived"))`
     // between the render and this line, which is the whole claim.
     expect(screen.getByText(/^Archive the logs/)).toBeTruthy();
-    // THE OTHER HALF OF THE DECISION: opening is the INITIAL value, not a lock.
+    // THE OTHER HALF OF THE DECISION: opening is the DERIVED default, not a lock.
     // The user can still collapse the section by hand and it stays collapsed —
-    // which is what the lazy initialiser (rather than a derived value) buys.
+    // which is what `userChoice` (the explicit click, once made, outranks the
+    // derivation for this mount) buys.
     fireEvent.click(screen.getByText("Archived"));
     expect(screen.queryByText(/^Archive the logs/)).toBeNull();
   });
 
+  it("the Archived section opens when the Landing Session ARRIVES after mount (the boot order)", () => {
+    // THE ORDER IS THE WHOLE TEST. The case above seeds the active archived row
+    // BEFORE `render`, which is the OPPOSITE of what the app does, and a rule
+    // pinned only that way passes while being dead in the shipped app.
+    //
+    // `src/main.tsx` renders `<App />` with no boot gate and `SpacesList` mounts
+    // on the FIRST frame; boot's `Promise.all([listSessions(true), listSpaces(),
+    // sessionRecency()]).then(… setSpaces …)` is what runs `autoSelectActive` and
+    // lands `activeSessionId` on the archived row — strictly LATER. `ArchivedSection`
+    // is mounted unconditionally and unkeyed in the permanent sidebar (ADR
+    // 0094/0095), so a mount-time initialiser reads `activeSessionId === null`
+    // here and can never see the row that arrives. Same for the tab-click route:
+    // the component is mounted long before `selectSpace` sets the id.
+    //
+    // So: render FIRST with nothing active (the first frame), THEN land on the
+    // archived row (what `setSpaces` does). The row must appear without a click.
+    render(<SpacesList />);
+    expect(screen.queryByText(/^Archive the logs/)).toBeNull();
+    act(() => {
+      seedArchived("a1", {
+        active: true,
+        messages: { text: "Archive the logs", at: Date.now() - 3_600_000 },
+      });
+    });
+    expect(screen.getByText(/^Archive the logs/)).toBeTruthy();
+  });
+
   it("the Archived section stays collapsed by default when the active Session is elsewhere", () => {
-    // The other arm, and the one that keeps the initialiser honest: the section
+    // The other arm, and the one that keeps the derivation honest: the section
     // opens for the row ON SCREEN, not whenever archived rows exist. Here the
     // active Session is the fixture's LIVE `s1`, so the predicate is false at
     // mount and the archived row is hidden until the header is clicked — exactly

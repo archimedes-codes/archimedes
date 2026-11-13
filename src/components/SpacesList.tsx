@@ -934,7 +934,7 @@ function SessionRow({
  * The **active Space's** Archived section: the archived rows whose `cwd` is the
  * selected Space, rendered AFTER that Space's groups and scrolling with the
  * list. COLLAPSED by default — EXCEPT when it holds the active Session, in which
- * case it mounts open (see the `useState` below); the header (icon + "Archived" +
+ * case it is open (see the derived `open` below); the header (icon + "Archived" +
  * count + chevron) toggles it either way. The count is the SAME array the rows
  * render, so it is the Space's count and never the app-wide total.
  *
@@ -986,32 +986,51 @@ function ArchivedSection({
   const visible = archivedInSpace(activeSpacePath, archived, sessions, {
     recency: sessionRecency,
   });
-  // Collapsed by default, because the section is secondary. The initialiser is
-  // LAZY: React reads the initial value on the FIRST render only and discards
-  // whatever later renders hand it, so the lazy form is the one that says what is
-  // happening — an eager `visible.some(…)` would recompute on every re-render of
-  // the section (and it re-renders on any `sessions` / `archivedSessions` /
-  // recency change) only to throw the answer away. (Measured: the eager form
-  // passes this file's 70 cases too, because it is discarded rather than wrong —
-  // the two forms differ in wasted work, not in behaviour. The lazy form is also
-  // the one that cannot be turned into a derived value by the next editor, which
-  // is the shape that WOULD break the manual collapse.)
+  // Collapsed by default, because the section is secondary — with ONE exception
+  // that decides the whole shape: the Landing Session can now be an ARCHIVED one
+  // (ADR 0075's amendment), and `activeView.sessionIds` is `mergeSessionOrder`'s
+  // output, which by construction never contains an archived id — so the Space
+  // group can never carry the highlight and THIS section is the only place that
+  // row lives. Left collapsed, the app would boot with a transcript on screen and
+  // nothing in the sidebar pointing at it. Opening the section does not select
+  // anything: it reveals the row that is already selected.
   //
-  // The one exception, and the reason this is not a bare `useState(false)`: the
-  // Landing Session can now be an ARCHIVED one (ADR 0075's amendment), and
-  // `activeView.sessionIds` is `mergeSessionOrder`'s output, which by
-  // construction never contains an archived id — so the Space group can never
-  // carry the highlight and THIS section is the only place that row lives. Left
-  // collapsed, the app would boot with a transcript on screen and nothing in the
-  // sidebar pointing at it. Opening the section does not select anything: it
-  // reveals the row that is already selected.
-  const [open, setOpen] = useState(() =>
-    visible.some((s) => s.sessionId === activeSessionId),
-  );
+  // DERIVED, not seeded at mount. The rule is the controlled/uncontrolled split:
+  // the user's own click, once made, is final for this mount; until then the
+  // section is open exactly when it holds the row that is actually on screen.
+  //
+  // Why the initialiser-only form (this file's previous shape) was inert in the
+  // shipped app — THE BOOT ORDER, which is the finding: `src/main.tsx` renders
+  // `<App />` with no boot gate, so `SpacesList` — and this section — mounts on
+  // the FIRST frame, while boot's
+  // `Promise.all([listSessions(true), listSpaces(), sessionRecency()]).then(… setSpaces …)`
+  // is what runs `autoSelectActive` and lands `activeSessionId` on the archived
+  // row strictly LATER. This component is mounted unconditionally and UNKEYED in
+  // the permanent sidebar (ADR 0094/0095), so a lazy initialiser ran exactly once
+  // against `activeSessionId === null`, computed `false`, and never recomputed —
+  // collapsed on boot in precisely the state the rule exists to serve. The tab-
+  // click route failed the same way: the section is mounted long before
+  // `selectSpace` sets the id. A test that seeded the active row BEFORE `render`
+  // could not see this, which is exactly why the pin now renders first and lands
+  // the Session after.
+  //
+  // No effect is needed and none is wanted: `holdsActiveRow` is a boolean
+  // PRIMITIVE, so this compares a value, not an identity. Do NOT put `visible` in
+  // a dependency list — `archivedInSpace` returns a fresh array every render, so
+  // an effect keyed on it churns (and an effect that sets state is the shape that
+  // risks a render loop).
+  //
+  // `userChoice === null` means "untouched": open iff this section holds the
+  // active row. A hand-collapsed section therefore STAYS collapsed even if the
+  // active row later leaves it, and a hand-opened one stays open — the user's
+  // click outranks the derivation for the rest of this mount.
+  const [userChoice, setUserChoice] = useState<boolean | null>(null);
+  const holdsActiveRow = visible.some((s) => s.sessionId === activeSessionId);
+  const open = userChoice ?? holdsActiveRow;
   return (
     <div className="px-2.5 py-1">
       <RowButton
-        onClick={() => setOpen(!open)}
+        onClick={() => setUserChoice(!open)}
         className="group flex cursor-pointer items-center gap-1 rounded-lg px-1 hover:bg-surface-hover"
       >
         <ArchiveIcon className="size-4 shrink-0 text-foreground-subtlest" />
