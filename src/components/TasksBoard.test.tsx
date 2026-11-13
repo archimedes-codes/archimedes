@@ -389,7 +389,7 @@ describe("TasksBoard — what it draws from the store", () => {
     );
   });
 
-  it("renders nothing but the header when there is no active Space", () => {
+  it("renders nothing but the header when there is no Selected Space", () => {
     // `activeSpacePath` is `null` only when NO Space is selected at all — no Space
     // has ever been opened, or the last tab was closed (`setSpaces` with no rows,
     // `removeSpace` on the last tab). The board arm is reachable from the sidebar
@@ -638,7 +638,7 @@ describe("TasksBoard — the New Task modal's render site (A5)", () => {
     expect(screen.getByRole("button", { name: "New task" })).toBeTruthy();
   });
 
-  it("the affordance is disabled with no active Space (createTask(null, …) is not a thing)", () => {
+  it("the affordance is disabled with no Selected Space (createTask(null, …) is not a thing)", () => {
     // No Space selected at all (see the header case above) — the one state where the
     // creation affordance has nowhere to file a Task.
     useSessions.setState({ activeSpacePath: null });
@@ -1159,7 +1159,7 @@ describe("TasksBoard — the Stage editor's render site (T3)", () => {
     ).toEqual(["New task", "Configure"]);
   });
 
-  it("Configure is disabled with no active Space (there is no board to configure)", () => {
+  it("Configure is disabled with no Selected Space (there is no board to configure)", () => {
     // No Space selected at all — there is genuinely no board to configure here, so
     // the affordance is dead rather than opening a dialog that cannot write.
     useSessions.setState({ activeSpacePath: null });

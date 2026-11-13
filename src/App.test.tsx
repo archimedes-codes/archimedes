@@ -2785,12 +2785,38 @@ describe("App (the Task board view)", () => {
       await Promise.resolve();
     });
     expect(screen.getByTestId("tasks-board")).toBeTruthy();
+    // The COUNT, not just the arg — the same strengthening the "no stages" case
+    // above got for the same reason: `toHaveBeenCalledWith` alone stays green
+    // through a double-fetch (the cache-key thrash `useCatalogRow` is exposed
+    // to), and a count-less pin is how the vacuous version of this case hid.
+    // Measured: exactly 1 (the board's single mount fetch for the Selected
+    // Space) — no double-fetch here. `getBoard` is `mockClear`ed in this
+    // describe's `beforeEach`, so the count is this case's alone.
+    expect(getBoard).toHaveBeenCalledTimes(1);
     expect(getBoard).toHaveBeenCalledWith("/tmp/alpha");
     // Back to the empty-boot shape. The three `Once` arms need no re-arm — a
     // consumed `Once` falls back to the factory default on its own, which is why
     // every other `Once` user in this file leaves them alone; what does survive is
     // the SELECTED Space and the archived `activeSessionId`, and those are the
     // store's, so the store is what gets cleared (see `clearStoreForBoot`).
-    clearStoreForBoot();
+    //
+    // BOTH HALVES OF THE TEARDOWN ARE `act`-wrapped, AND THAT IS NOT CEREMONY.
+    // The bare `setState` inside `clearStoreForBoot` lands on still-mounted
+    // subscribers (`SpaceTabs`, `ArchivedSection`, `SpacesList`, `App`,
+    // `SubagentModals`, `TasksBoard`) outside any `act`, which is the shape React
+    // warns about — measured: 28 "not wrapped in act" lines for this case alone
+    // with a bare teardown, 0 with both wraps. The second `await act` is the one
+    // that catches the LATE half: clearing the selection changes the catalog
+    // hooks' key, `useCatalogRow` fires a fresh fetch, and its `.then` settles
+    // into a `setState` a tick later — a post-`await` update outside `act`, i.e.
+    // exactly the async-leak family this repo already names three flakes of.
+    // Draining it inside `act` here keeps the leak inside the case that caused it
+    // instead of into whichever case runs next.
+    act(() => {
+      clearStoreForBoot();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
   });
 });

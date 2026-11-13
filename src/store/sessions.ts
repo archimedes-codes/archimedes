@@ -1262,8 +1262,11 @@ export const useSessions = create<SessionsState>((set, get) => ({
     if (!state.spaces.some((s) => s.path === path)) return;
     // Live first (the most-recently-started one — the one-live-cap-lifted
     // rule), then the most RECENT stored Session (ADR 0075 — NOT the first row
-    // of the Space's manual order), then nothing (an empty space → the chat's
-    // empty state). Both maps go in because this action reads state
+    // of the Space's manual order), then the most RECENT ARCHIVED Session
+    // (ADR 0075's `## Amendment (2026-11-12)`: an archived-only Space is not an
+    // empty Space), and only then nothing — which now means a Space with no
+    // row in ANY of the three lists, not merely no live/stored one (→ the
+    // chat's empty state). Both maps go in because this action reads state
     // imperatively: there is no subscription here, so none of the re-render
     // cost that keeps `messages` out of the sidebar's call site applies.
     const live = mostRecentLiveInSpace(state.sessions, path);

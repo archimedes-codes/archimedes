@@ -380,9 +380,10 @@ export default function TasksBoard({ onReturnToWorkspace }: TasksBoardProps) {
         {/* The creation affordance. It sits in the header rather than inside a
             column because a new Task is not a property of any one column — the
             modal files it in the FIRST stage, which is a board-level fact.
-            Disabled with no active Space: `createTask(null, …)` is not a thing,
-            and a dead button that opens a modal which cannot send is worse than
-            one that says nothing is open. */}
+            Disabled with no Selected Space — literally no Space open (a Space
+            with zero Sessions still enables this): `createTask(null, …)` is not
+            a thing, and a dead button that opens a modal which cannot send is
+            worse than one that says nothing is open. */}
         <Button
           type="button"
           variant="ghost"
@@ -399,7 +400,8 @@ export default function TasksBoard({ onReturnToWorkspace }: TasksBoardProps) {
             it: create first, configure second. Same ghost/idle-ink recipe as its
             neighbour so the two read as one pair of quiet header affordances rather
             than one primary action and one loud one, and the SAME disabled rule —
-            with no active Space there is no column set to edit, and a button that
+            with no Selected Space (literally no Space open) there is no column
+            set to edit, and a button that
             opens a dialog whose every write has no target is worse than one that
             says nothing is open.
 
