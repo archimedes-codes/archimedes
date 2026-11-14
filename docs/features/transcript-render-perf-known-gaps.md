@@ -18,6 +18,16 @@ verified-by: §1–§3 as originally recorded — each claim re-measured against
   before (`'no-preference'`) and restored after (re-verified). Caveat that bounds all of §4: **the measuring
   session runs inside the app it measures** — the agent `--worker`'s PPID is the host PID — so a genuinely idle
   app is not reachable from it, and both states are measured explicitly instead.
+  §5 recorded on the same date at the head of `feature/whole-window-jank`: every deferred item re-verified against
+  this tree rather than copied from the run that deferred it — `grep -rn 'wal_autocheckpoint' src-tauri/src` (one
+  hit, prose only), `grep -rn 'with_batched' --include=*.rs src-tauri` (the builder method plus `lib.rs`'s single
+  production call), `grep -n 'The mutator class is NOT eliminated in general' src/store/sessions.test.ts`,
+  `grep -n 'slice(0, 80)' src/components/SidePane.tsx`, `command -v perf` (absent),
+  `grep -rl 'prefers-reduced-motion' node_modules/tailwindcss/*.css` (nothing), and
+  `wc -l node_modules/tw-animate-css/dist/tw-animate.css` → 0 lines / 14,880 bytes with no `animate-spin` in it,
+  which is what corrects the `tw-animate-css:438` citation §4 already retracted. §5.6 also **refutes** the claim
+  that reached it: `resumeSession`'s reload re-reads `activeSessionId` after its only `await` and cannot populate
+  an off-screen `messages[id]`; the unguarded writers are the frame-driven ones.
 ---
 
 # Transcript render performance — known gaps
@@ -262,3 +272,169 @@ sqlite3 "file:$HOME/.local/share/archimedes/archimedes.db?mode=ro" "
   `d03c13cf`); the tag is dated Nov 11, the fixes Nov 14. **Nothing in this section tests the shipped fixes**, and
   the spinners the census predicts are still mounting on this machine. Re-running §4 against a build that contains
   Task 1 is the cheapest thing on the list and has not been done.
+
+## 5. What this branch deliberately did NOT fix
+
+Issue #155 landed six commits on `feature/whole-window-jank`, named here by what they did rather than by hash —
+the squash-orphan rule above says per-issue objects die with the branch: the tool-call **status-hydration split**
+(an unresolved persisted status now hydrates as `failed`), the **WAL / `busy_timeout` / `synchronous` pragmas**
+plus a batched message write, **releasing the transcript of a session the user has left** (and the
+**carried-label salvage** that forced, both in that one commit), the **pin that the ADR 0050 third mutator no
+longer duplicates** a hydrated card, **history and session-list reads moved off the tokio workers**, and the
+**`FulcrumPersistence` batching decorator**. What follows is the accepted-deferred list from that run — each item
+with the command or content anchor that locates it, so the next reader re-measures instead of trusting this
+prose. **Nothing here is a defect the branch missed; each was weighed and left.**
+
+### 1. `wal_autocheckpoint` is un-tuned, on purpose
+
+WAL does not only remove cost, it **introduces** a checkpoint cost that rollback-journal never had. The
+measurement that matters is the **81 ms `wal_checkpoint(TRUNCATE)` observed at 703 MB** during planning.
+
+Located by content in `src-tauri/src/storage/db.rs`, in the doc comment on the pragma setter — the comment ends
+*“Deliberately NOT here: `wal_autocheckpoint` … tuning the autocheckpoint blind against it would trade one stall
+for another with no measurement to say which is cheaper.”* Re-runnable:
+
+```bash
+grep -rn 'wal_autocheckpoint' src-tauri/src          # exactly ONE hit, and it is prose, not a pragma
+grep -n 'journal_mode\|synchronous\|busy_timeout' src-tauri/src/storage/db.rs | head
+```
+
+The three pragmas that DID ship are set in one function and read back (`journal_mode` refuses silently on some
+filesystems, so a `?` cannot see it). A fourth is a tuning decision with no data behind it, so it was not taken.
+
+### 2. `with_batched` on the builder is load-bearing and enforced by nothing but a comment
+
+`attach_db` deliberately does **not** build a second decorator when a persister is already installed — a second
+buffer nobody writes to would be what every flush point drains, while the real one filled up and was never
+drained. The consequence: **a future production caller that builds its own `TranscriptPersister` and hands it to
+`SessionManagerBuilder` silently gets no batching.** No compile error, no red test, just a slower app.
+
+```bash
+grep -n 'with_batched\|flush_batched\|fn attach_db' src-tauri/src/agent/session/mod.rs
+grep -rn 'with_batched' --include=*.rs src-tauri      # the builder method + lib.rs's ONE production call
+```
+
+The obligation is stated in `with_batched`'s own doc comment (“REQUIRED for batching to be reachable at all on
+this path … `lib.rs` does; the persister-shaped test call sites do not”). **Nothing enforces it** — no source
+lint, no boundary pin, no test names the missing-`with_batched` mistake. Note the related asymmetry while you
+are in there: `SessionManager::batched()` (the accessor) has **zero call sites** — the router reaches the
+decorator through `flush_batched` and the exit path through the `app.manage`d concrete `Arc`, so the accessor
+exists for tests that were never written against it.
+
+### 3. `insert_native_message` passes through unbatched — a deviation from the plan, kept deliberately
+
+The plan listed it among the writes to buffer. Batching it **reddens**
+`src-tauri/tests/ipc.rs::a_subagent_transcript_persists_as_a_hidden_ephemeral_row`, which reads
+`load_native_messages(child_id)` immediately after the crate emits `subagent-closed` — and nothing between a
+child's last frame and that emission is a flush point the desktop controls: `finish_subagent` emits
+`subagent-closed` on the sink directly, and the child's `Exited` (the router's other candidate) arrives only
+after the reap.
+
+```bash
+grep -n 'a_subagent_transcript_persists_as_a_hidden_ephemeral_row' src-tauri/tests/ipc.rs
+grep -n 'DEVIATION FROM THE PLAN' -A22 src-tauri/src/storage/batching.rs   # the method doc carries the analysis
+```
+
+Cost is negligible, and that is the honest second half of the argument: an `Insert` frame is one per transcript
+message (a handful per turn), **not** the ~60/sec `Display` flood the batching exists to absorb. Documented on
+the method in `src-tauri/src/storage/batching.rs`, and summarised in that module's “Why coalescing is legal
+here” header.
+
+### 4. `mergeDedupeKey` still carries `status`, so the ADR 0050 duplicate-card class is NOT eliminated
+
+`src/lib/transcript/identity.ts` builds a `tool-call` key as `tool-call|<id>|<title>|<status>` — content-
+inclusive by design. Task 1 made the **common** case collapse to one card by splitting the status mapper from
+the hydrate path (`rowToMessages` → `mapPersistedStatus` in `src/lib/transcript/reducer.ts` now maps an
+unresolved persisted status to `failed`, matching `finalizeSessionMessages`). But **a live card whose status
+disagrees with the hydrated row still duplicates.**
+
+```bash
+grep -n 'tool-call|' src/lib/transcript/identity.ts            # the key composition
+grep -n 'The mutator class is NOT eliminated in general' src/store/sessions.test.ts
+```
+
+That last grep is the point: **the residual gap is documented only in a test comment** — inside the `it(...)`
+that pins the collapsed single card (`collapses a tool card to ONE failed card when a session close finalizes it
+inside the load window`). Nothing outside that test file says the class survives. ADR 0050's rule (where
+identity cannot decide, KEEP the message) is untouched and is the reason a duplicate is the safe direction.
+
+### 5. `SidePane.tsx` re-implements the truncation inline instead of calling `titleFor`
+
+Every other labelling surface goes through the one rule; `SidePane` is the exception, so it is the one surface
+that does **not** inherit the carried-label salvage Task 5 added.
+
+```bash
+grep -rn 'titleFor(' src --include=*.tsx | grep -v '\.test\.'   # SessionsSection, SpaceTabs, SpacesList, TaskDetailDialog
+grep -n 'slice(0, 80)' src/components/SidePane.tsx src/lib/sessionTitle.ts   # the duplicate, + the helper it duplicates
+```
+
+`src/lib/sessionTitle.ts` exists precisely so `slice(0, 80)` has one owner, and its own doc comment names the
+risk (“a second copy … is how two surfaces start naming one Session differently”). **Still correct today**, and
+that is why it was left: `SidePane` reads `messages[activeSessionId]`, and the active session is live, so its
+transcript is never released — the arm it does not inherit is the arm it never needs. It is a divergence waiting
+for someone to make the pane render a non-active session.
+
+### 6. An off-screen `messages[id]` can still be populated — but NOT by the path this section first named
+
+The claim carried into this run was that `resumeSession`'s fire-and-forget reload could populate `messages[id]`
+for an id the user has navigated away from. **That is wrong, and it is worth recording as wrong because the
+opposite is the thing to check.** `resumeSession` re-reads `activeSessionId` after its only `await` and returns
+without touching `messages`, and the `set` that writes the transcript is reached synchronously from that guard:
+
+```bash
+# exactly ONE await between the guard and the write, in the resume reload:
+awk 'NR>=2250 && NR<=2390 && (/await /||/activeSessionId !== sessionId/||/messages: \{ \.\.\./)' src/store/sessions.ts
+```
+
+The paths that CAN write `messages` for an id nobody is looking at are the **frame-driven** ones, which carry no
+`activeSessionId` guard at all: `applySessionUpdate`/`applySessionUpdates`, `addUserMessage`, and
+`handleSessionClosed` — the last of which writes `finalizeSessionMessages(state.messages[id] ?? [])`, so a late
+`session-closed` **re-creates `messages[id] = []`** for a released id. This is known and already defended:
+`openSession`'s loaded test is a TWO-signal test (`history[id] !== undefined` AND a non-empty transcript) for
+exactly this reason, and its comment spells out that `[]` is truthy and defeats an absence guard. A live id is
+never evicted, so the frames themselves are ADR 0073's intended behaviour, not a leak. Left as-is: no observed
+cost, and the guard that would “fix” it is the one that already exists.
+
+### 7. The idle peg is still NOT named — see §4
+
+§4 is the record; it is not restated here. Two facts from it bound anything a future run can do:
+
+- **`perf` is not installed on this machine** (`command -v perf` → nothing; `gdb` is present and was deliberately
+  not used, because the measuring session is the user's live session). So nothing in §4 is perf-derived and the
+  planned `perf top` step never ran.
+- **There is no DevTools profile of a burst** — the one instrument that would settle the paint-path question —
+  because the running AppImage mounts **read-only** (`mount | grep archim` → `fuse.archimedes.appimage … ro`) and
+  ships no devtools feature. §4's “What could not be measured” carries the full list, including that the peg
+  cannot be provoked on demand.
+
+### 8. `prefers-reduced-motion` does not reach `animate-spin`, so §4's null does NOT exonerate the spinners
+
+The OS flag only turns off what a CSS rule tells it to. App CSS gates exactly two selectors —
+`.animated-gradient-text` and `.flip-in`, both in `src/styles/utilities.css` — and Tailwind ships **no reduced-motion
+rule for `animate-spin`**:
+
+```bash
+grep -rl 'prefers-reduced-motion' node_modules/tailwindcss/*.css   # prints NOTHING (theme/index/preflight/utilities)
+grep -n 'prefers-reduced-motion' src/styles/utilities.css          # exactly two blocks: .animated-gradient-text, .flip-in
+grep -n -- '--animate-spin' node_modules/tailwindcss/theme.css     # :438 — the definition, unguarded
+grep -rn 'animate-spin' src --include=*.tsx | grep -v '\.test\.'   # 3 non-test uses
+grep -rn 'motion-reduce' src --include=*.tsx | grep -v '\.test\.'  # also NOTHING — no per-use guard either
+```
+
+Do not be thrown by `grep -rl` over the whole package, which does hit `dist/lib.js` and `dist/lib.mjs`: those are
+Tailwind's `motion-safe` / `motion-reduce` **variant definitions** — machinery that lets an author *opt in* — not a
+rule that switches any animation off. Neither the `animate-spin` utility nor any of the three call sites uses that
+variant, so the flag genuinely never reaches them.
+
+The three mounted spinners are `src/components/ui/spinner.tsx`, `src/components/SubagentStatusIcon.tsx` and
+`src/components/SessionStatusMark.tsx`. **Cite `tailwindcss/theme.css` for the definition.** The citation that
+circulated earlier in this issue — `tw-animate-css/dist/tw-animate.css:438` — is **wrong**, and `tw-animate-css`
+is the wrong package too: that file is 14,880 bytes on **one** line (`wc -l` → 0 newlines) and contains neither
+`animate-spin` nor `--animate-spin` nor `reduced-motion` (its only `spin` substrings are the unrelated
+`spin-in`/`spin-out` enter/exit utilities). `tw-animate-css` IS imported by `src/index.css`, so the correction is
+about the location of the rule, not about whether the package is in play.
+
+Consequence, restated because it is the part that changes a conclusion: §4's reduced-motion A/B was **null**, and
+that null covers the two selectors the flag reaches. The census-mounted spinners were never switched off during
+it, so they remain live candidates — with Task 1's status hydration now mapping an unresolved persisted status
+to `failed`, the mount count should fall, but §4 measured a **v0.13.0** build that contains none of these fixes.

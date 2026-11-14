@@ -786,6 +786,84 @@ These are properties of the repo, not of any branch:
   step gets — this test passes with OR without `closed_stdin`."* So its pass/fail depends on the
   inherited handle, and the behaviour proof lives in the `execute_tool` test that re-execs the
   binary with a real pipe. Re-run before investigating.
+- **`src-tauri/tests/provider_gcloud_adc.rs` flakes under concurrent load, is not named in this
+  file, and needs an owner — not a drive-by fix.** Two of its tests intermittently fail with
+  `left: None` where an ADC-minted bearer was expected: `env_override_beats_the_provider_flag`
+  (`assertion \`left == right\` failed: an unrecognised env value defers to the provider flag`,
+  `right: Some("ya29.env-token")`) and `resolve_bearer_serves_the_minted_adc_token` (`the ADC token
+  is the effective bearer`, `right: Some("ya29.arm-token")`). **Three observations on 2026-11-14,
+  two distinct tests.** The run logs were in `/tmp` and are ephemeral, so per the squash-orphan rule
+  above the quoted assertions are the durable handle, not the paths or the lines. Match on the test
+  NAME: the file is byte-identical to `main` (below), which is why both
+  `resolve_bearer_serves_the_minted_adc_token` panics landed on the same `provider_gcloud_adc.rs:337`
+  — the line is not evidence of anything and it moves the moment the file is edited.
+  **Pre-existing, not this branch's, and no storage change can reach it.** `git log main..HEAD --
+  src-tauri/tests/provider_gcloud_adc.rs` prints nothing and `git diff --stat main...HEAD --` that
+  same path prints nothing — identical to `main` — and the file has zero database contact:
+  `grep -cE 'Db::open|rusqlite|Connection' src-tauri/tests/provider_gcloud_adc.rs` → **0** (and
+  case-insensitive `sqlite` and `\bDb\b`: also 0). So do not go hunting for a storage fix here.
+  **The load signature is a correlation, not a discriminator — and it is refuted once.** The box is
+  8 cores (`nproc`). All three failures overlap a `vitest` run: `w1b-cargo.log` was last written
+  16:01:14 while its `w1b-pnpm.log` reports `Start at 16:01:04` for a 130 s run, so cargo's tail —
+  `provider_gcloud_adc` is that run's LAST target — executed inside the vitest window; `w2b` has the
+  same shape (cargo ends 17:46:28, a vitest ends 17:48:28, though that log is a 226-byte tail with no
+  `Start at`, so only the end is proven); the third (14:55:50) overlaps a vitest in a SIBLING
+  worktree (`RUN v3.2.6 /tmp/wt162`, `Start at 14:55:46`) — load on the box, but not this tree's
+  `pnpm test`, so the weakest of the three. **But the clean control run breaks it: `w1` — both logs
+  in THIS tree — PASSED 979/0 with all five of this file's env tests `ok`, and its cargo test phase
+  sits entirely inside its vitest window.** Reconstruct the windows from the artifacts, since no
+  cargo log carries a timestamp: sum the per-target `finished in N s` lines (w1: 58.3 s over 40
+  targets) and subtract from the file's mtime, which gives cargo's test phase as AT LATEST
+  15:54:16–15:55:15 against a vitest window of 15:54:02–15:56:20. So concurrency plausibly raises
+  the odds and is nowhere near sufficient; `w2` (981/0) probably overlapped too but its vitest log
+  is a 60-byte tail with no `Start at`, so that is not provable. **The runs that are provably alone
+  are the 981/0 at 18:28:10 (`baseline-cargo-test.log`; nothing else in `/tmp` between 17:50 and
+  18:35) and the two 1003/0 runs at 20:01:46 / 20:16:04 (`task3-final.log`, `task3-commit.log`; the
+  only thing between them is `task3-clippy.log`, which is clippy, not a suite).** Corollary, and it
+  bit once already: **all three failing runs are 26-target and all three passing runs are 39-target.**
+  Cargo's fail-fast stops the binary list at `error: test failed, to rerun pass \`--test
+  provider_gcloud_adc\``, so the 13 targets after it (`worker_e2e`, `storage`, `skills`,
+  `provider_oidc`, …) never ran. A 26-target `cargo test` log is a TRUNCATED run, not a smaller
+  suite, and its 856/857/859 totals are not comparable to 981/1003.
+  **CI is safe and cannot hit this, so a red on CI is never "unexplained" here.**
+  `.github/workflows/ci.yml` holds two jobs; `cargo test` and `pnpm test` are sequential STEPS of
+  the one `lint-test-build` job (the three `cargo test` steps are mutually exclusive —
+  `if: runner.os == 'linux'`, `'macos'`, `'windows'` — and `pnpm test` is a later step of that same
+  job), and the `scripts` job runs neither. Running the two suites at once is the only reproduction
+  anyone has, but read the paragraph above first: it raises the odds and does not reliably
+  reproduce.
+  **The mechanism this file's sibling doc carries does not fit the evidence — start there.**
+  `docs/features/improvement-boundary-residue-closeout.md` §7 names this file's flake (that entry is
+  the only prior documentation, and it names `env_override_beats_the_provider_flag` alone) and
+  attributes it to "process-global `LITELLM_GCLOUD_TOKEN_AUTH` bleed under parallel harnesses". That
+  cannot explain `resolve_bearer_serves_the_minted_adc_token`, which never touches that variable;
+  and intra-process bleed is excluded by construction, because every env-mutating test in the file
+  holds the SAME `test_support::ENV_LOCK` whether it spells it `env_lock()` or `adc_serial()`, so
+  they are mutually exclusive — and the lib-test binary that also drives the override
+  (`agent/session/tests/mod.rs`) is a different PROCESS holding its own copy of that static, so a
+  cross-binary env bleed is arithmetically impossible. What the evidence does fit: both failures are
+  a MINT resolving to `None` and the target binary reports `finished in 0.05–0.08 s` — far inside the 30 s
+  `gcloud::HTTP_TIMEOUT`, so the ADC leg failed fast rather than timing out: an absent-or-unreadable ADC file, a
+  parse rejection, or a refused POST to the in-process `wiremock` server under CPU starvation. Both tests
+  that mint can lose; the tests that assert `None` cannot, which is why they never show up here.
+  **The two bare-lock tests, located by content, and the trap in the obvious fix.**
+  `env_override_beats_the_provider_flag` and `token_is_none_when_no_adc_file_exists_anywhere` are the
+  only two of the file's twelve `#[tokio::test]`s that take a bare `env_lock()`; the other ten split
+  **9 on `adc_serial()`** and one (`the_refresher_passes_a_gcloud_adc_credential_through_unchanged`)
+  on neither, correctly, because it mutates no env. Both bare-lock tests mutate process-global state
+  (`HOME`, `LITELLM_GCLOUD_TOKEN_AUTH`, `gcloud::ADC_ENV_VAR`) across `.await`s. But moving both onto
+  `adc_serial()` is WRONG for the second, and that is the trap: `adc_serial()` installs
+  `AdcFileSource::Explicit(None)`, which REPLACES discovery, so running
+  `token_is_none_when_no_adc_file_exists_anywhere` — whose entire subject is the PRODUCTION discovery
+  path over a scratch `HOME` — through it would pass having tested nothing. And a second bare
+  `env_lock()` in one thread deadlocks: the file's own note on
+  `an_ordinary_row_never_touches_the_adc_flow` records `ENV_LOCK` as a non-reentrant
+  `std::sync::Mutex` and calls that "the one way this suite can hang". So the real fix is a
+  thread-local override (or a reentrant-aware serialization), not a re-lock. **Isolation is green —
+  the close-out records `env_override_beats_the_provider_flag` as green standalone 3× and green as a
+  target 3×, green on the next 4 full runs — but those runs left no artifact I could find (no
+  single-target `cargo test` log survives in `/tmp`), so that figure is the close-out's, not a
+  re-measurement here.** Re-run alone before investigating.
 - **ADR numbers collide on disk, and a plan will confidently name one that is taken.** `0086` is used by
   TWO files (`0086-glossary-names-govern-new-code-and-are-repaired-on-touch-not-by-sweep.md` and
   `0086-two-stage-async-session-titling-with-wire-isolation.md`) — pre-existing, and the only collision
