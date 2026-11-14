@@ -32,6 +32,7 @@ use crate::agent::{
     TranscriptPersister,
 };
 use crate::storage::Db;
+use fulcrum_harness::seams::FulcrumPersistence;
 
 /// The path to THIS executable that is guaranteed to still be spawnable.
 ///
@@ -177,10 +178,24 @@ fn init_dir_deps<R: tauri::Runtime>(
     let sink: Arc<dyn EventSink> = Arc::new(commands::sessions::TauriSink(app.handle().clone()));
     app.manage(sink.clone());
 
-    let persister = Arc::new(TranscriptPersister::new(db.clone()));
+    // (#155, Task 3) The batching decorator, installed at the ONE production
+    // seam the per-frame store writes flow through. `persister` holds it as
+    // `Arc<dyn FulcrumPersistence>` (that is the field type
+    // `TranscriptPersister::new` takes), so the SAME `Arc` is also managed under
+    // its own concrete TypeId: `flush()` is not on the trait — putting it there
+    // would teach the crate's seam about a `Db` it cannot name — and a
+    // `dyn`-erased `Arc` has no way back to the concrete type. `RunEvent::Exit`
+    // and the router's flush points reach it through that managed handle.
+    let batched = Arc::new(crate::storage::BatchingPersistence::new(db.clone()));
+    app.manage(batched.clone());
+    let persister = Arc::new(TranscriptPersister::new(
+        batched.clone() as Arc<dyn FulcrumPersistence>
+    ));
 
     let mut builder =
         SessionManagerBuilder::new(config_dir.clone(), db.clone(), sink.clone(), persister)
+            // The decorator the router's flush points and `RunEvent::Exit` drain.
+            .with_batched(batched)
             .with_crash_log_dir(app_data_dir.clone())
             .with_subagent_manager(Arc::new(SubagentSessionManager::new()))
             .with_dead_bound_secs(
@@ -737,77 +752,133 @@ pub fn run() {
     // context (the event loop is Tauri's own), so a fresh
     // current-thread runtime drives it (a short-lived, bounded block —
     // the process is exiting anyway).
-    app.run(|handle, event| {
-        // The webview, not the window, must hold key focus or no key event reaches
-        // JS. `Ready` does that on every platform; the `Focused(true)` re-assert is
-        // withheld on Windows, and that withholding is the fix for "nothing is
-        // clickable on Windows" (ADR 0061, superseding ADR 0057's platform matrix).
-        // `&event`: RunEvent is owned here and `label` is a String, so a by-value
-        // `if let` partially moves `event` and the `Exit` arm below stops compiling
-        // (E0382). `..` is required — the variant is `#[non_exhaustive]`.
-        //
-        // The decision is `key_focus_grab_needed`, NOT a hand-written match here:
-        // the platform is passed in as `cfg!(windows)` DATA so the Windows branch
-        // is executed by a test on Linux (`tests::windows_never_grabs_key_focus_*`).
-        // A `cfg`-gated match here would compile that branch out of the Linux test
-        // binary, which is exactly how ADR 0057's Windows claim went unexamined
-        // while this repo's CI was green.
-        //
-        // THREE facts, each of which reads wrong without them:
-        //
-        // 1. `Ready` is here because tauri's OWN `setup()` — the one that creates
-        //    the config window — runs inside the `Ready` arm before this callback,
-        //    so the grab cannot precede the window's existence. ⚠ Do NOT also
-        //    claim it is ordered after the window-state plugin's reveal: the
-        //    plugin's `on_window_ready` goes through `run_on_main_thread`, which
-        //    executes inline, so that ordering is a coincidence of the inline
-        //    queue and not a guarantee.
-        //
-        // 2. ⚠ `Focused(true)` DOES arrive on Windows. ADR 0057 recorded the
-        //    opposite after reading only `WindowEventWrapper::map_from_tao`, where
-        //    the `#[cfg(windows)]` path really does return `Self(None)` for our
-        //    shape. It missed the SECOND, Windows-only source: the WebView2
-        //    controller's `add_GotFocus` handler synthesises
-        //    `SynthesizedWindowEvent::Focused(true)`
-        //    (`tauri-runtime-wry-2.11.4/src/lib.rs:5293-5310`), and that dispatches
-        //    straight into the `RunEvent::WindowEvent` matched below (`:4237-4252`).
-        //    So on Windows this event means WEBVIEW WIDGET focus — the very case
-        //    0057 argued was impossible — and re-asserting it moves the DOM caret
-        //    off the element the user just clicked. On Linux/macOS the only source
-        //    is window activation (`connect_focus_in_event` / `windowDidBecomeKey`),
-        //    so the re-assert is safe there and is what fixes minimise/restore.
-        //
-        // 3. The macOS `Webview::focus()` implementation runs
-        //    `self.webview.window().unwrap()` before `makeFirstResponder`
-        //    (`wry-0.57.0/src/wkwebview/mod.rs:1057-1064`) — so a webview that
-        //    was ever detached from its window turns this arm into a PANIC inside
-        //    the event-loop callback. Accepted (tauri's own macOS build attaches
-        //    the webview to the window), but it is why this arm is not free.
-        let trigger = match &event {
-            tauri::RunEvent::Ready => Some(KeyFocusTrigger::Ready),
-            tauri::RunEvent::WindowEvent {
-                label,
-                event: tauri::WindowEvent::Focused(focused),
-                ..
-            } => Some(KeyFocusTrigger::WindowFocused(*focused, label)),
-            _ => None,
-        };
-        if let Some(trigger) = trigger {
-            if key_focus_grab_needed(cfg!(windows), &trigger) {
-                grab_webview_key_focus(handle);
-            }
+    app.run(run_event_callback);
+}
+
+/// The `app.run` callback, EXTRACTED from `run` so the `Exit` arm is reachable
+/// from a test.
+///
+/// `App::run` never returns and ends in `std::process::exit`
+/// (`tauri-2.12.2/src/app.rs:1364`), so nothing can drive the real `run()` from a
+/// test — but `tauri::test::MockRuntime`'s own `run` loop DOES deliver
+/// `RunEvent::Exit` (closing the last window breaks its loop and calls the
+/// callback with `Exit`, `mock_runtime.rs:1419`). So a test that runs a mock app
+/// with THIS function as its callback reaches the exit arm for real, which is
+/// what makes the quit-durability claim testable at all rather than asserted in
+/// a comment. That is `tests/ipc.rs::the_exit_run_event_flushes_the_buffered_rows`.
+///
+/// The key-focus arm is the callback `run` used to carry inline, MOVED VERBATIM.
+/// The `Exit` arm is that arm plus the two `flush_batched` calls (#155, Task 3) —
+/// the only behavioural change, and the one the test above exists to pin.
+pub fn run_event_callback<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, event: tauri::RunEvent) {
+    // The webview, not the window, must hold key focus or no key event reaches
+    // JS. `Ready` does that on every platform; the `Focused(true)` re-assert is
+    // withheld on Windows, and that withholding is the fix for "nothing is
+    // clickable on Windows" (ADR 0061, superseding ADR 0057's platform matrix).
+    // `&event`: RunEvent is owned here and `label` is a String, so a by-value
+    // `if let` partially moves `event` and the `Exit` arm below stops compiling
+    // (E0382). `..` is required — the variant is `#[non_exhaustive]`.
+    //
+    // The decision is `key_focus_grab_needed`, NOT a hand-written match here:
+    // the platform is passed in as `cfg!(windows)` DATA so the Windows branch
+    // is executed by a test on Linux (`tests::windows_never_grabs_key_focus_*`).
+    // A `cfg`-gated match here would compile that branch out of the Linux test
+    // binary, which is exactly how ADR 0057's Windows claim went unexamined
+    // while this repo's CI was green.
+    //
+    // THREE facts, each of which reads wrong without them:
+    //
+    // 1. `Ready` is here because tauri's OWN `setup()` — the one that creates
+    //    the config window — runs inside the `Ready` arm before this callback,
+    //    so the grab cannot precede the window's existence. ⚠ Do NOT also
+    //    claim it is ordered after the window-state plugin's reveal: the
+    //    plugin's `on_window_ready` goes through `run_on_main_thread`, which
+    //    executes inline, so that ordering is a coincidence of the inline
+    //    queue and not a guarantee.
+    //
+    // 2. ⚠ `Focused(true)` DOES arrive on Windows. ADR 0057 recorded the
+    //    opposite after reading only `WindowEventWrapper::map_from_tao`, where
+    //    the `#[cfg(windows)]` path really does return `Self(None)` for our
+    //    shape. It missed the SECOND, Windows-only source: the WebView2
+    //    controller's `add_GotFocus` handler synthesises
+    //    `SynthesizedWindowEvent::Focused(true)`
+    //    (`tauri-runtime-wry-2.11.4/src/lib.rs:5293-5310`), and that dispatches
+    //    straight into the `RunEvent::WindowEvent` matched below (`:4237-4252`).
+    //    So on Windows this event means WEBVIEW WIDGET focus — the very case
+    //    0057 argued was impossible — and re-asserting it moves the DOM caret
+    //    off the element the user just clicked. On Linux/macOS the only source
+    //    is window activation (`connect_focus_in_event` / `windowDidBecomeKey`),
+    //    so the re-assert is safe there and is what fixes minimise/restore.
+    //
+    // 3. The macOS `Webview::focus()` implementation runs
+    //    `self.webview.window().unwrap()` before `makeFirstResponder`
+    //    (`wry-0.57.0/src/wkwebview/mod.rs:1057-1064`) — so a webview that
+    //    was ever detached from its window turns this arm into a PANIC inside
+    //    the event-loop callback. Accepted (tauri's own macOS build attaches
+    //    the webview to the window), but it is why this arm is not free.
+    let trigger = match &event {
+        tauri::RunEvent::Ready => Some(KeyFocusTrigger::Ready),
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::Focused(focused),
+            ..
+        } => Some(KeyFocusTrigger::WindowFocused(*focused, label)),
+        _ => None,
+    };
+    if let Some(trigger) = trigger {
+        if key_focus_grab_needed(cfg!(windows), &trigger) {
+            grab_webview_key_focus(handle);
         }
-        if let tauri::RunEvent::Exit = event {
-            if let Some(wm) = handle.try_state::<Arc<WorkerManager>>() {
-                let wm = wm.inner().clone();
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("the exit reap runtime");
-                rt.block_on(wm.reap_all());
-            }
+    }
+    if let tauri::RunEvent::Exit = event {
+        // (#155, Task 3) THE QUIT FLUSH — the one flush point that makes
+        // buffered persistence durable across a quit, because `Drop` cannot:
+        // `App::run` never returns and exits through `std::process::exit`,
+        // which runs NO destructors, so the last `Arc<BatchingPersistence>`
+        // is never dropped and its `Drop` backstop never fires. Flushing here
+        // is what stops a quit from discarding the newest rows in the buffer.
+        //
+        // BEFORE the reap, on purpose: `reap_all` drives the Workers' clean
+        // `close`, and a closing Worker emits frames — which the pump hands
+        // to `route_event`, which BUFFERs them. So the reap is a producer,
+        // not just a consumer, and the flush after it is what catches what it
+        // produced. Both are bounded and both are logged on failure; a failed
+        // flush at quit loses rows, which is the one outcome this module was
+        // built to avoid, so it says so rather than returning silently.
+        flush_batched(handle, "exit");
+        if let Some(wm) = handle.try_state::<Arc<WorkerManager>>() {
+            let wm = wm.inner().clone();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("the exit reap runtime");
+            rt.block_on(wm.reap_all());
         }
-    });
+        flush_batched(handle, "exit-after-reap");
+    }
+}
+
+/// Flush the batching decorator through managed state (issue #155, Task 3).
+///
+/// Managed under the CONCRETE `Arc<BatchingPersistence>` type rather than reached
+/// through the `TranscriptPersister`: the flush method is not on
+/// `FulcrumPersistence` (adding it there would put batching into the crate's
+/// seam, which has no `Db` and no business knowing about one), and the persister
+/// holds its `Arc` as `Arc<dyn FulcrumPersistence>` with no way back to the
+/// concrete type. Same reason `lib.rs` manages `Arc<dyn EventSink>` and the
+/// `Arc<Db>` under their own TypeIds.
+///
+/// A missing state is a no-op, not an error: `Exit` also fires on a `tauri::test`
+/// app that never ran `setup_dirs`, and on a build with no database.
+fn flush_batched<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, where_: &str) {
+    let Some(batched) = handle.try_state::<Arc<crate::storage::BatchingPersistence>>() else {
+        return;
+    };
+    if let Err(e) = batched.flush() {
+        debuglog::log(&format!(
+            "batching flush ({where_}) FAILED — buffered rows this interval are lost: {e}"
+        ));
+    }
 }
 
 #[cfg(test)]
