@@ -11,8 +11,7 @@ import { useTasks } from "./tasks";
 
 /**
  * The ONE orchestration behind "open this **Task** as a **Session**", shared by the
- * Task detail modal's Discuss / Research buttons and the New Task modal's three
- * buttons.
+ * Task detail modal's launch buttons and the New Task modal's two buttons.
  *
  * ## What moved here, and why it is not in a component
  *
@@ -250,9 +249,10 @@ function missingSkill(
  *
  *  Default: send the token and let the model load it. The system prompt's
  *  `<available_skills>` section already instructs the model to load a skill BY
- *  NAME with `read_skill`, and the launch's own instruction line ("Let's discuss
- *  this task.") is a trigger phrase the target skill's description advertises, so
- *  the load is organic rather than a token the model has to decode.
+ *  NAME with `read_skill`, and the launch's own instruction line ("Let's work on
+ *  Research.") names the Stage whose Skill is being asked for, which is a phrase the
+ *  merged `research` Skill's description advertises, so the load is organic rather
+ *  than a token the model has to decode.
  *
  *  Inlining `discuss` put 18 KB (and 12 KB for `research`) into every launch
  *  message. Worse, `expandMentions` APPENDS its block at the END of the text while
@@ -431,17 +431,19 @@ function artifactKeysFor(spacePath: string, taskId: string): string[] {
  *
  *  `sendPrompt` resolves when the turn SETTLES — `router.rs` resolves the session's
  *  `pending_turn` on `agent_settled`. Awaiting it here therefore held the click for
- *  the whole first turn, and for these two skills that is not a latency problem, it
- *  is a DEADLOCK:
+ *  the whole first turn, and for a Skill whose first turn ends on an `ask` gate that
+ *  is not a latency problem, it is a DEADLOCK:
  *
- *    - `discuss`'s whole shape is to end a turn on an `ask` gate, and `ask_flow`
+ *    - the merged `research` Skill ends a turn on an `ask` gate (Path A's Phase 0
+ *      asks before dispatching anything, Phase 4 is a REQUIRED hard stop, and Path B
+ *      is an `ask` chain at B3/B4/B5), and `ask_flow`
  *      blocks on a oneshot with NO timeout (`harness/ask.rs`);
  *    - that gate renders through `AskQuestionCard`, which is mounted ONLY by
  *      `MessageList` under `ChatStream`;
  *    - and `App`'s view ternary renders the board INSTEAD of `ChatStream`.
  *
  *  So the turn waits on a gate that has no renderer, and the gate cannot appear
- *  until the turn ends to let the view switch. A Discuss click produced a Session,
+ *  until the turn ends to let the view switch. A Research click produced a Session,
  *  a sidebar row, and a board that never moved. Every `sendPrompt` mock in the suite
  *  resolves immediately, which is why the pins for "leaves the board view" passed
  *  while the feature did not.

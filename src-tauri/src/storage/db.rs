@@ -1058,16 +1058,24 @@ impl Db {
         // three from `SCHEMA` and every gate below stays silent — there is no
         // code path in which a fresh open runs one of these ALTERs.
         //
-        // `on_enter_skill` carries the whole #179 backfill, because the column
-        // and the data are one atomic unit: spec §3.1's two Skill UPDATEs and the
-        // `discuss` INSERT all write columns this ALTER creates. Splitting them
-        // across gates would let a crash commit the column without the rows, and
-        // a board with no `discuss` column is exactly the silent-green shape
-        // ADR 0098's Consequence warns about (both shipped launch buttons gone,
-        // no error, a plausible-looking board).
+        // `on_enter_skill` carries the whole surviving #179 backfill, because the
+        // column and the data are one atomic unit: the Skill UPDATE below writes a
+        // column this ALTER creates, so the two share one gate — a crash rolls the
+        // ALTER back with the backfill, and the next open re-runs the whole gate
+        // instead of leaving the column unpopulated.
+        //
+        // This gate adds the column and backfills the ONE launch Skill that still
+        // exists (`research`). The `discuss` backfill and the `discuss`
+        // column-insert that used to live here went out with the retired Stage
+        // (ADR 0107): the `discuss` Skill no longer exists, so the row the old
+        // gate invented was a column whose launch button nothing could resolve. A
+        // Space that still carries a `discuss` column is therefore USER DATA the
+        // Stage editor owns — deleting a column is the editor's job, not a
+        // migration's — and this gate deliberately leaves it alone rather than
+        // filling what it used to call a hole.
         gate(&mut conn, "stages", "on_enter_skill", |tx| {
             tx.execute("ALTER TABLE stages ADD COLUMN on_enter_skill TEXT", [])?;
-            // spec §3.1 steps 1–2: the two launch Skills. `IS NULL` keeps the
+            // spec §3.1 step 1: the one surviving launch Skill. `IS NULL` keeps the
             // statement a backfill rather than an overwrite, and it is what makes
             // the whole gate safe to re-run after a crash.
             tx.execute(
@@ -1075,52 +1083,6 @@ impl Db {
                  WHERE slug = 'research' AND on_enter_skill IS NULL",
                 [],
             )?;
-            tx.execute(
-                "UPDATE stages SET on_enter_skill = 'discuss' \
-                 WHERE slug = 'discuss' AND on_enter_skill IS NULL",
-                [],
-            )?;
-            // spec §3.1 step 3: give every Space that has a `research` column and
-            // no `discuss` column a `discuss` column immediately BEFORE `research`.
-            // The `NOT IN` pre-check is the idempotence (the PRIMARY KEY is
-            // `(space_path, slug)`, so re-running without it would fail the INSERT
-            // and brick `Db::open`) AND the respect-a-rename rule: a Space whose
-            // owner renamed `research` to `spike` has no `research` row, so the
-            // migration gives it nothing rather than inventing a column beside a
-            // workflow the owner already changed.
-            // The `let … ; found` shape is the borrow checker, not tidiness: the
-            // `MappedRows` temporary borrows `stmt`, so a block-ending expression
-            // would drop `stmt` first.
-            let mut probe = tx.prepare(
-                "SELECT DISTINCT space_path FROM stages \
-                 WHERE slug = 'research' \
-                   AND space_path NOT IN \
-                   (SELECT space_path FROM stages WHERE slug = 'discuss')",
-            )?;
-            let spaces_without_discuss = probe
-                .query_map([], |r| r.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            for space in spaces_without_discuss {
-                let research_sort: i64 = tx.query_row(
-                    "SELECT sort_order FROM stages WHERE space_path = ?1 AND slug = 'research'",
-                    params![space],
-                    |r| r.get(0),
-                )?;
-                // The shift runs BEFORE the insert: `sort_order` carries NO UNIQUE
-                // constraint, so an insert-then-shift would leave `discuss` and
-                // `research` sharing an index and the board's ordering would be
-                // decided by the `slug` tiebreak instead of the user's layout.
-                tx.execute(
-                    "UPDATE stages SET sort_order = sort_order + 1 \
-                     WHERE space_path = ?1 AND sort_order >= ?2",
-                    params![space, research_sort],
-                )?;
-                tx.execute(
-                    "INSERT INTO stages (space_path, slug, label, sort_order, on_enter_skill) \
-                     VALUES (?1, 'discuss', 'Discuss', ?2, 'discuss')",
-                    params![space, research_sort],
-                )?;
-            }
             Ok(())
         })?;
         // ADR 0099's column, deliberately NOT backfilled: NULL means
@@ -1908,7 +1870,7 @@ impl Db {
     /// own cards.
     ///
     /// LAZY SEEDING happens here (spec §2): a Space with no `stages` rows gets
-    /// the six defaults on the first board read, so a Space that never opens
+    /// the five defaults on the first board read, so a Space that never opens
     /// the board pays nothing and no migration writes for every existing Space.
     /// The count-check and the five inserts share ONE lock with the board read
     /// that follows, so two first-reads of the same Space cannot both seed.
@@ -3133,7 +3095,7 @@ fn stage_row_by_slug(
     }
 }
 
-/// Insert the six default stages when this Space has none.
+/// Insert the five default stages when this Space has none.
 ///
 /// Idempotence is NOT the property being claimed here — being called under the
 /// CALLER's lock is. Every caller already holds `self.conn.lock()` and passes
@@ -3156,12 +3118,13 @@ fn seed_default_stages(conn: &mut Connection, space_path: &str) -> Result<(), Bo
     if count > 0 {
         return Ok(());
     }
-    // The six defaults, spec §2 + §3.1. `label` is the slug capitalised and
+    // The five defaults, spec §2 + §3.1. `label` is the slug capitalised and
     // `sort_order` is the index; `on_enter` is left OUT of the column list so
     // the DDL's `DEFAULT 'none'` stays the single source of that value instead
     // of a second copy of it spelled here. `on_enter_skill` IS spelled here,
-    // because a fresh Space must launch the same two buttons an upgraded one
-    // gets from the migration (ADR 0098) — and `next_slugs` is deliberately
+    // because a fresh Space must launch the same button an upgraded one
+    // gets from the migration (ADR 0098, as amended by ADR 0107 — one launch
+    // Skill survives, not two) — and `next_slugs` is deliberately
     // absent, so a seeded graph stays NULL = unconfigured (ADR 0099).
     for (index, (slug, label, skill)) in DEFAULT_STAGES.iter().enumerate() {
         conn.execute(
@@ -3173,15 +3136,13 @@ fn seed_default_stages(conn: &mut Connection, space_path: &str) -> Result<(), Bo
     Ok(())
 }
 
-/// The six default stages, in order: `(slug, label, on_enter_skill)`.
+/// The five default stages, in order: `(slug, label, on_enter_skill)`.
 ///
-/// `discuss` sits BEFORE `research` (discuss it, then research it) and `approved`
-/// stays in the seed — deleting a column is the editor's job, not the seed's
-/// (spec §3.1). `on_enter` stays out of the tuple so the DDL's `DEFAULT 'none'`
-/// remains the single source of that value.
-const DEFAULT_STAGES: [(&str, &str, Option<&str>); 6] = [
+/// `approved` stays in the seed — deleting a column is the editor's job, not the
+/// seed's (spec §3.1). `on_enter` stays out of the tuple so the DDL's
+/// `DEFAULT 'none'` remains the single source of that value.
+const DEFAULT_STAGES: [(&str, &str, Option<&str>); 5] = [
     ("backlog", "Backlog", None),
-    ("discuss", "Discuss", Some("discuss")),
     ("research", "Research", Some("research")),
     ("approved", "Approved", None),
     ("doing", "Doing", None),

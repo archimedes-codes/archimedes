@@ -18,7 +18,7 @@ import type { TaskRow } from "../lib/tauri";
 import type { TaskLaunchDestination } from "../lib/taskPrompt";
 
 /**
- * The **New Task** modal — one textarea and three buttons.
+ * The **New Task** modal — two fields and two buttons.
  *
  * ## What changed, and why it matters
  *
@@ -27,8 +27,8 @@ import type { TaskLaunchDestination } from "../lib/taskPrompt";
  * Task. That made "put this sentence on my board" impossible without starting a
  * Session, spending a provider call, and waiting — for a card that is one line of
  * text. Now the create is one `create_task` write and the LLM is opt-in: **Backlog**
- * files the card and opens nothing; **Discuss** and **Research** file it and then
- * launch it as a Session.
+ * files the card and opens nothing; **Research** files it and then launches it as a
+ * Session.
  *
  * ## NO `boards` prop, and that is a decision rather than a simplification
  *
@@ -39,16 +39,16 @@ import type { TaskLaunchDestination } from "../lib/taskPrompt";
  * offer a column the write then refused to use. The board is one store; both readers
  * go to it.
  *
- * ## The three buttons are the skill choice
+ * ## The two buttons are the skill choice
  *
- * The old Skill `Select` is GONE, and not for tidiness. A dropdown beside three
- * buttons would be two contradictable answers to "which skill" — the dropdown could
- * say `research` while the click said Backlog. The button IS the choice now, and
+ * The old Skill `Select` is GONE, and not for tidiness. A dropdown beside the buttons
+ * would be two contradictable answers to "which skill" — the dropdown could say
+ * `research` while the click said Backlog. The button IS the choice now, and
  * `lib/taskPrompt`'s destination shape is the only place a launch is described.
  *
  * Note what replaced the mode table this file used to point at. `lib/taskPrompt`'s
  * `TASK_LAUNCH_MODES` / `skillOfMode` table is DELETED (issue #179, ADR 0098): the
- * Stage row owns the Skill now. That is why the three destinations below name a slug
+ * Stage row owns the Skill now. That is why the two destinations below name a slug
  * and a skill the seeded row already carries, and why `store/taskLaunch` resolves
  * them against the board rather than translating a literal — the button is still the
  * one choice, it just no longer has to be a hardcoded one to be a single answer.
@@ -76,8 +76,8 @@ import type { TaskLaunchDestination } from "../lib/taskPrompt";
  *
  * ## What a failure leaves behind, and why the modal stays open
  *
- * Backlog failing writes nothing, so both fields survive. A Discuss/Research failure
- * can land AFTER the card exists — at which point closing the dialog would take the
+ * Backlog failing writes nothing, so both fields survive. A Research failure can land
+ * AFTER the card exists — at which point closing the dialog would take the
  * error line with it and leave the person believing their card was lost. So the
  * modal keeps both fields and shows the line, and the card that did get written is
  * already in the board the modal sits on top of.
@@ -94,8 +94,11 @@ import type { TaskLaunchDestination } from "../lib/taskPrompt";
  *
  * The catalog is an async fetch that starts EMPTY, so a button enabled from the first
  * paint is clickable before the catalog lands, and that click fails with "This Space
- * has no `discuss` skill" — a sentence that is false two frames later. Gating on the
- * same predicate `store/taskLaunch` refuses on removes the race rather than narrowing
+ * has no `research` skill" — a sentence that is false two frames later. (The name in
+ * that sentence is templated on the destination's own `onEnterSkill`, so it names
+ * whatever Skill the surviving launch button asks for; `research` is simply the one it
+ * asks for now.) Gating on the same predicate `store/taskLaunch` refuses on removes
+ * the race rather than narrowing
  * it. Backlog needs no skill and is gated only on there being a Space.
  */
 export interface NewTaskDialogProps {
@@ -109,16 +112,23 @@ export interface NewTaskDialogProps {
   onCreated: (task: TaskRow, sessionId: string | null) => void;
 }
 
-/** The three buttons, in the order a person reads them: safe first.
+/** The two buttons, in the order a person reads them: safe first.
  *
- *  Each is a DESTINATION, not a mode (issue #179). The three shipped destinations are
- *  the three seeded Stages they name, so the slug and the Skill spelled here are the
+ *  Each is a DESTINATION, not a mode (issue #179). The two shipped destinations are
+ *  the two seeded Stages they name, so the slug and the Skill spelled here are the
  *  seeded row's own `slug` / `on_enter_skill` — and they are hardcoded deliberately,
  *  on the decision this file already records below ("NO `boards` prop"): a modal that
  *  built one button per loaded Stage would offer a column the create then refuses,
  *  which is the same two-owners-on-one-fact defect the detail modal's header records
- *  for its own label. The store resolves the SAME three slugs against the board it
+ *  for its own label. The store resolves the SAME two slugs against the board it
  *  reads, so the button set and the write still cannot disagree.
+ *
+ *  There used to be a third. It was DROPPED (ADR 0107) together with the seeded Stage
+ *  it named: its `onEnterSkill` could never satisfy the gate below, so the button
+ *  rendered permanently disabled behind a tooltip that was false about the Space's
+ *  future. That is why the list stays hardcoded rather than following the loaded
+ *  Stages — a derived list is a list that can offer a launch the create refuses, which
+ *  is exactly what this one had done.
  *
  *  `SAVE_ONLY` is Backlog: a real column to file into, and `launches: false` is the
  *  one thing that makes it not a launch. */
@@ -131,11 +141,6 @@ const BUTTONS: {
     destination: SAVE_ONLY,
     label: "Backlog",
     hint: "Save this to the Backlog column. Nothing is started.",
-  },
-  {
-    destination: { slug: "discuss", label: "Discuss", onEnterSkill: "discuss" },
-    label: "Discuss",
-    hint: "Save it and open a session that discusses it.",
   },
   {
     destination: { slug: "research", label: "Research", onEnterSkill: "research" },
@@ -217,8 +222,7 @@ export default function NewTaskDialog({
         <DialogHeader>
           <DialogTitle>New task</DialogTitle>
           <DialogDescription>
-            Backlog just saves the card. Discuss and Research also open a session for
-            it.
+            Backlog just saves the card. Research also opens a session for it.
           </DialogDescription>
         </DialogHeader>
 
@@ -268,10 +272,10 @@ export default function NewTaskDialog({
             <Button
               key={destination.slug}
               type="button"
-              // Backlog is the safe, no-side-effect action, so it is the OUTLINE and the
-              // two launches are the filled ones — the inverse of a destructive-first
+              // Backlog is the safe, no-side-effect action, so it is the OUTLINE and
+              // the launch is the filled one — the inverse of a destructive-first
               // footer, matching the reading order (safe first, and visibly safer). The
-              // flag that decides it is the destination's own `launches`, so a fourth
+              // flag that decides it is the destination's own `launches`, so another
               // save-only Stage would read as safe without anyone editing this line.
               variant={destination.launches === false ? "outline" : "default"}
               onClick={() => void submit(destination)}

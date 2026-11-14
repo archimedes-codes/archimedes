@@ -69,7 +69,7 @@ fn create_stage_refusals_reach_the_wire_naming_what_was_refused() {
     let dir = crate::test_support::ScratchDir::in_env_temp("cmd-stage-create-", "scratch");
     let db = Db::open(&dir.join("t.db")).expect("db should open");
     let space = "/cmd-stage/create";
-    db.get_board(space).expect("seed the six");
+    db.get_board(space).expect("seed the five");
 
     let err = board_call(Ok::<_, String>(db.create_stage(
         space,
@@ -116,7 +116,7 @@ fn delete_stage_refusals_reach_the_wire_naming_what_was_refused() {
     let dir = crate::test_support::ScratchDir::in_env_temp("cmd-stage-del-", "scratch");
     let db = Db::open(&dir.join("t.db")).expect("db should open");
     let space = "/cmd-stage/delete";
-    db.get_board(space).expect("seed the six");
+    db.get_board(space).expect("seed the five");
 
     // Refusal 1: the count.
     db.create_task(space, "one", None, Some("doing"))
@@ -153,9 +153,7 @@ fn delete_stage_refusals_reach_the_wire_naming_what_was_refused() {
     db.get_board(solo).expect("seed a second board");
     db.create_stage(solo, "only", "Only", None)
         .expect("create_stage");
-    for slug in [
-        "backlog", "discuss", "research", "approved", "doing", "done",
-    ] {
+    for slug in ["backlog", "research", "approved", "doing", "done"] {
         db.delete_stage(solo, slug, Some("only"))
             .expect("empty the seeded columns into `only`");
     }
@@ -181,8 +179,8 @@ fn strict_move_refusals_reach_the_wire_naming_the_legal_destinations() {
     db.upsert_space(space, false).expect("upsert_space");
     db.set_board_strict(space, true).expect("strict ON");
     db.get_board(space).expect("seed");
-    db.set_stage_next(space, "backlog", &["discuss".to_string()])
-        .expect("backlog → discuss only");
+    db.set_stage_next(space, "backlog", &["research".to_string()])
+        .expect("backlog → research only");
     let card = db
         .create_task(space, "governed", None, None)
         .expect("create_task");
@@ -196,7 +194,7 @@ fn strict_move_refusals_reach_the_wire_naming_the_legal_destinations() {
         "both stages are named, got `{message}`"
     );
     assert!(
-        message.contains("discuss"),
+        message.contains("research"),
         "and so is the destination the graph DOES allow, got `{message}`"
     );
 

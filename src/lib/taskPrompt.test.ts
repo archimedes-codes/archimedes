@@ -37,8 +37,9 @@ const identity = (t: string): string => t;
 
 /** One destination Stage (issue #179: the Stage row owns the launch).
  *
- *  The defaults are the SEEDED `discuss` stage — the sixth entry of Rust's
- *  `DEFAULT_STAGES` — because that is the destination the shipped launch path
+ *  The defaults are the SEEDED `research` stage — one of the five entries of Rust's
+ *  `DEFAULT_STAGES` (ADR 0107 dropped the sixth, a `discuss` Stage that no launch
+ *  surface could satisfy) — because that is the destination the shipped launch path
  *  actually carries. A case that cares about a Skill-less or differently-named
  *  Stage overrides the field it is about, which keeps each assertion about ONE
  *  difference from the seeded shape. */
@@ -46,9 +47,9 @@ function destination(
   over: Partial<TaskLaunchDestination> = {},
 ): TaskLaunchDestination {
   return {
-    slug: "discuss",
-    label: "Discuss",
-    onEnterSkill: "discuss",
+    slug: "research",
+    label: "Research",
+    onEnterSkill: "research",
     ...over,
   };
 }
@@ -143,7 +144,7 @@ describe("taskPrompt — the <task> block", () => {
 describe("taskPrompt — the <artifacts> block (issue #180 D2)", () => {
   it("lists the card's artifact keys between the open tag and the body", () => {
     // The keys are `TaskCardView.artifactKeys` (D1's board payload) — NAME ONLY.
-    // A `discuss` Session started from a card that has a `research` artifact has
+    // A `research` Session started from a card that has a `spec` artifact has
     // to be told the name, or the model cannot ask for it: the whole point of the
     // element is that the Session discovers the list rather than guessing it
     // (spec §5). Position matters as much as presence — BEFORE the body, so the
@@ -305,7 +306,7 @@ describe("taskPrompt — the launch draft", () => {
     expect(message).toContain("<artifacts>spec, research</artifacts>");
     // Still LAST: the keys join the block, they do not precede the instruction.
     expect(message.indexOf("<artifacts>")).toBeGreaterThan(
-      message.indexOf("$discuss"),
+      message.indexOf("$research"),
     );
     // And the default (no argument) is the same string as before D2 — the fresh
     // draft card has no artifacts and must not gain an empty element.

@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-11-13
-verified-by: re-measured at the tip of the task-board-selected-space run — the comment-only claim covers commit `595e8f4f` ALONE and not the run — that commit changed no behaviour (its four `src` edits are comment text in `src/components/SessionConfigBlock.tsx`, `src/hooks/useActiveSpaceCwd.ts`, `src/components/StageEditor.test.tsx` and `src/store/sessions.ts`, so no test can show THOSE). The RUN is not comment-only, and two behavioural changes in it ARE test-visible — (i) the board's Space key moved from a prop to a store read, `TasksBoard` now calling `useSessions((s) => s.activeSpacePath)` and taking no Space prop at all, pinned by `renders the board for a SELECTED Space with no active Session (the board is per-Space)` in `src/components/TasksBoard.test.tsx` and by `the board loads for the selected Space when every Session is archived` in `src/App.test.tsx`; (ii) the sidebar's Archived section changed its open rule to follow the Landing Session, pinned by `the Archived section is OPEN by default when it holds the active Session`, `the Archived section stays collapsed by default when the active Session is elsewhere` and `the Archived section opens when the Landing Session ARRIVES after mount (the boot order)` in `src/components/SpacesList.test.tsx`. So nothing here should be read as "the run changed no behaviour". Every number below was re-run in this sitting and none is carried over. New for §7 — `grep -rn "useActiveSpaceCwd()" src/App.tsx src/components/ChatStream.tsx` gives **2** (the two production consumers and no third), `grep -rn "activeSpacePath=" src/App.tsx` gives **0** (the board's prop is gone) and `grep -c "useSessions((s) => s.activeSpacePath)" src/components/TasksBoard.tsx` gives **1**, `grep -rn "the board is only reachable while a Session IS active" src/` gives **0**, `grep -n "stored/paused banner" src/store/sessions.ts` gives **0**, `grep -n "disabled={activeSpacePath === null}" src/components/TasksBoard.tsx` gives **2** (so `New task` and `Configure` now gate on NO Space open rather than on no active Session), and `npx vitest run src/components/SessionConfigBlock.test.tsx src/components/StageEditor.test.tsx` gives **49 passed** with `pnpm build` green. Carried claims re-checked — `grep -rn "on_enter ==" src-tauri/src src` still gives **exactly 1** hit and it is `commands/tasks.rs`'s "compact" arm, `grep -rn "UPDATE stages SET on_enter = " src-tauri/src` still gives **2** hits both inside `storage/db/tests/mod.rs`, `grep -rn "DELETE FROM tasks" src-tauri/src` still gives **2** lines (one test and one prose comment) so §1 stays latent, and `grep -c "tauri::command" src-tauri/src/commands/tasks.rs` still gives **18**. ONE carried claim was FALSE and is corrected in §2 — `grep -rln "TaskStore" src-tauri/src` gives **5 files** and not 4, and it gave 5 at the commit that wrote 4. §5's seed sites were re-read rather than executed — `seed_default_stages` runs inside `get_board` before the stage SELECT and again inside `create_task`. Rust read, not executed; `cargo test` and `cargo clippy` deliberately not run here. Kept to one line and free of interior colons so this front-matter parses as strict YAML, which nine other files in this directory do not (re-counted 2026-11-13 — this directory holds 24 files, 15 parse and 9 do not, and the "seven" this line used to say was itself a carried number that had decayed by two).
+verified-by: re-measured at the tip of the task-board-selected-space run — the comment-only claim covers commit `595e8f4f` ALONE and not the run — that commit changed no behaviour (its four `src` edits are comment text in `src/components/SessionConfigBlock.tsx`, `src/hooks/useActiveSpaceCwd.ts`, `src/components/StageEditor.test.tsx` and `src/store/sessions.ts`, so no test can show THOSE). The RUN is not comment-only, and two behavioural changes in it ARE test-visible — (i) the board's Space key moved from a prop to a store read, `TasksBoard` now calling `useSessions((s) => s.activeSpacePath)` and taking no Space prop at all, pinned by `renders the board for a SELECTED Space with no active Session (the board is per-Space)` in `src/components/TasksBoard.test.tsx` and by `the board loads for the selected Space when every Session is archived` in `src/App.test.tsx`; (ii) the sidebar's Archived section changed its open rule to follow the Landing Session, pinned by `the Archived section is OPEN by default when it holds the active Session`, `the Archived section stays collapsed by default when the active Session is elsewhere` and `the Archived section opens when the Landing Session ARRIVES after mount (the boot order)` in `src/components/SpacesList.test.tsx`. So nothing here should be read as "the run changed no behaviour". Every number below was re-run in this sitting and none is carried over. New for §7 — `grep -rn "useActiveSpaceCwd()" src/App.tsx src/components/ChatStream.tsx` gives **2** (the two production consumers and no third), `grep -rn "activeSpacePath=" src/App.tsx` gives **0** (the board's prop is gone) and `grep -c "useSessions((s) => s.activeSpacePath)" src/components/TasksBoard.tsx` gives **1**, `grep -rn "the board is only reachable while a Session IS active" src/` gives **0**, `grep -n "stored/paused banner" src/store/sessions.ts` gives **0**, `grep -n "disabled={activeSpacePath === null}" src/components/TasksBoard.tsx` gives **2** (so `New task` and `Configure` now gate on NO Space open rather than on no active Session), and `npx vitest run src/components/SessionConfigBlock.test.tsx src/components/StageEditor.test.tsx` gives **49 passed** with `pnpm build` green. Carried claims re-checked — `grep -rn "on_enter ==" src-tauri/src src` still gives **exactly 1** hit and it is `commands/tasks.rs`'s "compact" arm, `grep -rn "UPDATE stages SET on_enter = " src-tauri/src` still gives **2** hits both inside `storage/db/tests/mod.rs`, `grep -rn "DELETE FROM tasks" src-tauri/src` still gives **2** lines (one test and one prose comment) so §1 stays latent, and `grep -c "tauri::command" src-tauri/src/commands/tasks.rs` still gives **18**. ONE carried claim was FALSE and is corrected in §2 — `grep -rln "TaskStore" src-tauri/src` gives **5 files** and not 4, and it gave 5 at the commit that wrote 4. §5's seed sites were re-read rather than executed — `seed_default_stages` runs inside `get_board` before the stage SELECT and again inside `create_task`. Rust read, not executed; `cargo test` and `cargo clippy` deliberately not run here. Kept to one line and free of interior colons so this front-matter parses as strict YAML, which nine other files in this directory do not (re-counted 2026-11-13 — this directory holds 24 files, 15 parse and 9 do not, and the "seven" this line used to say was itself a carried number that had decayed by two). Re-measured 2026-11-13 for the drop-seeded-discuss-stage run (ADR 0107) — `grep -n "const DEFAULT_STAGES" src-tauri/src/storage/db.rs -A6` gives a `[(&str, &str, Option<&str>); 5]` of backlog / research / approved / doing / done with `research` the ONLY Skill-bearing entry, `grep -rn "seeds_the_six\|seeds_six" src-tauri/src` gives **0** (the six-stage pins are renamed, not merely failing), `grep -rn "UPDATE stages SET on_enter_skill" src-tauri/src/storage/db.rs` gives **2** and they are the ONLY two — the migration's `'research'` backfill and `set_stage_skill`'s parameterised write — so the `discuss` UPDATE and the `discuss` row-insert are gone, and the three gate pins that asserted the insert (`five_stage_database_gains_discuss_before_research_and_both_skills_on_open`, `a_space_that_already_has_a_discuss_row_is_left_alone_by_the_backfill`, `a_space_with_a_hand_renamed_research_slug_gains_no_discuss_row`) give **0** hits and are replaced by `the_on_enter_skill_gate_backfills_research_and_inserts_no_discuss_row`. §3 and §5 were re-read line by line, `docs/decisions/0098-*.md` was checked for a front-matter-only supersession note, and `docs/decisions/ | grep -oE "^[0-9]{4}" | sort | uniq -d` still gives **0086** alone. The §3 and §5 edits in THIS amendment are prose and front-matter only — no test reads `docs/`, so nothing could measure them and the greps above ARE the instrument (the code they describe landed in the two commits before this one).
 ---
 
 # Task board — known gaps
@@ -172,14 +172,15 @@ refuses to narrate `on_enter` at all (it passes `"fresh"` through as opaque data
 **The pointer — `stages.on_enter_skill` is the thing that actually starts a Session with a Skill.**
 ADR 0098 added it as a SECOND column beside `on_enter`, not a widened `on_enter`, and it is live
 end to end: the column exists in `storage/db.rs` (`STAGE_COLUMNS` is 7 entries, `StageRow` carries
-`on_enter_skill`, `set_stage_skill` writes it, the migration backfills `research` and `discuss`),
+`on_enter_skill`, `set_stage_skill` writes it, the migration backfills `research` alone — the
+`discuss` backfill went out with the retired Stage, ADR 0107),
 `StageEditor` edits it through a Skill `Select`, and `taskPrompt.ts`'s `headOfMode` appends a bare
 `$`-prefixed Skill token to the launch head. So the sentence "this column starts a Session that
 loads `research`" is now carried entirely by `on_enter_skill`, and `on_enter` carries none of it.
 
 The two fields are ORTHOGONAL, which is why `fresh` was left in place rather than folded in: a
 Stage can be `compact` AND carry a Skill. ADR 0098's reason for the split is the render site —
-`on_enter`'s value is printed RAW as the column-header chip, so a composite `fresh:discuss` would
+`on_enter`'s value is printed RAW as the column-header chip, so a composite `fresh:research` would
 print as a label. Whether to drop `fresh` from the value union is an unmade decision, and removing
 a legal value from a stored union is a migration for no gain.
 
@@ -231,16 +232,41 @@ of the spec's letter, recorded so a future reader does not file it as a bug.
 `[(&str, &str, Option<&str>); 6]` of `(slug, label, on_enter_skill)` and the order is
 backlog / **discuss** / research / approved / doing / done, with `discuss` sitting BEFORE
 `research` and carrying `Some("discuss")` (ADR 0098, #179 §3.1). `get_board_seeds_the_six_default_stages_once`
-pins the count and `on_enter` stays OUT of the tuple so the DDL's `DEFAULT 'none'` remains the
+pins the count (since RENAMED — see the 2026-11-13 amendment below; the name is left here because
+it is what the six-stage state was pinned by) and `on_enter` stays OUT of the tuple so the DDL's
+`DEFAULT 'none'` remains the
 single source of that value. The part of this section that is still the gap is the SHAPE, not the
 number — a lazy seed that also runs from a write verb is wider than the spec, and the sixth entry
 made it worse in a new way: **the lazy seed still cannot fix an existing Space**, because
 `seed_default_stages`'s count check only fires at ZERO rows and every pre-#179 install has five.
-That is why the `discuss` row and both Skills arrive through a one-time migration backfill rather
-than through the seed, and why the backfill hardcodes two Skill names in Rust — ADR 0098 accepts
-that as the smaller evil ("a one-time migration ages out, a live switch keeps asserting"). A
+That is why the Skills arrive through a one-time migration backfill rather than through the seed,
+and why the backfill hardcodes a Skill name in Rust — ADR 0098 accepts
+that as the smaller evil ("a one-time migration ages out, a live switch keeps asserting"; ADR 0107
+falsifies that justification for the name it deleted, and keeps it for `research`, which resolves).
+As of 2026-11-13 the backfill carries the `research` Skill ONLY — the `discuss` `UPDATE` and the
+`discuss` row-insert were removed — so an upgraded database gains the column and the one Skill that
+still exists and NO `discuss` row. A
 future reader who touches `DEFAULT_STAGES` and expects the seed to heal an old board is the reader
 this paragraph exists for.
+
+**Amended 2026-11-13 — the seed is FIVE again, and this reverses the amendment directly above.**
+(This is the drop-seeded-discuss-stage run; the §7 amendment carries the same date and is unrelated.)
+The `discuss` **Skill** was deleted from disk and merged into `research` (`~/.agents/skills`
+`38341e7`), and because ADR 0098 made a **Stage** row the sole authority for a launch, a Skill that
+vanishes is a breaking change against every Stage that names it (ADR 0107, which supersedes 0098 on
+exactly this point). So `DEFAULT_STAGES` is back to
+`[(&str, &str, Option<&str>); 5]` — backlog / research / approved / doing / done, only `research`
+carrying `Some("research")` — pinned by `get_board_seeds_the_five_default_stages_once`, with
+`fresh_database_gets_the_three_new_columns_from_schema_and_seeds_five` pinning the fresh-DB shape
+and `the_on_enter_skill_gate_backfills_research_and_inserts_no_discuss_row` pinning that the gate
+backfills `research` and invents NO `discuss` row. The six-stage amendment above is kept rather
+than edited away on purpose: this section has now been corrected in BOTH directions, and the record
+of the first correction is what tells a reader the number is unstable rather than trustworthy.
+What SURVIVES both amendments is the gap this section is actually about — the lazy seed still cannot
+fix an existing Space — and it is now also the REASON legacy `discuss` columns persist: ADR 0107
+declines to migrate them (they are user data, `gate()` can only latch on a missing COLUMN, and a
+data-only gate would need a mechanism the repo does not have), so a pre-existing board keeps its
+`discuss` column until someone deletes it in the **Stage editor**.
 
 ## 6. A card cannot show its state or attachments; Sessions and cost now can — was #174
 

@@ -273,7 +273,7 @@ fn handoff_instructions(from_stage: Option<&str>, to_stage: &str) -> String {
     )
 }
 
-/// The board for one Space: the six default stages seed lazily on this read
+/// The board for one Space: the five default stages seed lazily on this read
 /// (spec §2), so opening a board is what creates a Space's columns.
 #[tauri::command]
 pub async fn get_board(

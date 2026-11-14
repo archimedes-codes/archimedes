@@ -1189,7 +1189,7 @@ fn the_task_store_surface_round_trips_through_a_real_db() {
 
     let (dir, db) = temp_db("fulcrum-seams-taskstore-");
     let space = "/seams/taskstore";
-    // Reading a Space's board is what seeds its six columns (ADR 0090's lazy
+    // Reading a Space's board is what seeds its five columns (ADR 0090's lazy
     // seed) — so `create_task` has a first stage to land a card in.
     db.get_board(space).expect("get_board seeds the defaults");
 
@@ -1380,7 +1380,8 @@ fn db_with_one_card(
 ) {
     let (dir, db) = temp_db(prefix);
     let path = dir.join("db.sqlite");
-    db.get_board(space).expect("get_board seeds the six stages");
+    db.get_board(space)
+        .expect("get_board seeds the five stages");
     let task = db
         .create_task(space, "a card the model writes to", None, None)
         .expect("create_task");

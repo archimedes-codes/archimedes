@@ -863,7 +863,7 @@ fn the_session_cwd_string_and_the_space_path_key_are_the_same_string() {
 /// seen a board.
 ///
 /// The board is created by READING it (spec §2's lazy seed), so the first
-/// assertion is the one a user makes: open a Space's board, get six columns,
+/// assertion is the one a user makes: open a Space's board, get five columns,
 /// and a new card lands in the first one with the label `#1`.
 #[test]
 fn stages_and_tasks_seed_and_list_stepwise_from_a_fresh_db() {
@@ -875,8 +875,8 @@ fn stages_and_tasks_seed_and_list_stepwise_from_a_fresh_db() {
     let slugs: Vec<&str> = board.iter().map(|c| c.stage.slug.as_str()).collect();
     assert_eq!(
         slugs,
-        vec!["backlog", "discuss", "research", "approved", "doing", "done"],
-        "reading a Space's board is what creates its six columns"
+        vec!["backlog", "research", "approved", "doing", "done"],
+        "reading a Space's board is what creates its five columns"
     );
 
     let task = db
@@ -893,7 +893,7 @@ fn stages_and_tasks_seed_and_list_stepwise_from_a_fresh_db() {
     assert!(task.id.starts_with("tsk_"), "the key shape is {}", task.id);
 
     let after = db.get_board(space).expect("get_board again");
-    assert_eq!(after.len(), 6, "the second read does not re-seed");
+    assert_eq!(after.len(), 5, "the second read does not re-seed");
     assert_eq!(
         after[0]
             .tasks
@@ -965,7 +965,7 @@ fn task_board_survives_delete_space_through_the_public_api() {
     let board = db
         .get_board(space)
         .expect("the board survives its Space's tab close");
-    assert_eq!(board.len(), 6, "the six columns are still there");
+    assert_eq!(board.len(), 5, "the five columns are still there");
     let cards: Vec<&str> = board
         .iter()
         .flat_map(|column| column.tasks.iter())

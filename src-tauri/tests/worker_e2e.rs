@@ -2557,7 +2557,7 @@ async fn task_artifact_round_trips_through_a_real_worker() {
     let db: Arc<Db> = Arc::new(Db::open(&dir.join("e2e.db")).expect("db opens"));
     let space = dir.path().to_str().expect("utf-8 path").to_string();
     db.get_board(&space)
-        .expect("get_board seeds the six stages");
+        .expect("get_board seeds the five stages");
     let card = db
         .create_task(&space, "e2e card", Some("the body"), None)
         .expect("create_task");

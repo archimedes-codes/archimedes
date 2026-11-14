@@ -2691,8 +2691,9 @@ CREATE TABLE sessions (
 );
 
 /// The full 5-table batch with ONLY `stages.on_enter_skill` missing (`sessions`
-/// and `spaces` are complete, so no sibling gate fires — and the `discuss`
-/// backfill inside this gate is what the migration test observes).
+/// and `spaces` are complete, so no sibling gate fires — and the gate this
+/// fixture isolates now backfills only the `research` Skill; the migration claim
+/// lives in `the_on_enter_skill_gate_backfills_research_and_inserts_no_discuss_row`).
 const SCHEMA_WITHOUT_STAGES_ON_ENTER_SKILL: &str =
     legacy_batch!(complete_sessions, stages_without_on_enter_skill);
 
@@ -4019,10 +4020,10 @@ fn create_task_reads_and_inserts_under_one_lock() {
     );
 }
 
-/// (lazy seeding) `get_board` on a Space with no stage rows inserts the SIX
+/// (lazy seeding) `get_board` on a Space with no stage rows inserts the FIVE
 /// defaults in `sort_order` order, and a SECOND call seeds nothing.
 #[test]
-fn get_board_seeds_the_six_default_stages_once() {
+fn get_board_seeds_the_five_default_stages_once() {
     let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-seed-", "scratch");
     let db = Db::open(&dir.join("t.db")).expect("db should open");
     let space = board_space("fresh");
@@ -4043,14 +4044,13 @@ fn get_board_seeds_the_six_default_stages_once() {
         columns,
         vec![
             ("backlog", "Backlog", 0, "none"),
-            ("discuss", "Discuss", 1, "none"),
-            ("research", "Research", 2, "none"),
-            ("approved", "Approved", 3, "none"),
-            ("doing", "Doing", 4, "none"),
-            ("done", "Done", 5, "none"),
+            ("research", "Research", 1, "none"),
+            ("approved", "Approved", 2, "none"),
+            ("doing", "Doing", 3, "none"),
+            ("done", "Done", 4, "none"),
         ],
-        "the six defaults, in sort_order, label = slug capitalised, on_enter at \
-         the DDL's DEFAULT 'none' — and `discuss` sits BEFORE `research` (spec §3.1)"
+        "the five defaults, in sort_order, label = slug capitalised, on_enter at \
+         the DDL's DEFAULT 'none' (ADR 0107: the seeded `discuss` Stage is gone)"
     );
     let skills: Vec<(&str, Option<&str>)> = board
         .iter()
@@ -4065,13 +4065,12 @@ fn get_board_seeds_the_six_default_stages_once() {
         skills,
         vec![
             ("backlog", None),
-            ("discuss", Some("discuss")),
             ("research", Some("research")),
             ("approved", None),
             ("doing", None),
             ("done", None),
         ],
-        "ADR 0098: exactly the two launch columns carry a Skill, and the seed \
+        "ADR 0098: exactly the one launch column carries a Skill, and the seed \
          spells it (not a second copy of `on_enter`)"
     );
     assert!(
@@ -4086,13 +4085,13 @@ fn get_board_seeds_the_six_default_stages_once() {
     let again = db.get_board(&space).expect("second get_board");
     assert_eq!(
         again.len(),
-        6,
+        5,
         "a second board read must NOT re-seed — the seed is lazy AND idempotent"
     );
     assert_eq!(
         db.list_stages(&space).expect("list_stages").len(),
-        6,
-        "still exactly six stage rows after two reads"
+        5,
+        "still exactly five stage rows after two reads"
     );
 }
 
@@ -4288,7 +4287,7 @@ fn delete_space_leaves_the_board_rows_in_place() {
     let board = db
         .get_board(&space)
         .expect("the board survives the tab close");
-    assert_eq!(board.len(), 6, "the six stage rows are still there");
+    assert_eq!(board.len(), 5, "the five stage rows are still there");
     assert_eq!(
         board
             .iter()
@@ -4568,8 +4567,9 @@ fn stage_row_from_maps_the_select_const_columns_in_order() {
     assert_eq!(got.slug, "doing");
     assert_eq!(got.label, "Doing");
     assert_eq!(
-        got.sort_order, 4,
-        "`doing` moved down one when `discuss` was seeded at index 1"
+        got.sort_order, 3,
+        "`doing` sits at index 3 on the five-stage seed (ADR 0107 dropped the \
+         seeded `discuss` row that used to push it down one)"
     );
     assert_eq!(got.on_enter, "none");
     assert_eq!(
@@ -4580,12 +4580,12 @@ fn stage_row_from_maps_the_select_const_columns_in_order() {
         got.next_slugs, None,
         "index 6 maps to the lenient JSON read, NULL on a seeded row"
     );
-    let discuss = stmt
-        .query_row(params![space, "discuss"], stage_row_from)
-        .expect("the discuss row maps too");
+    let research = stmt
+        .query_row(params![space, "research"], stage_row_from)
+        .expect("the research row maps too");
     assert_eq!(
-        discuss.on_enter_skill.as_deref(),
-        Some("discuss"),
+        research.on_enter_skill.as_deref(),
+        Some("research"),
         "the two new fields map for a row that actually CARRIES a value — a mapper \
          that read index 5 as `None` for every row would pass the NULL case above"
     );
@@ -4618,7 +4618,6 @@ fn get_board_groups_tasks_under_their_stage_in_stage_order() {
         shaped,
         vec![
             ("backlog", vec![]),
-            ("discuss", vec![]),
             ("research", vec![]),
             ("approved", vec![]),
             ("doing", vec![]),
@@ -5257,7 +5256,7 @@ fn reorder_tasks_persists_the_new_within_stage_order_in_one_pass() {
     let dir = crate::test_support::ScratchDir::in_env_temp("db-task-reorder-", "scratch");
     let db = Db::open(&dir.join("t.db")).expect("db should open");
     let space = board_space("reorder");
-    db.get_board(&space).expect("seed the six stages");
+    db.get_board(&space).expect("seed the five stages");
 
     // Three cards in `backlog` (the first stage, so `stage_slug: None` lands
     // them there) and two in `done`. The `done` pair is the control group: it
@@ -5709,9 +5708,9 @@ fn stage_order(db: &Db, space: &str) -> Vec<(String, i64)> {
 
 /// (spec §3 + §3.1, the fresh path) a brand-new database gets all THREE new
 /// columns from `SCHEMA` — no `ADD COLUMN` runs, because no gate's probe finds a
-/// missing column — and seeds SIX stages with `discuss` at index 1.
+/// missing column — and seeds FIVE stages (ADR 0107 retired the seeded `discuss`).
 #[test]
-fn fresh_database_gets_the_three_new_columns_from_schema_and_seeds_six() {
+fn fresh_database_gets_the_three_new_columns_from_schema_and_seeds_five() {
     let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-fresh-", "scratch");
     let db = Db::open(&dir.join("t.db")).expect("db should open");
 
@@ -5727,7 +5726,7 @@ fn fresh_database_gets_the_three_new_columns_from_schema_and_seeds_six() {
     }
 
     let space = board_space("fresh-columns");
-    let board = db.get_board(&space).expect("get_board seeds six");
+    let board = db.get_board(&space).expect("get_board seeds five");
     let shaped: Vec<(&str, i64, Option<&str>)> = board
         .iter()
         .map(|c| {
@@ -5742,14 +5741,13 @@ fn fresh_database_gets_the_three_new_columns_from_schema_and_seeds_six() {
         shaped,
         vec![
             ("backlog", 0, None),
-            ("discuss", 1, Some("discuss")),
-            ("research", 2, Some("research")),
-            ("approved", 3, None),
-            ("doing", 4, None),
-            ("done", 5, None),
+            ("research", 1, Some("research")),
+            ("approved", 2, None),
+            ("doing", 3, None),
+            ("done", 4, None),
         ],
-        "six defaults in order, `discuss` BEFORE `research`, and only the two \
-         launch columns carry a Skill (ADR 0098)"
+        "five defaults in order, and only the one surviving launch column \
+         carries a Skill (ADR 0098, as amended by ADR 0107)"
     );
     assert!(
         board.iter().all(|c| c.stage.next_slugs.is_none()),
@@ -5758,12 +5756,19 @@ fn fresh_database_gets_the_three_new_columns_from_schema_and_seeds_six() {
     );
 }
 
-/// (spec §3.1, the migration path) an existing FIVE-stage database gains a
-/// `discuss` column immediately BEFORE `research`, both launch Skills
-/// backfilled, `next_slugs` left NULL — and a SECOND `Db::open` changes nothing.
+/// (ADR 0107 — the surviving half of spec §3.1) a pre-#179 database that has
+/// the FIVE-column `stages` and no `on_enter_skill` gains the column and the ONE
+/// launch Skill that still exists (`research`), and gains NO `discuss` row —
+/// inventing a column for a retired Stage is no longer this gate's job, and a
+/// Space that still carries a `discuss` column is user data the Stage editor
+/// owns. A SECOND `Db::open` changes nothing.
+///
+/// This is the replacement pin for the three migration tests ADR 0107 deleted
+/// with the `discuss` backfill: without it the surviving gate (the `ALTER` plus
+/// the `research` UPDATE) would be untested on the migration path.
 #[test]
-fn five_stage_database_gains_discuss_before_research_and_both_skills_on_open() {
-    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-migrate-", "scratch");
+fn the_on_enter_skill_gate_backfills_research_and_inserts_no_discuss_row() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-gate-", "scratch");
     let space = board_space("upgrade-me");
     let path = preexisting_db(
         &dir,
@@ -5772,47 +5777,52 @@ fn five_stage_database_gains_discuss_before_research_and_both_skills_on_open() {
     );
 
     {
-        let db = Db::open(&path).expect("the migration runs on open");
+        let db = Db::open(&path).expect("the gate runs on open");
+
+        // (a) `research` gained its launch Skill from the surviving UPDATE.
+        assert_eq!(
+            db.list_stages(&space)
+                .expect("list_stages")
+                .iter()
+                .find(|s| s.slug == "research")
+                .expect("the research row exists")
+                .on_enter_skill
+                .as_deref(),
+            Some("research"),
+            "the one launch Skill that still exists is backfilled (spec §3.1 \
+             step 1, the step ADR 0107 kept)"
+        );
+        // (b) no `discuss` row was invented, and the five rows kept their indices.
         assert_eq!(
             stage_order(&db, &space),
             vec![
                 ("backlog".to_string(), 0),
-                ("discuss".to_string(), 1),
-                ("research".to_string(), 2),
-                ("approved".to_string(), 3),
-                ("doing".to_string(), 4),
-                ("done".to_string(), 5),
+                ("research".to_string(), 1),
+                ("approved".to_string(), 2),
+                ("doing".to_string(), 3),
+                ("done".to_string(), 4),
             ],
-            "`discuss` lands at research's OLD index and everything from \
-             `research` up shifts by one, so the order stays dense"
+            "the gate inserts NO `discuss` row and shifts NO `sort_order` — the \
+             pre-#179 board keeps the layout its owner has (ADR 0107)"
         );
-        let skills: Vec<(String, Option<String>)> = raw_column(
-            &db,
-            &format!(
-                "SELECT slug || '|' || COALESCE(on_enter_skill,'NULL') FROM stages \
-                 WHERE space_path = '{space}' ORDER BY sort_order ASC, slug ASC"
-            ),
-        )
-        .into_iter()
-        .map(|pair| {
-            let (slug, skill) = pair.split_once('|').expect("the fixture spells a pair");
-            (
-                slug.to_string(),
-                (skill != "NULL").then(|| skill.to_string()),
-            )
-        })
-        .collect();
+        let has_discuss = {
+            let guard = db.conn.lock().expect("db mutex poisoned");
+            stage_slug_exists(&guard, &space, "discuss").expect("the probe reads")
+        };
+        assert!(
+            !has_discuss,
+            "no `discuss` column arrives on an upgraded Space — the retired Stage \
+             must not be re-invented by a migration (ADR 0107)"
+        );
         assert_eq!(
-            skills,
-            vec![
-                ("backlog".to_string(), None),
-                ("discuss".to_string(), Some("discuss".to_string())),
-                ("research".to_string(), Some("research".to_string())),
-                ("approved".to_string(), None),
-                ("doing".to_string(), None),
-                ("done".to_string(), None),
-            ],
-            "spec §3.1 steps 1–2 backfill exactly the two launch Skills"
+            db.list_stages(&space)
+                .expect("list_stages")
+                .iter()
+                .filter(|s| s.on_enter_skill.is_some())
+                .count(),
+            1,
+            "exactly ONE Stage carries a launch Skill after the gate — a surviving \
+             `discuss` backfill would make this 2"
         );
         assert_eq!(
             raw_i64s(
@@ -5824,112 +5834,35 @@ fn five_stage_database_gains_discuss_before_research_and_both_skills_on_open() {
             )
             .first(),
             Some(&0),
-            "`next_slugs` is NOT backfilled (spec §3.1 step 4)"
+            "`next_slugs` is still NOT backfilled (spec §3.1 step 4, ADR 0099)"
         );
-        // The board the user sees after upgrading keeps BOTH launch buttons —
-        // the failure ADR 0098's Consequence calls out for a missing backfill.
-        let board = db.get_board(&space).expect("get_board after the migration");
-        assert_eq!(board.len(), 6, "six columns after one open");
+        // The upgraded board is the five-column board the user sees.
+        let board = db.get_board(&space).expect("get_board after the gate");
+        assert_eq!(board.len(), 5, "five columns after one open");
     }
 
-    // Re-open the SAME file: the gate's probe now finds the column, so nothing
-    // re-runs and no second `discuss` appears.
+    // (c) Re-open the SAME file: the gate's probe now finds the column, so
+    // nothing re-runs — no second row, no second shift, no re-backfill.
     let db = Db::open(&path).expect("a second open is a no-op");
     assert_eq!(
         stage_order(&db, &space),
         vec![
             ("backlog".to_string(), 0),
-            ("discuss".to_string(), 1),
-            ("research".to_string(), 2),
-            ("approved".to_string(), 3),
-            ("doing".to_string(), 4),
-            ("done".to_string(), 5),
+            ("research".to_string(), 1),
+            ("approved".to_string(), 2),
+            ("doing".to_string(), 3),
+            ("done".to_string(), 4),
         ],
         "idempotent on re-open: neither a second `discuss` row nor a second shift"
     );
-}
-
-/// (spec §3.1 step 3's pre-check) the backfill keys on a `research` row
-/// existing. A Space whose owner renamed that column has no `research` slug, so
-/// the migration gives it nothing — inventing a `discuss` column beside a
-/// renamed workflow would be the migration deciding the user's business.
-#[test]
-fn a_space_with_a_hand_renamed_research_slug_gains_no_discuss_row() {
-    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-spike-", "scratch");
-    let space = board_space("hand-renamed");
-    let rows = format!(
-        "INSERT INTO stages (space_path, slug, label, sort_order) VALUES \
-           ('{space}','backlog','Backlog',0),\
-           ('{space}','spike','Spike',1),\
-           ('{space}','done','Done',2);\n"
-    );
-    let path = preexisting_db(&dir, SCHEMA_PRE_TASK_BOARD_CONFIG, &rows);
-
-    let db = Db::open(&path).expect("open runs the gate");
-    assert_eq!(
-        stage_order(&db, &space),
-        vec![
-            ("backlog".to_string(), 0),
-            ("spike".to_string(), 1),
-            ("done".to_string(), 2),
-        ],
-        "no `research` row means no `discuss` insert, and `spike` keeps its index"
-    );
-}
-
-/// (the backfill's idempotence claim, mutated) the `NOT IN` pre-check is what
-/// makes the `discuss` INSERT safe to re-run. Delete it and this file — a
-/// pre-#179 Space that ALREADY has a `discuss` column — fails the
-/// `PRIMARY KEY (space_path, slug)` constraint inside the gate, i.e. `Db::open`
-/// bricks instead of skipping.
-#[test]
-fn a_space_that_already_has_a_discuss_row_is_left_alone_by_the_backfill() {
-    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-already-", "scratch");
-    let space = board_space("already-discuss");
-    let rows = format!(
-        "INSERT INTO stages (space_path, slug, label, sort_order) VALUES \
-           ('{space}','backlog','Backlog',0),\
-           ('{space}','discuss','My Discussions',1),\
-           ('{space}','research','Research',2),\
-           ('{space}','done','Done',3);\n"
-    );
-    let path = preexisting_db(&dir, SCHEMA_PRE_TASK_BOARD_CONFIG, &rows);
-
-    let db = Db::open(&path).expect("open must NOT fail on the existing discuss row");
-    let guard = db.conn.lock().expect("db mutex poisoned");
-    let label: String = guard
-        .query_row(
-            "SELECT label FROM stages WHERE space_path = ?1 AND slug = 'discuss'",
-            params![space],
-            |row| row.get(0),
-        )
-        .expect("the owner's discuss row is still there");
-    drop(guard);
-    assert_eq!(
-        label, "My Discussions",
-        "the pre-check skips the Space wholesale — the migration never overwrites \
-         a label a person wrote"
-    );
-    assert_eq!(
-        stage_order(&db, &space),
-        vec![
-            ("backlog".to_string(), 0),
-            ("discuss".to_string(), 1),
-            ("research".to_string(), 2),
-            ("done".to_string(), 3),
-        ],
-        "and it never shifts the existing rows either"
-    );
-    // The Skill backfill still ran for the two launch columns (steps 1–2 are
-    // unconditional; only the INSERT is pre-checked).
     assert_eq!(
         db.list_stages(&space)
             .expect("list_stages")
             .iter()
             .filter(|s| s.on_enter_skill.is_some())
             .count(),
-        2,
-        "`discuss` and `research` both carry their Skill"
+        1,
+        "the gate ran once, not twice"
     );
 }
 
@@ -5943,7 +5876,7 @@ fn create_stage_inserts_at_the_end_and_refuses_a_taken_slug_naming_the_valid_one
     let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-create-", "scratch");
     let db = Db::open(&dir.join("t.db")).expect("db should open");
     let space = board_space("create");
-    db.get_board(&space).expect("seed the six");
+    db.get_board(&space).expect("seed the five");
 
     let made = db
         .create_stage(&space, "spike", "Spike!", Some("brainstorm"))
@@ -5953,7 +5886,7 @@ fn create_stage_inserts_at_the_end_and_refuses_a_taken_slug_naming_the_valid_one
         made.label, "Spike!",
         "the LABEL is stored as the user typed it"
     );
-    assert_eq!(made.sort_order, 6, "a new column joins at the END");
+    assert_eq!(made.sort_order, 5, "a new column joins at the END");
     assert_eq!(
         made.on_enter, "none",
         "the DDL default, not a second copy here"
@@ -5980,7 +5913,7 @@ fn create_stage_inserts_at_the_end_and_refuses_a_taken_slug_naming_the_valid_one
     }
     assert_eq!(
         db.list_stages(&space).expect("list_stages").len(),
-        7,
+        6,
         "the refusal wrote nothing"
     );
 }
@@ -6005,7 +5938,7 @@ fn create_stage_refuses_an_empty_slug() {
     }
     assert_eq!(
         db.list_stages(&space).expect("list_stages").len(),
-        6,
+        5,
         "neither refusal wrote a row"
     );
 }
@@ -6027,7 +5960,11 @@ fn rename_stage_writes_only_the_label_and_keeps_the_slug() {
         .expect("rename_stage");
     assert_eq!(renamed.slug, "research", "the KEY never moves");
     assert_eq!(renamed.label, "Spike");
-    assert_eq!(renamed.sort_order, 2, "and neither does the position");
+    assert_eq!(
+        renamed.sort_order, 1,
+        "and neither does the position (index 1 on the five-stage seed — ADR 0107 \
+         dropped the `discuss` row that used to push `research` to 2)"
+    );
     assert_eq!(
         db.get_task(&card.id)
             .expect("get_task")
@@ -6084,7 +6021,7 @@ fn set_stage_next_persists_the_edges_and_round_trips_them() {
     let space = board_space("next");
     db.get_board(&space).expect("seed");
 
-    let wanted = vec!["discuss".to_string(), "research".to_string()];
+    let wanted = vec!["research".to_string(), "approved".to_string()];
     let set = db
         .set_stage_next(&space, "backlog", &wanted)
         .expect("set_stage_next");
@@ -6100,7 +6037,7 @@ fn set_stage_next_persists_the_edges_and_round_trips_them() {
     );
     assert_eq!(
         raw.first().map(|s| s.as_str()),
-        Some(r#"["discuss","research"]"#),
+        Some(r#"["research","approved"]"#),
         "JSON-at-rest, following the `sessions.todos_json` precedent"
     );
     let read_back = db.get_board(&space).expect("get_board");
@@ -6128,7 +6065,7 @@ fn set_stage_next_refuses_an_unknown_slug_naming_the_valid_ones() {
         BoardError::MissingStage { wanted, available } => {
             assert_eq!(wanted, "sprint-review");
             assert!(
-                available.contains("discuss"),
+                available.contains("research"),
                 "the refusal names the valid slugs, got `{available}`"
             );
         }
@@ -6202,11 +6139,9 @@ fn reorder_stages_persists_the_new_column_order_in_one_pass() {
     let space = board_space("order");
     db.get_board(&space).expect("seed");
 
-    let slugs = [
-        "done", "doing", "approved", "research", "discuss", "backlog",
-    ]
-    .map(str::to_string)
-    .to_vec();
+    let slugs = ["done", "doing", "approved", "research", "backlog"]
+        .map(str::to_string)
+        .to_vec();
     db.reorder_stages(&space, &slugs).expect("reorder_stages");
 
     assert_eq!(
@@ -6224,7 +6159,7 @@ fn reorder_stages_persists_the_new_column_order_in_one_pass() {
             .iter()
             .map(|c| c.stage.slug.as_str())
             .collect::<Vec<_>>(),
-        vec!["done", "doing", "approved", "research", "discuss", "backlog"],
+        vec!["done", "doing", "approved", "research", "backlog"],
         "and the board renders that order"
     );
 }
@@ -6253,12 +6188,7 @@ fn reorder_stages_is_a_silent_no_op_on_an_unknown_slug() {
     assert_eq!(named("done"), Some(0), "the named rows renumber…");
     assert_eq!(named("backlog"), Some(2), "…in the caller's order…");
     assert_eq!(named("ghost"), None, "…and the ghost wrote no row at all");
-    for (slug, untouched) in [
-        ("discuss", 1),
-        ("research", 2),
-        ("approved", 3),
-        ("doing", 4),
-    ] {
+    for (slug, untouched) in [("research", 1), ("approved", 2), ("doing", 3)] {
         assert_eq!(
             named(slug),
             Some(untouched),
@@ -6302,7 +6232,7 @@ fn delete_stage_refuses_a_stage_that_holds_cards_and_names_the_count_and_the_slu
     }
     assert_eq!(
         db.list_stages(&space).expect("list_stages").len(),
-        6,
+        5,
         "the refusal deleted nothing"
     );
 }
@@ -6342,7 +6272,7 @@ fn delete_stage_refuses_a_stage_another_stage_s_next_slugs_names_it() {
         .expect("with the edge gone, the delete goes through");
     assert_eq!(
         db.list_stages(&space).expect("list_stages").len(),
-        5,
+        4,
         "one row deleted"
     );
 }
@@ -6358,10 +6288,8 @@ fn delete_stage_refuses_the_last_stage() {
     let only = db
         .create_stage(&space, "solo", "Solo", None)
         .expect("create_stage");
-    // Empty the seeded six, leaving exactly one row.
-    for slug in [
-        "backlog", "discuss", "research", "approved", "doing", "done",
-    ] {
+    // Empty the seeded five, leaving exactly one row.
+    for slug in ["backlog", "research", "approved", "doing", "done"] {
         db.delete_stage(&space, slug, Some("solo"))
             .expect("clear the seeded columns into solo");
     }
@@ -6454,7 +6382,7 @@ fn delete_stage_relocates_cards_with_one_update_without_touching_updated_at_or_o
     );
     assert_eq!(
         db.list_stages(&space).expect("list_stages").len(),
-        5,
+        4,
         "and the emptied column is gone"
     );
 }
@@ -6479,7 +6407,7 @@ fn delete_stage_refuses_a_relocate_destination_that_is_not_a_stage_of_this_space
     );
     assert_eq!(
         db.list_stages(&space).expect("list_stages").len(),
-        6,
+        5,
         "a refused delete deleted the column AND stranded the card in no way at all"
     );
     assert_eq!(
@@ -6713,7 +6641,7 @@ fn next_slugs_that_is_not_a_json_array_reads_as_unconfigured() {
         let board = db
             .get_board(&space)
             .expect("a bad cell must never blank the board");
-        assert_eq!(board.len(), 6, "the whole board still arrives for {junk:?}");
+        assert_eq!(board.len(), 5, "the whole board still arrives for {junk:?}");
         assert_eq!(
             board[0].stage.next_slugs, None,
             "`{junk:?}` reads as unconfigured, never as an error"
