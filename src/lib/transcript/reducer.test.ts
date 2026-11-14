@@ -3,12 +3,25 @@ import {
   applySessionUpdate,
   extractDiffs,
   finalizeSessionMessages,
+  mapPersistedStatus,
   mapStatus,
   rowToMessages,
 } from "./reducer";
 import { isStaleCompactionStart } from "./identity";
 import type { AcpSessionUpdate, MessageRow } from "../tauri";
 import type { Message } from "../sessionTypes";
+
+/** A persisted `tool-call` row carrying `payload` as its `payload_json`. */
+function toolRow(payload: Record<string, unknown>): MessageRow {
+  return {
+    id: 1,
+    sessionId: "s1",
+    kind: "tool-call",
+    messageKey: null,
+    payloadJson: JSON.stringify(payload),
+    createdAt: 1000,
+  };
+}
 
 describe("src/lib/transcript", () => {
   describe("mapStatus", () => {
@@ -306,6 +319,144 @@ describe("src/lib/transcript", () => {
         text: "Hello agent",
         at: 1000,
       });
+    });
+
+    // THE HYDRATION TRAP (#155). A row that comes off disk with an UNRESOLVED
+    // status is a call whose settle frame never arrived — the same case
+    // `finalizeSessionMessages` already rules on by flipping a still-pending
+    // call to `failed` "so the transcript doesn't show a spinner forever".
+    // Sharing `mapStatus` made `in_progress` hydrate as `pending`, so every
+    // orphan row re-opened on load: the shimmer class, the present-tense verb,
+    // and — in `SubagentDelegatingCard` — a 1 s `setInterval` armed per visible
+    // card, all for a call that died before this process started.
+    it("hydrates an in_progress tool-call row as failed, not pending", () => {
+      const [msg] = rowToMessages(
+        toolRow({ toolCallId: "tc1", title: "bash", status: "in_progress" }),
+      );
+      if (msg?.kind !== "tool-call") throw new Error("no tool-call message");
+      expect(msg.status).toBe("failed");
+    });
+
+    it("hydrates a tool-call row with NO status as failed, not pending", () => {
+      const [msg] = rowToMessages(
+        toolRow({ toolCallId: "tc1", title: "bash" }),
+      );
+      if (msg?.kind !== "tool-call") throw new Error("no tool-call message");
+      expect(msg.status).toBe("failed");
+    });
+
+    it("hydrates a pending tool-call row as failed, not pending", () => {
+      const [msg] = rowToMessages(
+        toolRow({ toolCallId: "tc1", title: "bash", status: "pending" }),
+      );
+      if (msg?.kind !== "tool-call") throw new Error("no tool-call message");
+      expect(msg.status).toBe("failed");
+    });
+
+    // The two settled statuses are the whole truth on disk and must survive
+    // untouched — an unresolved row renders as `failed`, NOT as a success card
+    // whose body is the `(no output)` placeholder `ToolCallCard` shows when
+    // `status !== "failed"` and there is no output.
+    it("hydrates completed and failed tool-call rows verbatim", () => {
+      const done = rowToMessages(
+        toolRow({ toolCallId: "tc1", title: "bash", status: "completed" }),
+      )[0];
+      const boom = rowToMessages(
+        toolRow({ toolCallId: "tc2", title: "bash", status: "failed" }),
+      )[0];
+      if (done?.kind !== "tool-call" || boom?.kind !== "tool-call") {
+        throw new Error("no tool-call message");
+      }
+      expect(done.status).toBe("completed");
+      expect(boom.status).toBe("failed");
+    });
+  });
+
+  describe("mapPersistedStatus (hydrate-only)", () => {
+    it("can never return pending", () => {
+      const cases: unknown[] = [
+        undefined,
+        null,
+        "pending",
+        "in_progress",
+        "running",
+        "queued",
+        "",
+        "gibberish",
+      ];
+      for (const status of cases) {
+        expect(mapPersistedStatus(status as never)).toBe("failed");
+      }
+    });
+
+    it("maps the two settled statuses accurately", () => {
+      expect(mapPersistedStatus("completed")).toBe("completed");
+      expect(mapPersistedStatus("failed")).toBe("failed");
+    });
+  });
+
+  describe("live path is NOT the hydrate path (#155)", () => {
+    // THE GUARD. The live wire announces EVERY call at `in_progress`
+    // (`normalize.rs`: `toolcall_start` / `tool_execution_start`), so routing
+    // the live arms through the hydrate mapper would render every freshly-
+    // announced, genuinely-running tool call as FINISHED until its settle frame
+    // lands seconds later — deleting the live progress cue to fix a disk bug.
+    // If someone "simplifies" the two mappers back into one, this fails.
+    it("still yields pending for a live tool_call announced as in_progress", () => {
+      const messages = applySessionUpdate(
+        [],
+        {
+          sessionUpdate: "tool_call",
+          toolCallId: "live1",
+          title: "bash",
+          status: "in_progress",
+        } as AcpSessionUpdate,
+        100,
+      );
+      const [msg] = messages;
+      if (msg?.kind !== "tool-call") throw new Error("no tool-call message");
+      expect(msg.status).toBe("pending");
+    });
+
+    it("still yields pending for a live tool_call_update whose id is unknown", () => {
+      const messages = applySessionUpdate(
+        [],
+        {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "live2",
+          title: "bash",
+          status: "in_progress",
+        } as AcpSessionUpdate,
+        100,
+      );
+      const [msg] = messages;
+      if (msg?.kind !== "tool-call") throw new Error("no tool-call message");
+      expect(msg.status).toBe("pending");
+    });
+
+    it("still yields pending for a live in_progress update on an existing call", () => {
+      let messages = applySessionUpdate(
+        [],
+        {
+          sessionUpdate: "tool_call",
+          toolCallId: "live3",
+          title: "bash",
+          status: "in_progress",
+        } as AcpSessionUpdate,
+        100,
+      );
+      messages = applySessionUpdate(
+        messages,
+        {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "live3",
+          status: "in_progress",
+        } as AcpSessionUpdate,
+        150,
+      );
+      const [msg] = messages;
+      if (msg?.kind !== "tool-call") throw new Error("no tool-call message");
+      expect(msg.status).toBe("pending");
     });
   });
 });
