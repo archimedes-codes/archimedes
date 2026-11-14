@@ -54,7 +54,7 @@ use tauri::State;
 
 use crate::agent::{debuglog, EventSink, SessionError, SessionInfo, SessionManager, TasksError};
 use crate::storage::{
-    Artifact, ArtifactMeta, Db, StageRow, StageWithTasks, TaskRow, TaskSessionRow,
+    Artifact, ArtifactMeta, Db, FieldPatch, StageRow, StageWithTasks, TaskRow, TaskSessionRow,
 };
 
 /// What a `move_task` reports: the destination stage's `on_enter`, plus — only
@@ -345,11 +345,19 @@ pub async fn edit_task(
     let db = state.inner().clone();
     board_call(
         tauri::async_runtime::spawn_blocking(move || {
+            // The mechanical half of the `FieldPatch` migration, and ONLY that: the
+            // wire shape is still TWO-state (`Option<String>`, `None` = leave it), so
+            // `None` maps to `Keep` and `Some` to `Set`. Nothing here can send
+            // `FieldPatch::Clear`, and the `Clear`-on-`title` refusal is deliberately
+            // NOT added — that is this command's third-state decision to make, not a
+            // consequence of the storage signature.
             db.edit_task(
                 &task_id,
-                title.as_deref(),
-                body.as_deref(),
-                spec_path.as_deref(),
+                title.as_deref().map_or(FieldPatch::Keep, FieldPatch::Set),
+                body.as_deref().map_or(FieldPatch::Keep, FieldPatch::Set),
+                spec_path
+                    .as_deref()
+                    .map_or(FieldPatch::Keep, FieldPatch::Set),
             )
         })
         .await,

@@ -4309,7 +4309,7 @@ fn delete_space_leaves_the_board_rows_in_place() {
     );
 }
 
-/// (`edit_task`) the COALESCE patch writes ONLY the fields it is given, and
+/// (`edit_task`) the `FieldPatch::Keep` patch writes ONLY the fields it is given, and
 /// never the position or the label — `move_task` owns the stage, `number` is
 /// never renumbered, and within-column position is a human concern (spec §3).
 #[test]
@@ -4322,13 +4322,18 @@ fn edit_task_writes_only_the_fields_it_is_given() {
         .expect("create");
 
     let edited = db
-        .edit_task(&task.id, Some("renamed"), None, Some("docs/x.md"))
+        .edit_task(
+            &task.id,
+            FieldPatch::Set("renamed"),
+            FieldPatch::Keep,
+            FieldPatch::Set("docs/x.md"),
+        )
         .expect("edit_task");
     assert_eq!(edited.title, "renamed", "the title is written");
     assert_eq!(
         edited.body.as_deref(),
         Some("body one"),
-        "an absent body keeps the stored one (COALESCE, not an overwrite with NULL)"
+        "a kept body keeps the stored one (Keep, not an overwrite with NULL)"
     );
     assert_eq!(
         edited.spec_path.as_deref(),
@@ -4349,9 +4354,202 @@ fn edit_task_writes_only_the_fields_it_is_given() {
     );
 
     let err = db
-        .edit_task("tsk_missing", Some("x"), None, None)
+        .edit_task(
+            "tsk_missing",
+            FieldPatch::Set("x"),
+            FieldPatch::Keep,
+            FieldPatch::Keep,
+        )
         .expect_err("editing a Task that does not exist is a rejection");
     assert!(matches!(err, BoardError::MissingTask(_)), "got {err:?}");
+}
+
+/// (`edit_task`) `FieldPatch::Clear` writes NULL.
+///
+/// The whole reason the patch type exists. Under the old `Option<&str>` +
+/// `COALESCE` statement `NULL` meant "leave it alone", so no value a caller
+/// could send blanked a column — and a card could never stop naming a deleted
+/// file (`finish` deletes `docs/roadmap/*` on ship, ADR 0100), leaving a
+/// permanently dangling link.
+#[test]
+fn edit_task_can_clear_body_and_spec_path_to_null() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-task-edit-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("clear");
+    let task = db
+        .create_task(&space, "kept title", Some("body one"), None)
+        .expect("create");
+    db.edit_task(
+        &task.id,
+        FieldPatch::Keep,
+        FieldPatch::Keep,
+        FieldPatch::Set("docs/gone.md"),
+    )
+    .expect("plant a spec_path");
+
+    let cleared = db
+        .edit_task(
+            &task.id,
+            FieldPatch::Keep,
+            FieldPatch::Clear,
+            FieldPatch::Clear,
+        )
+        .expect("edit_task");
+
+    assert!(
+        cleared.body.is_none(),
+        "`Clear` writes NULL, not an empty string — body came back {:?}",
+        cleared.body
+    );
+    assert!(
+        cleared.spec_path.is_none(),
+        "`Clear` writes NULL, not an empty string — spec_path came back {:?}",
+        cleared.spec_path
+    );
+    assert_eq!(
+        cleared.title, "kept title",
+        "the same call leaves a `Keep` column exactly as it was"
+    );
+}
+
+/// (`edit_task`) the three-state proof: NOT sending a field and sending an
+/// explicit clear are DIFFERENT answers.
+///
+/// This test could not exist before `FieldPatch` — with `Option<&str>` +
+/// `COALESCE` there was only one state to observe, which is precisely the
+/// defect. It is the plan's falsifier: if it passes without `FieldPatch`, the
+/// third state was reachable some other way and this work is unnecessary.
+///
+/// The `Keep` call also pins the unconditional `updated_at` stamp: an
+/// all-`Keep` patch writes no column but still moves the clock, exactly as the
+/// `COALESCE` statement did. The timestamp is PLANTED old rather than trusted,
+/// for the reason `delete_stage_relocates_cards…` gives — a same-ms write would
+/// otherwise turn this assert green by accident.
+#[test]
+fn an_omitted_field_and_a_cleared_field_are_different_answers() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-task-edit-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("threestate");
+    let task = db
+        .create_task(&space, "a title", Some("a body"), None)
+        .expect("create");
+    db.edit_task(
+        &task.id,
+        FieldPatch::Keep,
+        FieldPatch::Keep,
+        FieldPatch::Set("docs/spec.md"),
+    )
+    .expect("plant a spec_path");
+
+    // ── `Keep`: the stored value survives untouched ──────────────────────────
+    const PLANTED: i64 = 1000;
+    db.conn
+        .lock()
+        .expect("db mutex poisoned")
+        .execute(
+            "UPDATE tasks SET updated_at = ?1 WHERE id = ?2",
+            params![PLANTED, task.id],
+        )
+        .expect("plant the old timestamp");
+
+    let kept = db
+        .edit_task(
+            &task.id,
+            FieldPatch::Keep,
+            FieldPatch::Keep,
+            FieldPatch::Keep,
+        )
+        .expect("an all-Keep patch is a legal call");
+    assert_eq!(kept.title, "a title", "`Keep` leaves `title` alone");
+    assert_eq!(
+        kept.body.as_deref(),
+        Some("a body"),
+        "`Keep` leaves `body` alone"
+    );
+    assert_eq!(
+        kept.spec_path.as_deref(),
+        Some("docs/spec.md"),
+        "`Keep` leaves `spec_path` alone — this is the state the old `None` meant"
+    );
+    assert!(
+        kept.updated_at > PLANTED,
+        "`updated_at` is stamped UNCONDITIONALLY as before: {} must be later than \
+         the planted {}",
+        kept.updated_at,
+        PLANTED
+    );
+
+    // ── `Clear`: the SAME verb, the SAME column, a different answer ──────────
+    let cleared = db
+        .edit_task(
+            &task.id,
+            FieldPatch::Keep,
+            FieldPatch::Keep,
+            FieldPatch::Clear,
+        )
+        .expect("edit_task");
+    assert_eq!(
+        cleared.title, kept.title,
+        "the field the call kept is still untouched"
+    );
+    assert_eq!(
+        cleared.body, kept.body,
+        "the field the call kept is still untouched"
+    );
+    assert!(
+        cleared.spec_path.is_none(),
+        "`Clear` nulls the very column `Keep` preserved — two states, not one: {:?}",
+        cleared.spec_path
+    );
+}
+
+/// (`edit_task`) the `touched == 0` instrument does not misfire on a no-op
+/// clear.
+///
+/// `edit_task` is the ONLY board write that refuses AFTER the write — every
+/// other one (`move_task`'s stage gate, `create_task`'s number) checks first and
+/// writes nothing when it refuses. That asymmetry is affordable only because
+/// `touched == 0` means exactly one thing here: no row matched `WHERE id`. So it
+/// must stay true when an UPDATE re-sets a column to the value it already holds,
+/// which is what clearing an already-NULL column is. SQLite reports rowcount 1
+/// for such a statement; this pins it against THIS crate's bundled rusqlite
+/// rather than against a Python binding's reading of it.
+///
+/// A misfire would be a nasty one: the card exists, and the command layer is
+/// told it is gone.
+#[test]
+fn edit_task_clearing_an_already_null_column_is_not_reported_as_a_missing_task() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-task-edit-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("nullclear");
+    // `create_task` stores `body` = NULL and `spec_path` = NULL, so BOTH clear
+    // targets start already-NULL — no planting needed.
+    let task = db
+        .create_task(&space, "nothing to clear", None, None)
+        .expect("create");
+    assert!(task.body.is_none() && task.spec_path.is_none());
+
+    let cleared = db
+        .edit_task(
+            &task.id,
+            FieldPatch::Keep,
+            FieldPatch::Clear,
+            FieldPatch::Clear,
+        )
+        .expect("clearing an already-NULL column is NOT a missing Task");
+
+    assert!(
+        cleared.body.is_none() && cleared.spec_path.is_none(),
+        "and the answer is the row as stored"
+    );
+    assert_eq!(
+        db.get_task(&task.id)
+            .expect("get_task")
+            .expect("the card is still there")
+            .id,
+        task.id,
+        "the card was never gone — `touched` counted the UPDATE, not a change"
+    );
 }
 
 /// (`get_task`) a missing id is `Ok(None)` — the `find_space` shape: a read of
