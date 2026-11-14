@@ -542,22 +542,47 @@ fn edit_task_refuses_to_clear_the_title_because_the_column_is_not_null() {
 ///
 /// Why this test exists at all: `wire_call`'s inner arm returns the `TasksError` it
 /// is handed UNCHANGED, so the `not_found`/`database` distinction now depends on the
-/// ONE `.map_err(TasksError::from)` inside the command's closure. Delete it and
+/// ONE `.map_err(TasksError::from)` inside [`edit_task_core`]. Delete it and
 /// nothing else reddens — a cleared spec path on a deleted card would report a
 /// generic failure, the frontend would keep the card on the board (it only drops a
 /// card on `not_found`, ADR 0090), and the user would stare at a card that is not
 /// there. That is the silent-green shape, and it is the one risk the swap introduces
 /// — so the mutation IS tested: replacing that `map_err` with a flattening one turns
-/// the last assertion here red.
+/// the last assertion here red (verified: `left: "other"`, right: `"not_found"`).
 ///
-/// Driven through the REAL storage call and the REAL `wire_call`, the way
+/// Driven through [`edit_task_core`] — the function the command's closure calls —
+/// plus the REAL `wire_call`, the way
 /// `reorder_tasks_refusals_reach_the_wire_naming_what_was_refused` drives the other
 /// flattener: the outer `Ok` stands in for the join succeeding (the arm `board_call`
 /// documents as untestable), everything inside is the composition the command runs.
+///
+/// The core, not a hand-written `db.edit_task(..).map_err(..)`: an earlier shape of
+/// this test typed that `map_err` ITSELF, so the very line it existed to protect was
+/// a copy rather than the original, and flattening it inside the command left the
+/// suite green (review #189). Driving the core means the assertion runs the mapping
+/// the wire runs. `tauri::State` and `tauri::ipc::Request` cannot be built in a unit
+/// test (the `start_task_session_inner` / `write_artifact_core` reason), and the
+/// mock-runtime IPC test that could is `tests/ipc.rs` — `#![cfg(target_os = "linux")]`
+/// for the macOS SIGSEGV its own header records — so the core is the seam that is
+/// reachable from all three CI legs.
 #[test]
 fn edit_task_still_reports_a_missing_card_as_not_found_after_the_wire_call_swap() {
-    use crate::commands::tasks::wire_call;
+    use crate::commands::tasks::{edit_task_core, wire_call};
     use crate::storage::{Db, FieldPatch};
+
+    /// Build the body the way the wire sends it: `taskId` plus whichever fields the
+    /// caller named — an absent key is a `Keep` and cannot be spelled here.
+    fn body(
+        task_id: &str,
+        fields: &[(&str, serde_json::Value)],
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut map = serde_json::Map::new();
+        map.insert("taskId".to_string(), serde_json::json!(task_id));
+        for (key, value) in fields {
+            map.insert((*key).to_string(), value.clone());
+        }
+        map
+    }
 
     let dir = crate::test_support::ScratchDir::in_env_temp("cmd-task-edit-", "scratch");
     let db = Db::open(&dir.join("t.db")).expect("db should open");
@@ -579,15 +604,16 @@ fn edit_task_still_reports_a_missing_card_as_not_found_after_the_wire_call_swap(
 
     // A clear that lands: the row comes back with both columns NULLed. This is the
     // end-to-end shape the whole plan is for, asserted at the layer below the wire.
-    let row = wire_call(Ok::<_, String>(
-        db.edit_task(
+    let row = wire_call(Ok::<_, String>(edit_task_core(
+        &db,
+        &body(
             &live.id,
-            FieldPatch::Keep,
-            FieldPatch::Clear,
-            FieldPatch::Clear,
-        )
-        .map_err(crate::agent::TasksError::from),
-    ))
+            &[
+                ("body", serde_json::Value::Null),
+                ("specPath", serde_json::Value::Null),
+            ],
+        ),
+    )))
     .expect("a clear on a live card succeeds");
     assert_eq!(row.body, None, "`body` is NULL");
     assert_eq!(row.spec_path, None, "`spec_path` is NULL");
@@ -595,15 +621,10 @@ fn edit_task_still_reports_a_missing_card_as_not_found_after_the_wire_call_swap(
 
     // A clear against a card that is not there: `not_found`, naming the id, through
     // the SAME composition the command's closure runs.
-    let err = wire_call(Ok::<_, String>(
-        db.edit_task(
-            "tsk_gone",
-            FieldPatch::Keep,
-            FieldPatch::Clear,
-            FieldPatch::Keep,
-        )
-        .map_err(crate::agent::TasksError::from),
-    ))
+    let err = wire_call(Ok::<_, String>(edit_task_core(
+        &db,
+        &body("tsk_gone", &[("specPath", serde_json::Value::Null)]),
+    )))
     .expect_err("a missing card must be refused");
     let envelope = tauri::ipc::InvokeError::from(err).0;
     assert_eq!(

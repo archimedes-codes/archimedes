@@ -27,7 +27,7 @@
 //! `From<DbError> for TasksError` is added here. The other two are [`write_artifact`]
 //! and [`edit_task`]: each composes command-layer refusals that only exist in the
 //! wire family, so each goes through [`wire_call`] and maps its own `BoardError`
-//! inside the closure — which is where `not_found` keeps its identity.
+//! inside the core the closure calls — which is where `not_found` keeps its identity.
 //!
 //! The blocking rule is the file rule from `commands/files/mod.rs`, restated in
 //! `spaces.rs`: SQLite work goes on a worker thread, and it is
@@ -207,6 +207,32 @@ fn patch_title(
                 .to_string(),
         )),
         FieldPatch::Set(raw) => Ok(Some(require_title(raw)?)),
+    }
+}
+
+/// Read the `taskId` out of an invoke body, or refuse.
+///
+/// `task_id` used to be a typed parameter and Tauri produced "missing required
+/// key `taskId`" natively. With no typed parameters the command produces that
+/// answer itself — naming the key, because that is the string the caller greps
+/// for. The camelCase spelling is what the macro's own default
+/// (`ArgumentCase::Camel`) looks up, and what `editTask` sends.
+///
+/// A helper rather than an inline `match` because the core re-reads it: the
+/// command checks it BEFORE the blocking hop so a refusal spends no worker
+/// thread, and the core re-checks it so a caller that did not come through the
+/// command cannot skip it — [`write_artifact_core`]'s re-check rule, and the
+/// reason the sentence cannot be written twice.
+fn task_id_from(body: &serde_json::Map<String, serde_json::Value>) -> Result<String, TasksError> {
+    match body.get("taskId") {
+        Some(serde_json::Value::String(id)) => Ok(id.clone()),
+        Some(other) => Err(TasksError::Other(format!(
+            "edit_task `taskId` must be a string, found {}",
+            json_type_name(other),
+        ))),
+        None => Err(TasksError::Other(
+            "edit_task missing required key `taskId`".to_string(),
+        )),
     }
 }
 
@@ -457,6 +483,44 @@ pub async fn get_task(
 /// The stage, the number and the position are not this verb's to write — the stage
 /// is [`move_task`], the position is [`reorder_tasks`] (spec §3's two drag verbs),
 /// and the number is never written at all (ADR 0090).
+/// [`edit_task`]'s testable core (the [`write_artifact_core`] /
+/// [`start_task_session_inner`] precedent — neither `tauri::State` nor
+/// `tauri::ipc::Request` can be built in a unit test).
+///
+/// Everything the command does after pulling the owned map out of the body: read
+/// `taskId`, apply the title rules, build the two borrowed patches, call storage,
+/// and map storage's `BoardError` through `TasksError::from`. The command keeps
+/// exactly two jobs — unwrap the `InvokeBody`, and cross `spawn_blocking` — so the
+/// composition the wire runs is reachable from a plain `#[test]`.
+///
+/// That reachability is the point. The `not_found` identity now rides on the ONE
+/// `.map_err(TasksError::from)` below; when the test that exists to guard it hand-
+/// wrote its own copy of that line instead of calling this function, flattening the
+/// real one left the suite green (review #189). Here there is no copy: the guard
+/// runs the mapping the wire runs.
+///
+/// `body` is the ALREADY-OWNED map the command pulled out of the request, and the
+/// `task_id` / title re-reads are deliberate — cheap, idempotent, and what makes
+/// this core safe for a caller that skipped the command's pre-flight (the
+/// `write_artifact_core` rule again).
+fn edit_task_core(
+    db: &Db,
+    body: &serde_json::Map<String, serde_json::Value>,
+) -> Result<TaskRow, TasksError> {
+    let task_id = task_id_from(body)?;
+    let title = patch_title(body)?;
+    // `patch_field` borrows the map, so the patches are built HERE rather than
+    // before the hop — a `FieldPatch` cannot cross a `'static` boundary.
+    let body_patch = patch_field(body, "body")?;
+    let spec_patch = patch_field(body, "specPath")?;
+    let title_patch = match title.as_deref() {
+        Some(cleaned) => FieldPatch::Set(cleaned),
+        None => FieldPatch::Keep,
+    };
+    db.edit_task(&task_id, title_patch, body_patch, spec_patch)
+        .map_err(TasksError::from)
+}
+
 #[tauri::command]
 pub async fn edit_task(
     state: State<'_, Arc<Db>>,
@@ -478,30 +542,12 @@ pub async fn edit_task(
             ))
         }
     };
-    // `task_id` used to be a typed parameter and Tauri produced "missing required
-    // key `taskId`" natively. There are no typed parameters now, so the command
-    // produces that answer itself — naming the key, because that is the string the
-    // caller greps for. The camelCase spelling is what the macro's own default
-    // (`ArgumentCase::Camel`) looks up, and what `editTask` sends.
-    let task_id = match body.get("taskId") {
-        Some(serde_json::Value::String(id)) => id.clone(),
-        Some(other) => {
-            return Err(TasksError::Other(format!(
-                "edit_task `taskId` must be a string, found {}",
-                json_type_name(other),
-            )));
-        }
-        None => {
-            return Err(TasksError::Other(
-                "edit_task missing required key `taskId`".to_string(),
-            ))
-        }
-    };
-    // The title rules run BEFORE the hop: `clean_title` is pure and cheap, and its
-    // answer is an OWNED `String` — which is precisely why `patch_title` answers
-    // `Option<String>` instead of a borrowed `FieldPatch`. A rejection here spends no
-    // worker thread and writes nothing, exactly as `create_task`'s does.
-    let title = patch_title(&body)?;
+    // Refused BEFORE the hop, so a bad `taskId` or a bad title spends no worker
+    // thread and writes nothing — the `create_task` / `write_artifact` shape. Both
+    // are re-checked inside [`edit_task_core`]; these two calls exist for the nicer
+    // answer, not as the only guard.
+    task_id_from(&body)?;
+    patch_title(&body)?;
     let db = state.inner().clone();
     // `wire_call`, not `board_call`: this body now composes command-layer refusals
     // (`TasksError`, from [`patch_field`] / [`patch_title`]) with a storage call, and
@@ -510,22 +556,7 @@ pub async fn edit_task(
     // `board_call` exists to protect is preserved INSIDE the closure, where the
     // storage `BoardError` still goes through `TasksError::from` — so a missing card
     // stays `not_found` and never flattens into `other`.
-    wire_call(
-        tauri::async_runtime::spawn_blocking(move || {
-            // `patch_field` borrows the map, so it runs HERE, against the map the
-            // closure owns — the patch cannot be built before the hop without
-            // threading a borrow across a `'static` boundary.
-            let body_patch = patch_field(&body, "body")?;
-            let spec_patch = patch_field(&body, "specPath")?;
-            let title_patch = match title.as_deref() {
-                Some(cleaned) => FieldPatch::Set(cleaned),
-                None => FieldPatch::Keep,
-            };
-            db.edit_task(&task_id, title_patch, body_patch, spec_patch)
-                .map_err(TasksError::from)
-        })
-        .await,
-    )
+    wire_call(tauri::async_runtime::spawn_blocking(move || edit_task_core(&db, &body)).await)
 }
 
 /// Move a card to another column, then run that column's `on_enter`.
