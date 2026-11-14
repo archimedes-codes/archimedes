@@ -25,8 +25,15 @@ verified-by: mixed instruments, run read-only at `2f2d5f19` on 2026-11-14 (the s
   live Linux reproduction plus code reading, NOT on the WebKitGTK/WKWebView process-model research that angle was
   to return. **Two numbers cited by a researcher were re-measured here and one disagreed** — see §Corrections.
   Not measured, and said so where claimed: Windows/WebView2 numbers (this machine is Linux), Windows behaviour of
-  any kind, react-virtuoso's internal cost (read from shipped `dist`, not instrumented), and whether the sustained
-  idle peg survives disabling the CSS animations (the confound in §3).
+  any kind, react-virtuoso's internal cost (read from shipped `dist`, not instrumented). **Second pass 2026-11-14
+  (§10, same day):** the animation A/B **has now been run twice and is NULL** (§10.4), the eventfd claim in the
+  Executive summary is **withdrawn and corrected** (§Corrections, §10.2), and the peg turns out to be **episodic**
+  rather than constant (§10.1). **`perf` is not installed on this machine** — the planned `perf top` step never
+  ran and no figure here is perf-derived; §10 names the `/proc`/`strace` substitutes. Still not measured: a
+  DevTools profile of one burst (the running 0.13.0 AppImage is read-only and has no devtools feature), and the
+  animation test with the CSS classes actually commented (likewise unreachable read-only). The app under test is
+  **v0.13.0, which contains NONE of Tasks 1–4** — verified with `git merge-base --is-ancestor` against the tag for
+  all four fix commits.
 task: tsk_74e3a9d0-2d96-48cd-bedf-1f433f44e96e
 issue: https://github.com/archimedes-codes/archimedes/issues/155
 ---
@@ -56,11 +63,21 @@ platform-generality; deep depth.
 1. **It is not the Windows/WebView2 counterpart of anything.** WebKitGTK shows it too, so `docs/features/transcript-render-perf-known-gaps.md` §1's platform-neutral framing is right and the fix must be platform-neutral. Linux and macOS users have this bug unreported — reporting bias, not absence. §6.
 2. **"25 WebView2 processes" is a counting artifact, not a leak.** `msedgewebview2.exe` is the image name for browser, GPU, utility and crashpad processes *and every other WebView2 app on the box*; a healthy single-webview app shows many. This tree contains exactly **one** `WebviewWindowBuilder::new` (`src-tauri/src/agent/web/render.rs:135`). The known-gaps doc's "something else is holding 25 renderers alive" is chasing an instrument that cannot distinguish a leak from a normal process group. §5.
 
-**The burn is not streaming-driven.** All six `archimedes --worker` processes held ~0 CPU; `strace` on the host
-for 8 s recorded **8,333 `write` calls and zero `fdatasync`/`fsync`**. No stream was running, no DB write was
-committing, and the renderer still held ~95%. Per-thread accumulated CPU puts the cost in the renderer's **JS
-main thread** (19,823 s) plus **GPU/compositor** (5,976 + 5,751 `SkiaGPUWorker` + 3,865 `ThreadedCompositor`);
-instantaneously 39% JS + 35% GPU + 11% compositor. §3.
+**The burn is not streaming-driven.** All six `archimedes --worker` processes held ~0 CPU, and `strace` on the
+host for 8 s recorded **zero `fdatasync`/`fsync`** — no stream was running and no DB write was committing while
+the renderer held ~95%. Per-thread accumulated CPU puts the cost in the renderer's **JS main thread** (19,823 s)
+plus **GPU/compositor** (5,976 + 5,751 `SkiaGPUWorker` + 3,865 `ThreadedCompositor`); instantaneously 39% JS +
+35% GPU + 11% compositor. §3.
+
+> **CORRECTION (2026-11-14, same day).** An earlier draft of this paragraph also counted that trace's
+> **8,333 `write` calls** as part of the idleness case. That was backwards and is withdrawn. Every one of those
+> writes was `write(fd, "\1\0\0\0\0\0\0\0", 8)` on an `anon_inode:[eventfd]` — i.e. ~1,000 **event-loop wakeups
+> per second inside an app the paragraph was calling idle**. They are evidence of internal activity, not of
+> idleness, and the exclusion above rests on the zero fsyncs and the idle workers alone, which is where it
+> should have rested. Re-measured and chased in §10: the storm is real, it is **~1,144/sec and flat**, and it is
+> present at the same rate whether the app is pegged or not — so it is neither the idleness marker the first
+> draft read it as, nor the cause of the peg.
+
 
 **Both suspects the issue named are answered, and one is eliminated.**
 
@@ -121,6 +138,11 @@ Instantaneous over 10 s: `39% JS main · 18% + 17% SkiaGPUWorker · 11% Threaded
 **MEASURED.** The JS main thread is the single largest consumer, and a third of the burn is GPU/compositor — a
 continuously-repainting surface, not a one-off computation.
 
+> **Follow-up (§10, same day).** This table's snapshot (93–112%) was a burst. Re-measured over 600 × 1 s samples
+> the peg is **episodic** — a 20.5% floor with ~2-minute bursts to 100–130%, 17% of seconds ≥90% — and the
+> per-thread split above reproduces almost exactly *during* a burst (38.9% JS / 53% GPU / 10.3% compositor). The
+> accumulated figures here are also superseded: renderer 41,089 s → **52,794 s**, 43.4 h, mean 33.8% of a core.
+
 ### 2. Why typing stays smooth and everything else stutters — CONFIRMED mechanically
 
 The premise `docs/features/transcript-render-perf-known-gaps.md` §2 left open ("measure first: the benefit is
@@ -174,6 +196,13 @@ itself a candidate finding, and it is the cheapest test available:
 - **Free A/B test:** disable the animations (`prefers-reduced-motion`, or comment the class) and re-sample
   `/proc/<pid>/stat`. If the peg drops, the idle burn is named. **This was offered to the requester and
   deferred to the plan; it should be the plan's first step.**
+
+**UPDATE (2026-11-14, §10).** This test has now been run twice. The OS `prefers-reduced-motion` half is **NULL**
+(§10.4: 87.7% → 78.2%, against a control that fell to 21.4% on its own). The class-commenting half **could not be
+run** — the installed AppImage is read-only. And the confound stated above is understated: the measuring session
+runs *inside* this app, so a clean idle state is not reachable from it at all (§10.1). The peg survives the agent
+at verifiably 0.0% CPU, so it is real; **animations are not exonerated, because `animate-spin` — the one the
+stale-status census mounts — has no reduced-motion rule and the OS flag cannot disable it** (§10.4.3).
 
 Amplifiers, by evidence quality:
 
@@ -274,7 +303,10 @@ stream produces commits far faster than that.**
 - Measured consequence: **delete-journal + `synchronous=FULL` costs ~11× WAL+FULL and ~100× WAL+NORMAL** at
   identical size (Run B above: 14–17 ms vs 1.1–1.6 ms vs ~0.12 ms). `strace` shows a real commit in that mode
   issuing **3 `fdatasync`** calls (researcher's `strace`; my own 8 s trace of the *idle* host showed **zero**
-  fsyncs, which is consistent — nothing was committing). Per-frame commits therefore pay 3 fsyncs per stream
+  fsyncs, which is consistent — nothing was committing. **Qualification from §10:** the host is not always
+  quiet — during one of the CPU bursts a 10 s trace counted **64 `fsync` + 255 `pwrite64`**, so "zero fsyncs"
+  describes a quiet window, not the app in general. It does not weaken the ratio, which was measured on a
+  benchmark, not on the live app). Per-frame commits therefore pay 3 fsyncs per stream
   update for durability the app does not need.
 - **Batching is the highest-leverage single change.** A researcher measured 1000 rows in ONE transaction at
   ~700 MB at **39.5 / 21.4 / 10.8 ms** (delete / WAL-FULL / WAL-NORMAL) — i.e. one commit's cost buys a
@@ -485,6 +517,204 @@ virtualization (`MessageList.tsx`, PR #67), per-frame coalescing to one `setStat
 
 ---
 
+### 10. Re-measurement, the eventfd storm, and the reduced-motion null result (2026-11-14, second pass)
+
+A second measurement pass on the same machine, same running app. **The app under test is v0.13.0**
+(`/tmp/.mount_archimbcMJab/usr/bin/archimedes`, PID 1790154; renderer PID 1790208 — both re-derived with
+`pgrep -a -f`, not assumed). **v0.13.0 contains NONE of this branch's Tasks 1–4**:
+`git merge-base --is-ancestor <fix> v0.13.0` fails for all four (`e5170826`, `2ae39645`, `fda3fc45`, `d03c13cf`),
+and the tag is dated Nov 11 while the fixes are Nov 14. **Nothing in this section tests the shipped fixes.**
+Live DB `~/.local/share/archimedes/archimedes.db` = 2,333,728,768 bytes.
+
+**`perf` is not installed on this machine** (`command -v perf` → nothing), so the plan's `perf top -p <pid>`
+step could not run at all. Everything below comes from `/proc` sampling, `strace -f`, and `/proc/<tid>/syscall`.
+`ptrace_scope` = 0, `HZ` = 100.
+
+#### 10.1 The instrument, and the confound that is worse than §3's
+
+`ps` `pcpu` is a **lifetime average** and was never used as an instantaneous reading. Instantaneous values are
+`utime+stime` deltas from `/proc/<pid>/stat` fields 14+15; per-thread from `/proc/<pid>/task/*/stat`, split on
+the **last** `) ` — the kernel truncates `comm` to 15 chars and it can contain parentheses, so naive field
+extraction silently returns 0. (That bug bit twice in this pass and produced two pages of convincing zeros.)
+
+**The confound is structural, not incidental: this measuring session runs INSIDE the app being measured.**
+`archimedes --worker` PID 2312298 has PPID 1790154 — the host. My own output is rendered by the renderer whose
+CPU I am measuring. A "truly idle app" is therefore **not reachable from this session**; §3's confound cannot be
+removed, only bracketed. Both states were therefore measured explicitly, with my worker's own CPU sampled
+alongside:
+
+| State | How it was forced | Renderer % of core | My worker |
+|---|---|---|---|
+| Streaming | emitted a ~8 KB transcript delta | 13.9 → 114.7 → 115.8 → 111.9 (mean 39.0%, n=22) | active |
+| 45 s after stream ended | slept | **mean 106.4%** (n=45, range 41.6–130.6) | 0 |
+| 120 s, worker sampled every 1 s | slept | first 60 s **128.4%**, last 60 s **100.3%**; 117/120 samples ≥90% | **0.0% in all 120 samples** |
+| 30 s, nothing attached | slept | **4.7%** | 0 |
+| 1 s × 20, quiet window | slept | 3.0 1.0 2.0 11.9 2.0 3.0 1.0 12.9 … (mean ~5%) | 0 |
+
+So §1's peg **replicates with the agent at verifiably zero CPU** — the §3 confound does not explain it — but it
+is **not constant**. 600 × 1 s samples over 10 min: mean **41.1%**, of which **17% of seconds ≥90%** and **66%
+≤25%**. Baseline (samples <60%, n=447) is **20.5%** (min 10.9, max 59.8). The peg is **episodic**: bursts of
+27 s, 57 s, 49 s at 86.7 / 108.5 / 113.2% means, starting ~every 2 min, **not periodic**. "Sustained while idle"
+in this report's title is true of the *average* and misleading about the *shape*: the honest shape is a ~20%
+floor with ~1–2 minute spikes to 100–130%. **This is the single most important correction in this section — any
+fix measured against a 20-second window will read as a success or a failure at random.**
+
+Per-thread composition **during** a burst (10 s window), which reproduces §1's split almost exactly:
+
+```
+38.9%  24961s acc  WebKitWebProces   ← JS main thread
+27.5%   7786s      SkiaGPUWorker
+25.5%   7498s      SkiaGPUWorker
+10.3%   5052s      ThreadedCompositor
+ 7.3%   3339s      WebKitWebP:cs0
+ 1.2%   1038s      ReceiveQueue
+```
+
+Accumulated totals also still climb: renderer **41,089 s → 52,794 s**, elapsed 43.4 h, mean **33.8%** of a core
+(§1 said 29.8%; the window between contains my own streaming and several `strace` runs, so it is inflated).
+
+#### 10.2 The eventfd storm: real, ~1,144/sec, and NOT the cause of the peg
+
+The §Corrections item. Re-measured on the host, 8 s and 125 s runs, `strace -f -tt -e trace=write`:
+
+- Every write is `write(fd, "\1\0\0\0\0\0\0\0", 8)` — an 8-byte counter, the eventfd signature. Confirmed
+  verbatim, including the value.
+- **The fds are on the HOST (1790154), not the renderer**: `readlink /proc/1790154/fd/4` and `/fd/38` are both
+  `anon_inode:[eventfd]`. In the *renderer* fd 4 is `/dev/urandom` and fd 38 does not exist. §4's trace was
+  against the host and said so, but the fd numbers are easy to misread as the renderer's.
+- **A 125 s continuous capture: 130,832 host writes, mean 1,144/sec, min 589, max 1,341 — FLAT.** No step at
+  burst onset, no decay. Sampled per-second rates over the whole window: `589 1213 1087 1126 … 1288 747`.
+- Per-thread attribution (25 s capture, 5,277 writes): `ReceiveQueue` tid 1790218 → 2,957 (fd38 2,272 + fd4 685);
+  host **main thread** 1790154 → 1,444 (fd4 820, fd38 624); `tokio-rt-worker` 1790212 → 565 (all fd4);
+  `VBlankMonitor` 2209237 → 298. So the §Corrections' "tokio-rt-worker and ReceiveQueue" was right about the
+  threads and missed the **main thread**, which is the second-largest writer.
+- The renderer has **its own** storm on its own fds (5, 11, 28), driven by renderer main thread 1790208 and its
+  `ReceiveQueue` 1790231 — ~478/sec in 8 s.
+- **The discriminator: the storm is present at the same rate when the app is NOT pegged.** Three quiet-state
+  rounds: **1,091 / 882 / 1,018 writes/sec** while the renderer sat at 13–16% CPU. During bursts: 2,530 and
+  1,422/sec. So the peg *multiplies* the wakeups ~2–2.5×; the wakeups do not cause the peg. **A 1 kHz tick
+  driving continuous repaint is REFUTED** — it would have to be absent, or far rarer, in the 20% floor, and it is
+  not.
+- fd 38 is a **round trip, not a timer**: in 12 s, 8,180 writes vs 6,321 reads, and **all 6,321 reads are by
+  `ReceiveQueue` 1790218** while the main thread wrote 1,740 and read 0. That is a producer/consumer channel
+  (WebKit IPC), not a periodic signal.
+- `VBlankMonitor` and `PressureMonitor` are **WebKitGTK's own threads**, not ours — `strings` finds both names in
+  `/usr/lib64/libwebkit2gtk-4.1.so.0.24.5` and neither appears anywhere in `src-tauri/src`. Do not go looking for
+  them in our code.
+- One incidental find worth recording: the host reads **`/proc/meminfo` 121 times/sec** (fd 40, 1,450 reads in
+  12 s, every one by tid 1790206) and `/proc/1790154/cgroup` 16/sec. That is `PressureMonitor`, and it is a real
+  ~121 syscall/sec of pure polling — but it is engine-side and steady, so it is not the peg either.
+
+#### 10.3 What the burst actually is, and where this leaves the question
+
+`perf` being unavailable, the substitute was a **poor man's profiler**: sample `/proc/<tid>/syscall` and
+`/proc/<tid>/wchan` in a tight loop (no `ptrace`, so the live app is never interrupted). During a burst:
+
+```
+host main 1790154      244 poll_schedule_timeout   138 running (wchan=0)
+renderer 1790208       236 poll_schedule_timeout   145 running
+compositor 1790256     224 drm_syncobj_array_wait_timeout   113 poll   35 running
+```
+
+The compositor is blocked **waiting on the GPU** (`drm_syncobj_array_wait_timeout`) — consistent with the
+53%-of-the-peg GPU share in §1, and the closest this pass came to a mechanism: the renderer main thread is busy
+and the compositor is queueing behind it. `gdb` was available but deliberately not used — interrupting the
+user's live session was out of bounds.
+
+Burst-time host syscalls (10 s): **`futex` 1,586 calls / 9.26 s / 518 errors**, `fsync` 64, `pwrite64` 255,
+`pread64` 48. So there IS DB write traffic during a burst (64 fsyncs/10 s ≈ 6.4/sec) — see the §4 qualification.
+And the host is not a bystander: across 300 × 1 s samples, **burst = renderer 119.8% + host 62.1%; baseline =
+renderer 15.6% + host 10.5%**, with all six long-lived workers at **0.0% for the entire 300 s**.
+
+**Verdict: the peg is NOT named.** It is now characterised (episodic, ~2 min, host+renderer together, workers at
+zero) and the following are **excluded as its cause**: streaming (workers at 0 for 120 and 300 consecutive
+seconds while pegged); the eventfd/wakeup storm (flat 1,144/sec in the quiet state too); `prefers-reduced-motion`
+(§10.4, null); the DB write path *as the trigger* (64 fsyncs/10 s is ~1 ms of work against a full core; it is a
+passenger, though §4's mode ratio stands on its own benchmark); and agent activity of any kind.
+**Remaining candidate, unproven:** something in the renderer's own paint/GPU path that enters a ~2-minute
+sustained repaint episode, with the host main thread (53.2% during a burst) responding to it. The next
+instrument that would actually settle this is a **DevTools Performance profile of one burst** — which requires a
+build with devtools enabled, and the running 0.13.0 AppImage is mounted read-only (`ro`), so neither a profile
+nor the "comment the CSS classes" experiment is reachable from here.
+
+#### 10.4 Reduced-motion A/B: NULL, and the toggle was never going to be clean
+
+Run on a genuinely pegged app (renderer 73–114% at baseline). Original value read and printed first:
+`gsettings get org.gnome.desktop.a11y.interface reduced-motion` → **`'no-preference'`**; restored and re-verified
+afterwards.
+
+**A false start worth recording:** the key is an **enum** (`gsettings range` → `'no-preference'|'reduce'`). The
+first attempt used `true` and failed with *"The provided value is outside of the valid range"* — so that run's
+"during" phase **never applied anything**, and its numbers are void. Discarding them is why this subsection has
+a result at all.
+
+Valid run, 20 × 1 s per phase, renderer % of one core:
+
+| Phase | Samples | Mean |
+|---|---|---|
+| A baseline (pegged) | 114.3 104.1 104.2 109.9 110.1 101.1 88.2 73.4 78.3 77.4 80.4 85.2 79.3 78.3 81.2 80.3 80.3 76.3 74.3 77.4 | **87.7%** |
+| B `reduced-motion='reduce'` | 71.6 85.2 74.4 76.3 79.3 78.3 78.4 77.3 77.3 75.3 73.4 76.4 76.3 74.4 81.3 77.3 76.4 78.2 79.4 98.2 | **78.2%** |
+| C restored `'no-preference'` | 41.8 43.7 19.8 22.8 24.8 33.7 17.9 29.7 16.9 29.7 18.9 15.9 12.9 11.9 14.9 16.9 14.9 16.9 11.9 12.9 | **21.4%** |
+
+A−B = 9.5 points looks like something until phase C is taken into account: the burst was **decaying anyway**, and
+C — the flag switched *back off*, i.e. animations restored — fell to 21.4%. Comparing only the contemporaneous
+plateau (A's last 10 samples = 79.3%) against B (74.5%) leaves **4.8 points**, inside the run-to-run spread of
+this signal (§10.1 shows the same app swinging 10.9→130.6% unaided). **NULL RESULT.** The animation hypothesis
+stays refuted, now on a second, better-instrumented run.
+
+**And the toggle was never a clean instrument** — three things the plan's framing missed:
+
+1. In app CSS, `prefers-reduced-motion` covers **exactly two selectors**: `.animated-gradient-text`
+   (`src/styles/utilities.css:70`) and `.flip-in` (`:92`). Grep confirms nothing else in `src/styles/`.
+2. It also changes **JS** paths, not just CSS — `usePrefersReducedMotion.ts:29`, `braille-loader.tsx:33` and the
+   `EmptyStateFilm`/`QueueRow` gates all read `matchMedia`. So the OS flag is not a CSS-only switch; it changes
+   behaviour too.
+3. `animate-spin` has **no reduced-motion rule anywhere**. Three non-test uses:
+   `src/components/ui/spinner.tsx:9`, `SubagentStatusIcon.tsx:26`, `SessionStatusMark.tsx:161`. Tailwind defines
+   `--animate-spin: spin 1s linear infinite;` at **`node_modules/tailwindcss/theme.css:438`** and neither
+   `theme.css`, `index.css` nor `preflight.css` contains the string `reduced-motion`.
+
+   **A citation in the plan was wrong and is corrected here:** it pointed at
+   `node_modules/tw-animate-css/dist/tw-animate.css:438`. That file exists (14,880 bytes) but has **0 newlines**
+   — it is one minified line, so line 438 does not exist, and the file contains no `spin` and no `reduced-motion`
+   at all. The claim was right; the location was not.
+
+**Half of the planned A/B could not be run.** The plan asked for a comparison against the animation *classes*
+disabled, not just the OS flag. That requires editing the installed app's CSS, and the AppImage is mounted
+**read-only** (`fuse.archimedes.appimage … ro`); rebuilding and relaunching would have destroyed the very
+process being measured and is the user's live session. **So only the OS-flag half was run, and it is null.**
+The class-level test remains open, and it is the one that could still distinguish "no infinite animation is
+running" from "an infinite animation is running that the OS flag does not touch".
+
+#### 10.5 Stale-status census, re-run (the mount-spinners lead)
+
+§3's mechanism was: persisted `in_progress` tool rows → `mapStatus` → shimmer + a 1 s `setInterval` per card.
+Re-run read-only against the live 2.33 GB DB (`mode=ro`, `busy_timeout`; 6.5 s wall):
+
+```
+sqlite3 "file:$HOME/.local/share/archimedes/archimedes.db?mode=ro" "
+  PRAGMA busy_timeout=10000;
+  WITH page AS (SELECT session_id, kind, json_extract(payload_json,'\$.status') AS st,
+    row_number() OVER (PARTITION BY session_id ORDER BY id DESC) AS rn FROM messages)
+  SELECT count(*) FROM messages WHERE kind='tool-call'
+     AND json_extract(payload_json,'\$.status')='in_progress';
+  SELECT count(DISTINCT session_id) FROM page WHERE rn<=500 AND kind='tool-call'
+     AND st='in_progress';
+  SELECT count(*) FROM sessions;"
+```
+
+→ **1,064** `in_progress` tool-call rows (of 186,322); **355** sessions carry one inside their **newest 500
+messages**, i.e. on the first page loaded when opening them; **2,278** sessions in the DB. The figures recorded
+earlier (1,056 / 350 of 2,207, and 1,067 in `silent-turn-settle-…`) and these differ only because the DB is
+live-growing; all are correct for their own instant, and the command above is the one to re-run.
+
+**This is fixed on this branch by Task 1** (`e5170826`, `mapPersistedStatus` → unresolved persisted rows render
+`failed`, `mapStatus` byte-unchanged) — **but the running 0.13.0 does not contain it**, so the spinners this
+census predicts are still mounting on this machine, and §10.4's null result therefore does **not** clear
+mounted spinners as a contributor: `animate-spin` is exactly the animation the OS flag cannot disable.
+
+---
+
 ## Unresolved contradictions
 
 1. **The SQLite benchmark disagrees with itself across runs, and I report both.** Cold-built Run A said 3.9 ms
@@ -498,16 +728,41 @@ virtualization (`MessageList.tsx`, PR #67), per-frame coalescing to one `setStat
    (object). I could not reproduce theirs and I report my own measurement. **The disagreement is informative
    either way** — the discriminator is whether `rawOutput` is a string or an object, because the object path
    `JSON.stringify`s per call. Both agree the shape matters more than N.
-3. **Is the idle peg animation or a leak?** §3's confound is not resolved. `strace` (0 fsyncs) and idle workers
-   rule out streaming and DB; they do not rule out always-mounted infinite CSS animation. The A/B test is free
-   and unbudgeted.
+3. **Is the idle peg animation or a leak?** §3's confound is **not resolved and cannot be from this session** —
+   §10.1 establishes the measuring session runs *inside* the app being measured (worker PPID = the host PID).
+   §10.4's second reduced-motion run is **NULL**, and §10.2 refutes the wakeup-storm hypothesis, so the two
+   cheapest candidates are both out. **Still open:** always-mounted `animate-spin`, which the OS flag cannot
+   disable (§10.4.3) and which the stale-status census (§10.5) says is still mounting on 0.13.0. The test that
+   would settle it needs the CSS classes commented, which the read-only AppImage forbids.
 4. **`freelist_count` 21,643 (this snapshot) vs 22,973 (a researcher's snapshot).** Different copies of a
    live-growing DB; both are correct for their own instant. Cited: mine, with the command.
 5. **Is the `render.rs` timeout leak an origin or an amplifier?** The trigger (a stalled main thread) is the
    symptom, so the causal direction is genuinely open.
+6. **"Sustained while idle" vs the measured shape.** The title is right about the average (33.8% of a core since
+   launch) and wrong about the shape: §10.1 measures a **20.5% floor with ~2-minute spikes to 100–130%**, 17% of
+   seconds ≥90% and 66% ≤25%. Both are true of the same process. Any A/B measured over a short window is
+   measuring which side of the cycle it landed on, not a treatment effect.
+7. **The eventfd storm: cause, symptom, or neither?** §10.2 shows it is present at 882–1,091/sec while the app
+   sits at 13–16% CPU, so it is **not** the peg's cause. But it rises to 1,422–2,530/sec during bursts, and the
+   host main thread is the second-largest writer and burns 53.2% during a burst. Whether the main thread is
+   *following* the renderer or *driving* it is unanswered — separating them needs a profiler this machine does not
+   have installed.
+
 
 ## Gaps
 
+- **`perf` is not installed on this machine**, so the plan's `perf top -p <pid>` step was never run and nothing
+  here is perf-derived. §10's substitute was `/proc` deltas, `strace -f`, and `/proc/<tid>/syscall`+`wchan`
+  sampling — a poor man's profiler that names *where threads wait*, not *which function costs*. No flame graph,
+  no symbol-level attribution exists for the peg.
+- **No DevTools profile of a burst.** The running 0.13.0 AppImage is mounted **read-only** and ships no devtools
+  feature, so §9's step 4 — the single cheapest discriminator, and the one that would settle §10.3 — is
+  unreachable against the process that is actually pegged. Every burst finding in §10 is `/proc`-level.
+- **The class-level animation test was never run** (§10.4). Only the OS `reduced-motion` flag was toggled, and it
+  cannot reach `animate-spin`. "Animations are not the peg" is therefore proven for the two selectors the flag
+  covers, and **unproven** for the spinner the stale-status census actually mounts.
+- **The peg cannot be reproduced on demand** — it was caught by waiting through 8-minute polling loops, and its
+  onset is unexplained. Nothing in §10 was measured against a *controlled* burst.
 - **Nothing is measured above 700 MB.** The 900 MB run timed out on this machine, so the 2.33 GB live DB sits
   **outside** the measured range. The size-elimination claim is proven for 400–700 MB and *assumed* to hold to
   2.33 GB.
@@ -521,7 +776,9 @@ virtualization (`MessageList.tsx`, PR #67), per-frame coalescing to one `setStat
   that would explain whole-window stickiness at the OS level.
 - **Virtuoso's O(measured-items) rebuild is INFERRED from shipped `dist`, not instrumented.** It is the leading
   explanation for "cost scales with total history, not visible rows", and it is unproven.
-- **The idle spinner/animation A/B test has not been run** — the cheapest decisive experiment available.
+- **The idle spinner/animation A/B test has been run twice and both runs are NULL** (§10.4) — but only via the
+  OS `prefers-reduced-motion` flag, which cannot disable `animate-spin`. The decisive variant (classes commented)
+  is still unrun, so this is not closed.
 - **No DOM-cost measurement.** `DiffBlock`'s 20k-node expansion and re-highlight-on-remount are read from
   source; their real cost, which is what "expanding feels delayed" names, is unmeasured.
 - **`synchronous` is not set anywhere in `db.rs`**, so it is SQLite's default (`FULL` for rollback-journal
@@ -542,3 +799,42 @@ virtualization (`MessageList.tsx`, PR #67), per-frame coalescing to one `setStat
 - The card's premise "reproduce and report WebView2 process count and DB size" turned out to be **partly
   already-done work**: paging (ADR 0073) and the `web-fetch-render-*` filter shipped, and the DB-size suspect is
   now measured flat. §7 records the ADR so a plan does not re-implement it.
+- **The eventfd writes were published as evidence of idleness. They are evidence of the opposite, and the claim
+  is withdrawn.** The first draft's §Executive-summary paragraph read the `strace` finding — 8,333 `write` calls
+  in 8 s, every one `write(fd, "\1\0\0\0\0\0\0\0", 8)` on `fd 4`/`fd 38`, both `anon_inode:[eventfd]`, from
+  `tokio-rt-worker` and `ReceiveQueue` — as corroborating "no stream was running, the app was idle". ~1,000
+  event-loop wakeups per second is internal activity, not idleness; the sentence was self-refuting and the
+  report has been public on #155 with it. Corrected in place with this note rather than silently rewritten.
+  Re-measured in §10.2: the storm is real (**1,144/sec mean over 125 s, flat**), the fds are the **host's**, the
+  **main thread** is also a large writer (missed first time), and it is **not** the peg's cause — the same rate
+  appears at 13–16% CPU. The idleness case now rests only on the zero fsyncs and the idle workers.
+- **§1's "sustained while idle" is an average, not a shape.** Re-measurement (§10.1) shows a **20.5% floor with
+  ~2-minute bursts to 100–130%** — 17% of seconds ≥90%, 66% ≤25%. The peg is real and it does survive the agent
+  sitting at verifiably 0.0% CPU (120 and 300 consecutive samples), so the reproduction stands; what does not
+  stand is reading it as a constant ~95–100%.
+- **§3's confound is worse than stated, and is structural.** The plan assumed an idle app was reachable by
+  waiting. It is not: the measuring session runs *inside* the app (worker 2312298's PPID is the host 1790154),
+  so my output is painted by the renderer under test. §10.1 brackets both states explicitly instead of claiming a
+  clean one.
+- **The reduced-motion A/B is NULL on a second, better-instrumented run** (§10.4): baseline 87.7% vs
+  reduced-motion 78.2%, but the control phase — flag restored, animations back on — fell to **21.4%** on its own,
+  so the burst was decaying regardless. Contemporaneous comparison is 79.3% vs 74.5% = **4.8 points**, inside
+  this signal's noise. §3's "cheapest decisive experiment" is decisive in the negative direction only.
+- **A first reduced-motion run was void and its numbers are not reported.** `gsettings` `reduced-motion` is an
+  **enum** (`'no-preference'|'reduce'`); the first attempt passed `true`, was rejected with *"value outside of the
+  valid range"*, and the "during" phase measured an app that had had nothing changed. Recorded because it is the
+  kind of green that reads as a result.
+- **A plan citation was wrong: `--animate-spin` is not at `node_modules/tw-animate-css/dist/tw-animate.css:438`.**
+  That file is 14,880 bytes on **one line** (0 newlines) and contains neither `spin` nor `reduced-motion`. The
+  correct location is **`node_modules/tailwindcss/theme.css:438`**. The claim itself survives and is stronger
+  than stated: `animate-spin` (3 non-test uses) has no reduced-motion rule in `theme.css`, `index.css` or
+  `preflight.css`, so the OS flag cannot disable the one animation the stale-status census mounts.
+- **Stale-status census re-run against the live DB** (§10.5): **1,064** `in_progress` tool-call rows and **355 of
+  2,278** sessions carrying one in the newest 500 messages — earlier figures (1,056 / 350 of 2,207, and 1,067 in
+  `docs/research/silent-turn-settle-after-announcing-a-write.md`) are the same measurement on earlier snapshots
+  of a live-growing DB, not disagreements. **Task 1 (`e5170826`) fixes this on this branch**, and the running
+  0.13.0 predates it, so the spinners are still mounting here — which is exactly why §10.4's null does not
+  exonerate mounted spinners.
+- **`perf` was unavailable, contrary to the plan's assumption.** The `perf top -p <pid>` step could not run; §10
+  names the `/proc`-based substitutes used instead and no perf-derived figure appears anywhere in this report.
+
