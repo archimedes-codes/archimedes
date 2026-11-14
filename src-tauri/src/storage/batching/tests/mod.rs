@@ -785,6 +785,74 @@ async fn a_failed_flush_leaves_the_decorator_usable() {
     );
 }
 
+/// A failed session must not strand the sessions it happened to be batched
+/// WITH. `flush()` drains EVERY session and then writes them one at a time, and
+/// `take()` hands back the drained batch in `HashMap` order — so one session's
+/// failure used to `?` out of the loop and abandon every session still queued
+/// behind it. Those rows were already removed from the buffer by `take()`, so
+/// they were not "deferred", they were GONE: silently, and never re-queued.
+///
+/// The module docs license dropping the batch that SQLite REFUSED (re-queuing it
+/// would retry the identical failure forever); they never licensed dropping the
+/// innocent co-batched ones. The fix is a per-session error boundary — log it,
+/// keep going — and this is what pins it.
+///
+/// WHY A LOOP AND NOT ONE ROUND: the order `take()` yields is a `HashMap`
+/// iteration order, which no test controls. A single round is RED only when the
+/// ghost happens to drain BEFORE the healthy sessions; drain it last and the
+/// same buggy `?` passes the test for a reason that has nothing to do with the
+/// behaviour under test. Each round therefore builds a FRESH decorator (a fresh
+/// `RandomState`, so a fresh permutation) over fresh ids, and every round must
+/// land all three healthy rows — with 3 healthy sessions per round, one round
+/// hides the defect a quarter of the time, eight rounds one in 65 536.
+#[tokio::test]
+async fn a_failed_session_does_not_strand_the_sessions_it_was_batched_with() {
+    const ROUNDS: usize = 8;
+    let (_dir, db) = temp_db("batching-neighbour-");
+    // The healthy sessions get their FK source; the ghost deliberately does not,
+    // because the constraint violation is the instrument (the file's own idiom,
+    // see [`a_batched_error_surfaces_at_the_flush_and_not_at_the_write`]).
+    for round in 0..ROUNDS {
+        for sid in ["s1", "s2", "s3"] {
+            seed_session(&db, sid);
+        }
+        let p = Arc::new(BatchingPersistence::with_interval(db.clone(), LONG));
+        let ghost = format!("ghost-{round}");
+
+        // The ghost FIRST here, so the buffer's own insertion order is not what
+        // is being varied — only `take()`'s iteration order is.
+        p.record_message(&ghost, "agent-text", Some("k"), r#"{"text":"orphan"}"#)
+            .expect("buffered");
+        for sid in ["s1", "s2", "s3"] {
+            p.record_message(
+                sid,
+                "agent-text",
+                Some(&format!("k-{round}")),
+                r#"{"text":"fine"}"#,
+            )
+            .expect("buffered");
+        }
+
+        // The deferred error must STILL be reported — the per-session boundary
+        // makes neighbours land, it does not hide the failure (`flush()`'s
+        // callers log it, and
+        // [`a_batched_error_surfaces_at_the_flush_and_not_at_the_write`] pins
+        // that an error still surfaces at all).
+        p.flush()
+            .expect_err("the ghost's FK violation still surfaces at the flush");
+
+        for sid in ["s1", "s2", "s3"] {
+            assert_eq!(
+                db.messages_for(sid).expect("the read").len(),
+                round + 1,
+                "round {round}: {sid} was batched with a failing session and must \
+                 still have landed — a stranded row is removed from the buffer by \
+                 `take()` and never written again"
+            );
+        }
+    }
+}
+
 // ── The pass-through half of the surface ─────────────────────────────────────
 
 /// The writes that are NOT batched still reach the `Db` unchanged and

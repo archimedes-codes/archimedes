@@ -1082,13 +1082,6 @@ impl SessionManager {
         }
     }
 
-    /// The batching decorator this manager persists through (`None` before
-    /// `attach_db` / `with_batched`). Exposed for the exit-path wiring and for
-    /// tests that must prove a flush point reached the buffer.
-    pub fn batched(&self) -> Option<Arc<crate::storage::BatchingPersistence>> {
-        self.batched.get().cloned()
-    }
-
     /// Drain one session's buffered writes (#155, Task 3). The router's flush
     /// points call this; a manager with no decorator (a test that installed a
     /// `TranscriptPersister` straight on the `Db`) has nothing buffered, so this

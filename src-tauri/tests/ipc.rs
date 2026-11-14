@@ -2034,6 +2034,130 @@ fn the_exit_run_event_flushes_the_buffered_rows() {
     );
 }
 
+/// (#155 review, Finding 1) THE UPDATE-RELAUNCH TEARDOWN FLUSHES THE BUFFER.
+///
+/// The relaunch path replays the `Exit` teardown BY HAND and then calls
+/// `std::process::exit(0)`, which runs no destructors — so before this fix an
+/// app update discarded whatever the batch was holding.
+/// `relaunch_through_the_mount` itself cannot be driven from a test: it never
+/// returns, it spawns a real successor, and it calls `cleanup_before_exit()`
+/// (after which no Tauri API is usable). So the batch-draining half is factored
+/// into `commands::update::drain_batch_and_reap_workers` and THIS drives that,
+/// against the PRODUCTION decorator from managed state — the same shape as
+/// [`the_exit_run_event_flushes_the_buffered_rows`] above, and it excludes the
+/// same ways a row could have landed for an unrelated reason:
+///
+/// * **The interval.** The row is buffered on a private current-thread runtime
+///   that is DROPPED before the teardown runs, so its armed timer is cancelled.
+/// * **`Drop` on the decorator.** The test holds its own `Arc` clone, so the
+///   decorator is alive when the row is read.
+/// * **The router's flush points.** No session is started (no Worker, no turn,
+///   no frame, no `Exited`) — `reap_all` walks an empty registry.
+/// * **`RunEvent::Exit`.** This app runs with the NO-OP callback (`build_app`,
+///   not `build_app_with_exit_callback`) and the window is never closed, so the
+///   `Exit` arm is provably not what flushed it. That is what keeps this a test
+///   of the RELAUNCH path and not a second copy of the exit test.
+///
+/// NON-VACUITY, MEASURED, and its exact reach: with BOTH `crate::flush_batched`
+/// calls deleted from `drain_batch_and_reap_workers` this test goes RED (row
+/// absent); with them restored it goes GREEN. Deleting only ONE of the two does
+/// NOT redden it — the registry is empty here, so the reap produces nothing for
+/// the second flush to catch, and the surviving flush writes the row either way.
+/// So this test pins "the relaunch teardown drains the buffer"; the ORDER and the
+/// count of the two calls are pinned by the source-shape test
+/// `commands::update::tests::the_relaunch_path_drains_the_batch_before_it_exits`,
+/// which reads the file rather than running it.
+///
+/// WHAT THIS DOES NOT PROVE, so nobody over-reads it: it does not prove
+/// `relaunch_through_the_mount` CALLS this function (that edge is `-> !` and
+/// unrunnable in a test — the source-shape test above pins it), and it does not
+/// prove the second flush catches what the reap PRODUCES (that needs a live
+/// Worker emitting frames during `close`, which this harness's empty registry
+/// cannot supply; the ordering is argued in the function's own doc, and the
+/// exit-arm twin `the_exit_run_event_flushes_the_buffered_rows` runs the same
+/// triad through the real `RunEvent::Exit` path).
+#[test]
+fn the_relaunch_teardown_flushes_the_buffered_rows() {
+    let dirs = TestDirs::new();
+    // The NO-OP-callback app, deliberately — see the `RunEvent::Exit` bullet above.
+    let app = build_app(&dirs);
+
+    let d = db(&app);
+    let batched = app
+        .handle
+        .try_state::<Arc<archimedes_lib::storage::BatchingPersistence>>()
+        .expect("the batching decorator is managed state")
+        .inner()
+        .clone();
+    use fulcrum_harness::seams::FulcrumPersistence;
+
+    d.record_session(&SessionInfo {
+        session_id: "relaunch-flush-session".to_string(),
+        cwd: dirs.cwd(),
+        capabilities: serde_json::Value::Null,
+        config_options: None,
+        archived: false,
+        title: None,
+        context_usage: None,
+        cost_usd: None,
+        is_subagent: false,
+    })
+    .expect("the sessions row (the `messages` FK source)");
+
+    {
+        // A runtime of its own, DROPPED below: the timer this write arms lives
+        // and dies here, so the interval provably cannot be the writer.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        rt.block_on(async {
+            batched
+                .record_message(
+                    "relaunch-flush-session",
+                    "agent-text",
+                    Some("relaunch-flush-probe"),
+                    r#"{"text":"buffered at relaunch"}"#,
+                )
+                .expect("the write is buffered");
+        });
+        drop(rt);
+    }
+
+    // The premise, pinned: buffered, not on disk.
+    assert!(
+        d.messages_for("relaunch-flush-session")
+            .expect("the display rows load")
+            .is_empty(),
+        "the premise: the row is BUFFERED (a written-through row would make the \
+         relaunch flush unobservable)"
+    );
+
+    // The relaunch teardown, minus the two things a test must not do: spawn a
+    // real successor, and `cleanup_before_exit`.
+    archimedes_lib::commands::update::drain_batch_and_reap_workers(&app.handle);
+
+    let rows = d
+        .messages_for("relaunch-flush-session")
+        .expect("the display rows load");
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.message_key.as_deref() == Some("relaunch-flush-probe"))
+            .count(),
+        1,
+        "the relaunch teardown reached the batching decorator's flush: the \
+         buffered row is on disk, with the interval, `Drop`, the router's flush \
+         points and `RunEvent::Exit` all excluded. If this fails, check whether \
+         the `flush_batched` calls are still in \
+         `commands::update::drain_batch_and_reap_workers` — an app update that \
+         discards the buffer is exactly the defect this test exists to catch."
+    );
+    assert!(
+        Arc::strong_count(&batched) >= 1,
+        "the decorator outlived the teardown — so `Drop` cannot be what wrote the row"
+    );
+}
+
 /// (#155, Task 3) THE LOSS WINDOW, MEASURED — the number the decorator's doc
 /// comment names as the price of batching, checked against reality rather than
 /// asserted from the constant.

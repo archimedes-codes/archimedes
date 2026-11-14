@@ -317,9 +317,10 @@ grep -rn 'with_batched' --include=*.rs src-tauri      # the builder method + lib
 The obligation is stated in `with_batched`'s own doc comment (“REQUIRED for batching to be reachable at all on
 this path … `lib.rs` does; the persister-shaped test call sites do not”). **Nothing enforces it** — no source
 lint, no boundary pin, no test names the missing-`with_batched` mistake. Note the related asymmetry while you
-are in there: `SessionManager::batched()` (the accessor) has **zero call sites** — the router reaches the
-decorator through `flush_batched` and the exit path through the `app.manage`d concrete `Arc`, so the accessor
-exists for tests that were never written against it.
+are in there: the `SessionManager` field holding the decorator has no public accessor at all (the `batched()`
+getter this section used to describe had **zero call sites** and was deleted — the router reaches the decorator
+through `flush_batched` and the exit path through the `app.manage`d concrete `Arc`), so a test that needed to
+prove a flush point reached the buffer must go through managed state, as `tests/ipc.rs` does.
 
 ### 3. `insert_native_message` passes through unbatched — a deviation from the plan, kept deliberately
 

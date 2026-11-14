@@ -1552,6 +1552,16 @@ impl Db {
     ///
     /// `record_message` stays public and unchanged: `SessionStore`
     /// (`agent/harness/store.rs`) is built on it and is not this task's scope.
+    ///
+    /// PANICS ON A POISONED MUTEX, and that is the correct call here rather than
+    /// the recover that `batching.rs`'s per-session map does: this lock guards
+    /// `Db`'s ONE shared `rusqlite::Connection`, so a panic mid-transaction can
+    /// leave that single connection unusable, and recovering would hand the next
+    /// caller a connection of unknown state (an open transaction, or a rolled-back
+    /// batch it believes landed). AGENTS.md's poisoned-mutex rule — recover when
+    /// the lock guards independent per-key state, panic when it guards one shared
+    /// resource — and this is the file's own 28 sites, now arguing for itself
+    /// instead of merely asserting.
     pub fn record_messages_batch(
         &self,
         rows: &[(&str, &str, Option<&str>, &str)],

@@ -51,14 +51,35 @@
 //! the alternative — writing through to keep the per-call error — is the
 //! per-frame commit this module exists to remove. Every flush point logs what it
 //! deferred, so a failure is loud at the point it becomes real rather than silent
-//! forever. The one exception is the no-runtime write-through path (see
-//! [`BatchingPersistence::buffer_or_write`]): with no flush to defer to, the
-//! error is returned immediately.
+//! forever. TWO exceptions, not one:
+//!
+//! 1. The no-runtime write-through path (see
+//!    [`BatchingPersistence::buffer_or_write`]): with no flush to defer to, the
+//!    error is returned immediately.
+//! 2. The pass-through writes that flush their own session first —
+//!    `insert_native_message` and `replace_native_messages` call
+//!    [`BatchingPersistence::flush_before_passthrough`], which LOGS a failed
+//!    flush and carries on, because the caller's `Result` belongs to the write it
+//!    asked for and not to the batch. So a caller of `Insert`/`Replace` can get
+//!    `Ok(())` while that session's pending `Display` rows were dropped. It is
+//!    loud in the log and silent in the return value; that is the deliberate
+//!    trade, and a caller must not read an `Ok` here as "the batch landed too".
 //!
 //! A failed batch is DROPPED, not re-queued — deliberately. SQLite refused these
 //! rows (a FK on a session row that is never going to appear, a disk that is
 //! full), so re-queuing would retry the identical failure every interval forever
 //! while the buffer grew.
+//!
+//! That refusal is bounded to the session that caused it: the flush loop has ONE
+//! ERROR BOUNDARY PER SESSION. `flush()` drains every session at once, and the
+//! rows of a session whose write was refused are the only ones dropped — a
+//! neighbour that happened to be in the same drained batch is still written, and
+//! each refusal is logged with the session id that caused it. Without that
+//! boundary one ghost session would silently take down every other session's
+//! transcript in the same flush (rows already removed from the buffer by the
+//! take, so never re-queued), which is a much larger loss than the one the
+//! paragraph above licenses. Pinned by
+//! `tests::a_failed_session_does_not_strand_the_sessions_it_was_batched_with`.
 //!
 //! # The bounded loss window: 250 ms
 //!
@@ -491,40 +512,86 @@ fn take(inner: &Arc<Inner>, session_id: Option<&str>) -> Vec<(String, Pending)> 
 /// Those land at a few per TURN, not a few per second, so they are not the
 /// pressure being relieved — and this comment says so rather than claiming one
 /// commit for a batch that is not literally one commit.
+///
+/// ONE ERROR BOUNDARY PER SESSION, and it is not a nicety. `flush()` drains
+/// EVERY session and this loop then writes them one at a time, so a `?` here
+/// abandoned every session still queued behind the one that failed — rows that
+/// `take()` had ALREADY removed from the buffer, so they were not deferred, they
+/// were lost, and never re-queued. The module docs license dropping the batch
+/// SQLite refused; they never licensed dropping the innocent co-batched ones.
+/// So: log it, keep going, and report the FIRST failure at the end so the
+/// "errors move to the flush" contract still holds for whoever calls.
+///
+/// The log line here and the one the caller writes are complementary, not a
+/// duplicate: this one names WHICH session was refused (the caller cannot know —
+/// it gets one `Result` for the whole batch), the caller's names WHERE the flush
+/// was invoked from.
 fn write(inner: &Arc<Inner>, drained: &[(String, Pending)]) -> Result<usize, DbError> {
     let mut writes = 0usize;
+    let mut first_error: Option<DbError> = None;
     for (session_id, pending) in drained {
-        if !pending.display.is_empty() {
-            let rows: Vec<(&str, &str, Option<&str>, &str)> = pending
-                .display
-                .iter()
-                .map(|slot| {
-                    (
-                        session_id.as_str(),
-                        slot.kind.as_str(),
-                        slot.message_key.as_deref(),
-                        slot.payload_json.as_str(),
-                    )
-                })
-                .collect();
-            Db::record_messages_batch(&inner.db, &rows)?;
-            writes += rows.len();
+        match write_session(inner, session_id, pending) {
+            Ok(issued) => writes += issued,
+            Err(e) => {
+                fulcrum_harness::debuglog::log(&format!(
+                    "batching flush: session {session_id} was refused and its \
+                     buffered rows are dropped: {e}"
+                ));
+                // Keep the FIRST failure — with several refused sessions it is
+                // as good a representative as any, and the per-session line
+                // above already names each one.
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
         }
-        if let Some((used, window)) = pending.context {
-            Db::record_session_context_usage(&inner.db, session_id, used, window)?;
-            writes += 1;
-        }
-        if let Some(cost) = pending.cost {
-            Db::record_session_cost(&inner.db, session_id, cost)?;
-            writes += 1;
-        }
-        // `todos` is `Option<Option<String>>`: the OUTER `None` is "nothing
-        // pending" (write nothing), the INNER `None` is a `todos_clear` (write
-        // SQL `NULL`). Collapsing the two would silently lose a clear.
-        if let Some(todos) = pending.todos.as_ref().map(|value| value.as_deref()) {
-            Db::record_session_todos(&inner.db, session_id, todos)?;
-            writes += 1;
-        }
+    }
+    match first_error {
+        Some(e) => Err(e),
+        None => Ok(writes),
+    }
+}
+
+/// Write ONE session's drained rows. The unit the boundary above is drawn at:
+/// within a session a failure still stops at the failure (the display batch is
+/// one all-or-nothing transaction, and a session that cannot write its
+/// transcript is not served by trying its `sessions` columns next).
+fn write_session(
+    inner: &Arc<Inner>,
+    session_id: &str,
+    pending: &Pending,
+) -> Result<usize, DbError> {
+    let mut writes = 0usize;
+    if !pending.display.is_empty() {
+        let rows: Vec<(&str, &str, Option<&str>, &str)> = pending
+            .display
+            .iter()
+            .map(|slot| {
+                (
+                    session_id,
+                    slot.kind.as_str(),
+                    slot.message_key.as_deref(),
+                    slot.payload_json.as_str(),
+                )
+            })
+            .collect();
+        Db::record_messages_batch(&inner.db, &rows)?;
+        writes += rows.len();
+    }
+    if let Some((used, window)) = pending.context {
+        Db::record_session_context_usage(&inner.db, session_id, used, window)?;
+        writes += 1;
+    }
+    if let Some(cost) = pending.cost {
+        Db::record_session_cost(&inner.db, session_id, cost)?;
+        writes += 1;
+    }
+    // `todos` is `Option<Option<String>>`: the OUTER `None` is "nothing
+    // pending" (write nothing), the INNER `None` is a `todos_clear` (write
+    // SQL `NULL`). Collapsing the two would silently lose a clear.
+    if let Some(todos) = pending.todos.as_ref().map(|value| value.as_deref()) {
+        Db::record_session_todos(&inner.db, session_id, todos)?;
+        writes += 1;
     }
     Ok(writes)
 }
@@ -575,36 +642,32 @@ impl FulcrumPersistence for BatchingPersistence {
         message_key: Option<&str>,
         payload_json: &str,
     ) -> Result<(), StoreError> {
-        let kind = kind.to_string();
-        let message_key = message_key.map(str::to_string);
-        let payload_json = payload_json.to_string();
         self.buffer_or_write(
             session_id,
             |pending| {
+                // The owned copies are built HERE and not before the call. Both
+                // closures are `FnOnce` and the pass-through branch needs `&str`
+                // only, so converting up front made the no-runtime write-through
+                // path pay three allocations it immediately discarded — and that
+                // path is the one taken whenever there is no runtime to hold a
+                // timer, which is every plain test thread and any caller off the
+                // async runtime.
                 match pending
                     .display
                     .iter_mut()
-                    .find(|slot| slot.kind == kind && slot.message_key == message_key)
+                    .find(|slot| slot.kind == kind && slot.message_key.as_deref() == message_key)
                 {
                     // Last-wins on the PAYLOAD, FIRST-SEEN on the POSITION (the
                     // `message_retracted` case in the module docs).
-                    Some(slot) => slot.payload_json = payload_json.clone(),
+                    Some(slot) => slot.payload_json = payload_json.to_string(),
                     None => pending.display.push(DisplaySlot {
-                        kind: kind.clone(),
-                        message_key: message_key.clone(),
-                        payload_json: payload_json.clone(),
+                        kind: kind.to_string(),
+                        message_key: message_key.map(str::to_string),
+                        payload_json: payload_json.to_string(),
                     }),
                 }
             },
-            || {
-                Db::record_message(
-                    &self.inner.db,
-                    session_id,
-                    &kind,
-                    message_key.as_deref(),
-                    &payload_json,
-                )
-            },
+            || Db::record_message(&self.inner.db, session_id, kind, message_key, payload_json),
         )
         .map_err(StoreError::from)
     }

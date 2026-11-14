@@ -6776,3 +6776,146 @@ describe("clearSessionState write-set contract (the session-keyed maps, finding 
     ]);
   });
 });
+
+describe("the eviction keep-set's ONE gap: the two statements between addUserMessage and beginTurn (#155 review, Finding 6)", () => {
+  // WHAT THIS IS, and what it deliberately is NOT. `releaseUnseenTranscripts`'
+  // keep-set is `keepSessionId` ∪ live ids ∪ `inTurn` ids ∪ Subagent child/parent
+  // ids. Every Session the user is typing into is covered by one of those EXCEPT
+  // in ONE window: `useChatPromptDispatch`'s send tail runs
+  //
+  //     addUserMessage(sessionId, text, imageRefs);   // ← the bubble is in the store
+  //     beginTurn(sessionId);                        // ← only NOW is the id `inTurn`
+  //
+  // so between those two statements the id is neither live (a stored/resumed
+  // Session that has closed is not in `sessions`), nor `inTurn`, nor a Subagent
+  // relation. A navigation landing in that gap evicts the transcript holding the
+  // prompt the user just typed.
+  //
+  // THE BEHAVIOUR IS ACCEPTED, AND THIS TEST DOES NOT TRY TO CHANGE IT. The
+  // window carries no `await` (the two calls are adjacent, with nothing between
+  // them that can yield), so on the shipped path nothing can interleave there —
+  // the exposure is a store subscriber reacting synchronously to the new message,
+  // which is exactly what this test drives, because that is the only shape the
+  // gap can actually take. And the loss is the BUBBLE, not the prompt: the row is
+  // written by `send_prompt` on the Rust side, which goes straight through
+  // `self.driver.db` and is NOT batched (see `storage/batching.rs`'s "three honest
+  // limits" — the `send_prompt` user row bypasses the persister entirely), so it
+  // is on disk before the next paint and comes back on re-open.
+  //
+  // SO WHAT IS PINNED is the RECOVERY, which is the half that could silently
+  // rot: re-open has to actually re-fetch, and it re-fetches only because
+  // `releaseUnseenTranscripts` deletes the pagination window and its cursor
+  // TOGETHER (the stale-cursor trap). If a future change kept `history[id]`
+  // alive across a release, `openSession`'s loaded test would read "already
+  // loaded", the re-fetch would be skipped, and the prompt would be gone from the
+  // screen for good. That is the regression this test goes red for.
+  beforeEach(() => resetStores());
+  afterEach(() => resetStores());
+
+  it("a navigation inside the addUserMessage→beginTurn window drops the bubble, and re-opening brings the row back", async () => {
+    const PROMPT = "the prompt typed inside the window";
+    // A STORED session, not a live one — the only shape the gap can bite. A live
+    // id is in `sessions` and the keep-set never releases it.
+    useSessions.setState({
+      sessions: [],
+      historySessions: [info("gap", "/a")],
+      spaces: [row("/a", 2000)],
+      activeSessionId: "gap",
+      activeSpacePath: "/a",
+      inTurn: {},
+      // The transcript the session already had, hydrated from its rows.
+      messages: {
+        gap: [{ kind: "agent-text", messageId: "m1", text: "an earlier answer", at: 1 }],
+      },
+      history: {
+        gap: {
+          oldestRowId: 7,
+          hasMore: false,
+          loadingMore: false,
+          generation: 0,
+          epoch: 0,
+        },
+      },
+    });
+
+    // The interleaving itself, and the only honest way to produce it: zustand
+    // notifies subscribers SYNCHRONOUSLY at the end of `setState`, so a subscriber
+    // that navigates runs between `addUserMessage` and `beginTurn` — inside the
+    // window, with `inTurn` still unset for `gap`. That is the premise, and it is
+    // asserted below rather than assumed.
+    let navigations = 0;
+    const unsub = useSessions.subscribe(() => {
+      if (navigations > 0) return; // fire ONCE, on the first `set` it sees
+      if (useSessions.getState().messages.gap === undefined) return;
+      navigations += 1;
+      useSessions.getState().openSession("other");
+    });
+
+    // ── Statement 1 of the send tail ────────────────────────────────────────
+    useSessions.getState().addUserMessage("gap", PROMPT);
+    unsub();
+    expect(navigations).toBe(1);
+
+    // THE PREMISE, pinned: the navigation really did land inside the window, and
+    // `gap` was in no arm of the keep-set when it ran.
+    expect(useSessions.getState().inTurn.gap).toBeUndefined();
+    expect(useSessions.getState().messages.gap).toBeUndefined();
+    // …and the cursor went WITH the transcript, which is what makes the recovery
+    // below possible at all.
+    expect(useSessions.getState().history.gap).toBeUndefined();
+
+    // ── Statement 2 of the send tail ────────────────────────────────────────
+    useSessions.getState().beginTurn("gap");
+    expect(useSessions.getState().inTurn.gap).toBe(true);
+    // Setting the flag afterwards does NOT undo the release — `inTurn` keeps an id
+    // from being evicted NEXT time, it does not resurrect rows already dropped.
+    expect(useSessions.getState().messages.gap).toBeUndefined();
+
+    // ── The recovery ────────────────────────────────────────────────────────
+    // `sendPrompt` now runs and the Rust command writes the user row DIRECTLY
+    // (unbatched, `agent/session/mod.rs` → `self.driver.db`), so by the time the
+    // user navigates back the row is in the database. The mock returns what the
+    // command would have persisted: the earlier answer, plus the prompt.
+    vi.mocked(loadHistory).mockImplementationOnce(() =>
+      Promise.resolve<HistoryPage>({
+        rows: [
+          msgRow({
+            id: 7,
+            sessionId: "gap",
+            kind: "agent-text",
+            messageKey: "m1",
+            payloadJson: JSON.stringify({ text: "an earlier answer" }),
+            createdAt: 1,
+          }),
+          msgRow({
+            id: 8,
+            sessionId: "gap",
+            kind: "user",
+            payloadJson: JSON.stringify({ text: PROMPT }),
+            createdAt: 2,
+          }),
+        ],
+        hasMore: false,
+        todos: null,
+      }),
+    );
+
+    useSessions.getState().openSession("gap");
+    await vi.waitFor(() => {
+      const transcript = useSessions.getState().messages.gap;
+      expect(transcript?.map((m) => (m.kind === "user" ? m.text : m.kind))).toEqual([
+        "agent-text",
+        PROMPT,
+      ]);
+    });
+
+    // The prompt is back, and the whole transcript with it — not the one-row
+    // transcript `addUserMessage` alone would have left behind.
+    const recovered = useSessions.getState().messages.gap ?? [];
+    expect(recovered).toHaveLength(2);
+    expect(recovered[1]).toMatchObject({ kind: "user", text: PROMPT });
+    expect(loadHistory).toHaveBeenCalledWith("gap", {
+      limit: INITIAL_HISTORY_PAGE,
+    });
+  });
+});

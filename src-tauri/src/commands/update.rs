@@ -543,29 +543,48 @@ fn owned_relaunch(
     Some((path, args, patch))
 }
 
-/// The owned spawn, with the teardown `App::run` would have performed. Never
-/// returns: `std::process::exit(0)` is the last statement whatever the spawn
-/// did, mirroring `tauri::process::restart` (`process.rs:74-89`).
+/// The batch-draining half of the relaunch teardown, EXTRACTED from
+/// [`relaunch_through_the_mount`] so it is reachable from a test — the same
+/// reason `lib.rs`'s `run_event_callback` is a function and not inline in `run`.
 ///
-/// The spawn uses [`crate::agent::childproc`]`::command_std`, the owner of the
-/// Windows child-console window policy (`CREATE_NO_WINDOW`).
+/// `relaunch_through_the_mount` cannot be driven from a test at all: it never
+/// returns (`std::process::exit(0)` is its last statement whatever the spawn
+/// did), it spawns a real successor process, and it calls
+/// `cleanup_before_exit()`, after which no Tauri API may be used again. So the
+/// half that matters for durability is factored out here and the caller is left
+/// with the parts a test must not run. That is what makes
+/// `tests/ipc.rs::the_relaunch_teardown_flushes_the_buffered_rows` possible: it
+/// drives THIS function against the production decorator on a mock app, exactly
+/// as `the_exit_run_event_flushes_the_buffered_rows` drives the `Exit` arm.
 ///
-/// ⚠ Only because this function is Linux-gated: on Windows and macOS the
-/// relaunch is the `app.restart()` fallthrough below, whose spawn is Tauri's own
-/// unflagged `Command::new(path)…spawn()` (`tauri-2.12.2/src/process.rs:83`) —
-/// outside that seam, and outside the census that guards it.
+/// FLUSH → REAP → FLUSH, the triad the `RunEvent::Exit` arm in `run`'s callback
+/// performs, and for the same two reasons:
+///
+/// * The flush is not covered by `Drop`. `BatchingPersistence::Drop` is
+///   documented best-effort and never runs on a path ending in
+///   `std::process::exit`, which runs no destructors — and BOTH relaunch paths
+///   end there. Without it an app update silently discards up to one flush
+///   interval of buffered transcript, which is data loss at the one moment the
+///   user expects none, because the app restarted itself rather than crashing.
+/// * The reap is a PRODUCER as well as a consumer: a closing Worker emits frames
+///   that `route_event` buffers, so the flush AFTER it is what catches what the
+///   reap wrote. Flushing only before it loses exactly those rows.
+///
+/// A failed flush is LOGGED and the teardown continues (the helper logs; it does
+/// not return a `Result`). Losing one interval beats never installing the update,
+/// and the sibling reap below made the same trade for the same reason.
+///
+/// Generic over `R` so the mock-runtime integration test can reach it, while the
+/// production caller passes the `Wry` handle it already holds.
 #[cfg(target_os = "linux")]
-fn relaunch_through_the_mount(
-    app: &AppHandle,
-    path: &std::path::Path,
-    args: &[std::ffi::OsString],
-    patch: &hostenv::EnvPatch,
-) -> ! {
-    // (1) This app's OWN `RunEvent::Exit` hook (`src/lib.rs:378-389`): reap the
-    //     Workers — the graceful `close` + grace + `kill`. Skip it and every
-    //     Worker is SIGKILLed on each update-restart instead of reaped. The
-    //     fresh current-thread runtime is the same one that hook builds, for the
-    //     same reason: this is not a tokio context.
+pub fn drain_batch_and_reap_workers<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    crate::flush_batched(app, "relaunch");
+
+    // This app's OWN `RunEvent::Exit` hook (the `RunEvent::Exit` arm in `run`'s
+    // callback): reap the Workers — the graceful `close` + grace + `kill`. Skip
+    // it and every Worker is SIGKILLed on each update-restart instead of reaped.
+    // The fresh current-thread runtime is the same one that hook builds, for the
+    // same reason: this is not a tokio context.
     if let Some(wm) =
         app.try_state::<std::sync::Arc<crate::agent::worker::manager::WorkerManager>>()
     {
@@ -586,13 +605,44 @@ fn relaunch_through_the_mount(
         }
     }
 
+    // The SECOND flush — what the reap above just produced.
+    crate::flush_batched(app, "relaunch-after-reap");
+}
+
+/// The owned spawn, with the teardown `App::run` would have performed. Never
+/// returns: `std::process::exit(0)` is the last statement whatever the spawn
+/// did, mirroring `tauri::process::restart` (`process.rs:74-89`).
+///
+/// The spawn uses [`crate::agent::childproc`]`::command_std`, the owner of the
+/// Windows child-console window policy (`CREATE_NO_WINDOW`).
+///
+/// ⚠ Only because this function is Linux-gated: on Windows and macOS the
+/// relaunch is the `app.restart()` fallthrough below, whose spawn is Tauri's own
+/// unflagged `Command::new(path)…spawn()` (`tauri-2.12.2/src/process.rs:83`) —
+/// outside that seam, and outside the census that guards it.
+#[cfg(target_os = "linux")]
+fn relaunch_through_the_mount(
+    app: &AppHandle,
+    path: &std::path::Path,
+    args: &[std::ffi::OsString],
+    patch: &hostenv::EnvPatch,
+) -> ! {
+    // (1) The batch flush + the Worker reap + the second flush — the triad the
+    //     `RunEvent::Exit` arm in `run`'s callback performs, and the half of this
+    //     teardown that a test can reach. It lives in
+    //     [`drain_batch_and_reap_workers`] with its own argument for why each of
+    //     the three steps is there; what is arguable HERE is only that it must
+    //     happen BEFORE the geometry save and `cleanup_before_exit()`, because it
+    //     is the last step that still uses Tauri state.
+    drain_batch_and_reap_workers(app);
+
     // (2) The `tauri-plugin-window-state` `RunEvent::Exit` handler
     //     (`tauri-plugin-window-state-2.4.0/src/lib.rs:503`): the geometry save.
-    //     `StateFlags::all()` is what the plugin is registered with
-    //     (`Builder::default()`, `src/lib.rs:280`), so this is the same save and
-    //     not a wider one. Its `Result` is ignored on purpose: a state file that
-    //     cannot be written costs the user a geometry, and the process is
-    //     exiting whatever we do with it here.
+    //     `StateFlags::all()` is what the plugin is registered with (this app's
+    //     `Builder::default()` call in `run`, where `tauri_plugin_window_state` is
+    //     registered), so this is the same save and not a wider one. Its `Result`
+    //     is ignored on purpose: a state file that cannot be written costs the
+    //     user a geometry, and the process is exiting whatever we do with it here.
     use tauri_plugin_window_state::AppHandleExt as _;
     let _ = app.save_window_state(tauri_plugin_window_state::StateFlags::all());
 
@@ -650,7 +700,7 @@ fn relaunch_through_the_mount(
 /// the relaunched bundle's `AppRun` re-adds its own single set, and that one is
 /// all the new process and its children carry.
 ///
-/// ⚠ What the owned spawn owes, and why it is three steps rather than one.
+/// ⚠ What the owned spawn owes, and why it is FOUR steps rather than one.
 /// `relaunch_app` is a BLOCKING command, so Tauri runs it inline in an IPC
 /// handler off the main thread, so `restart()` would not spawn anything itself:
 /// it sets `restart_on_exit` and requests exit, and the restart happens in
@@ -658,10 +708,11 @@ fn relaunch_through_the_mount(
 /// `RunEvent::Exit` **callback first** and `cleanup_before_exit()` only after.
 /// `cleanup_before_exit()` alone (`app.rs:1128-1140`: tray icons + resource
 /// tables) is therefore NOT the teardown being bypassed. The owned path replays,
-/// in that order: this app's own `RunEvent::Exit` hook (the Worker `reap_all`,
-/// `src/lib.rs:378-389`), the window-state plugin's `RunEvent::Exit` save
-/// (`tauri-plugin-window-state-2.4.0/src/lib.rs:503`), and then
-/// `cleanup_before_exit()`.
+/// in that order: the batching flush (before AND after the reap — step (1)
+/// below), this app's own `RunEvent::Exit` hook (the Worker `reap_all`, in the
+/// `RunEvent::Exit` arm of `run`'s callback), the window-state plugin's
+/// `RunEvent::Exit` save (`tauri-plugin-window-state-2.4.0/src/lib.rs:503`), and
+/// then `cleanup_before_exit()`.
 #[tauri::command]
 pub fn relaunch_app(app: AppHandle) {
     // Non-Linux has no `Env::appimage`/`Env::appdir` to read and nothing for
@@ -673,6 +724,21 @@ pub fn relaunch_app(app: AppHandle) {
             relaunch_through_the_mount(&app, &path, &args, &patch);
         }
     }
+    // THE FLUSH-PRESERVING PATH, and this is now load-bearing rather than
+    // incidental. Because `relaunch_app` is a BLOCKING command — off the main
+    // thread — `restart()` does not spawn anything here: it sets
+    // `restart_on_exit` and requests exit, so `App::run` reaches its `Exit` arm,
+    // which runs the `RunEvent::Exit` callback, which is where `flush_batched`
+    // lives. So the fallthrough DOES flush the batch and the owned path above had
+    // to reproduce that by hand to stay even with it.
+    //
+    // ⚠ Nothing enforces this. Make `relaunch_app` an `#[tauri::command(async)]`,
+    // or call it from the main thread, and `restart()` spawns Tauri's own
+    // successor and `std::process::exit`s WITHOUT running the `Exit` callback —
+    // silently removing the flush from every non-AppImage platform, with no test
+    // to catch it (the owned path's flush is Linux-gated, and the mock runtime
+    // has no AppImage env to read). If that ever changes, the flush has to move
+    // onto this line's path explicitly.
     app.restart()
 }
 
@@ -1248,5 +1314,146 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// (#155 review, Finding 1) THE RELAUNCH PATH DRAINS THE BATCH BEFORE IT
+    /// EXITS — pinned from the SOURCE, because this edge cannot be run.
+    ///
+    /// `relaunch_through_the_mount` is `-> !`: its last statement is
+    /// `std::process::exit(0)` whatever the spawn did, it launches a real
+    /// successor, and it calls `cleanup_before_exit()`, after which no Tauri API
+    /// may be used. There is therefore NO way to call it from a test and observe
+    /// anything — a test that reached it would kill the test binary, and no
+    /// assertion would run. So the behavioural half lives in
+    /// [`drain_batch_and_reap_workers`] and is proven for real by
+    /// `tests/ipc.rs::the_relaunch_teardown_flushes_the_buffered_rows`; what is
+    /// left unproven is only the WIRING — that the relaunch function calls it,
+    /// and calls it BEFORE the steps that make Tauri state unusable. That wiring
+    /// is what this reads the file for, and it is the honest shape of the
+    /// exposure: an ordering pin, not a durability proof.
+    ///
+    /// This is the same instrument the schema guards in `storage/db.rs`'s tests
+    /// use (`include_str!` + count), for the same reason: the alternative to a
+    /// source pin is a comment, and a comment is what failed here in the first
+    /// place — the relaunch path documented that it replayed the `Exit` teardown
+    /// while quietly not replaying the flush.
+    ///
+    /// BOUNDED, deliberately: it asserts the CALL and its POSITION, not the body
+    /// of the helper (the integration test covers the body). Over-reading it as a
+    /// durability proof is the mistake to avoid.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_relaunch_path_drains_the_batch_before_it_exits() {
+        let source = include_str!("update.rs");
+        let body = source
+            .split("fn relaunch_through_the_mount(")
+            .nth(1)
+            .expect("the owned relaunch function")
+            // Stop at the next item so a later function cannot satisfy the search.
+            .split("\n/// ")
+            .next()
+            .expect("the owned relaunch body");
+        // COMMENTS STRIPPED before anything is located: this function's own prose
+        // names `cleanup_before_exit()` and the geometry save (it is explaining
+        // the ordering), so searching the raw text finds the sentence and not the
+        // call — which is exactly how a pin like this goes vacuously green.
+        let code: String = body
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // (a) The relaunch calls the draining helper at all.
+        let drain_at = code.find("drain_batch_and_reap_workers(app)").expect(
+            "`relaunch_through_the_mount` must call `drain_batch_and_reap_workers` \
+                     — it is the only thing that flushes the batch before `std::process::exit` \
+                     runs no destructors",
+        );
+        // (b) BEFORE `cleanup_before_exit()`, whose documented contract is that no
+        //     Tauri API may be used after it (and `flush_batched` reads managed
+        //     state, so it is a Tauri API).
+        let cleanup_at = code
+            .find(".cleanup_before_exit()")
+            .expect("the teardown still replays `cleanup_before_exit`");
+        assert!(
+            drain_at < cleanup_at,
+            "the batch drain must run before `cleanup_before_exit()` (found the drain \
+             at {drain_at}, the cleanup at {cleanup_at})"
+        );
+        // (c) BEFORE the window-state save too, so a save that blocks cannot be
+        //     the last thing standing between the buffer and the exit.
+        let save_at = code
+            .find(".save_window_state(")
+            .expect("the teardown still replays the window-state save");
+        assert!(
+            drain_at < save_at,
+            "the batch drain must run before the geometry save (found the drain at \
+             {drain_at}, the save at {save_at})"
+        );
+        // (d) And the helper itself still flushes on BOTH sides of the reap — the
+        //     count is the pin (`lib.rs`'s exit arm is the shape this mirrors).
+        let helper = source
+            .split("pub fn drain_batch_and_reap_workers")
+            .nth(1)
+            .expect("the draining helper")
+            .split("\n}\n")
+            .next()
+            .expect("the draining helper body");
+        let helper_code: String = helper
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            helper_code.matches("crate::flush_batched(").count(),
+            2,
+            "the helper flushes before AND after the reap — the reap is a producer \
+             (a closing Worker emits frames `route_event` buffers), so one flush on \
+             either side alone leaves rows behind"
+        );
+        assert!(
+            helper_code.contains("reap_all()"),
+            "and it still replays the Worker reap between them"
+        );
+        // (e) The stale-citation guard: this repo forbids `file:line` citations in
+        //     durable prose, and this function cited THIS crate's `lib.rs` by line
+        //     twice for an arm that has since moved. Cite it by WHAT IT IS —
+        //     "the `RunEvent::Exit` arm in `run`'s callback".
+        //
+        // GENERAL rather than a list of known-bad numbers: any such citation rots
+        // the moment `lib.rs` grows. A citation whose path carries a VERSIONED
+        // dependency directory (the window-state plugin's) is exempt — that path
+        // names a pinned crate whose source does not move under us, which is the
+        // one case a line number survives.
+        //
+        // The needle is BUILT and never written out: this test lives in the file it
+        // reads, so any literal spelling of it in the prose or the message would be
+        // found by the scan and the guard would fail on its own text.
+        let our_lib = "lib";
+        let needle = format!("src/{our_lib}.rs:");
+        let versioned_dependency = "tauri-plugin-window-state";
+        let mut at = 0usize;
+        while let Some(offset) = source[at..].find(needle.as_str()) {
+            let absolute = at + offset;
+            let looks_versioned = source[..absolute]
+                .rsplit(char::is_whitespace)
+                .next()
+                .is_some_and(|token| token.contains(versioned_dependency));
+            assert!(
+                looks_versioned,
+                "`{}…` is a line-number citation of OUR `lib.rs` — this branch has \
+                 already moved that code once; cite it by what it is (e.g. \"the \
+                 `RunEvent::Exit` arm in `run`'s callback\")",
+                &source[absolute..absolute + needle.len() + 6]
+            );
+            at = absolute + needle.len();
+        }
+        // The guard is not vacuous: the exemption path must still be exercised, or
+        // a typo in `versioned_dependency` would make it accept everything.
+        assert!(
+            source.contains(versioned_dependency),
+            "the exemption is only meaningful while the versioned-plugin citation \
+             it exempts is still in this file"
+        );
     }
 }

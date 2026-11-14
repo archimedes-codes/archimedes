@@ -870,7 +870,12 @@ pub fn run_event_callback<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, event
 ///
 /// A missing state is a no-op, not an error: `Exit` also fires on a `tauri::test`
 /// app that never ran `setup_dirs`, and on a build with no database.
-fn flush_batched<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, where_: &str) {
+///
+/// `pub(crate)` rather than private because the update-relaunch path replays this
+/// teardown by hand and must reach the decorator the SAME way (`commands/update.rs`
+/// — `std::process::exit` there runs no destructors either, so it needs the same
+/// flush; duplicating the downcast there is how the two would drift).
+pub(crate) fn flush_batched<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, where_: &str) {
     let Some(batched) = handle.try_state::<Arc<crate::storage::BatchingPersistence>>() else {
         return;
     };
