@@ -83,6 +83,71 @@ pub(crate) fn history_page(
     })
 }
 
+/// Crosses the `spawn_blocking` join for the history reads (#155).
+///
+/// Two arms, and they mean different things: `Ok(Err(DbError))` is the database
+/// refusing, and each `DbError` variant keeps its OWN `HistoryError` kind through
+/// `From` — "SQLite refused" and "the disk failed" stay two answers on the wire
+/// (ADR 0063, Finding 20). `Err(join)` is the blocking closure DIED, which before
+/// this task was not reachable at all because the read ran inline on the async
+/// worker.
+///
+/// The join lands on `HistoryError::Io`, the variant
+/// `commands/files/mod.rs::read_file_bytes` maps its own `JoinError` to for the
+/// same reason: `HistoryError` has no catch-all arm and adding one would widen
+/// the wire vocabulary for a case the frontend cannot act on differently from an
+/// i/o failure. The sentence is the join's own (`Display`), so a panic inside the
+/// read is legible in the log rather than flattened to a bare kind.
+///
+/// Generic over `E` (the join error) rather than naming it, exactly as
+/// `commands/tasks.rs::board_call` is: `spawn_blocking` hands back a
+/// `tauri::Error`, and `tauri::async_runtime` re-exports the handle types but NOT
+/// that error, so naming the concrete type would mean importing it past the
+/// dialect this file speaks. `Display` is all the arm needs.
+fn history_call<T, E: std::fmt::Display>(
+    joined: Result<Result<T, DbError>, E>,
+) -> Result<T, HistoryError> {
+    match joined {
+        Ok(inner) => inner.map_err(HistoryError::from),
+        Err(join) => Err(HistoryError::Io(join.to_string())),
+    }
+}
+
+/// [`load_history`]'s testable core (#155 Task 4) — the `save_settings_and_push`
+/// / `write_artifact_core` shape, for the reason those record: `tauri::State` has
+/// no public constructor, so the command wrapper cannot be called from a unit
+/// test (`commands/settings.rs`, `commands/agents.rs`, `commands/tasks.rs`).
+///
+/// The body is the one the command ran inline before: [`history_page`] against
+/// the same `Db`, the same arguments, the same order. What changes is WHERE it
+/// runs. `db.messages_page` and `db.session_todos` take the `StdMutex<Connection>`
+/// the per-token writer holds, and calling them inline blocked a **tokio worker**
+/// on that mutex — head-of-line blocking on the same lock the transcript writer
+/// is on, so a boot-time history read could stall an unrelated async task for the
+/// length of the query. `Arc<Db>` is `Send + Sync` (`Db { conn: StdMutex<Connection> }`,
+/// `Connection: Send`, the `Mutex` supplying `Sync`), so the read moves whole onto
+/// a worker thread and the async worker only awaits the join.
+///
+/// No lock is held across the `.await` (the guard is function-local inside each
+/// `Db` method), which is what makes the crossing safe at all.
+pub(crate) async fn load_history_core(
+    db: Arc<Db>,
+    session_id: String,
+    limit: Option<u32>,
+    before_id: Option<i64>,
+) -> Result<HistoryPage, HistoryError> {
+    // The house precedent (`commands/spaces.rs::space_for_path`, stated as the
+    // rule at `commands/files/mod.rs`): `tauri::async_runtime::spawn_blocking`,
+    // NOT `tokio::task::spawn_blocking` — both compile, one file speaking two
+    // dialects does not.
+    history_call(
+        tauri::async_runtime::spawn_blocking(move || {
+            history_page(&db, &session_id, limit, before_id)
+        })
+        .await,
+    )
+}
+
 #[tauri::command]
 pub async fn load_history(
     state: State<'_, Arc<Db>>,
@@ -90,7 +155,9 @@ pub async fn load_history(
     limit: Option<u32>,
     before_id: Option<i64>,
 ) -> Result<HistoryPage, HistoryError> {
-    history_page(&state, &session_id, limit, before_id).map_err(HistoryError::from)
+    // A thin unwrap + delegate: everything the wire answers is decided by
+    // `load_history_core`, which the in-file tests call directly.
+    load_history_core(state.inner().clone(), session_id, limit, before_id).await
 }
 
 /// Archive (or unarchive) a stored session (ADR 0016): sets the
@@ -383,6 +450,228 @@ mod tests {
             listed,
             vec!["s_c".to_string(), "s_a".to_string(), "s_b".to_string()],
             "the given slice order IS the stored order"
+        );
+    }
+
+    /// (#155 Task 4) The BEHAVIOUR PIN for `load_history_core`: the page it
+    /// answers is the page `history_page` answers for the same seeded database
+    /// — same rows, same order, same `has_more`, same `todos` — even though the
+    /// read now happens on a `spawn_blocking` worker thread instead of inline on
+    /// the async worker. Moving the call must change WHERE the query runs and
+    /// nothing else.
+    ///
+    /// Asserted through `load_history_core` and NOT through `load_history`
+    /// because `tauri::State` has no public constructor, so the command wrapper
+    /// is unreachable from a unit test (`commands/settings.rs`,
+    /// `commands/agents.rs` and `commands/tasks.rs` each record that wall). The
+    /// core takes the `Arc<Db>` the wrapper hands it — the
+    /// `save_settings_and_push` / `write_artifact_core` shape — so this IS the
+    /// code the wire runs, minus the `State` unwrap.
+    ///
+    /// `#[tokio::test]` per `commands/open.rs` / `commands/files`: the core is
+    /// `async`, and `spawn_blocking` needs a runtime to await its join on.
+    #[tokio::test]
+    async fn load_history_core_answers_the_page_history_page_does() {
+        // ScratchDir declared FIRST so it drops LAST — the drop-order rule the
+        // three tests above document (Linux tolerates the wrong order, Windows
+        // does not).
+        let dir = crate::test_support::ScratchDir::in_env_temp("history-core-page-test-", "db");
+        let db = Arc::new(Db::open(&dir.join("t.db")).expect("db should open"));
+
+        db.record_session(&SessionInfo {
+            session_id: "sess-core".to_string(),
+            cwd: std::path::PathBuf::from("/tmp"),
+            capabilities: serde_json::json!({}),
+            config_options: None,
+            archived: false,
+            title: None,
+            context_usage: None,
+            cost_usd: None,
+            is_subagent: false,
+        })
+        .expect("record_session should succeed");
+        db.record_session_todos(
+            "sess-core",
+            Some(r#"[{"content":"task1","status":"pending"}]"#),
+        )
+        .expect("record_session_todos should succeed");
+        // Five rows, distinct `message_key`s (the UNIQUE constraint is
+        // (session_id, kind, message_key), so five inserts really are five rows).
+        for i in 0..5 {
+            db.record_message("sess-core", "agent-text", Some(&format!("k{i}")), "{}")
+                .expect("record_message should succeed");
+        }
+
+        // The OLD answer, straight from the sync fn the command used to call
+        // inline. `HistoryPage` derives no `PartialEq`, so the comparison runs
+        // on the wire form — `Serialize` is what the webview actually receives,
+        // which makes it the stronger of the two available comparisons.
+        let sync = history_page(&db, "sess-core", Some(2), None).expect("history_page should work");
+
+        let core = load_history_core(db.clone(), "sess-core".to_string(), Some(2), None)
+            .await
+            .expect("load_history_core should succeed");
+
+        assert_eq!(
+            serde_json::to_value(&core).expect("HistoryPage serializes"),
+            serde_json::to_value(&sync).expect("HistoryPage serializes"),
+            "the page the async core answers is identical to the page the sync fn answers"
+        );
+
+        // The legible half, so a failure names the field rather than two blobs:
+        // the newest TWO of five, ascending, with rows still behind the cursor,
+        // and the FIRST page carrying the todos.
+        assert_eq!(core.rows.len(), 2, "`limit: Some(2)` bounds the page");
+        assert!(core.has_more, "three rows are still behind the cursor");
+        assert!(
+            core.rows[0].id < core.rows[1].id,
+            "the page is in INSERTION order (ADR 0073), newest-last"
+        );
+        assert_eq!(
+            core.rows
+                .iter()
+                .map(|r| r.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["agent-text", "agent-text"],
+            "the seeded kinds come back untouched"
+        );
+        assert_eq!(
+            core.todos,
+            Some(serde_json::json!([{"content":"task1","status":"pending"}])),
+            "the first page carries the stored todos"
+        );
+
+        // The cursor arm, through the same core: an older page keeps the rows
+        // and drops the todos (the `before_id.is_none()` gate inside
+        // `history_page` must survive the move).
+        let oldest = core.rows[0].id;
+        let sync2 = history_page(&db, "sess-core", Some(2), Some(oldest))
+            .expect("history_page should work");
+        let page2 = load_history_core(db.clone(), "sess-core".to_string(), Some(2), Some(oldest))
+            .await
+            .expect("the paged call should succeed");
+        assert_eq!(
+            serde_json::to_value(&page2).expect("HistoryPage serializes"),
+            serde_json::to_value(&sync2).expect("HistoryPage serializes"),
+            "the paged page is identical too"
+        );
+        assert_eq!(page2.todos, None, "a paged page never re-sends the todos");
+        assert_eq!(page2.rows.len(), 2);
+
+        // The `limit: None` arm (the frontend sends `null` — see
+        // `src/lib/tauri/commands/sessions.ts`): every row up to the cursor,
+        // `has_more` false because nothing was dropped.
+        let unbounded = load_history_core(db.clone(), "sess-core".to_string(), None, None)
+            .await
+            .expect("the unbounded call should succeed");
+        assert_eq!(unbounded.rows.len(), 5, "no limit → every row");
+        assert!(
+            !unbounded.has_more,
+            "nothing was truncated, so nothing is behind"
+        );
+        assert!(unbounded.todos.is_some(), "still the first page");
+    }
+
+    /// (#155 Task 4) The JOIN arm of the crossing: a dead `spawn_blocking`
+    /// closure arrives as a `HistoryError`, never a panic — and a `DbError` that
+    /// the closure answered with keeps its OWN kind on the way out (the
+    /// discrimination ADR 0063 and Finding 20 exist to protect).
+    ///
+    /// Asserted through `history_call`, the SAME helper `load_history_core`
+    /// runs, because the arm cannot be reached THROUGH the core: the closure is
+    /// pure against an `Arc<Db>` and owned arguments, so the only thing that can
+    /// kill it is a poisoned mutex — and `Db::conn` is private, which is exactly
+    /// why `commands/spaces.rs` calls the `JoinError` arm "stated, not implied".
+    /// `commands/tasks.rs` solved the identical wall by making its flattener
+    /// generic over the join-error type and feeding both arms from a test
+    /// (`board.rs`, `stages.rs`); this copies that, with `String` naming the join
+    /// slot for the same stated reason — `spawn_blocking` hands back a
+    /// `tauri::Error` this file's dialect does not name.
+    #[test]
+    fn history_call_maps_a_dead_closure_to_a_history_error_and_keeps_the_db_kinds() {
+        // The join arm: `Err(_)` in the OUTER result. Before this task the arm
+        // did not exist (there was no crossing); a panic inside the read used to
+        // be impossible because the read ran inline, and now it is possible — so
+        // what it must produce is a rejected command, not a lost IPC reply.
+        let err = history_call::<HistoryPage, String>(Err("task 3 has panicked".to_string()))
+            .expect_err("a dead blocking closure is an error, not a panic");
+        assert_eq!(
+            err.kind(),
+            "io",
+            "the family has no catch-all arm, so the join lands on `io` — the arm \
+             `commands/files/mod.rs` maps its own JoinError to for the same reason"
+        );
+        let sentence = err.to_string();
+        assert!(
+            sentence.contains("task 3 has panicked"),
+            "the sentence is the join's own, got `{sentence}`"
+        );
+        // The envelope the webview receives (ADR 0063), read through
+        // `InvokeError`'s public `.0`.
+        let envelope = tauri::ipc::InvokeError::from(err).0;
+        assert_eq!(envelope["kind"], serde_json::json!("io"));
+        assert_eq!(
+            envelope["message"],
+            serde_json::json!(sentence),
+            "the envelope carries the same sentence `Display` gave"
+        );
+
+        // The `Ok(Err(_))` arm: a storage failure keeps its identity, so
+        // "SQLite refused" and "the disk failed" stay two different answers.
+        // The inner `Err` (the OUTER `Ok` stands in for the join succeeding —
+        // the same two-layer shape `commands/tasks/tests/board.rs` feeds
+        // `board_call`).
+        assert_eq!(
+            history_call::<HistoryPage, String>(Ok(Err(DbError::Io(std::io::Error::other(
+                "disk on fire",
+            )))))
+            .expect_err("a DbError is still an error at the wire"),
+            HistoryError::from(DbError::Io(std::io::Error::other("disk on fire"))),
+            "`DbError::Io` maps to `HistoryError::Io`, not to the join's arm"
+        );
+        let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        assert_eq!(
+            history_call::<HistoryPage, String>(Ok(Err(DbError::Json(json_err))))
+                .expect_err("a JSON payload failure is an error too")
+                .kind(),
+            "json",
+            "`DbError::Json` keeps the `json` kind"
+        );
+
+        // A REAL `Sqlite` failure, produced the way this file's other test
+        // produces real rows — a second raw connection to the same file, because
+        // `Db::conn` is private. Dropping `messages` out from under the `Db`
+        // makes `messages_page`'s own `prepare` refuse, so the arm is fed by
+        // SQLite and not by a hand-built error.
+        let dir = crate::test_support::ScratchDir::in_env_temp("history-core-join-test-", "db");
+        let path = dir.join("t.db");
+        let db = Arc::new(Db::open(&path).expect("db should open"));
+        {
+            let conn = rusqlite::Connection::open(&path).expect("raw open of the fixture db");
+            conn.execute("DROP TABLE messages", [])
+                .expect("drop the table the read selects from");
+        }
+        let raw = history_page(&db, "sess-any", Some(2), None);
+        assert!(
+            matches!(raw, Err(DbError::Sqlite(_))),
+            "the premise: dropping the table makes the storage call itself refuse"
+        );
+        let err = history_call::<HistoryPage, String>(Ok(raw))
+            .expect_err("a refused statement must reach the wire as an error");
+        assert_eq!(err.kind(), "sqlite", "the sqlite arm survives the crossing");
+
+        // And the happy shape the helper also owns: `Ok(Ok(_))` passes straight
+        // through, unmapped.
+        assert!(
+            history_call::<HistoryPage, String>(Ok(Ok(HistoryPage {
+                rows: vec![],
+                has_more: false,
+                todos: None,
+            })))
+            .expect("a good page is a good page")
+            .rows
+            .is_empty(),
+            "`Ok(Ok(_))` is returned untouched"
         );
     }
 }

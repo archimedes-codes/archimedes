@@ -1654,10 +1654,30 @@ impl SessionManager {
         let db = self.driver.db.clone().ok_or_else(|| {
             SessionError::Io("list_sessions requires an attached database".to_string())
         })?;
-        let rows = db
-            .list_sessions(include_archived)
+        // (#155 Task 4) The read takes the `StdMutex<Connection>` the per-token
+        // writer holds, so it runs on a worker thread — otherwise it blocked a
+        // **tokio worker** on that mutex (head-of-line blocking against the
+        // transcript write). The house precedent and the dialect rule:
+        // `commands/spaces.rs::space_for_path`, stated at
+        // `commands/files/mod.rs` — `tauri::async_runtime::spawn_blocking`, NOT
+        // `tokio::task::spawn_blocking`. `Arc<Db>` is `Send + Sync` and NO lock is
+        // held across this `.await` (`Db::list_sessions`' guard is function-local),
+        // which is what makes the crossing safe. The `JoinError` arm is UNTESTABLE
+        // for the reason `spaces.rs` states — the closure is pure against an
+        // `Arc<Db>` and a `bool`, so it dies only on a genuine mutex poison — and
+        // it maps to this family's own `SessionError`, NOT to `HistoryError`: the
+        // two commands sit in different files and speak different wires, and the
+        // error type is chosen by the WIRE, not by the file (ADR 0063).
+        let rows = tauri::async_runtime::spawn_blocking(move || db.list_sessions(include_archived))
+            .await
+            .map_err(|join| SessionError::Io(join.to_string()))?
             .map_err(|e| SessionError::Io(e.to_string()))?;
         let catalog = self.effective_catalog(None, true).await;
+        // NOTE (#155, deliberately NOT this task): `load_settings` is sync file
+        // I/O and still runs on the async worker. One read of a small JSON file on
+        // a path the frontend hits once per boot, so it is not this task's
+        // blocking source; it is named here so the next pass does not have to
+        // rediscover it.
         let settings = load_settings(&self.config_dir);
         Ok(rows
             .into_iter()
