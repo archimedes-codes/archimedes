@@ -259,6 +259,17 @@ describe("TaskCard — what it renders", () => {
     expect(screen.queryByText("spec")).toBeNull();
   });
 
+  it("renders no spec chip for an empty spec path — an empty pointer is not a pointer", () => {
+    // `""` is what a cleared field looks like on the wire, and the chip is the worst
+    // possible surface for it: the chip shows the word `spec` and NEVER the path, so
+    // an empty pointer rendered a chip PIXEL-IDENTICAL to a real one. `null` is the
+    // only value that means "no pointer", and the gate has to say so rather than
+    // asking merely "is this not null". Same shape as the `null` case above — the
+    // positive control is that test, this one is the second half of the pair.
+    render(<TaskCard task={task({ specPath: "" })} {...NO_LINKS} />);
+    expect(screen.queryByText("spec")).toBeNull();
+  });
+
   it("carries the task id as the drag payload handle", () => {
     // The board's drag handlers are keyed by id, so the DOM has to expose which
     // card a node is — otherwise a drop cannot say which card moved.
