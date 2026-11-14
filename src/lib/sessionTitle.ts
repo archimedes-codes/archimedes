@@ -24,8 +24,10 @@ import type { Message } from "./sessionTypes";
  * **The second arm does not need the transcript any more** (ADR 0073's
  * amendment, issue #155). A Session's transcript is now released when the user
  * navigates away from it, so `messages` is `undefined` for every Session the
- * window is not currently showing — and eight surfaces label rows for Sessions
- * they are not showing. Rather than let all eight fall to the folder name,
+ * window is not currently showing — and eight label sites label rows for Sessions
+ * they are not showing (7 `titleFor` call sites across 4 components, plus
+ * `SidePane`'s inline chain — ADR 0073's amendment enumerates all eight). Rather
+ * than let all eight fall to the folder name,
  * `store/sessions.ts` carries this arm's ANSWER onto the `SessionInfo.title` of
  * every list holding the id at the moment it releases the transcript, so the
  * first arm supplies what the second arm used to. Read that as: `title` is the

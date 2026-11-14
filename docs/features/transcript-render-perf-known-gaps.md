@@ -28,6 +28,17 @@ verified-by: §1–§3 as originally recorded — each claim re-measured against
   which is what corrects the `tw-animate-css:438` citation §4 already retracted. §5.6 also **refutes** the claim
   that reached it: `resumeSession`'s reload re-reads `activeSessionId` after its only `await` and cannot populate
   an off-screen `messages[id]`; the unguarded writers are the frame-driven ones.
+  **Doc-accuracy pass, 2026-11-15 (no §1–§3 re-measurement — the stamp above still carries those):** every
+  command and figure this file asks a reader to run was re-run at the head of `feature/whole-window-jank`,
+  and four defects were corrected rather than silently rewritten — §4's "contains neither `spin` nor
+  `reduced-motion`" (false: `grep -c spin` → 1 line / 8 occurrences of `spin-in`/`spin-out`; §5.8 already had
+  it right, and §4 now copies that wording), the census SQL in §4's *Commands* (two statements over one CTE,
+  so it died `no such table: page`, and `of 186,322` had no producing command at all — both fixed, and the
+  single-statement form is what printed the 2026-11-15 figures), §5.6's caption (claimed one `await` between
+  the guard and the write; there are zero, and its hard-coded `awk NR` range is replaced by a content anchor),
+  and §5.5's claim that `SidePane` does not inherit the carried-label salvage (**it does** — it reads
+  `sessionFieldOf(…, "title")`, which is exactly what the salvage writes). The four per-issue commit hashes
+  this file cited are gone, replaced by a content-marker check: they die with the squash-merge.
 ---
 
 # Transcript render performance — known gaps
@@ -177,14 +188,30 @@ Two things are still alive that the OS flag could not reach:
 - **`animate-spin` has no reduced-motion rule anywhere**, so the flag never disabled it. Tailwind defines
   `--animate-spin: spin 1s linear infinite;` at **`node_modules/tailwindcss/theme.css:438`** — *not* at the
   `tw-animate-css/dist/tw-animate.css:438` citation that was circulating: that file is 14,880 bytes on **one
-  line** (0 newlines) and contains neither `spin` nor `reduced-motion`. Three non-test uses:
+  line** (0 newlines), so line 438 does not exist, and it defines neither `animate-spin` nor `--animate-spin`
+  nor carries `reduced-motion` — **its only `spin` substrings are the unrelated `spin-in`/`spin-out`
+  enter/exit `@utility` definitions**, so a bare `grep -c spin` on it prints `1` (8 occurrences) and does NOT
+  support a "contains no spin" claim. §5.8 carries the same correction with the full wording.
+  Three non-test uses:
   `src/components/ui/spinner.tsx:9`, `SubagentStatusIcon.tsx:26`, `SessionStatusMark.tsx:161`. App CSS gates only
   `.animated-gradient-text` (`src/styles/utilities.css:70`) and `.flip-in` (`:92`).
 - **The stale-status census says those spinners really are mounted.** Read-only against the live 2.33 GB DB:
-  **1,064** `in_progress` tool-call rows (of 186,322), and **355 of 2,278 sessions carry one inside their newest
-  500 messages** — the first page loaded when you open them. **Task 1 (`e5170826`) fixes this**, but see the
+  **1,064** `in_progress` tool-call rows (of **186,322** messages), and **355 of 2,278 sessions carry one
+  inside their newest 500 messages** — the first page loaded when you open them. **The status-hydration
+  split (Task 1) fixes
+  this**, but see the
   version caveat below. So §4's null result does **not** exonerate mounted spinners; it only exonerates the two
   selectors the flag covers.
+  **Those four figures are one snapshot of a live-growing DB and every one of them is stale the moment you
+  read it.** A run of the census command in §4's *Commands* block on 2026-11-15 printed
+  `all_messages=368,244 | in_progress_tool_calls=1,062 | sessions_with_one_in_newest_500=353 |
+  sessions=2,297` (your run will differ — that is the point): the message table has roughly doubled since the
+  figures above were taken while the
+  `in_progress` count has barely moved, which is itself the finding (the population is old rows, not a
+  growing leak).
+  **Every figure in this bullet is now produced by that ONE printed command** — including the `of 186,322`, whose
+  `SELECT count(*) FROM messages` the printed SQL previously omitted entirely. Compare ratios, not absolutes,
+  and never compare two runs' absolutes: each is correct only for its own instant.
 
 `VBlankMonitor` and `PressureMonitor` turned up in the write attribution and are **WebKitGTK's own threads**, not
 ours — `strings` finds both in `/usr/lib64/libwebkit2gtk-4.1.so.0.24.5`, zero hits in `src-tauri/src`. Related
@@ -235,15 +262,31 @@ ORIG=$(gsettings get org.gnome.desktop.a11y.interface reduced-motion); echo "ORI
 gsettings set org.gnome.desktop.a11y.interface reduced-motion "'reduce'"; # ...sample...
 gsettings set org.gnome.desktop.a11y.interface reduced-motion "$ORIG"     # restore, then re-read to verify
 
-# 6. Stale-status census (read-only; the live DB is locked for writes)
-sqlite3 "file:$HOME/.local/share/archimedes/archimedes.db?mode=ro" "
-  PRAGMA busy_timeout=10000;
-  WITH page AS (SELECT session_id, kind, json_extract(payload_json,'\$.status') AS st,
-    row_number() OVER (PARTITION BY session_id ORDER BY id DESC) AS rn FROM messages)
-  SELECT count(*) FROM messages WHERE kind='tool-call'
-     AND json_extract(payload_json,'\$.status')='in_progress';
-  SELECT count(DISTINCT session_id) FROM page
-   WHERE rn<=500 AND kind='tool-call' AND st='in_progress';"
+# 6. Stale-status census (read-only; the live DB is locked for writes).
+#    ONE statement, because a CTE is scoped to its own statement: the two-statement form this
+#    block used to print (`WITH page AS (…) SELECT …;` then `SELECT … FROM page;`) dies with
+#    `Parse error … no such table: page`, so the second number was never reproducible as written.
+#    The PRAGMA prints its own value, so the FIRST output line is `10000` and the four labelled
+#    figures are the line after it. (`-cmd` does not silence it — verified on sqlite3 3.53.4.)
+#    `immutable=1` tells sqlite3 the file is not being written, so it takes no locks at all —
+#    safe against a live app, and it is what makes this a read-only handle rather than a polite one.
+sqlite3 -cmd "PRAGMA busy_timeout=10000;" \
+        "file:$HOME/.local/share/archimedes/archimedes.db?mode=ro&immutable=1" "
+SELECT 'all_messages='              || (SELECT count(*) FROM messages),
+       'in_progress_tool_calls='     || (SELECT count(*) FROM messages
+                                          WHERE kind='tool-call'
+                                            AND json_extract(payload_json,'\$.status')='in_progress'),
+       'sessions_with_one_in_newest_500='
+                                     || (SELECT count(DISTINCT session_id) FROM (
+                                           SELECT session_id, kind,
+                                                  json_extract(payload_json,'\$.status') AS st,
+                                                  row_number() OVER (PARTITION BY session_id
+                                                                     ORDER BY id DESC) AS rn
+                                             FROM messages)
+                                          WHERE rn<=500 AND kind='tool-call' AND st='in_progress'),
+       'sessions='                   || (SELECT count(*) FROM sessions);"
+# → 10000 (the PRAGMA), then ONE line with the four labelled figures. Every census number in this
+#   document comes from this command; none of them is comparable across runs (live-growing DB).
 ```
 
 ### Two traps that produced wrong results in this pass
@@ -267,15 +310,37 @@ sqlite3 "file:$HOME/.local/share/archimedes/archimedes.db?mode=ro" "
   the measuring session runs *inside* the thing it measures, and its output is painted by the renderer under test.
   Both states were therefore measured explicitly, with the worker's own CPU sampled alongside.
 - **The peg cannot be provoked on demand**; every burst above was caught by polling for up to 8 minutes.
-- **The app under test is v0.13.0 and contains NONE of Tasks 1–4** — checked with
-  `git merge-base --is-ancestor <fix> v0.13.0`, which fails for all four (`e5170826`, `2ae39645`, `fda3fc45`,
-  `d03c13cf`); the tag is dated Nov 11, the fixes Nov 14. **Nothing in this section tests the shipped fixes**, and
-  the spinners the census predicts are still mounting on this machine. Re-running §4 against a build that contains
-  Task 1 is the cheapest thing on the list and has not been done.
+- **The app under test is v0.13.0 and contains NONE of the four fixes this branch shipped** — the
+  status-hydration split, the WAL/`busy_timeout`/`synchronous` pragmas plus a batched message write, the
+  release of a left session's transcript, and the history/session-list reads moved off the tokio workers.
+  **No commit hashes are cited for these, on purpose:** they are per-issue objects on a branch that
+  squash-merges, so any hash written here resolves until the merge and nowhere after (the squash-orphan
+  rule). Check it by CONTENT instead, which survives the squash — each fix leaves a marker in a file that
+  exists in the tag, and the tag has zero of all four:
+
+  ```bash
+  for spec in "src/lib/transcript/reducer.ts:mapPersistedStatus" \
+              "src-tauri/src/storage/db.rs:journal_mode" \
+              "src/store/sessions.ts:releaseUnseenTranscripts" \
+              "src-tauri/src/commands/history.rs:spawn_blocking"; do
+    f=${spec%:*}; s=${spec#*:}
+    printf "%-52s tag=%s HEAD=%s\n" "$spec" \
+      "$(git show v0.13.0:$f 2>/dev/null | grep -c "$s")" "$(grep -c "$s" "$f")"
+  done
+  ```
+
+  → every line prints `tag=0` with a non-zero `HEAD=`. (`git merge-base --is-ancestor HEAD v0.13.0` also
+  fails, but it says only "the tag predates this branch"; the marker loop says these specific four are
+  absent.) The tag is dated Nov 11, the fixes Nov 14. **Nothing in this section tests the shipped fixes**,
+  and the spinners the census predicts are still mounting on this machine. Re-running §4 against a build
+  that contains the status-hydration split is the cheapest thing on the list and has not been done.
 
 ## 5. What this branch deliberately did NOT fix
 
-Issue #155 landed six commits on `feature/whole-window-jank`, named here by what they did rather than by hash —
+Issue #155 landed a run of commits on `feature/whole-window-jank` — **no count is given here on purpose**:
+the number depends on whether you count merges (`git log --no-merges --oneline <base>..HEAD | wc -l` and
+`git log --oneline <base>..HEAD | wc -l` differ on this branch), and any figure written here would be stale
+after the next fix commit. They are named below by what they did rather than by hash —
 the squash-orphan rule above says per-issue objects die with the branch: the tool-call **status-hydration split**
 (an unresolved persisted status now hydrates as `failed`), the **WAL / `busy_timeout` / `synchronous` pragmas**
 plus a batched message write, **releasing the transcript of a session the user has left** (and the
@@ -354,26 +419,48 @@ grep -n 'tool-call|' src/lib/transcript/identity.ts            # the key composi
 grep -n 'The mutator class is NOT eliminated in general' src/store/sessions.test.ts
 ```
 
-That last grep is the point: **the residual gap is documented only in a test comment** — inside the `it(...)`
-that pins the collapsed single card (`collapses a tool card to ONE failed card when a session close finalizes it
-inside the load window`). Nothing outside that test file says the class survives. ADR 0050's rule (where
+That last grep is the point: **the only in-source record of the gap as it stands AFTER #155's narrowing is
+that test comment** — the sentence above, inside the `it(...)` that pins the collapsed single card
+(`collapses a tool card to ONE failed card when a session close finalizes it inside the load window`).
+Nothing else in `src/` says the class got narrower without closing, so a reader who never opens the test
+file has nothing to find.
+
+Say precisely what is and is not recorded, because the obvious stronger claim is false: **the mutator class
+ITSELF is documented outside the test.** `src/store/sessions.ts`'s merge comment names it ("Three
+duplications are accepted, one per mutator of the window"), and **ADR 0050 records it at length** — its
+"A message that MUTATES during the window duplicates" clause enumerates all three mutators and states the
+close-case two-card outcome as an accepted decision. What neither can say is what #155 changed about it:
+ADR 0050 predates this branch, so it still describes the close case as live. ADR 0050's rule (where
 identity cannot decide, KEEP the message) is untouched and is the reason a duplicate is the safe direction.
 
-### 5. `SidePane.tsx` re-implements the truncation inline instead of calling `titleFor`
+### 5. `SidePane.tsx` re-implements the 80-char truncation inline instead of calling the shared helper
 
-Every other labelling surface goes through the one rule; `SidePane` is the exception, so it is the one surface
-that does **not** inherit the carried-label salvage Task 5 added.
+Every other labelling surface resolves its label through `titleFor`; `SidePane` builds its own chain, so it
+owns a **second copy of the 80-char rule**.
 
 ```bash
-grep -rn 'titleFor(' src --include=*.tsx | grep -v '\.test\.'   # SessionsSection, SpaceTabs, SpacesList, TaskDetailDialog
+grep -rn 'titleFor(' src --include=*.tsx | grep -v '\.test\.'   # 4 components: SessionsSection, SpaceTabs, SpacesList, TaskDetailDialog
 grep -n 'slice(0, 80)' src/components/SidePane.tsx src/lib/sessionTitle.ts   # the duplicate, + the helper it duplicates
+grep -n 'sessionFieldOf(s, s.activeSessionId, "title")' src/components/SidePane.tsx   # the arm it DOES inherit
 ```
 
-`src/lib/sessionTitle.ts` exists precisely so `slice(0, 80)` has one owner, and its own doc comment names the
-risk (“a second copy … is how two surfaces start naming one Session differently”). **Still correct today**, and
-that is why it was left: `SidePane` reads `messages[activeSessionId]`, and the active session is live, so its
-transcript is never released — the arm it does not inherit is the arm it never needs. It is a divergence waiting
-for someone to make the pane render a non-active session.
+**Correction, recorded because the earlier version of this section was wrong.** It claimed `SidePane` "is the
+one surface that does **not** inherit the carried-label salvage". **It does inherit it**, and ADR 0073's
+amendment has it right: `SidePane` reads its stored title through the same `sessionLookup` walk every other
+surface uses, and the salvage writes the carried first-prompt label onto `SessionInfo.title` — which is
+exactly what that walk reads. So `SidePane` short-circuits on the carried label before it ever reaches its
+inline truncation, and it diverges only on the arm the salvage stands in *for*: the live first-user-message
+scan, which for the pane's own subject (the ACTIVE session, whose transcript is never released) always has
+its transcript in hand anyway.
+
+So the real risk is narrower than "a lost label" and still worth naming: **text drift between two 80-char
+rules.** `src/lib/sessionTitle.ts` exists precisely so `slice(0, 80)` has one owner, and its own doc comment
+names this exact failure ("a second copy … is how two surfaces start naming one Session differently").
+Today the two copies agree character-for-character (`length > 80 ? slice(0, 80) : text`, and both treat an
+empty first message as no label), which is why this was left: **it is correct, just duplicated.** It is a
+divergence waiting for someone to change one copy — or to make the pane render a non-active session, at
+which point the duplicated arm stops being redundant and starts being the only thing standing between the
+pane and a folder name.
 
 ### 6. An off-screen `messages[id]` can still be populated — but NOT by the path this section first named
 
@@ -383,9 +470,19 @@ opposite is the thing to check.** `resumeSession` re-reads `activeSessionId` aft
 without touching `messages`, and the `set` that writes the transcript is reached synchronously from that guard:
 
 ```bash
-# exactly ONE await between the guard and the write, in the resume reload:
-awk 'NR>=2250 && NR<=2390 && (/await /||/activeSessionId !== sessionId/||/messages: \{ \.\.\./)' src/store/sessions.ts
+# ZERO awaits between the guard and the write — the single `await` in this region is the fetch that
+# PRECEDES the guard. Print the region by content and read the order for yourself: the `await
+# loadHistory(...)` line comes first, the `activeSessionId !== sessionId` guard second, and the
+# `messages: { … }` write last, with no `await` between the last two.
+awk '/The reload is fire-and-forget \(NOT awaited by the caller\)/,/\[sessionId\]: \[\.\.\.reloaded, \.\.\.fresh\]/' \
+  src/store/sessions.ts | grep -nE 'await |activeSessionId !== sessionId|messages: \{ \.\.\.'
 ```
+
+(The anchor is `src/store/sessions.ts`'s own comment *"The reload is fire-and-forget (NOT awaited by the
+caller)"* — it occurs exactly once (`grep -c` → 1). **This block previously hard-coded an `awk 'NR>=2250
+&& NR<=2390 …'` line range, which is exactly what this repo forbids in durable prose, and its caption
+claimed "exactly ONE await between the guard and the write" — false: the one `await` is BEFORE the guard
+and there are ZERO between.** The prose above the block was right; the caption was not.)
 
 The paths that CAN write `messages` for an id nobody is looking at are the **frame-driven** ones, which carry no
 `activeSessionId` guard at all: `applySessionUpdate`/`applySessionUpdates`, `addUserMessage`, and

@@ -128,10 +128,21 @@ narrowed.** This ADR accepted that the fallback "sees only the window", on the
 ground that a session long enough to be windowed already has a generated title
 (ADR 0037). Release breaks that on different grounds: the fallback no longer sees
 *less* of the transcript, it sees **nothing** of it, and it sees nothing for every
-session the window is not currently showing — not just long ones. Eight surfaces
-label rows for sessions they are not showing (`SpacesList`'s live and archived rows,
-the delete-confirm, `SpaceTabs`' close-anyway list, Settings → Detached, the Task
-detail dialog's session rows, `SidePane`'s header), so the unhandled version of this
+session the window is not currently showing — not just long ones. **Eight label sites**
+label rows for sessions they are not showing: `SpacesList`'s live row, its archived row
+and its delete-confirm; `SpaceTabs`' close-anyway list; Settings → Detached's rows and its
+delete-confirm; the Task detail dialog's session rows; and `SidePane`'s header.
+**The count is of label SITES, not of components, and that distinction is why the
+number looks wrong at first glance.**
+`grep -rn 'titleFor(' src --include=*.tsx | grep -v '\.test\.'` finds **7** call sites in
+**4** components (`SessionsSection`, `SpaceTabs`, `SpacesList`, `TaskDetailDialog`):
+`SpacesList` alone carries three, and `SidePane` carries none because it builds its chain
+inline — so **7 call sites + `SidePane`'s inline chain = the eight counted here**. Two
+things NOT counted separately, so a reader reconciling the numbers does not add them
+twice: `CloseSpaceDialog` contains **no** `titleFor` call at all (it is handed a
+pre-resolved `label` by `SpaceTabs`, so its rows ARE that component's site), and
+`ClearDetachedSessionsDialog` labels folders, never a Session.
+So the unhandled version of this
 degrades **every untitled Session** in the app to a folder name at once. That is not
 the loss this ADR accepted, so it is not accepted here.
 

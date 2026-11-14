@@ -32,8 +32,13 @@ verified-by: mixed instruments, run read-only at `2f2d5f19` on 2026-11-14 (the s
   ran and no figure here is perf-derived; §10 names the `/proc`/`strace` substitutes. Still not measured: a
   DevTools profile of one burst (the running 0.13.0 AppImage is read-only and has no devtools feature), and the
   animation test with the CSS classes actually commented (likewise unreachable read-only). The app under test is
-  **v0.13.0, which contains NONE of Tasks 1–4** — verified with `git merge-base --is-ancestor` against the tag for
-  all four fix commits.
+  **v0.13.0, which contains NONE of the four fixes this branch shipped** — verified by CONTENT (§10 names the
+  marker loop), not by commit hash: the hashes would be orphaned by this branch's squash-merge.
+  **Doc-accuracy pass 2026-11-15** — every command in this report re-run; three defects corrected and
+  recorded in §Corrections rather than silently rewritten: the `tw-animate.css` "no `spin`" claim (§10.4),
+  the §10.5 census command that did not run as printed and could not produce one of its own four figures,
+  and four per-issue commit hashes removed as squash-orphans. **This report is published on #155, so the
+  published text stays wrong where it was wrong; §Corrections is the authoritative record of what changed.**
 task: tsk_74e3a9d0-2d96-48cd-bedf-1f433f44e96e
 issue: https://github.com/archimedes-codes/archimedes/issues/155
 ---
@@ -521,9 +526,30 @@ virtualization (`MessageList.tsx`, PR #67), per-frame coalescing to one `setStat
 
 A second measurement pass on the same machine, same running app. **The app under test is v0.13.0**
 (`/tmp/.mount_archimbcMJab/usr/bin/archimedes`, PID 1790154; renderer PID 1790208 — both re-derived with
-`pgrep -a -f`, not assumed). **v0.13.0 contains NONE of this branch's Tasks 1–4**:
-`git merge-base --is-ancestor <fix> v0.13.0` fails for all four (`e5170826`, `2ae39645`, `fda3fc45`, `d03c13cf`),
-and the tag is dated Nov 11 while the fixes are Nov 14. **Nothing in this section tests the shipped fixes.**
+`pgrep -a -f`, not assumed). **v0.13.0 contains NONE of the four fixes this branch shipped**: the
+status-hydration split, the WAL/`busy_timeout`/`synchronous` pragmas plus a batched message write, the
+release of a left session's transcript, and the history/session-list reads moved off the tokio workers.
+**How this was checked, and a correction:** it was originally checked with
+`git merge-base --is-ancestor <fix> v0.13.0`, which fails for all four — but that command needs the four
+fix commits' **hashes**, and this branch squash-merges, so a hash cited here resolves today and nowhere
+after the merge. **They are therefore removed from this document** (a second instance of the orphan rule
+this report already flags for line citations, whose front-matter stamp exists so they can be re-checked) and
+replaced by a content check that survives a
+squash — each fix leaves a marker in a file that exists in the tag, and the tag has zero of all four:
+
+```bash
+for spec in "src/lib/transcript/reducer.ts:mapPersistedStatus" \
+            "src-tauri/src/storage/db.rs:journal_mode" \
+            "src/store/sessions.ts:releaseUnseenTranscripts" \
+            "src-tauri/src/commands/history.rs:spawn_blocking"; do
+  f=${spec%:*}; s=${spec#*:}
+  printf "%-52s tag=%s HEAD=%s\n" "$spec" \
+    "$(git show v0.13.0:$f 2>/dev/null | grep -c "$s")" "$(grep -c "$s" "$f")"
+done
+# → four lines, every one `tag=0` with a non-zero HEAD=
+```
+
+The tag is dated Nov 11 while the fixes are Nov 14. **Nothing in this section tests the shipped fixes.**
 Live DB `~/.local/share/archimedes/archimedes.db` = 2,333,728,768 bytes.
 
 **`perf` is not installed on this machine** (`command -v perf` → nothing), so the plan's `perf top -p <pid>`
@@ -676,8 +702,14 @@ stays refuted, now on a second, better-instrumented run.
 
    **A citation in the plan was wrong and is corrected here:** it pointed at
    `node_modules/tw-animate-css/dist/tw-animate.css:438`. That file exists (14,880 bytes) but has **0 newlines**
-   — it is one minified line, so line 438 does not exist, and the file contains no `spin` and no `reduced-motion`
-   at all. The claim was right; the location was not.
+   — it is one minified line, so line 438 does not exist. The claim was right; the location was not.
+   **Second-order correction (2026-11-15): this paragraph originally went further than the evidence and said
+   the file "contains no `spin` and no `reduced-motion` at all". The `reduced-motion` half is true
+   (`grep -c 'reduced-motion'` → 0); the `spin` half is FALSE.** `grep -c spin` prints **1** — the file is one
+   line, so that is one line and **8 occurrences**: the `spin-in` and `spin-out` enter/exit `@utility`
+   definitions and their variants. They are unrelated to `animate-spin`, which the file does not define
+   (`grep -c 'animate-spin'` → **0**), so nothing above this note changes — but the bare "no `spin`" phrasing
+   is refuted by the obvious grep, which is exactly the mistake this report exists to catch.
 
 **Half of the planned A/B could not be run.** The plan asked for a comparison against the animation *classes*
 disabled, not just the OS flag. That requires editing the installed app's CSS, and the AppImage is mounted
@@ -689,26 +721,54 @@ running" from "an infinite animation is running that the OS flag does not touch"
 #### 10.5 Stale-status census, re-run (the mount-spinners lead)
 
 §3's mechanism was: persisted `in_progress` tool rows → `mapStatus` → shimmer + a 1 s `setInterval` per card.
-Re-run read-only against the live 2.33 GB DB (`mode=ro`, `busy_timeout`; 6.5 s wall):
+Re-run read-only against the live 2.33 GB DB (`mode=ro`, `busy_timeout`; ~4 s wall):
 
 ```
-sqlite3 "file:$HOME/.local/share/archimedes/archimedes.db?mode=ro" "
-  PRAGMA busy_timeout=10000;
-  WITH page AS (SELECT session_id, kind, json_extract(payload_json,'\$.status') AS st,
-    row_number() OVER (PARTITION BY session_id ORDER BY id DESC) AS rn FROM messages)
-  SELECT count(*) FROM messages WHERE kind='tool-call'
-     AND json_extract(payload_json,'\$.status')='in_progress';
-  SELECT count(DISTINCT session_id) FROM page WHERE rn<=500 AND kind='tool-call'
-     AND st='in_progress';
-  SELECT count(*) FROM sessions;"
+sqlite3 -cmd "PRAGMA busy_timeout=10000;" \
+        "file:$HOME/.local/share/archimedes/archimedes.db?mode=ro&immutable=1" "
+SELECT 'all_messages='              || (SELECT count(*) FROM messages),
+       'in_progress_tool_calls='     || (SELECT count(*) FROM messages
+                                          WHERE kind='tool-call'
+                                            AND json_extract(payload_json,'\$.status')='in_progress'),
+       'sessions_with_one_in_newest_500='
+                                     || (SELECT count(DISTINCT session_id) FROM (
+                                           SELECT session_id, kind,
+                                                  json_extract(payload_json,'\$.status') AS st,
+                                                  row_number() OVER (PARTITION BY session_id
+                                                                     ORDER BY id DESC) AS rn
+                                             FROM messages)
+                                          WHERE rn<=500 AND kind='tool-call' AND st='in_progress'),
+       'sessions='                   || (SELECT count(*) FROM sessions);"
 ```
+
+**Correction (2026-11-15): the command this section printed did not run as printed, and it could not produce
+one of the four figures it claimed.** Two defects, both found by running it:
+
+1. **It was two statements and a CTE does not survive a statement boundary.** The old block was
+   `WITH page AS (…) SELECT …;` followed by `SELECT count(DISTINCT session_id) FROM page …;`. A CTE is
+   scoped to the statement it is written on, so the second statement dies
+   `Parse error … no such table: page`. Only the FIRST number was ever reproducible from the printed text;
+   the "355 sessions" figure came from a command that was not the one printed. The rewrite folds every
+   count into **one** `SELECT` of scalar subqueries (the `page` CTE becomes an inline subquery).
+2. **`of 186,322` had no producing command at all** — the printed SQL never counted all messages. The
+   rewrite adds `SELECT count(*) FROM messages` (the `all_messages=` column).
+
+Two smaller fixes while rewriting: `immutable=1` so the read takes no locks at all against a live app, and
+the PRAGMA moved to `-cmd` so the SQL argument is one statement (note the PRAGMA still **prints its own
+value**, so the first output line is `10000` and the four labelled figures are the line after it — verified
+on sqlite3 3.53.4; `-cmd` does not silence it).
 
 → **1,064** `in_progress` tool-call rows (of 186,322); **355** sessions carry one inside their **newest 500
 messages**, i.e. on the first page loaded when opening them; **2,278** sessions in the DB. The figures recorded
 earlier (1,056 / 350 of 2,207, and 1,067 in `silent-turn-settle-…`) and these differ only because the DB is
 live-growing; all are correct for their own instant, and the command above is the one to re-run.
+**One run of it on 2026-11-15 printed
+`all_messages=368,244 | in_progress_tool_calls=1,062 | sessions_with_one_in_newest_500=353 |
+sessions=2,297`** — that instant, like every other, is already stale. The message table has nearly doubled
+since the figures above while the `in_progress` population barely moved, which is the shape the mechanism
+predicts (old rows accumulating, not a fresh leak). **Compare ratios across runs, never absolutes.**
 
-**This is fixed on this branch by Task 1** (`e5170826`, `mapPersistedStatus` → unresolved persisted rows render
+**This is fixed on this branch by the status-hydration split** (`mapPersistedStatus` → unresolved persisted rows render
 `failed`, `mapStatus` byte-unchanged) — **but the running 0.13.0 does not contain it**, so the spinners this
 census predicts are still mounting on this machine, and §10.4's null result therefore does **not** clear
 mounted spinners as a contributor: `animate-spin` is exactly the animation the OS flag cannot disable.
@@ -825,14 +885,36 @@ mounted spinners as a contributor: `animate-spin` is exactly the animation the O
   valid range"*, and the "during" phase measured an app that had had nothing changed. Recorded because it is the
   kind of green that reads as a result.
 - **A plan citation was wrong: `--animate-spin` is not at `node_modules/tw-animate-css/dist/tw-animate.css:438`.**
-  That file is 14,880 bytes on **one line** (0 newlines) and contains neither `spin` nor `reduced-motion`. The
+  That file is 14,880 bytes on **one line** (0 newlines), so line 438 does not exist, and it carries no
+  `reduced-motion`. The
   correct location is **`node_modules/tailwindcss/theme.css:438`**. The claim itself survives and is stronger
   than stated: `animate-spin` (3 non-test uses) has no reduced-motion rule in `theme.css`, `index.css` or
   `preflight.css`, so the OS flag cannot disable the one animation the stale-status census mounts.
+  **This bullet used to also say the file "contains neither `spin` nor `reduced-motion`" — the `spin` half of
+  that was FALSE, and is corrected in §10.4's note.** `grep -c spin` on it prints **1** line / **8** occurrences
+  (the unrelated `spin-in`/`spin-out` enter/exit `@utility` definitions). The conclusion is untouched — the
+  file defines no `animate-spin` (`grep -c 'animate-spin'` → 0) — but the phrasing was refuted by the grep a
+  reader would naturally run, which is the failure mode this whole section is meant to prevent.
+- **The §10.5 census command did not run as printed, and one of its four figures had no producing command.**
+  The `WITH page AS (…) SELECT …;` / `SELECT … FROM page;` pair died `Parse error … no such table: page` —
+  a CTE is scoped to its own statement — so only the first count was reproducible from the text, and
+  `of 186,322` was never produced by anything the section printed. §10.5 now carries a single-statement
+  version that emits all four figures labelled, plus a fresh 2026-11-15 run of it. Recorded rather than
+  silently rewritten because the published version told readers "the command above is the one to re-run",
+  and it was not a command that ran.
+- **Four commit hashes cited in this report have been removed, not corrected.** `e5170826`, `2ae39645`,
+  `fda3fc45` and `d03c13cf` (the four fixes, cited at §10's opening, §10.5 and this list) all resolve today
+  — they are ancestors of this branch's head — but this branch squash-merges, so every one of them will
+  resolve nowhere the moment it lands. That is this repo's squash-orphan rule applied to objects — the same
+  hazard the report's own front-matter stamp exists to manage for its `file:line` citations. They are
+  replaced by the task descriptions
+  ("the status-hydration split", …) and, where a hash was load-bearing for a check, by the content-marker
+  loop in §10. **A reader of the published version who runs `git show e5170826` after the merge will get
+  `unknown revision`; that is expected, and the prose no longer asks you to.**
 - **Stale-status census re-run against the live DB** (§10.5): **1,064** `in_progress` tool-call rows and **355 of
   2,278** sessions carrying one in the newest 500 messages — earlier figures (1,056 / 350 of 2,207, and 1,067 in
   `docs/research/silent-turn-settle-after-announcing-a-write.md`) are the same measurement on earlier snapshots
-  of a live-growing DB, not disagreements. **Task 1 (`e5170826`) fixes this on this branch**, and the running
+  of a live-growing DB, not disagreements. **The status-hydration split fixes this on this branch**, and the running
   0.13.0 predates it, so the spinners are still mounting here — which is exactly why §10.4's null does not
   exonerate mounted spinners.
 - **`perf` was unavailable, contrary to the plan's assumption.** The `perf top -p <pid>` step could not run; §10

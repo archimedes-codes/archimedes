@@ -206,8 +206,10 @@ export function clearSessionState(
  * THE LABEL IS SALVAGED TOO, and this is the `titleFor` decision ADR 0073's
  * amendment records. `titleFor`'s second arm — the first user message truncated
  * to 80 chars — was already documented as seeing only the window; eviction makes
- * it see NOTHING, and eight surfaces label rows for Sessions they are not
- * showing, so an unhandled version of this degrades every untitled Session in
+ * it see NOTHING, and eight label sites label rows for Sessions they are not
+ * showing (7 `titleFor` call sites across 4 components, plus `SidePane`'s inline
+ * chain — ADR 0073's amendment enumerates all eight), so an unhandled version of
+ * this degrades every untitled Session in
  * the sidebar, the tab strip's close-confirm, Settings → Detached, the Task
  * detail dialog and the side pane to a folder name at once. A twelfth
  * session-keyed map is forbidden by the `SESSION_KEYED_FIELDS` pin, so the label
