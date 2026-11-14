@@ -288,8 +288,12 @@ export default function TaskCard({
           placeholder for an absent field. `specPath` is stored and crosses IPC and
           nothing rendered it at all, so this is the field's first consumer; the path
           itself stays off the card (an absolute filesystem path on every card is not
-          information, it is noise) and the chip says what it is. */}
-      {task.specPath !== null && (
+          information, it is noise) and the chip says what it is. An EMPTY STRING is
+          not a pointer either, so the gate asks for both halves — and this is the
+          surface where that matters most, because the chip shows the word `spec` and
+          never the path, which means `""` would paint a chip indistinguishable from
+          a real one. */}
+      {task.specPath !== null && task.specPath !== "" && (
         <span className="inline-flex items-center gap-1 rounded-full bg-background px-2 py-0.5 text-ui-xs text-foreground-subtle">
           spec
         </span>

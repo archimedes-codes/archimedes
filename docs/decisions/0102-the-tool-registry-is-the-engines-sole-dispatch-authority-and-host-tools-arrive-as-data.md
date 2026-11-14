@@ -101,3 +101,18 @@ message because a bare count cannot say which half vanished.
   advertised tool list"*) has a premise this decision reverses: it asserted the crate owns
   the list. It is inverted to assert the **Client** is the sole owner. Leaving it would be
   the worst outcome available — a green test arguing against the design it now guards.
+- **`edit_task` gained a third patch state on the desktop side only, and the published seam stays
+  two-state on purpose.** The inherent `Db::edit_task` now takes a three-state `FieldPatch`
+  (`Keep` / `Set` / `Clear`) over one fixed-arity `CASE` UPDATE, so a desktop caller can finally null
+  `body` or `spec_path` — the old `COALESCE` statement made `NULL` mean "leave it alone" and left no value
+  that could blank a column. `impl TaskStore for Db` maps its `Option<&str>` with `None` → `Keep`, so
+  **`TaskStore::edit_task` / `TaskCall::EditTask` stay two-state and the model's `edit_task` still cannot
+  clear a field.** That is a deferral, not a half-done widening: this decision deletes both types wholesale,
+  so widening them would freeze the precise shape this decision removes, and it would cost a hand-run
+  `cargo publish -p fulcrum-harness` plus a desktop pin bump to buy a wire shape with a scheduled funeral.
+  **#183 is where the third state becomes reachable from the tool** — once the desktop owns `edit_task`'s
+  spec *and* executor behind a vocabulary-free `HostToolCall`, the clear is a one-repo change for both
+  callers. Falsifier: **if #183 is abandoned, the harness-side clear becomes real work again** — the seam
+  widening, the publish and the pin bump are then owed rather than deferred, not waived. `impl TaskStore
+  for Db`'s body comment carries the same pointer, and
+  `docs/research/edit-task-cannot-clear-a-field.md` is the finding behind all of it.

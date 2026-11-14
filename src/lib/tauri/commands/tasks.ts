@@ -81,7 +81,33 @@ export async function getTask(taskId: string): Promise<TaskRow | null> {
   return invoke<TaskRow | null>("get_task", { taskId });
 }
 
-/** Patch a card's text. An omitted field keeps its stored value.
+/** Patch a card's text, ONE FIELD AT A TIME — three readings per field:
+ *
+ *   - **omit the argument** → the column keeps its stored value;
+ *   - **pass `null`** → the column is cleared to NULL;
+ *   - **pass a string** → the column is written with it (`""` writes an empty
+ *     string, which is a WRITE and not a clear).
+ *
+ * `title` is the one exception: the column is `NOT NULL`, so `title: null` is
+ * REFUSED (`kind: "other"`) rather than blanking the card's label — rename it, do
+ * not clear it. A `title` string goes through the same cleaner `createTask`'s does,
+ * so a whitespace-only one rejects with `kind: "empty_title"` and writes nothing.
+ *
+ * So the three are three different answers, and the first two are NOT
+ * interchangeable. This is the **inverse** of the `startTaskSession` rule below
+ * ("pass the explicit `null`, never `undefined`"): there the wrapper normalizes,
+ * so an omitted argument and an explicit `null` mean the same thing. Here they are
+ * different ON PURPOSE, and the mechanism is `JSON.stringify` — the encoder the
+ * real `invoke` hands this payload to drops an `undefined` property entirely, so an
+ * omitted argument arrives as an ABSENT key while `null` arrives as a key holding
+ * `null`. Rust's `Option<String>` cannot tell those apart (both deserialize to
+ * `None`), which is why the command reads presence off the raw body
+ * (`tauri::ipc::Request`). Do not "normalize" an argument here to `null` or `?? `
+ * anything: that would turn every keep-it into a clear-it and blank a card's body
+ * and spec path on a rename.
+ *
+ * `null` clears **from this side only**. The model's `edit_task` tool reaches the
+ * published two-state seam and still cannot clear a field until #183 — see ADR 0102.
  *
  * Deliberately NOT a general patch: the stage (`moveTask` runs the destination's
  * `on_enter`), the `number` (never renumbered), and the within-column position

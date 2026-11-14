@@ -127,6 +127,50 @@ impl From<DbError> for TaskStoreError {
     }
 }
 
+/// One field of a patch: leave it, write this value, or clear it to NULL.
+///
+/// The third state is the point. `Db::edit_task` used to take `Option<&str>` and
+/// `COALESCE` the result, which made `NULL` mean "do not change it" and left no value
+/// that could blank a column — so a card could never stop naming a deleted file
+/// (`finish` deletes `docs/roadmap/*` on ship, ADR 0100).
+pub enum FieldPatch<'a> {
+    /// Do not touch the column.
+    Keep,
+    /// Write this value.
+    Set(&'a str),
+    /// Write NULL.
+    Clear,
+}
+
+impl<'a> FieldPatch<'a> {
+    /// Which of the three states this is, as the SQL `CASE` discriminant:
+    /// `0 = Keep`, `1 = Set`, `2 = Clear`.
+    ///
+    /// PRIVATE on purpose: the command layer builds the enum and never learns the
+    /// encoding. The statement is fixed-arity (one `execute!`, no built SQL string)
+    /// precisely so a patch cannot become an injection surface, and that only holds
+    /// while the mode is a bound parameter rather than a formatted one.
+    fn mode(&self) -> i64 {
+        match self {
+            FieldPatch::Keep => 0,
+            FieldPatch::Set(_) => 1,
+            FieldPatch::Clear => 2,
+        }
+    }
+
+    /// The value to bind, or `""` when the mode will not read it.
+    ///
+    /// `""` is not a meaningful answer for `Keep`/`Clear` — the `CASE` picks the
+    /// column or `NULL` and never looks at this slot — so no caller can mistake it
+    /// for "write the empty string". That is `FieldPatch::Set("")`'s job.
+    fn value(&self) -> &'a str {
+        match self {
+            FieldPatch::Set(s) => s,
+            FieldPatch::Keep | FieldPatch::Clear => "",
+        }
+    }
+}
+
 /// Why a Task-board write was refused.
 ///
 /// A SEPARATE error type from [`DbError`], and not an accident of taste:
@@ -2167,7 +2211,25 @@ impl Db {
         })
     }
 
-    /// Patch a card's TEXT fields. `None` keeps the stored value (COALESCE).
+    /// Patch a card's TEXT fields.
+    ///
+    /// Each field is a [`FieldPatch`]: [`FieldPatch::Keep`] leaves the stored value
+    /// exactly as it is, [`FieldPatch::Set`] writes the given value, and
+    /// [`FieldPatch::Clear`] writes NULL. The three states are the reason this verb
+    /// does not take `Option<&str>` — under the old `COALESCE` statement `NULL` meant
+    /// "leave it alone", so a card could never stop naming a spec file that `finish`
+    /// deleted on ship (ADR 0100).
+    ///
+    /// `updated_at` is stamped unconditionally, as before: an all-`Keep` patch writes
+    /// no column and still moves the clock. That is the old statement's behaviour
+    /// carried over, not a regression — and it is why the `touched == 0` check below
+    /// can only ever mean "no row matched `WHERE id`".
+    ///
+    /// `title` is `NOT NULL` and this layer does NOT refuse [`FieldPatch::Clear`] on
+    /// it. The refusal lives in the command layer, beside `require_title` — one place
+    /// that decides what a valid title is, for both the empty and the absent case. A
+    /// `Clear` that slipped past would surface SQLite's constraint as
+    /// [`BoardError::Sqlite`]: defence-in-depth, not a hole to paper over here.
     ///
     /// Deliberately cannot touch `stage_slug` (that is `move_task`, which also
     /// runs the destination's `on_enter`), `number` (a label that is never
@@ -2183,21 +2245,42 @@ impl Db {
     pub fn edit_task(
         &self,
         task_id: &str,
-        title: Option<&str>,
-        body: Option<&str>,
-        spec_path: Option<&str>,
+        title: FieldPatch<'_>,
+        body: FieldPatch<'_>,
+        spec_path: FieldPatch<'_>,
     ) -> Result<TaskRow, BoardError> {
         let guard = self.conn.lock().expect("db mutex poisoned");
         let touched = guard.execute(
             "UPDATE tasks SET \
-               title = COALESCE(?2, title), \
-               body = COALESCE(?3, body), \
-               spec_path = COALESCE(?4, spec_path), \
-               updated_at = ?5 \
+               title     = CASE WHEN ?2 = 0 THEN title     WHEN ?2 = 1 THEN ?3  ELSE NULL END, \
+               body      = CASE WHEN ?4 = 0 THEN body      WHEN ?4 = 1 THEN ?5  ELSE NULL END, \
+               spec_path = CASE WHEN ?6 = 0 THEN spec_path WHEN ?6 = 1 THEN ?7  ELSE NULL END, \
+               updated_at = ?8 \
              WHERE id = ?1",
-            params![task_id, title, body, spec_path, now_ms()],
+            params![
+                task_id,
+                title.mode(),
+                title.value(),
+                body.mode(),
+                body.value(),
+                spec_path.mode(),
+                spec_path.value(),
+                now_ms(),
+            ],
         )?;
         drop(guard);
+        // The ONLY board write that refuses AFTER the write, and the reason is the
+        // shape of the statement above: one fixed-arity UPDATE whose `CASE` arms
+        // cannot fail, so `touched == 0` has exactly one reading — no row matched
+        // `WHERE id`. Every other board write (`move_task`'s stage gate,
+        // `create_task`'s number) checks first and writes nothing when it refuses;
+        // this one is allowed to check after because nothing it can bind makes the
+        // write itself fail.
+        //
+        // Which is also why an all-`Keep` patch, and a `Clear` on a column that is
+        // already NULL, must NOT land here: SQLite counts an UPDATE that re-sets a
+        // column to the value it already holds, so rowcount stays 1. Pinned by
+        // `edit_task_clearing_an_already_null_column_is_not_reported_as_a_missing_task`.
         if touched == 0 {
             return Err(BoardError::MissingTask(task_id.to_string()));
         }
@@ -3413,7 +3496,19 @@ impl TaskStore for Db {
         body: Option<&str>,
         spec_path: Option<&str>,
     ) -> Result<CrateTaskRow, TaskStoreError> {
-        let row = Db::edit_task(self, task_id, title, body, spec_path)?;
+        // The published seam is TWO-state: `Option<&str>` with `None` = leave that field
+        // alone, and `fulcrum-harness = "0.2.0"` is a registry pin, so there is no value the
+        // model can send that reaches `FieldPatch::Clear`. A model's `edit_task` therefore
+        // still clears nothing. Deliberate and deferred: ADR 0102 / issue #183 move this verb
+        // desktop-side over a vocabulary-free `HostToolCall`, which makes the third state
+        // reachable from the tool too. See docs/research/edit-task-cannot-clear-a-field.md.
+        let row = Db::edit_task(
+            self,
+            task_id,
+            title.map_or(FieldPatch::Keep, FieldPatch::Set),
+            body.map_or(FieldPatch::Keep, FieldPatch::Set),
+            spec_path.map_or(FieldPatch::Keep, FieldPatch::Set),
+        )?;
         Ok(desktop_row_to_crate_row(row))
     }
 

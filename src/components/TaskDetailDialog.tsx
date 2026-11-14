@@ -445,8 +445,12 @@ export default function TaskDetailDialog({
             whitespace class is deliberately GONE — with it a markdown document renders
             its own source newlines as gaps between every block. ADR 0101 accepted the
             cost that a single newline collapses to a space; `remark-breaks` was
-            considered and rejected, and a body that wants line breaks uses a list. */}
-        {task.body !== null && (
+            considered and rejected, and a body that wants line breaks uses a list.
+
+            An EMPTY STRING renders NOTHING here, not an empty region: the card hides
+            `""` through truthiness (`{task.body && …}`) and the dialog now agrees, so
+            the two surfaces give ONE answer to "does this card have a body". */}
+        {task.body !== null && task.body !== "" && (
           <div
             data-testid="task-body"
             className="min-h-0 shrink-0 text-ui-base text-foreground-subtle"
@@ -771,7 +775,7 @@ export default function TaskDetailDialog({
             Meta. Both are read-only, both wear NO leading glyph (see `MetaRow`), and
             that absence is what makes "has a glyph" mean "clickable" anywhere above
             them in this list. */}
-        {task.specPath !== null && (
+        {task.specPath !== null && task.specPath !== "" && (
           <MetaRow label="spec">{task.specPath}</MetaRow>
         )}
         {/* The id, in the one place it is useful: a card being discussed across two

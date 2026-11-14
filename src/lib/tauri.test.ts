@@ -22,6 +22,7 @@ import {
   attentionArm,
   attentionDisarm,
   compactSession,
+  editTask,
   externalOpen,
   getWindowState,
   listenAttentionAlertClicked,
@@ -759,3 +760,106 @@ describe("reorderTasks (the within-column drag write path, spec §3)", () => {
   });
 });
 
+
+describe("editTask (the per-field patch IPC boundary)", () => {
+  beforeEach(() => {
+    mockedInvoke.mockReset();
+  });
+
+  it("sends NO title/body/specPath key when they are omitted (absent is not null)", async () => {
+    // THE assertion this plan exists to make. An omitted argument arrives at Rust
+    // as an ABSENT key, while an explicit `null` arrives as a key holding `null` —
+    // and Rust's `Option<String>` cannot tell those apart (both deserialize to
+    // `None`), which is why the command reads presence off the raw body
+    // (`tauri::ipc::Request`) instead of its own arguments.
+    //
+    // Asserted on the ENCODED payload, not on the object the mock recorded, and
+    // that distinction is measured rather than assumed: the mock sees the
+    // wrapper's literal `{ taskId, title, body, specPath }`, which DOES carry all
+    // four keys with the value `undefined`, so `expect(args).not.toHaveProperty
+    // ("title")` is RED against a correct wrapper. `JSON.stringify` — the encoder
+    // the real `invoke` hands the payload to — drops every `undefined` property,
+    // and THAT is the boundary where "absent" becomes representable. So the
+    // round-trip below is the honest instrument: it fails the moment anyone
+    // normalizes `undefined` to `null` (the `sendPrompt` `?? []` habit), which
+    // would turn every keep-it into a clear-it and blank a card's body and spec
+    // path on a rename.
+    mockedInvoke.mockResolvedValue(null);
+    await editTask("tsk_1");
+    const [, args] = mockedInvoke.mock.calls[0]!;
+    const wire = JSON.parse(JSON.stringify(args));
+    expect(Object.keys(wire)).toEqual(["taskId"]);
+    expect(wire).not.toHaveProperty("title");
+    expect(wire).not.toHaveProperty("body");
+    expect(wire).not.toHaveProperty("specPath");
+  });
+
+  it("sends three explicit nulls for `editTask(id, null, null, null)` (the clear)", async () => {
+    // The other half of the boundary: `null` survives UNNORMALIZED, because a
+    // wrapper that folded it away would leave no way to say "clear this field" at
+    // all — and `""` is not the answer (Task 2: an empty spec path renders nothing,
+    // so a `""` written into `spec_path` is a field that is neither set nor null).
+    // The `compactSession` "null is not an empty string" shape, one layer over.
+    //
+    // This pins the ENCODING only. On the wire a `title: null` is then REFUSED by
+    // the command (`tasks.title` is `NOT NULL`) — see the wrapper's doc — so this
+    // call shape is the payload the wrapper produces, not a call that lands.
+    mockedInvoke.mockResolvedValue(null);
+    await editTask("tsk_1", null, null, null);
+    const [, args] = mockedInvoke.mock.calls[0]!;
+    expect(args).toEqual({
+      taskId: "tsk_1",
+      title: null,
+      body: null,
+      specPath: null,
+    });
+    // And it survives the encoder: `JSON.stringify` keeps a `null` property it
+    // would DROP if it were `undefined`, so the three nulls really do arrive as
+    // three keys holding null. That difference — one edge of the encoder, two
+    // answers — is the whole mechanism, so both halves are pinned.
+    expect(JSON.parse(JSON.stringify(args))).toEqual({
+      taskId: "tsk_1",
+      title: null,
+      body: null,
+      specPath: null,
+    });
+  });
+
+  it("passes string arguments through UNCHANGED (no trim, no normalize)", async () => {
+    // A patch writes WHAT WAS PASSED. A wrapper that trimmed or defaulted a
+    // whitespace-only title would make the Rust side's `empty_title` refusal
+    // unreachable from the UI, so the two title writers would disagree about what
+    // a title is — the exact reason `createTask` does the same no-cleaning here.
+    mockedInvoke.mockResolvedValue(null);
+    await editTask("tsk_1", "  Renamed  ", "", "docs/spec.md");
+    const [, args] = mockedInvoke.mock.calls[0]!;
+    expect(args).toEqual({
+      taskId: "tsk_1",
+      title: "  Renamed  ",
+      body: "",
+      specPath: "docs/spec.md",
+    });
+  });
+
+  it("returns the resolved `TaskRow` AS-IS (the row the write landed in)", async () => {
+    // The caller re-renders the card from this row — `specPath: null` after a
+    // clear is what removes the `spec` chip (Task 2's render guard). A wrapper that
+    // reshaped or dropped it would leave the chip on screen over a cleared column,
+    // and `undefined` in place of the row would break every caller that reads
+    // `updatedAt` off it.
+    const row = {
+      id: "tsk_1",
+      spacePath: "/space/x",
+      number: 3,
+      title: "Renamed",
+      body: null,
+      specPath: null,
+      stageSlug: "doing",
+      sortOrder: 0,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    mockedInvoke.mockResolvedValue(row);
+    await expect(editTask("tsk_1", null, null, null)).resolves.toBe(row);
+  });
+});
