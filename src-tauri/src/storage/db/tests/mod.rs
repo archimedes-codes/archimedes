@@ -7481,3 +7481,303 @@ fn write_artifact_refuses_a_dangling_task_id_there_is_no_fk_to_catch_it() {
          gate turned away. This is what removing the gate would let through."
     );
 }
+
+// ── #155: the journal pragmas + the batched message write ────────────────────
+
+/// (issue #155, the whole-window jank) A fresh `Db::open` runs in WAL with
+/// `synchronous = NORMAL` and a real `busy_timeout`.
+///
+/// WHY these three numbers and not a measurement: the measured cost of the
+/// old default (rollback journal + `synchronous = FULL`) is 14–17 ms per
+/// commit against 1.1–1.6 ms for WAL+FULL and ~0.12 ms for WAL+NORMAL, and
+/// every streamed message was its own commit — so the user watched a
+/// whole-window freeze while the UI thread waited on 3 `fdatasync`s per frame.
+///
+/// The readback is `PRAGMA journal_mode` on the app's OWN connection, compared
+/// case-insensitively — the same read the production code makes, because
+/// `journal_mode` can refuse SILENTLY (see the sibling test) and a `?` on
+/// `pragma_update` would never see the refusal.
+#[test]
+fn a_fresh_db_opens_in_wal_with_normal_synchronous_and_a_busy_timeout() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-journal-test-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let conn = db.conn.lock().expect("db mutex poisoned");
+
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .expect("the journal_mode readback");
+    assert_eq!(
+        mode.to_lowercase(),
+        "wal",
+        "a fresh database runs in WAL — the rollback journal is what cost \
+         3 fdatasyncs per commit"
+    );
+    let sync: i64 = conn
+        .query_row("PRAGMA synchronous", [], |row| row.get(0))
+        .expect("the synchronous readback");
+    assert_eq!(
+        sync, 1,
+        "`synchronous = NORMAL` (1): the durability step WAL makes cheap, taken"
+    );
+    let busy: i64 = conn
+        .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+        .expect("the busy_timeout readback");
+    assert!(
+        busy > 0,
+        "`busy_timeout` is non-zero — WAL lets a reader meet a writer, and \
+         without a timeout that meeting is an immediate SQLITE_BUSY"
+    );
+}
+
+/// (the degrade branch, unit-testable) A connection whose journal mode CANNOT
+/// become WAL — `:memory:`, which refuses the change while `pragma_update`
+/// returns `Ok` — comes back as `Some(reason)`, and the connection is still
+/// open for business afterwards.
+///
+/// This is the real refusal, not a mock of one: `journal_mode = WAL` on an
+/// in-memory database is a no-op SQLite accepts in silence, which is exactly
+/// the failure mode the plan says `pragma_update_and_check`'s `?` cannot see.
+/// A filesystem that refuses WAL (a network mount without the shared-memory
+/// support) takes the same path: the readback disagrees with the request.
+///
+/// The two halves of the contract, both asserted: DEGRADE (a reason comes back,
+/// never a panic, never an `Err` — `Db::open` must still start the app), and
+/// NOT-BRICKED (the other two pragmas still land and the connection still
+/// writes — a refused journal is not a refused database).
+#[test]
+fn set_journal_pragmas_reports_a_degrade_when_the_journal_mode_refuses_wal() {
+    let mut conn = Connection::open_in_memory().expect("an in-memory connection");
+    // The premise, pinned: this connection really does refuse WAL. Without
+    // this the test would be asserting against a connection that accepts it,
+    // and the degrade branch would never be reached.
+    assert_eq!(
+        conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .expect("the mode readback")
+            .to_lowercase(),
+        "memory",
+        "the premise: an in-memory database cannot be switched to WAL"
+    );
+
+    let degraded = set_journal_pragmas(&mut conn);
+
+    let reason = degraded.expect(
+        "a refused WAL reports the degrade, it does not \
+         pass as success",
+    );
+    assert!(
+        reason.to_lowercase().contains("wal"),
+        "the reason names what was refused, so the log line is actionable: \
+         got {reason:?}"
+    );
+    // ...and the app is NOT bricked by the refusal: the other two pragmas still
+    // apply (a rollback journal still benefits from the timeout — that is the
+    // pragma that keeps a second `Db` on one file from erroring), and the
+    // connection still writes.
+    assert_eq!(
+        conn.query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))
+            .expect("the busy_timeout readback"),
+        5000,
+        "a degraded journal does not skip the remaining pragmas"
+    );
+    conn.execute_batch("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);")
+        .expect("a refused WAL leaves a usable connection");
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM t", [], |row| row.get::<_, i64>(0))
+            .expect("the row count"),
+        1,
+        "and the write landed"
+    );
+}
+
+/// The WAL file as a COMMIT COUNTER: the number of frames it holds.
+///
+/// The layout is fixed by the format — a 32-byte header, then one frame per
+/// dirty page, each frame a 24-byte header plus one page. A commit appends its
+/// dirty-page frames and marks the LAST one a commit frame, so **N separate
+/// commits must append at least N frames**, while one transaction appending the
+/// same rows writes one frame per dirty page and a single commit frame. That
+/// asymmetry is what makes this a real commit counter.
+///
+/// WHY not `PRAGMA data_version` (the obvious candidate): measured here, it is
+/// a "has this database changed since I last looked" counter, NOT a commit
+/// counter — 12 autocommits moved a second connection's `data_version` by **1**,
+/// exactly the same as one 12-row transaction, because the observer only
+/// refreshes when it next reads. It cannot tell the two apart, so a test written
+/// against it PASSES against a per-row autocommit loop — vacuous. And
+/// `Connection::total_changes` cannot either: measured, it does not step back on
+/// a rollback, so it counts rows a transaction threw away.
+///
+/// WHY not `sqlite3_commit_hook`: it is the ideal instrument, but rusqlite puts
+/// it behind the `hooks` feature and this crate does not enable it (`cargo tree
+/// -p rusqlite` → `bundled,modern_sqlite`), so it is not compiled in.
+///
+/// `page_size` is read from the connection rather than hardcoded, so the
+/// arithmetic survives a page-size change.
+fn wal_frame_count(db: &Db, wal: &std::path::Path) -> u64 {
+    let page_size: u64 = db
+        .conn
+        .lock()
+        .expect("db mutex poisoned")
+        .query_row("PRAGMA page_size", [], |row| row.get(0))
+        .expect("the page_size readback");
+    match std::fs::metadata(wal) {
+        // A WAL shorter than one frame holds no frames (it was created by the
+        // open and nothing has been committed into it yet).
+        Ok(meta) if meta.len() > 32 => (meta.len() - 32) / (24 + page_size),
+        _ => 0,
+    }
+}
+
+/// (#155, the batch path) `record_messages_batch` writes N rows with FEWER
+/// frames than N commits would produce — i.e. it is not N commits.
+///
+/// The counter is the `-wal` file's frame count, read before and after; see
+/// [`wal_frame_count`] for why that is a commit counter and why the two
+/// `PRAGMA`-level candidates are not. The assertion is an inequality with a
+/// reason, not a magic number: N commits append >= N frames (one commit frame
+/// each), so a delta BELOW N cannot be N commits. Measured against the
+/// per-row-loop mutation this replaces, the delta is 3×N (each autocommit
+/// re-writes the leaf page plus its commit frame); one transaction writes 3
+/// frames for the same rows.
+///
+/// The row round-trip is asserted in the same test so a mutation that writes
+/// nothing cannot pass by producing zero frames.
+#[test]
+fn record_messages_batch_writes_n_rows_in_one_commit() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-batch-test-", "scratch");
+    let path = dir.join("t.db");
+    let db = Db::open(&path).expect("db should open");
+    db.record_session(&title_session("s_batch"))
+        .expect("record_session");
+    let wal = dir.join("t.db-wal");
+    // The premise, pinned: WAL really is on, or there is no `-wal` to count and
+    // the test would pass on an empty file for the wrong reason.
+    assert!(
+        wal.exists(),
+        "the premise: the database is in WAL, so commits land as frames in {:?}",
+        wal.display()
+    );
+
+    const N: usize = 12;
+    // The keys and payloads are OWNED (they vary per row), so build them first
+    // and borrow them into the `&[...]` the method takes.
+    let keys: Vec<String> = (0..N).map(|i| format!("k{i}")).collect();
+    let payloads: Vec<String> = (0..N)
+        .map(|i| format!("{{\"text\":\"frame {i}\"}}"))
+        .collect();
+    let batch: Vec<(&str, &str, Option<&str>, &str)> = keys
+        .iter()
+        .zip(payloads.iter())
+        .map(|(k, p)| ("s_batch", "agent-text", Some(k.as_str()), p.as_str()))
+        .collect();
+
+    let before = wal_frame_count(&db, &wal);
+    db.record_messages_batch(&batch)
+        .expect("record_messages_batch should succeed");
+    let after = wal_frame_count(&db, &wal);
+
+    assert!(
+        after > before,
+        "the batch actually committed (frames {before} -> {after})"
+    );
+    assert!(
+        after - before < N as u64,
+        "N={N} rows must not cost N commits: N separate commits append at          least N frames (one commit frame each), and this batch appended {} —          one transaction writing its dirty pages plus a single commit frame          (before={before}, after={after})",
+        after - before
+    );
+    let stored = db.messages_for("s_batch").expect("messages_for");
+    assert_eq!(stored.len(), N, "every row of the batch round-trips");
+    for (i, row) in stored.iter().enumerate() {
+        assert_eq!(row.message_key.as_deref(), Some(keys[i].as_str()));
+        assert_eq!(row.payload_json, payloads[i], "row {i} round-trips");
+    }
+}
+
+/// (#155, the batch path) The batch is ONE transaction in the atomicity sense
+/// too: a row that fails partway through rolls the WHOLE batch back, so a flush
+/// is all-or-nothing and never leaves half a transcript stored.
+///
+/// This is the direct proof of "one transaction" — the frame count above shows
+/// commits happened together, this shows they cannot happen PARTLY. The failing
+/// row is an FK violation (a `messages` row for a session that does not exist,
+/// and `foreign_keys` is ON in every `Db::open`), which is a real constraint
+/// rather than a contrived one, and it fails on the SECOND of three rows so the
+/// first is genuinely written-then-unwritten.
+///
+/// The mutation this pins: dropping the `transaction()` and executing per row
+/// leaves row 1 committed behind the failure.
+#[test]
+fn record_messages_batch_rolls_back_the_whole_batch_when_one_row_fails() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-batch-rb-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    db.record_session(&title_session("s_ok"))
+        .expect("record_session");
+
+    let batch = [
+        ("s_ok", "agent-text", Some("first"), "{\"text\":\"kept\"}"),
+        (
+            "s_no_such_session",
+            "agent-text",
+            Some("bad"),
+            "{\"text\":\"fk violation\"}",
+        ),
+        ("s_ok", "agent-text", Some("last"), "{\"text\":\"kept\"}"),
+    ];
+    db.record_messages_batch(&batch)
+        .expect_err("an FK-violating row must fail the batch");
+
+    let stored = db.messages_for("s_ok").expect("messages_for");
+    assert!(
+        stored.is_empty(),
+        "the whole batch rolled back — a transaction that committed rows 1 and          3 before failing on row 2 would leave them here: got {stored:?}"
+    );
+}
+
+/// (#155, the batch path) A key that appears TWICE inside one batch is an
+/// UPSERT, not an error — the same `ON CONFLICT … DO UPDATE` `record_message`
+/// uses, so a stream that re-sends a `messageId` (the accumulated-text case the
+/// module docs describe) collapses to one row holding the LAST payload.
+///
+/// Without the conflict clause this is a `UNIQUE constraint failed` and the
+/// whole batch rolls back — losing the frames that were fine.
+#[test]
+fn record_messages_batch_upserts_a_key_that_appears_twice_in_one_batch() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-batch-dup-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    db.record_session(&title_session("s_dup"))
+        .expect("record_session");
+
+    let batch = [
+        (
+            "s_dup",
+            "agent-text",
+            Some("same-key"),
+            "{\"text\":\"first\"}",
+        ),
+        ("s_dup", "user", None, "{\"text\":\"a user row\"}"),
+        (
+            "s_dup",
+            "agent-text",
+            Some("same-key"),
+            "{\"text\":\"last wins\"}",
+        ),
+    ];
+    db.record_messages_batch(&batch)
+        .expect("a repeated key inside one batch is an upsert, not an error");
+
+    let stored = db.messages_for("s_dup").expect("messages_for");
+    assert_eq!(
+        stored.len(),
+        2,
+        "the duplicate collapsed to one row: got {stored:?}"
+    );
+    let dup = stored
+        .iter()
+        .find(|r| r.message_key.as_deref() == Some("same-key"))
+        .expect("the upserted row is there");
+    assert_eq!(
+        dup.payload_json, "{\"text\":\"last wins\"}",
+        "the LAST write in the batch is what stands (the same excluded.* \
+         semantics as record_message)"
+    );
+}

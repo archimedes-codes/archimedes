@@ -884,6 +884,89 @@ fn gate(
     Ok(())
 }
 
+/// (#155) The durability pragmas `Db::open` runs, factored out of `Db::open`
+/// so the DEGRADE branch is unit-testable.
+///
+/// Returns `None` when the connection ended up in WAL, or the REASON it did
+/// not — and it NEVER returns `Err`. A database that refuses WAL (a network
+/// mount without shared-memory support; an in-memory database) is a database
+/// the user still has to be able to open, so the whole function degrades to a
+/// log line rather than bricking startup.
+///
+/// WHY the readback instead of `pragma_update_and_check`'s `?`: `journal_mode`
+/// **refuses silently** on some filesystems — `pragma_update` returns `Ok` and
+/// the mode stays `delete`. That silent refusal is the entire risk here, and a
+/// `?` cannot see it. So the mode is read back and compared case-insensitively
+/// (SQLite spells it lowercase; a readback that is merely differently cased is
+/// not a refusal). The `:memory:` case reproduces the refusal exactly, which is
+/// what makes the branch testable in this repo — a criterion like "a
+/// filesystem that refuses WAL still starts the app" is unverifiable here.
+///
+/// WHY the three pragmas, in one place:
+/// - `journal_mode = WAL` — the measured fix. Rollback journal + `FULL` costs
+///   3 `fdatasync`s per commit (14–17 ms measured at 400–700 MB); WAL+`FULL` is
+///   1.1–1.6 ms and WAL+`NORMAL` ~0.12 ms. Database SIZE is not the issue.
+/// - `synchronous = NORMAL` — safe under WAL: SQLite's own guidance is that
+///   `NORMAL` costs at most a transaction's worth of work after an OS crash,
+///   never a corrupt database, because WAL commits are append-only into the
+///   `-wal` file.
+/// - `busy_timeout = 5000` — WAL is the first mode where a reader can meet a
+///   writer at all, and without a timeout that meeting is an immediate
+///   `SQLITE_BUSY` error. Every connection this app opens goes through
+///   `Db::open`, so the timeout reaches all of them; a `SQLITE_BUSY` anywhere
+///   after this means it did NOT reach that connection, which is a bug and not
+///   a flake.
+///
+/// Deliberately NOT here: `wal_autocheckpoint`. The 81 ms
+/// `wal_checkpoint(TRUNCATE)` observed at 703 MB is a cost WAL *introduces*, and
+/// tuning the autocheckpoint blind against it would trade one stall for another
+/// with no measurement to say which is cheaper. Follow-up, not part of #155.
+fn set_journal_pragmas(conn: &mut Connection) -> Option<String> {
+    // `pragma_update` builds `PRAGMA name = value` and runs it through
+    // `execute_batch`, which tolerates a row-returning pragma — so `journal_mode`
+    // (which SELECTs its result) is settable this way with the existing idiom.
+    // Each one is `if let Err`, not `?`: a hard failure on one pragma must not
+    // skip the others, and must not fail the open.
+    let mut failures: Vec<String> = Vec::new();
+    let mut note = |name: &str, result: rusqlite::Result<()>| {
+        if let Err(e) = result {
+            failures.push(format!("`PRAGMA {name}` failed: {e}"));
+        }
+    };
+    note(
+        "journal_mode",
+        conn.pragma_update(None, "journal_mode", "WAL"),
+    );
+    note(
+        "synchronous",
+        conn.pragma_update(None, "synchronous", "NORMAL"),
+    );
+    note(
+        "busy_timeout",
+        conn.pragma_update(None, "busy_timeout", 5_000_i64),
+    );
+    // The readback is the authority, not the calls above.
+    let degraded = match conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0)) {
+        Ok(mode) if mode.eq_ignore_ascii_case("wal") => None,
+        Ok(mode) => Some(format!(
+            "`PRAGMA journal_mode = WAL` was refused — the database reports \
+             `{mode}`, so writes stay on the rollback journal (slower commits)"
+        )),
+        Err(e) => Some(format!(
+            "the `PRAGMA journal_mode` readback failed: {e} — the journal mode \
+             is unknown, so writes may still be on the rollback journal"
+        )),
+    };
+    if failures.is_empty() {
+        return degraded;
+    }
+    let detail = failures.join("; ");
+    Some(match degraded {
+        Some(reason) => format!("{reason}; {detail}"),
+        None => detail,
+    })
+}
+
 /// The app's SQLite database.
 ///
 /// The connection is wrapped in a `std::sync::Mutex` (a raw
@@ -903,6 +986,15 @@ impl Db {
         let mut conn = Connection::open(path)?;
         // Enforce the ON DELETE CASCADE on messages.
         conn.pragma_update(None, "foreign_keys", true)?;
+        // (#155) WAL + `synchronous = NORMAL` + `busy_timeout`, with the reason
+        // for a degrade logged instead of the open failed. The WHYs — including
+        // why the journal mode is READ BACK rather than trusted from the call —
+        // are on the function. It must stay before every migration below: the
+        // drop-migration and the gates are the expensive writes, and they are
+        // the reason an upgrade-first open used to stall the window.
+        if let Some(reason) = set_journal_pragmas(&mut conn) {
+            fulcrum_harness::debuglog::log(&format!("db journal degrade: {reason}"));
+        }
         // One-way migration for pre-rip-out databases (the desktop is
         // native-only now): drop the `sessions.agent_id` column. The
         // `messages` table STAYS (the native display transcript) — but ALL
@@ -1431,6 +1523,53 @@ impl Db {
                created_at = excluded.created_at",
             params![session_id, kind, message_key, payload_json, now_ms()],
         )?;
+        Ok(())
+    }
+
+    /// Insert or update MANY messages in ONE transaction — one commit for the
+    /// whole batch (#155).
+    ///
+    /// The batch path exists because `record_message` takes the mutex and runs
+    /// one statement in autocommit, so it commits per call. A caller that
+    /// buffers streamed frames and then flushes them by calling
+    /// `record_message` per key therefore pays one commit per key — which under
+    /// the old rollback-journal default was 14–17 ms of `fdatasync` per frame,
+    /// and even under WAL is a durability round-trip per frame. One transaction
+    /// makes the whole flush a single commit.
+    ///
+    /// Same statement and same upsert semantics as [`Self::record_message`]
+    /// (a repeated `(session_id, kind, message_key)` collapses to one row
+    /// holding the LAST payload — the accumulated-text case in the module
+    /// docs), and the same one-transaction-many-rows shape as
+    /// [`Self::replace_native_messages`]: one `transaction()`, one `execute`
+    /// per row, one `commit()`. A failure on any row rolls the whole batch
+    /// back, so a flush is all-or-nothing — never a half-written transcript.
+    ///
+    /// `created_at` is stamped ONCE for the batch: the frames were flushed
+    /// together, and transcript order is `id` (`messages_for` orders by it),
+    /// never this column — so a per-row clock read would buy nothing but a
+    /// syscall per row.
+    ///
+    /// `record_message` stays public and unchanged: `SessionStore`
+    /// (`agent/harness/store.rs`) is built on it and is not this task's scope.
+    pub fn record_messages_batch(
+        &self,
+        rows: &[(&str, &str, Option<&str>, &str)],
+    ) -> Result<(), DbError> {
+        let mut guard = self.conn.lock().expect("db mutex poisoned");
+        let tx = guard.transaction()?;
+        let now = now_ms();
+        for (session_id, kind, message_key, payload_json) in rows {
+            tx.execute(
+                "INSERT INTO messages (session_id, kind, message_key, payload_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(session_id, kind, message_key) DO UPDATE SET
+                   payload_json = excluded.payload_json,
+                   created_at = excluded.created_at",
+                params![session_id, kind, message_key, payload_json, now],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
