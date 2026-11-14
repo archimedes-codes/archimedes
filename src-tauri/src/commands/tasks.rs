@@ -17,16 +17,17 @@
 //! delegate too but refuse three things BEFORE the storage layer is reached (see
 //! the artifact section for why each refusal lives here).
 //!
-//! Three of the seventeen do NOT go through [`board_call`], and it is not an
+//! FOUR of the seventeen do NOT go through [`board_call`], and it is not an
 //! oversight: [`set_board_strict`] and [`get_board_strict`] write and read the
 //! `spaces` table, so their storage layer answers `DbError` rather than
 //! `BoardError`, and `board_call` is typed to `BoardError`. They go through
 //! [`db_call`], its twin for that family — the same two-layer flattening, mapping
 //! every failure to `Other` because `DbError` has no absence cases to preserve.
 //! `commands/spaces.rs` maps the same `DbError` by hand for the same reason, and no
-//! `From<DbError> for TasksError` is added here. [`write_artifact`] is the third:
-//! its body composes command-layer refusals that only exist in the wire family, so
-//! it goes through [`wire_call`].
+//! `From<DbError> for TasksError` is added here. The other two are [`write_artifact`]
+//! and [`edit_task`]: each composes command-layer refusals that only exist in the
+//! wire family, so each goes through [`wire_call`] and maps its own `BoardError`
+//! inside the closure — which is where `not_found` keeps its identity.
 //!
 //! The blocking rule is the file rule from `commands/files/mod.rs`, restated in
 //! `spaces.rs`: SQLite work goes on a worker thread, and it is
@@ -113,6 +114,100 @@ const NO_LIVE_SESSION: &str = "no live session to compact";
 /// writes what this approved, never what it was handed.
 fn require_title(raw: &str) -> Result<String, TasksError> {
     crate::agent::clean_title(raw, None).ok_or(TasksError::EmptyTitle)
+}
+
+/// The JSON type of a body field, for a refusal sentence.
+///
+/// `serde_json` has no public name-for-a-`Value` in the version this crate pins
+/// (measured: `Value::type_str` is absent from 1.0.154's sources), so the six arms
+/// are spelled here. `null` and `string` are the two LEGAL non-absent readings and
+/// never reach a refusal — they are named anyway because the `match` must be total
+/// and because a caller of this helper must not have to remember which arms are
+/// unreachable.
+fn json_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+/// Read one optional field out of an invoke body as a patch.
+///
+/// Absent key → `Keep`; explicit `null` → `Clear`; a string → `Set`. Any other JSON
+/// type is REFUSED, not kept: silently ignoring a `spec_path: 42` is the
+/// "reports success for a call that did something else" class ADR 0079 rejects.
+///
+/// THIS is why the command takes a [`tauri::ipc::Request`] and not three
+/// `Option<String>` parameters: Tauri deserializes an absent key and an explicit
+/// `null` into the SAME `None`, so the third state is invisible below this point —
+/// storage grew `FieldPatch::Clear` (Task 1) and the UI still could not reach it.
+/// Presence is only readable off the raw body, and the raw body is only reachable
+/// through `Request`.
+///
+/// The refusal rides the EXISTING [`TasksError::Other`] (`other`), naming the key
+/// AND the type it found. No new variant: `tasks_error_kinds_are_the_wire_strings`
+/// pins the wire vocabulary, nothing on either side branches on a sixth kind, and
+/// the harness's `editTask` deliberately does not exist to send one.
+///
+/// `""` is a `Set`, NOT a `Clear` — a patch that writes the empty string is a
+/// different question from a patch that writes NULL, and folding them here would
+/// reintroduce the collapse one layer up. (Task 2 is what makes `""` harmless on
+/// the render side; this function is what keeps it distinct on the write side.)
+///
+/// The lifetime is named rather than `'_` because the signature has TWO input
+/// borrows and the elision rules cannot guess which one the `&str` inside
+/// [`FieldPatch::Set`] comes from — it is always `body`'s, never `key`'s, and
+/// saying so is the one-line proof of that.
+fn patch_field<'a>(
+    body: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<FieldPatch<'a>, TasksError> {
+    match body.get(key) {
+        None => Ok(FieldPatch::Keep),
+        Some(serde_json::Value::Null) => Ok(FieldPatch::Clear),
+        Some(serde_json::Value::String(value)) => Ok(FieldPatch::Set(value)),
+        Some(other) => Err(TasksError::Other(format!(
+            "edit_task field `{key}` must be a string or null, found {}",
+            json_type_name(other),
+        ))),
+    }
+}
+
+/// [`patch_field`] for `title`, with the two title rules this layer owns applied.
+///
+/// Answers `Ok(None)` for KEEP (the column is not touched) and `Ok(Some(cleaned))`
+/// for a write — an owned `String` rather than a [`FieldPatch`] on purpose: the
+/// cleaner's output has to outlive the borrow of the body, so this is the one field
+/// whose patch is built from owned text (see the command for where that matters).
+///
+/// Two refusals, and both are WIRE rules that live here and not in `Db` — the same
+/// reason [`require_title`] was never pushed into storage:
+///
+///  - `Clear` is refused. `tasks.title` is `NOT NULL`, so a card without a label is
+///    not a thing; `Db::edit_task` says it takes the refusal from the other side (a
+///    `Clear` that slipped past would surface SQLite's constraint as a bare
+///    `database` error).
+///  - a `Set` that cleans to nothing is `EmptyTitle`, the SAME refusal a create
+///    makes, so the two title writers cannot disagree about what a title is.
+///
+/// A KEPT title never reaches the cleaner: omitting the field must not be the same
+/// act as blanking it.
+fn patch_title(
+    body: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<String>, TasksError> {
+    match patch_field(body, "title")? {
+        FieldPatch::Keep => Ok(None),
+        FieldPatch::Clear => Err(TasksError::Other(
+            "edit_task cannot clear `title`: tasks.title is NOT NULL — a card always has a label \
+             (rename it, do not blank it)"
+                .to_string(),
+        )),
+        FieldPatch::Set(raw) => Ok(Some(require_title(raw)?)),
+    }
 }
 
 /// Derive a Stage slug from a label (spec §5): lowercase; every run of
@@ -212,17 +307,24 @@ fn db_call<T, E: std::fmt::Display>(
 }
 
 /// The third flattener in this file, for the two commands whose body already
-/// answers [`TasksError`] rather than a storage family.
+/// answers [`TasksError`] rather than a storage family: [`write_artifact`] and
+/// [`edit_task`].
 ///
-/// Why a third and not a reuse: the artifact commands' refusals are a MIX — the
-/// key grammar and the byte cap are command-layer verdicts that only exist in the
-/// wire family, while a missing Task or a bad statement arrives from `BoardError`.
-/// So the core composes both into `TasksError` (the type the command returns
-/// anyway) and this helper's only job is the outer `JoinError` arm — the same
-/// mapping [`board_call`] and [`db_call`] make, for the same stated reason (this
-/// file's dialect does not name `tauri::Error`).
+/// Why a third and not a reuse: both bodies are a MIX — the key grammar and the
+/// byte cap are command-layer verdicts that only exist in the wire family, while a
+/// missing Task or a bad statement arrives from `BoardError`. So the core composes
+/// both into `TasksError` (the type the command returns anyway) and this helper's
+/// only job is the outer `JoinError` arm — the same mapping [`board_call`] and
+/// [`db_call`] make, for the same stated reason (this file's dialect does not name
+/// `tauri::Error`).
 ///
-/// The distinction the other two helpers exist to protect is NOT lost: the core
+/// `edit_task` arrived here the same way: reading the patch off the raw body adds
+/// three wire-only refusals (a wrong-typed field, a cleared `title`, a missing
+/// `taskId`) that `BoardError` has no arm for, and forcing them through
+/// `board_call` would mean inventing a `BoardError` variant whose only purpose is to
+/// be flattened straight back into `Other` on the way out.
+///
+/// The distinction the other two helpers exist to protect is NOT lost: each core
 /// maps its own `BoardError` through `TasksError::from`, which is exactly where
 /// `MissingTask` → `NotFound` happens. Nothing is flattened into `Other` that had
 /// a kind of its own.
@@ -323,42 +425,104 @@ pub async fn get_task(
     board_call(tauri::async_runtime::spawn_blocking(move || db.get_task(&task_id)).await)
 }
 
-/// Patch a card's text. `None` keeps the stored value; the stage, the number and
-/// the position are not this verb's to write — the stage is [`move_task`], the
-/// position is [`reorder_tasks`] (spec §3's two drag verbs), and the number is
-/// never written at all (ADR 0090).
+/// Patch a card's text, one field at a time.
+///
+/// THREE readings per field, and the difference between the first two is the whole
+/// reason this command takes a [`tauri::ipc::Request`] instead of three
+/// `Option<String>` parameters:
+///
+///  - **absent** (the key is not in the body at all) → the column is left exactly
+///    as it is;
+///  - **explicit `null`** → the column is cleared to NULL;
+///  - **a string** → the column is written with it, `""` included (an empty string
+///    is a WRITE, not a clear — see [`patch_field`]).
+///
+/// Tauri deserializes an absent key and an explicit `null` into the SAME `None`, so
+/// below this point the third state does not exist: presence is readable only off
+/// the raw body, which is reachable only through `Request`. That is what makes this
+/// the FIRST command in the repo to take one — not a style choice.
+///
+/// `title` is the exception: it is `NOT NULL`, so a `null` title is REFUSED rather
+/// than written, and a string title goes through the same [`require_title`] cleaner
+/// a create runs. Both rules are wire rules and live here — see [`patch_title`].
+///
+/// **The model cannot do any of this.** The harness's `edit_task` tool reaches
+/// `impl TaskStore for Db`, whose `Option<&str>` arguments are two-state: `None`
+/// there means "leave it", so a model can write a field but never clear one. That is
+/// deliberate, not an oversight — ADR 0102 deletes that whole trait and its
+/// `TaskCall` frame, so widening them would freeze a shape that decision removes; the
+/// third state becomes reachable from the tool at #183. ADR 0102's Consequences
+/// carries the deferral.
+///
+/// The stage, the number and the position are not this verb's to write — the stage
+/// is [`move_task`], the position is [`reorder_tasks`] (spec §3's two drag verbs),
+/// and the number is never written at all (ADR 0090).
 #[tauri::command]
 pub async fn edit_task(
     state: State<'_, Arc<Db>>,
-    task_id: String,
-    title: Option<String>,
-    body: Option<String>,
-    spec_path: Option<String>,
+    request: tauri::ipc::Request<'_>,
 ) -> Result<TaskRow, TasksError> {
-    // A title patch goes through the same cleaner a create does. An ABSENT title
-    // is "do not change it" and never reaches the cleaner — otherwise omitting
-    // the field would be the same as blanking it.
-    let title = match title.as_deref() {
-        Some(raw) => Some(require_title(raw)?),
-        None => None,
+    // Pull the OWNED map out of the borrowed body, HERE. Everything downstream
+    // needs `'static`: `spawn_blocking` takes `FnOnce() + Send + 'static`, `Request`
+    // borrows the `InvokeBody`, and `FieldPatch` borrows a `&str` — so neither can
+    // cross the hop. The clone is a shallow one over the payload's own keys, and it
+    // is the only way to move the presence information forward at all.
+    let body = match request.body() {
+        // Reachable only from a non-JS caller (`invoke` always sends an object),
+        // but the match on `InvokeBody` must be total and a raw-bytes payload has no
+        // fields to read.
+        tauri::ipc::InvokeBody::Json(serde_json::Value::Object(map)) => map.clone(),
+        _ => {
+            return Err(TasksError::Other(
+                "edit_task expects a JSON object body".to_string(),
+            ))
+        }
     };
+    // `task_id` used to be a typed parameter and Tauri produced "missing required
+    // key `taskId`" natively. There are no typed parameters now, so the command
+    // produces that answer itself — naming the key, because that is the string the
+    // caller greps for. The camelCase spelling is what the macro's own default
+    // (`ArgumentCase::Camel`) looks up, and what `editTask` sends.
+    let task_id = match body.get("taskId") {
+        Some(serde_json::Value::String(id)) => id.clone(),
+        Some(other) => {
+            return Err(TasksError::Other(format!(
+                "edit_task `taskId` must be a string, found {}",
+                json_type_name(other),
+            )));
+        }
+        None => {
+            return Err(TasksError::Other(
+                "edit_task missing required key `taskId`".to_string(),
+            ))
+        }
+    };
+    // The title rules run BEFORE the hop: `clean_title` is pure and cheap, and its
+    // answer is an OWNED `String` — which is precisely why `patch_title` answers
+    // `Option<String>` instead of a borrowed `FieldPatch`. A rejection here spends no
+    // worker thread and writes nothing, exactly as `create_task`'s does.
+    let title = patch_title(&body)?;
     let db = state.inner().clone();
-    board_call(
+    // `wire_call`, not `board_call`: this body now composes command-layer refusals
+    // (`TasksError`, from [`patch_field`] / [`patch_title`]) with a storage call, and
+    // `board_call` is typed to a `BoardError` that has no arm a wire refusal maps
+    // onto honestly. `wire_call` is that mix's flattener, and the distinction
+    // `board_call` exists to protect is preserved INSIDE the closure, where the
+    // storage `BoardError` still goes through `TasksError::from` — so a missing card
+    // stays `not_found` and never flattens into `other`.
+    wire_call(
         tauri::async_runtime::spawn_blocking(move || {
-            // The mechanical half of the `FieldPatch` migration, and ONLY that: the
-            // wire shape is still TWO-state (`Option<String>`, `None` = leave it), so
-            // `None` maps to `Keep` and `Some` to `Set`. Nothing here can send
-            // `FieldPatch::Clear`, and the `Clear`-on-`title` refusal is deliberately
-            // NOT added — that is this command's third-state decision to make, not a
-            // consequence of the storage signature.
-            db.edit_task(
-                &task_id,
-                title.as_deref().map_or(FieldPatch::Keep, FieldPatch::Set),
-                body.as_deref().map_or(FieldPatch::Keep, FieldPatch::Set),
-                spec_path
-                    .as_deref()
-                    .map_or(FieldPatch::Keep, FieldPatch::Set),
-            )
+            // `patch_field` borrows the map, so it runs HERE, against the map the
+            // closure owns — the patch cannot be built before the hop without
+            // threading a borrow across a `'static` boundary.
+            let body_patch = patch_field(&body, "body")?;
+            let spec_patch = patch_field(&body, "specPath")?;
+            let title_patch = match title.as_deref() {
+                Some(cleaned) => FieldPatch::Set(cleaned),
+                None => FieldPatch::Keep,
+            };
+            db.edit_task(&task_id, title_patch, body_patch, spec_patch)
+                .map_err(TasksError::from)
         })
         .await,
     )
@@ -866,8 +1030,13 @@ pub(crate) fn write_artifact_core(
 ///
 /// Answers `BoardError` (not the wire family) because it composes NO command-layer
 /// refusal — there is nothing here to add to the wire vocabulary — so the command
-/// reuses [`board_call`] like the fifteen other delegations do, and no extra
-/// flattener is invented for a read that has no opinions.
+/// reuses [`board_call`] like every other delegation whose storage layer answers
+/// `BoardError` and whose body adds no verdict of its own, and no extra flattener
+/// is invented for a read that has no opinions. (The count this sentence used to
+/// carry was stale the moment [`edit_task`] grew wire-only refusals; a helper's
+/// user-count is not something a doc comment can keep true, so the RULE is stated
+/// instead — which is the thing that actually decides which flattener a command
+/// belongs to.)
 pub(crate) fn get_artifact_core(
     db: &Db,
     task_id: &str,
