@@ -3016,27 +3016,39 @@ describe("resumeSession (history reload race)", () => {
     ]);
   });
 
-  it("duplicates a tool card when a session close finalizes it inside the load window (the third mutator ADR 0050 accepts)", async () => {
+  it("collapses a tool card to ONE failed card when a session close finalizes it inside the load window (the third mutator ADR 0050 accepts)", async () => {
     // The third mutator of the load window (ADR 0050's second consequence):
     // `handleSessionClosed` runs `finalizeSessionMessages`, which maps every
     // still-`pending` tool call to `failed`. Resume and then Pause/Close
     // before `loadHistory` resolves, and that card's `mergeDedupeKey`
     // (`tool-call|<id>|<title>|<status>` — content-inclusive, so `status` IS
     // part of the identity) changes in the window: the card is no longer "in
-    // the snapshot", it re-enters `added`, and the `reloadedKeys` gate cannot
-    // catch it either, because the persisted row still carries the status the
-    // WORKER last wrote (`pending` — the close is a frontend-only map, it
-    // never reaches the display store). So the same tool call lands TWICE.
+    // the snapshot", it re-enters `added`, and the `reloadedKeys` gate has to
+    // catch it on the reloaded row's key instead.
     //
-    // This is ADR 0050's decision APPLIED, not a defect to fix here: where
-    // identity cannot decide the merge KEEPS the message, because duplication
-    // beats loss. Verified before being pinned — the transcript below is what
-    // the merge actually produced (both cards present, one `pending` from the
-    // reloaded row and one `failed` from the finalized live copy; nothing
-    // dropped). The positional rule this branch replaced could not produce it
-    // — `slice(prior.length)` never re-selected a message that was already in
-    // the snapshot — so pinning it here is what stops a later "fix" dropping
-    // the finalized card instead.
+    // It does, so the duplicate this test used to pin no longer arises. #155
+    // split the status mapper and the HYDRATE path (`rowToMessages` →
+    // `mapPersistedStatus` in `src/lib/transcript/reducer.ts`) now maps an
+    // UNRESOLVED persisted status (`pending`, `in_progress`, or absent) to
+    // `failed` — matching `finalizeSessionMessages`, which already rules that
+    // an unresolved call is a dead one rather than a spinner that runs
+    // forever. The row on disk still carries what the WORKER last wrote
+    // (`pending` — the close is a frontend-only map, it never reaches the
+    // display store), but hydration reads it as `failed`, so BOTH copies of
+    // this call carry the same `mergeDedupeKey` (identity.ts),
+    // `reloadedKeys` catches the finalized live copy, and one card survives.
+    // This is the better outcome, not a lost pin: ADR 0050's rule — where
+    // identity cannot decide, KEEP the message — is untouched, it just no
+    // longer triggers here because identity CAN decide.
+    //
+    // The mutator class is NOT eliminated in general. `mergeDedupeKey` still
+    // carries `status`, so a live card whose status differs from the hydrated
+    // row's still duplicates: any case that leaves the two paths disagreeing
+    // about a settled status (or the title) re-opens the two-card outcome.
+    // That residual gap is the dedupe key's content-inclusiveness, not this
+    // merge. Pinning the collapsed single card here is what stops a later
+    // change from silently re-widening it — or from dropping the finalized
+    // card instead of collapsing it.
     useSessions.setState({
       activeSessionId: "s1",
       sessions: [
@@ -3072,7 +3084,8 @@ describe("resumeSession (history reload race)", () => {
     // Pause/Close INSIDE the window: the pending card becomes a failed one.
     useSessions.getState().handleSessionClosed("s1", "user");
     // The reload settles with the persisted rows — the tool-call row still
-    // reads `pending`, because nothing about a frontend close is persisted.
+    // reads `pending` ON DISK, because nothing about a frontend close is
+    // persisted; hydration is what turns it into `failed`.
     resolveRows([
       {
         id: 1,
@@ -3104,14 +3117,19 @@ describe("resumeSession (history reload race)", () => {
       },
     ]);
     await new Promise((r) => setTimeout(r, 0));
-    // TWO cards for one tool call: the reloaded row first, the finalized live
-    // copy appended after. Nothing else changed, and nothing was lost.
-    expect(useSessions.getState().messages.s1).toEqual([
+    // ONE card for one tool call — `failed`, hydrated from the reloaded row
+    // in its reloaded position; the finalized live copy collapsed into it.
+    // Nothing else changed, and nothing was lost.
+    const msgs = useSessions.getState().messages.s1;
+    expect(msgs).toHaveLength(3);
+    expect(msgs).toEqual([
       { kind: "user", text: "one", at: 1 },
       { kind: "agent-text", messageId: "a3f9c1:m1", text: "two", at: 2 },
-      { kind: "tool-call", id: "t1", title: "Read file", status: "pending", at: 2 },
       { kind: "tool-call", id: "t1", title: "Read file", status: "failed", at: 2 },
     ]);
+    // Explicitly: no second card, and no `pending` card left behind.
+    expect(msgs.filter((m) => m.kind === "tool-call")).toHaveLength(1);
+    expect(msgs.some((m) => m.kind === "tool-call" && m.status === "pending")).toBe(false);
   });
 
   it("keeps a tool call that ARRIVES in the window exactly once when the close finalizes it (the duplicate needs a lagging row, not the close alone)", async () => {
