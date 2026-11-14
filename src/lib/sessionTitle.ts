@@ -20,6 +20,18 @@ import type { Message } from "./sessionTypes";
  *
  * `""` is no title (the backend never writes one; a generated title is cleaned
  * to a non-empty string or not written at all).
+ *
+ * **The second arm does not need the transcript any more** (ADR 0073's
+ * amendment, issue #155). A Session's transcript is now released when the user
+ * navigates away from it, so `messages` is `undefined` for every Session the
+ * window is not currently showing — and eight surfaces label rows for Sessions
+ * they are not showing. Rather than let all eight fall to the folder name,
+ * `store/sessions.ts` carries this arm's ANSWER onto the `SessionInfo.title` of
+ * every list holding the id at the moment it releases the transcript, so the
+ * first arm supplies what the second arm used to. Read that as: `title` is the
+ * label the store holds, which is the naming pass's title when there is one and
+ * a carried first-prompt label when there is not. This function's own chain is
+ * unchanged, and so is its output.
  */
 export function titleFor(
   messages: Message[] | undefined,
@@ -27,7 +39,28 @@ export function titleFor(
   title?: string | null,
 ): string {
   if (title !== null && title !== undefined && title !== "") return title;
+  // `""` is NOT a label — the pre-existing behaviour is that an empty first
+  // user message falls through to the folder name, so the shared helper's
+  // `null` covers it.
+  return firstPromptLabelOf(messages) ?? spaceName;
+}
+
+/**
+ * The first arm's answer on its own: the first **user** message's text,
+ * truncated to 80 chars, or `null` when the transcript has none or its text is
+ * empty.
+ *
+ * It exists so the truncation rule has ONE owner. The store needs exactly this
+ * value at the moment it releases a transcript (see the note on `titleFor`), and
+ * a second copy of `slice(0, 80)` in `store/sessions.ts` is how two surfaces
+ * start naming one Session differently — the failure this module was extracted
+ * to prevent. A caller that has the label and not the transcript reads it back
+ * off `SessionInfo.title` through `lib/sessionLookup`'s walk.
+ */
+export function firstPromptLabelOf(
+  messages: readonly Message[] | undefined,
+): string | null {
   const firstUser = messages?.find((m) => m.kind === "user");
-  if (!firstUser || firstUser.text === "") return spaceName;
+  if (!firstUser || firstUser.text === "") return null;
   return firstUser.text.length > 80 ? firstUser.text.slice(0, 80) : firstUser.text;
 }
