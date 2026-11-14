@@ -22,6 +22,7 @@ import {
   type StopReason,
 } from "../lib/tauri";
 import { basenameOfPath } from "../lib/paths";
+import { firstPromptLabelOf } from "../lib/sessionTitle";
 import {
   mostRecentByRecency,
   sortByManualOrder,
@@ -72,9 +73,14 @@ export type { DiffRef, Message, ToolCallUiStatus } from "../lib/sessionTypes";
  * rows DO persist (`TranscriptPersister::apply` writes them with the
  * `is_subagent` flag), but `list_sessions` filters those rows out, so no surface
  * can re-open a closed child — while leaving the in-memory copy would keep every
- * child's transcript for the life of the window. MAIN sessions are untouched (the
- * guard below returns for any id with no `SubagentEntry`); a MAIN transcript is
- * kept — finalized by `handleSessionClosed` — for the history list.
+ * child's transcript for the life of the window. MAIN sessions are untouched by
+ * THIS function (the guard below returns for any id with no `SubagentEntry`); a
+ * MAIN transcript is finalized by `handleSessionClosed` so the transcript on
+ * screen survives the close — and it is RELEASED LATER, by
+ * `releaseUnseenTranscripts`, when the user navigates away (ADR 0073's
+ * amendment, issue #155). Two owners on purpose: `subagent-closed` is the only
+ * frame that names the end of a child, and a NAVIGATION is the only moment that
+ * knows which main sessions the user has left.
  */
 export function discardSessionMessages(sessionId: string): void {
   // ASSUMES the minted session ids (`mint_session_id` — `arch_<uuid v4>`,
@@ -144,6 +150,152 @@ export function clearSessionState(
     }
     return patch;
   };
+}
+
+/**
+ * Release the transcripts of every session the user has LEFT — ADR 0073's
+ * amendment, and the largest leak measured for issue #155. A MAIN session's
+ * transcript was previously released by NOTHING: `discardSessionMessages` above
+ * returns for any id with no `SubagentEntry`, and `handleSessionClosed` clears
+ * only the live-transcript flags, so every session opened in a window kept its
+ * full History window for the life of the window.
+ *
+ * WHAT IS KEPT, and why each arm is load-bearing:
+ *  - `keepSessionId` — the session being landed on. It is being LOOKED at, and
+ *    `handleSessionClosed` deliberately leaves a closed session DISPLAYED (a
+ *    pause, not a discard), so the id `activeSessionId` names is not by itself
+ *    evidence of anything; the CALLER names it.
+ *  - every LIVE session (`state.sessions`) — ADR 0073 rejected a sliding window
+ *    partly because "a streaming tail cannot be evicted". Scoping eviction to
+ *    non-live sessions is what answers that objection: a live session's tail is
+ *    exactly what this refuses to touch, and `resumeSession` reloads
+ *    unconditionally, so a session that comes back gets its transcript from the
+ *    database rather than from a window that was quietly thrown away.
+ *  - every id with `inTurn` set — the belt for a close that has not landed yet.
+ *    A non-live id holding `inTurn` is a race and not a state, and the cost of
+ *    being wrong in that direction is a transcript dropped out from under a
+ *    streaming session.
+ *  - every id a `SubagentEntry` names, AS CHILD OR AS PARENT — a child is never
+ *    in `sessions`, so liveness alone would not protect it, and three readers
+ *    reach across the session boundary by ID: `SubagentTranscript` reads the
+ *    child's own transcript AND the PARENT's (its progress fallback finds the
+ *    parent's `subagent` tool call), and `AskQuestionCard`'s anchoring scan runs
+ *    against the id its card is MOUNTED with, which for a child's gate is the
+ *    CHILD's id. A dismissed entry releases the pin — `useSubagents` evicts its
+ *    own oldest closed entries, so this cannot become a permanent hold.
+ *
+ * TWO FIELDS GO TOGETHER, and that is not tidiness. `history[id]` carries the
+ * scroll-back cursor (`oldestRowId` / `hasMore` / `generation` / `epoch`); leave
+ * it behind and a later `loadOlderHistory` prepends older rows into an EMPTY
+ * array — a transcript whose head and tail are two disjoint pieces of the
+ * conversation with everything between them missing. Deleting both means the
+ * first guard of `loadOlderHistory` (`!sessionHistory`) simply refuses, and
+ * `openSession` re-arms a fresh TAIL window on the way back in.
+ *
+ * RECENCY IS SALVAGED BEFORE THE WINDOW GOES. `lib/sessionRecency`'s rule is
+ * that the transcript is the FRESHER of two evidences and the boot
+ * `sessionRecency` map the fallback, and the sidebar's row time and the Landing
+ * Session both read through it. A Session STARTED this boot has no boot entry at
+ * all, so dropping its transcript without more notice would make its row lose
+ * its timestamp the moment the user navigated away from it — a visible
+ * regression traded for an invisible leak. So the last message's `at` is folded
+ * into the map (newer-wins, never older) on the way out. The map stays a
+ * snapshot of "every non-subagent session as of now"; it just learns about the
+ * sessions this window has watched.
+ *
+ * THE LABEL IS SALVAGED TOO, and this is the `titleFor` decision ADR 0073's
+ * amendment records. `titleFor`'s second arm — the first user message truncated
+ * to 80 chars — was already documented as seeing only the window; eviction makes
+ * it see NOTHING, and eight surfaces label rows for Sessions they are not
+ * showing, so an unhandled version of this degrades every untitled Session in
+ * the sidebar, the tab strip's close-confirm, Settings → Detached, the Task
+ * detail dialog and the side pane to a folder name at once. A twelfth
+ * session-keyed map is forbidden by the `SESSION_KEYED_FIELDS` pin, so the label
+ * goes where `costUsd` and `contextUsage` already go: onto the `SessionInfo` row
+ * of every list holding the id, and `lib/sessionLookup`'s walk — which those
+ * surfaces already use for `title` — finds it there with no new subscription.
+ * A generated title always wins (the write is skipped when the row already
+ * carries one), and the naming pass's `session-titled` push and
+ * `mergeRefreshedSessionRows` overwrite it exactly as they overwrite a real one,
+ * so a carried label never outlives the title it stands in for.
+ *
+ * Returns the state UNCHANGED (identity) when there is nothing to release, so a
+ * navigation that evicts nothing costs no re-render.
+ */
+export function releaseUnseenTranscripts(
+  keepSessionId: string | null | undefined,
+): void {
+  // Read OUTSIDE the updater, the way `discardSessionMessages` reads
+  // `useSubagents`: a cross-store read inside a `set` callback would make the
+  // updater depend on when it happens to run.
+  const entries = useSubagents.getState().entries;
+  useSessions.setState((state) => {
+    const keep = new Set<string>();
+    if (keepSessionId) keep.add(keepSessionId);
+    for (const session of state.sessions) keep.add(session.sessionId);
+    for (const [sessionId, inTurn] of Object.entries(state.inTurn)) {
+      if (inTurn) keep.add(sessionId);
+    }
+    for (const entry of Object.values(entries)) {
+      keep.add(entry.sessionId);
+      keep.add(entry.parentSessionId);
+    }
+
+    const messages = { ...state.messages };
+    const history = { ...state.history };
+    const recency = { ...state.sessionRecency };
+    // The label each released id loses with its transcript, keyed for the row
+    // rewrite below. Only ids that actually LOSE an arm get an entry.
+    const carriedLabels = new Map<string, string>();
+    let released = false;
+    for (const sessionId of new Set([...Object.keys(messages), ...Object.keys(history)])) {
+      if (keep.has(sessionId)) continue;
+      // Salvage the recency stamp the transcript was carrying, BEFORE the
+      // transcript goes (`recencyOf` reads the LAST message's `at`).
+      const transcript = messages[sessionId];
+      const last = transcript?.[transcript.length - 1];
+      if (last !== undefined) {
+        const known = recency[sessionId];
+        if (known === undefined || last.at > known) recency[sessionId] = last.at;
+      }
+      // Salvage the label the same way (`titleFor`'s second arm — see the note
+      // on this function). Read from the transcript, not from a row: the row is
+      // what this writes, and the row's own `title` is the FIRST arm.
+      const label = firstPromptLabelOf(transcript);
+      if (label !== null) carriedLabels.set(sessionId, label);
+      delete messages[sessionId];
+      delete history[sessionId];
+      released = true;
+    }
+    if (!released) return state;
+    // Carry the labels onto the rows. A list that holds none of the released ids
+    // keeps its SAME array (the `titleSession` precedent — a fresh array would
+    // re-render every sidebar row on every navigation), and a row that already
+    // carries a GENERATED title is left byte-for-byte alone: the naming pass's
+    // title is arm one and this is only ever arm two.
+    const carry = (rows: SessionInfo[]): SessionInfo[] =>
+      rows.some((s) => {
+        const label = carriedLabels.get(s.sessionId);
+        return label !== undefined && (s.title ?? "") === "";
+      })
+        ? rows.map((s) => {
+            const label = carriedLabels.get(s.sessionId);
+            return label === undefined || (s.title ?? "") !== ""
+              ? s
+              : { ...s, title: label };
+          })
+        : rows;
+    return {
+      messages,
+      history,
+      sessionRecency: recency,
+      // The TWO stored lists only. A released id is by construction not in
+      // `state.sessions` — every live id is in `keep` — so a third `carry` there
+      // would be a walk that cannot match, and would read as an unfinished arm.
+      historySessions: carry(state.historySessions),
+      archivedSessions: carry(state.archivedSessions),
+    };
+  });
 }
 
 /**
@@ -603,7 +755,15 @@ export interface SessionsState {
   sessionOrder: Record<string, number>;
   /** Replace BOTH maps from `sessionRecency()`'s rows (boot, alongside `setHistorySessions`). ONE call, ONE IPC round-trip's payload: the two maps must never be observable out of step. */
   setSessionRecency: (rows: SessionRecency[]) => void;
-  /** Transcript per session id. Kept after close for history. */
+  /**
+   * Transcript per session id — a **window**, and now a **released** one. Kept
+   * after close so the transcript on screen survives the pause, and released by
+   * `releaseUnseenTranscripts` when a navigation leaves the session behind
+   * (ADR 0073's amendment, issue #155): only the active, live, gate-pinned and
+   * Subagent-named sessions hold a transcript at any moment. `undefined` here
+   * therefore means "not loaded", NOT "empty" — read the length, and read
+   * `history[id]` alongside it, before concluding a session has no transcript.
+   */
   messages: Record<string, Message[]>;
   /** Config options per session id. */
   configOptions: Record<string, SessionConfigOption[]>;
@@ -630,7 +790,13 @@ export interface SessionsState {
    * `isStaleCompactionStart`, or the lock would come straight back.
    */
   compacting: Record<string, CompactionReason | undefined>;
-  /** History pagination window state per session id (ADR 0073). */
+  /**
+   * The history pagination window state per session id (ADR 0073) — released
+   * WITH its transcript, never on its own (ADR 0073's amendment, issue #155).
+   * An absent entry means "no window", and `loadOlderHistory` refuses on it,
+   * which is the load-bearing half: a cursor whose rows have been released would
+   * prepend older rows into an empty array.
+   */
   history: Record<
     string,
     {
@@ -660,6 +826,16 @@ export interface SessionsState {
   markStalled: (sessionId: string, at: number, crashLog: string | null) => void;
 
   addSession: (info: SessionInfo) => void;
+  /**
+   * Point the view at a session — and NOTHING else. A bare
+   * `set({ activeSessionId })`: no Space is resolved, no transcript is loaded,
+   * and deliberately no transcript is released. It is not a navigation (ADR
+   * 0073's amendment names `openSession` and `selectSpace` as the release
+   * owners precisely because both of those know where the user is going), and
+   * component tests call it directly, several times, into files that only
+   * sometimes mock `loadHistory` — hanging eviction here would fire real
+   * history fetches from tests that never asked for one.
+   */
   setActiveSession: (sessionId: string | null) => void;
   /**
    * Select a Space (the tab click): it becomes `activeSpacePath` and its
@@ -673,6 +849,13 @@ export interface SessionsState {
    * sticky membership, which landing on an archived row does not disturb). It
    * exists because an archived-only Space is not an empty Space (issue #185).
    * A no-op for an unknown path.
+   *
+   * A NAVIGATION, and the SECOND owner of transcript release: a tab click frees
+   * the `messages` + `history` of every session it leaves behind that is not
+   * live, not in a turn and not named by a `SubagentEntry` — including the
+   * arm where the Space has NO session of its own, where `openSession` is never
+   * reached and the chat's empty state is exactly the surface with no transcript
+   * on screen (ADR 0073's amendment, issue #155).
    */
   selectSpace: (path: string) => void;
   /**
@@ -851,6 +1034,15 @@ export interface SessionsState {
   /**
    * Open a session (live or stored). For a stored session whose transcript
    * is not loaded yet, fetch its history first.
+   *
+   * A NAVIGATION, and one of the two owners of transcript release: it frees the
+   * `messages` + `history` of every session it leaves behind that is not live,
+   * not in a turn, not named by a `SubagentEntry`, and not the id being opened
+   * (ADR 0073's amendment, issue #155 — see `releaseUnseenTranscripts`). That is
+   * why the reload guard below is a LOADED test and not an absence test: an
+   * evicted id's `messages` entry can be re-created as `[]` by a late
+   * `session-closed` or an `addUserMessage`, and an absence guard short-circuits
+   * on a truthy `[]` forever — a blank transcript, permanently.
    */
   openSession: (sessionId: string) => void;
   /** Delete a stored session (command + local cleanup). */
@@ -1287,6 +1479,15 @@ export const useSessions = create<SessionsState>((set, get) => ({
     );
     const id = live ?? stored ?? archived;
     set({ activeSpacePath: path, activeSessionId: id });
+    // A tab click is a NAVIGATION, so it owns the release too (ADR 0073's
+    // amendment, issue #155). It runs HERE and not only inside `openSession`
+    // because of the `id === null` arm: a Space with no Session of its own never
+    // reaches `openSession`, and the chat's empty state is precisely the surface
+    // with NO transcript on screen — leaving the sweep to `openSession` would
+    // keep every transcript the user has left mounted while showing none of
+    // them. It runs AFTER the recency reads above, which are what the sweep's
+    // salvage must not disturb.
+    releaseUnseenTranscripts(id);
     // Load the opened session's transcript (a no-op when already loaded —
     // `openSession` self-guards a mid-flight switch too).
     if (id) get().openSession(id);
@@ -1872,7 +2073,49 @@ export const useSessions = create<SessionsState>((set, get) => ({
       activeSessionId: sessionId,
       ...(owner ? { activeSpacePath: owner.path } : {}),
     });
-    if (state.messages[sessionId]) return; // already loaded
+    // ADR 0073's amendment (issue #155): this is a NAVIGATION, so it owns
+    // releasing the transcripts of the sessions it left behind. It runs BEFORE
+    // the loaded guard below on purpose — the sweep keeps `sessionId`, so the
+    // guard's read of it is unaffected, and a navigation to an ALREADY-LOADED
+    // session still leaves something else behind. Deliberately NOT here:
+    // `setActiveSession` (a bare `set({ activeSessionId })` with no navigation
+    // semantics — component tests call it directly, several times, into a file
+    // that only sometimes mocks `loadHistory`) and `handleSessionClosed` (whose
+    // allowed write-set subset is pinned by its own test).
+    releaseUnseenTranscripts(sessionId);
+    // A LIVE session's transcript is owned by its FRAMES, not by a history page.
+    // Eviction never releases a live id (see `releaseUnseenTranscripts`), so
+    // there is nothing here to reload — and writing a page over a streaming tail
+    // would drop the partial message no row holds yet. This is byte-for-byte the
+    // pre-existing behaviour for a live id (`addSession` seeds
+    // `messages[id] = []`, so the old absence guard always returned here), now
+    // spelled as a LIVENESS test instead of left to an array a navigation can
+    // delete.
+    if (state.sessions.some((s) => s.sessionId === sessionId)) return;
+    // A LOADED test, not an absence test — and TWO signals, because one is not
+    // enough. `messages[id]` is re-created by paths that survive an eviction and
+    // none of them means "the transcript is here":
+    //  - `handleSessionClosed` writes `finalizeSessionMessages(state.messages[id]
+    //    ?? [])` → `[]`, and `[]` is TRUTHY, so an absence guard short-circuits on
+    //    it forever: evict, let a late `session-closed` land, re-open, and the
+    //    transcript is blank permanently;
+    //  - `addUserMessage` spreads `state.messages[id] ?? []` and appends, so a
+    //    message that lands on an evicted id gives it ONE row — a length test
+    //    alone reads that as loaded and the session re-opens showing one message
+    //    and none of its history.
+    // `history[id]` is the signal that cannot lie, because eviction owns it:
+    // `releaseUnseenTranscripts` deletes the window and its cursor TOGETHER (the
+    // stale-cursor trap), and every path that genuinely LOADS a stored
+    // transcript — `openSession`, `resumeSession` — writes both. So "loaded"
+    // means the cursor is there AND rows are under it. A genuinely empty session
+    // re-fetches once per navigation, which is the honest answer anyway (its rows
+    // are in the database; the store just holds none of them).
+    if (
+      state.history[sessionId] !== undefined &&
+      (state.messages[sessionId]?.length ?? 0) > 0
+    ) {
+      return; // already loaded
+    }
     void (async () => {
       try {
         const page = await loadHistory(sessionId, { limit: INITIAL_HISTORY_PAGE });

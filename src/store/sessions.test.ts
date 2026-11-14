@@ -54,6 +54,11 @@ import type {
   SpaceRow,
 } from "../lib/tauri";
 import type { RecencyEvidence } from "../lib/sessionRecency";
+import { recencyOf } from "../lib/sessionRecency";
+// The label rule the eviction's salvage writes into `SessionInfo.title` — read
+// back through the SAME function the eight labelling surfaces call, so the
+// eviction test asserts the label the surface will actually print.
+import { titleFor } from "../lib/sessionTitle";
 
 vi.mock("../lib/tauri", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("../lib/tauri");
@@ -1307,7 +1312,20 @@ describe("discardSessionMessages (ephemeral subagent cleanup)", () => {
     );
   });
 
-  it("is a no-op for a main session id (no subagent entry)", () => {
+  it("is a no-op for a main session id (no subagent entry) — and that is now a NARROWER promise than it reads", () => {
+    // RE-AIMED, NOT DELETED (issue #155, ADR 0073's amendment). The behaviour
+    // this pins is unchanged and MUST stay unchanged: this function's guard is
+    // "is there a `SubagentEntry`", and a main id never has one, so a main
+    // transcript is never freed HERE. What changed is what the surrounding
+    // prose used to claim — that a MAIN transcript is therefore kept for the
+    // life of the window. It is no longer kept forever: `openSession` /
+    // `selectSpace` release the transcripts of the sessions the user has left,
+    // through `releaseUnseenTranscripts`. So the honest reading of this test is
+    // a DIVISION OF LABOUR, not a retention guarantee — the CHILD's cleanup
+    // routes through this function, the MAIN session's through the navigation
+    // sweep, and neither may be folded into the other (this one fires from
+    // `subagent-closed`, which names only children; that one fires from a
+    // navigation, which is the only moment that knows what the user left).
     const main: Message[] = [{ kind: "user", text: "hello", at: 1 }];
     useSessions.setState({ messages: { main1: main } });
     discardSessionMessages("main1");
@@ -4117,7 +4135,26 @@ describe("closeSpace (closing a Space TAB — the tab bar's ×)", () => {
     // NOT merely the path: the user is looking at the neighbour's conversation,
     // exactly as if they had clicked its tab.
     expect(s.activeSessionId).toBe("live-b");
-    expect(loadHistory).toHaveBeenCalledWith("live-b", { limit: 500 });
+    // RE-AIMED (issue #155, ADR 0073's amendment). This used to assert
+    // `loadHistory("live-b", { limit: 500 })`, and that assertion held only
+    // because the fixture seeded `sessions` WITHOUT a `messages` entry — a store
+    // shape the app cannot produce. A live Session reaches `sessions` only via
+    // `addSession` (which seeds `messages[id] = []`) or `resumeSession` (which
+    // reloads), so pre-change the guard's absence test ALREADY returned for
+    // every live id and no page was ever fetched over one. `openSession` now
+    // says that out loud as a liveness test, because an absence test cannot
+    // survive transcript eviction. The landing is still real — the pointer and
+    // the Space both move — and a live landing Session's transcript is its
+    // FRAMES, not a history page: fetching one over a live tail would drop the
+    // partial message no row holds yet. The fetched-landing arm is pinned by
+    // `closeSpace onto an archived-only neighbour lands on its most recent
+    // archived Session`, which lands on a non-live id and still asserts the
+    // call.
+    expect(loadHistory).not.toHaveBeenCalled();
+    // And the closed Space's own transcript is released by the navigation
+    // (`live-a` is live, so the sweep keeps it — the release belongs to
+    // `handleSessionClosed`'s caller, not to a close that never ran).
+    expect(s.sessions.map((x) => x.sessionId)).toContain("live-a");
   });
 
   it("closing a tab you are NOT looking at leaves the view alone", async () => {
@@ -5211,6 +5248,640 @@ describe("history window and pagination (ADR 0073)", () => {
     ]);
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+});
+
+describe("transcript eviction on navigation (ADR 0073 amendment, issue #155)", () => {
+  // WHY THIS BLOCK CALLS `resetStores()` ON BOTH SIDES. Every case here reads
+  // `Object.keys(messages)` / asserts a key is ABSENT, which is a residue
+  // assertion — and this file's neighbouring blocks (`history window and
+  // pagination`, `discardSessionMessages`, `resumeSession`, `archivedSessions`,
+  // `closeSpace`, `views`) hand-write PARTIAL `setState` lists and never reset,
+  // so a transcript any of them leaves behind would either masquerade as "the
+  // eviction missed one" or, worse, fill the very key this block asserts gone.
+  // `resetStores()` installs zustand's captured initial state wholesale (it does
+  // NOT merge), so neither direction can leak. Its documented blind spot — the
+  // four module-`let`s of `sessions.ts` (`inFlightToggles`, `committedTrusted`,
+  // `newSessionInFlight`, `clientMessageSeq`) — is not read by eviction.
+  beforeEach(() => {
+    resetStores();
+    // Re-arm the DEFAULT page rather than only clearing calls: an unconsumed
+    // `…Once` arm from a test whose assertion threw would otherwise answer the
+    // first fetch of THIS test with someone else's rows.
+    vi.mocked(loadHistory).mockClear();
+    vi.mocked(loadHistory).mockResolvedValue({ rows: [], hasMore: false, todos: null });
+  });
+  afterEach(() => resetStores());
+
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const userRow = (id: number, text: string): MessageRow =>
+    msgRow({ id, kind: "user", payloadJson: JSON.stringify({ text }) });
+  const windowOf = (
+    oldestRowId: number,
+  ): SessionsState["history"][string] => ({
+    oldestRowId,
+    hasMore: true,
+    loadingMore: false,
+    generation: 1,
+    epoch: 0,
+  });
+
+  /**
+   * Two CLOSED (stored, non-live) main sessions of one Space, each with a
+   * loaded window, the user parked on `left`. This is the exact shape the leak
+   * measured: a main session's transcript outliving the session it belongs to,
+   * because nothing but `discardSessionMessages` ever deleted a `messages` key
+   * and that function returns for any id with no `SubagentEntry`.
+   */
+  const seedTwoClosed = (): void => {
+    useSessions.setState({
+      spaces: [row("/x", 1000)],
+      historySessions: [info("left", "/x"), info("next", "/x")],
+      activeSessionId: "left",
+      activeSpacePath: "/x",
+      messages: {
+        left: [{ kind: "user", text: "the left transcript", at: 10 }],
+        next: [{ kind: "user", text: "the next transcript", at: 20 }],
+      },
+      history: { left: windowOf(10), next: windowOf(20) },
+    });
+  };
+
+  // (a) ---------------------------------------------------------------------
+  it("navigating away from a CLOSED, non-active main session drops its transcript AND its history window", async () => {
+    seedTwoClosed();
+
+    useSessions.getState().openSession("next");
+    await tick();
+
+    const st = useSessions.getState();
+    expect(st.activeSessionId).toBe("next");
+    // BOTH keys, in the same write. `messages` alone would leave `history`'s
+    // `oldestRowId` / `hasMore` / `generation` behind pointing at rows no longer
+    // in the array — the stale-cursor trap (see the block doc): a later
+    // `loadOlderHistory` would prepend older rows into an EMPTY window.
+    expect(st.messages).not.toHaveProperty("left");
+    expect(st.history).not.toHaveProperty("left");
+    // The session the user landed on is untouched.
+    expect(st.messages["next"]).toHaveLength(1);
+    expect(st.history["next"]).toEqual(windowOf(20));
+  });
+
+  it("a twelve-session walk retains ONE transcript, not twelve (the measured leak)", async () => {
+    // The acceptance criterion in the shape the DB measurement had: open twelve
+    // stored sessions in a row. Each transcript is pre-loaded so `openSession`
+    // short-circuits its own fetch — this pins RETENTION, not fetching.
+    const ids = Array.from({ length: 12 }, (_, i) => `s${i}`);
+    useSessions.setState({
+      spaces: [row("/x", 1000)],
+      historySessions: ids.map((id) => info(id, "/x")),
+      activeSessionId: null,
+      activeSpacePath: "/x",
+      messages: Object.fromEntries(
+        ids.map((id) => [[id], [{ kind: "user" as const, text: id, at: 1 }]]),
+      ),
+      history: Object.fromEntries(ids.map((id) => [[id], windowOf(1)])),
+    });
+
+    for (const id of ids) {
+      useSessions.getState().openSession(id);
+      await tick();
+    }
+
+    const st = useSessions.getState();
+    expect(Object.keys(st.messages)).toEqual(["s11"]);
+    expect(Object.keys(st.history)).toEqual(["s11"]);
+  });
+
+  // (b) ---------------------------------------------------------------------
+  it("re-opening an evicted session reloads it through loadHistory with a fresh tail window", async () => {
+    seedTwoClosed();
+    useSessions.getState().openSession("next");
+    await tick();
+    vi.mocked(loadHistory).mockClear();
+    vi.mocked(loadHistory).mockResolvedValueOnce({
+      rows: [userRow(7, "reloaded"), userRow(8, "reloaded tail")],
+      hasMore: true,
+      todos: null,
+    });
+
+    useSessions.getState().openSession("left");
+    await tick();
+
+    // The reload is a TAIL page, not a continuation of the old cursor: the
+    // evicted window's `oldestRowId` is gone with it, so there is nothing to
+    // resume from and nothing to resume INTO.
+    expect(loadHistory).toHaveBeenCalledWith("left", { limit: INITIAL_HISTORY_PAGE });
+    const st = useSessions.getState();
+    expect(st.messages["left"]).toHaveLength(2);
+    expect(st.history["left"]).toEqual({
+      oldestRowId: 7,
+      hasMore: true,
+      loadingMore: false,
+      generation: 1,
+      epoch: 0,
+    });
+  });
+
+  // (c) ---------------------------------------------------------------------
+  it("never evicts a LIVE session — a streaming tail is untouchable (ADR 0073's rejected sliding window, answered)", async () => {
+    // ADR 0073 rejected a sliding window partly because "a streaming tail cannot
+    // be evicted". Scoping eviction to non-live sessions is what answers that
+    // objection, so the guard is pinned rather than assumed: `left` is the
+    // session the user navigated AWAY from, and it is still live.
+    seedTwoClosed();
+    useSessions.setState({
+      sessions: [info("left", "/x")],
+      inTurn: { left: true },
+      messages: {
+        ...useSessions.getState().messages,
+        left: [
+          { kind: "user", text: "the left transcript", at: 10 },
+          { kind: "agent-text", messageId: "m1", text: "streaming…", at: 11 },
+        ],
+      },
+    });
+
+    useSessions.getState().openSession("next");
+    await tick();
+
+    const st = useSessions.getState();
+    expect(st.messages["left"]).toHaveLength(2);
+    expect(st.history["left"]).toEqual(windowOf(10));
+  });
+
+  it("never evicts a LIVE-but-IDLE session either (liveness, not `inTurn`, is the guard)", async () => {
+    // A live session with no turn in flight is still a Worker that can receive
+    // frames at any moment, and `applySessionUpdate` writes
+    // `messages[id] ?? []` — an evicted live session would resume its
+    // transcript from an empty array while its rows stay in the database.
+    seedTwoClosed();
+    useSessions.setState({ sessions: [info("left", "/x")], inTurn: {} });
+
+    useSessions.getState().openSession("next");
+    await tick();
+
+    expect(useSessions.getState().messages["left"]).toHaveLength(1);
+    expect(useSessions.getState().history["left"]).toEqual(windowOf(10));
+  });
+
+  it("never evicts a session whose turn flag is still set (the belt for a close that has not landed)", async () => {
+    // `handleSessionClosed` clears `inTurn`, so a non-live id with `inTurn` set
+    // is a race and not a state — but the cost of being wrong about it is a
+    // transcript dropped out from under a streaming session, so the belt is
+    // pinned.
+    seedTwoClosed();
+    useSessions.setState({ inTurn: { left: true } });
+
+    useSessions.getState().openSession("next");
+    await tick();
+
+    expect(useSessions.getState().messages["left"]).toHaveLength(1);
+  });
+
+  it("never evicts a session a SubagentEntry still names — as a CHILD or as a PARENT", async () => {
+    // Three readers of the table ADR 0073 exists to protect reach across this
+    // edge by SESSION ID, not by liveness: `SubagentTranscript` reads the
+    // child's own transcript AND the PARENT's (`.find(m => m.title ===
+    // "subagent")` — the progress fallback), and `AskQuestionCard`'s anchoring
+    // scan reads the id the gate's card is mounted with, which for a child is
+    // the CHILD's id. A child is never in `sessions`, so liveness alone would
+    // not protect it.
+    seedTwoClosed();
+    useSubagents.getState().addSession({
+      sessionId: "child",
+      parentSessionId: "left",
+      agentName: "reviewer",
+      task: "review the diff",
+      status: "running",
+    });
+    useSessions.setState((st) => ({
+      messages: {
+        ...st.messages,
+        child: [{ kind: "agent-text", messageId: "c1", text: "child tail", at: 30 }],
+      },
+    }));
+
+    useSessions.getState().openSession("next");
+    await tick();
+
+    const st = useSessions.getState();
+    expect(st.messages["left"]).toHaveLength(1); // the parent (progress fallback)
+    expect(st.messages["child"]).toHaveLength(1); // the child (its own sheet/gate)
+  });
+
+  it("evicts a closed session once no SubagentEntry names it any more", async () => {
+    // The mirror of the case above, so the guard cannot become a permanent pin:
+    // `useSubagents` evicts its own oldest closed entries, and when the last
+    // entry naming a parent is gone the parent's transcript goes on the next
+    // navigation.
+    seedTwoClosed();
+    useSubagents.getState().addSession({
+      sessionId: "child",
+      parentSessionId: "left",
+      agentName: "reviewer",
+      task: "review the diff",
+      status: "running",
+    });
+    useSubagents.getState().dismiss("child");
+
+    useSessions.getState().openSession("next");
+    await tick();
+
+    expect(useSessions.getState().messages).not.toHaveProperty("left");
+  });
+
+  // (d) ---------------------------------------------------------------------
+  it("after an eviction there is NO cursor left to prepend into (the stale-cursor trap)", async () => {
+    seedTwoClosed();
+    useSessions.getState().openSession("next");
+    await tick();
+    vi.mocked(loadHistory).mockClear();
+
+    await useSessions.getState().loadOlderHistory("left");
+
+    // `history.left` is gone with `messages.left`, so the very first guard of
+    // `loadOlderHistory` (`!sessionHistory`) refuses: no `beforeId` fetch, and
+    // therefore no older rows prepended into an empty array.
+    expect(loadHistory).not.toHaveBeenCalled();
+    expect(useSessions.getState().messages).not.toHaveProperty("left");
+  });
+
+  it("an older-page fetch already in flight when the eviction lands is DROPPED, not prepended into a gap", async () => {
+    let resolveOlder: (page: HistoryPage) => void = () => {};
+    vi.mocked(loadHistory).mockImplementationOnce(
+      () => new Promise<HistoryPage>((r) => (resolveOlder = r)),
+    );
+    seedTwoClosed();
+    // NOT awaited: the fetch is the thing held open, so awaiting it here would
+    // wait for the resolve several lines below.
+    const olderInFlight = useSessions.getState().loadOlderHistory("left");
+    expect(useSessions.getState().history["left"]?.loadingMore).toBe(true);
+
+    useSessions.getState().openSession("next");
+    await tick();
+    resolveOlder({ rows: [userRow(3, "older")], hasMore: false, todos: null });
+    await olderInFlight;
+
+    const st = useSessions.getState();
+    // The page's `set` callback finds no `history.left` and bails — the shape
+    // that would otherwise put an older row at the head of a transcript whose
+    // tail it never saw.
+    expect(st.messages).not.toHaveProperty("left");
+    expect(st.history).not.toHaveProperty("left");
+  });
+
+  // (e) — the empty-array wedge --------------------------------------------
+  it("a late session-closed after an eviction does NOT wedge the transcript at [] (trap 2)", async () => {
+    seedTwoClosed();
+    useSessions.getState().openSession("next");
+    await tick();
+    expect(useSessions.getState().messages).not.toHaveProperty("left");
+
+    // The late `session-closed` for the session the user already left. Its
+    // retained-write arm writes `finalizeSessionMessages(state.messages[id] ??
+    // [])` — so it RE-CREATES `messages.left` as `[]`. `[]` is truthy, so an
+    // absence TEST in `openSession`'s guard short-circuits on it forever and the
+    // session never reloads: a blank transcript, permanently.
+    useSessions.getState().handleSessionClosed("left", "user");
+    expect(useSessions.getState().messages["left"]).toEqual([]);
+
+    vi.mocked(loadHistory).mockResolvedValueOnce({
+      rows: [userRow(9, "back from the wedge")],
+      hasMore: false,
+      todos: null,
+    });
+    useSessions.getState().openSession("left");
+    await tick();
+
+    expect(loadHistory).toHaveBeenCalledWith("left", { limit: INITIAL_HISTORY_PAGE });
+    expect(useSessions.getState().messages["left"]).toEqual([
+      { kind: "user", text: "back from the wedge", at: 1000 },
+    ]);
+  });
+
+  it("an addUserMessage that lands after an eviction does NOT wedge the transcript either (trap 2, second writer)", async () => {
+    // The other re-creator of the empty array: `addUserMessage` spreads
+    // `state.messages[sessionId] ?? []`. Same wedge, different door — pinned
+    // separately so a guard written against one of the two writers fails here.
+    seedTwoClosed();
+    useSessions.getState().openSession("next");
+    await tick();
+    useSessions.getState().addUserMessage("left", "typed into a left session");
+
+    vi.mocked(loadHistory).mockResolvedValueOnce({
+      rows: [userRow(9, "the real transcript")],
+      hasMore: false,
+      todos: null,
+    });
+    useSessions.getState().openSession("left");
+    await tick();
+
+    expect(loadHistory).toHaveBeenCalledWith("left", { limit: INITIAL_HISTORY_PAGE });
+    expect(useSessions.getState().messages["left"] ?? []).toHaveLength(1);
+    expect(useSessions.getState().messages["left"]?.[0]).toMatchObject({
+      text: "the real transcript",
+    });
+  });
+
+  it("carries the first-prompt LABEL onto the row before the transcript goes (the titleFor decision)", async () => {
+    // The eight-surface degradation ADR 0073's amendment records is closed HERE,
+    // not by accepting a folder-name fallback: `titleFor`'s second arm read the
+    // first user message out of `messages`, and after an eviction there is no
+    // `messages` to read. So the answer to that arm is written onto the row's
+    // `title` — the field `lib/sessionLookup`'s walk already reads for the
+    // sidebar row, the tab strip's confirm, Settings → Detached, the Task detail
+    // dialog and the side pane. A twelfth session-keyed map is forbidden by the
+    // `SESSION_KEYED_FIELDS` pin, which is why this rides on the row.
+    useSessions.setState({
+      spaces: [row("/x", 1000)],
+      historySessions: [info("left", "/x"), info("next", "/x")],
+      activeSessionId: "left",
+      activeSpacePath: "/x",
+      messages: {
+        left: [
+          {
+            kind: "user",
+            text: `Refactor the auth middleware ${"x".repeat(90)}`,
+            at: 10,
+          },
+        ],
+        next: [{ kind: "user", text: "next", at: 20 }],
+      },
+      history: { left: windowOf(10), next: windowOf(20) },
+    });
+
+    useSessions.getState().openSession("next");
+    await tick();
+
+    const st = useSessions.getState();
+    expect(st.messages).not.toHaveProperty("left");
+    const leftRow = st.historySessions.find((s) => s.sessionId === "left");
+    // Truncated by the SAME function `titleFor` uses (one owner for the 80-char
+    // rule), so the row cannot label itself differently from the way the
+    // transcript used to.
+    expect(leftRow?.title).toBe(
+      `Refactor the auth middleware ${"x".repeat(90)}`.slice(0, 80),
+    );
+    // And `titleFor` lands on its FIRST arm for a session with no transcript at
+    // all, which is the whole point: the label survives, the window does not.
+    expect(titleFor(undefined, "x", leftRow?.title)).toBe(leftRow?.title);
+  });
+
+  it("never overwrites a GENERATED title with a carried label", async () => {
+    // ADR 0037/0086's naming pass is arm ONE of the label rule. A carried
+    // arm-two label must not displace it, and must not survive it either.
+    useSessions.setState({
+      spaces: [row("/x", 1000)],
+      historySessions: [
+        { ...info("left", "/x"), title: "Porting the session namer" },
+        info("next", "/x"),
+      ],
+      activeSessionId: "left",
+      activeSpacePath: "/x",
+      messages: {
+        left: [{ kind: "user", text: "the first prompt", at: 10 }],
+        next: [{ kind: "user", text: "next", at: 20 }],
+      },
+      history: { left: windowOf(10), next: windowOf(20) },
+    });
+
+    useSessions.getState().openSession("next");
+    await tick();
+
+    const st = useSessions.getState();
+    expect(st.messages).not.toHaveProperty("left");
+    expect(
+      st.historySessions.find((s) => s.sessionId === "left")?.title,
+    ).toBe("Porting the session namer");
+  });
+
+  it("salvages the RECENCY stamp the transcript was carrying, so the row keeps its time", async () => {
+    // `recencyOf` reads the LAST message's `at` and falls back to the boot map.
+    // A Session STARTED this boot has NO boot entry, so releasing its transcript
+    // silently would strip its row's timestamp — a visible regression bought for
+    // an invisible leak. The salvage is newer-wins, never older.
+    const now = Date.now();
+    useSessions.setState({
+      spaces: [row("/x", 1000)],
+      historySessions: [info("left", "/x"), info("next", "/x")],
+      activeSessionId: "left",
+      activeSpacePath: "/x",
+      sessionRecency: { left: now - 10 * 60_000 },
+      messages: {
+        left: [
+          { kind: "user", text: "left", at: now - 10 * 60_000 },
+          { kind: "user", text: "the newest turn", at: now - 60_000 },
+        ],
+        next: [{ kind: "user", text: "next", at: 20 }],
+      },
+      history: { left: windowOf(10), next: windowOf(20) },
+    });
+
+    useSessions.getState().openSession("next");
+    await tick();
+
+    const st = useSessions.getState();
+    expect(st.messages).not.toHaveProperty("left");
+    // The newer stamp replaced the older boot one — the row prints the same
+    // stamp the transcript was making it print a moment earlier.
+    expect(recencyOf("left", st.messages["left"], st.sessionRecency)).toBe(
+      now - 60_000,
+    );
+  });
+
+  it("keeps an OLDER boot stamp over a transcript whose last message predates it", async () => {
+    // Newer-wins, not last-write-wins: the boot map is a snapshot of "every
+    // non-subagent session as of now" (ADR 0075), and a window whose tail is
+    // older than that snapshot proves nothing NEW — it must not drag the row's
+    // recency BACKWARDS.
+    const now = Date.now();
+    useSessions.setState({
+      spaces: [row("/x", 1000)],
+      historySessions: [info("left", "/x"), info("next", "/x")],
+      activeSessionId: "left",
+      activeSpacePath: "/x",
+      sessionRecency: { left: now },
+      messages: {
+        left: [{ kind: "user", text: "left", at: now - 60 * 60_000 }],
+        next: [{ kind: "user", text: "next", at: 20 }],
+      },
+      history: { left: windowOf(10), next: windowOf(20) },
+    });
+
+    useSessions.getState().openSession("next");
+    await tick();
+
+    expect(useSessions.getState().sessionRecency["left"]).toBe(now);
+  });
+
+  it("never evicts the transcript a pending gate is anchored in (the AskQuestionCard scan)", async () => {
+    // `AskQuestionCard`'s anchoring is a FULL SCAN of `messages[sessionId]` for
+    // the tool call the request names, and it is the reader ADR 0073 exists to
+    // protect: release that transcript and the gate de-anchors into the corner
+    // while the user is being asked to answer it. What protects it is the
+    // `inTurn` arm, and the reason is the one the store already documents for
+    // Stop — a gate is held INSIDE a tool execution, so a session parked on a
+    // gate has `inTurn` set. Pinned here so the arm is not later "tidied" into
+    // a liveness-only test.
+    seedTwoClosed();
+    useSessions.setState((st) => ({
+      inTurn: { left: true },
+      messages: {
+        ...st.messages,
+        left: [
+          {
+            kind: "tool-call",
+            id: "tc-1",
+            title: "AskUserQuestion",
+            status: "pending" as const,
+            at: 10,
+          },
+        ],
+      },
+    }));
+    useInteractive.getState().addRequest("left", {
+      requestId: "r1",
+      method: "ask",
+      source: "native",
+      params: { questions: [{ id: "q1", question: "Which color?", options: [] }] },
+    });
+
+    useSessions.getState().openSession("next");
+    await tick();
+
+    const st = useSessions.getState();
+    const messages = st.messages["left"] ?? [];
+    // The scan the card runs, run here — the tool call it anchors on is still
+    // findable, because the window it lives in was never released.
+    expect(messages.some((m) => m.kind === "tool-call" && m.id === "tc-1")).toBe(true);
+  });
+
+  // ownership ---------------------------------------------------------------
+  it("setActiveSession does NOT evict (it carries no navigation semantics)", () => {
+    // `setActiveSession` is a bare `set({ activeSessionId })`. Hanging eviction
+    // on it would fire a real `loadHistory` from component tests that call it
+    // directly with no `loadHistory` mock, and it names no Space at all — so it
+    // is NOT a navigation and must not free anything.
+    seedTwoClosed();
+
+    useSessions.getState().setActiveSession("next");
+
+    const st = useSessions.getState();
+    expect(st.activeSessionId).toBe("next");
+    expect(st.messages["left"]).toHaveLength(1);
+    expect(st.history["left"]).toEqual(windowOf(10));
+  });
+
+  it("selectSpace evicts the session the tab click left behind", async () => {
+    // Two Spaces; `left` is the Landing Session of `/x` and the active session.
+    useSessions.setState({
+      spaces: [row("/x", 1000), row("/y", 2000)],
+      historySessions: [info("left", "/x"), info("next", "/y")],
+      activeSessionId: "left",
+      activeSpacePath: "/x",
+      messages: {
+        left: [{ kind: "user", text: "left", at: 10 }],
+        next: [{ kind: "user", text: "next", at: 20 }],
+      },
+      history: { left: windowOf(10), next: windowOf(20) },
+    });
+
+    useSessions.getState().selectSpace("/y");
+    await tick();
+
+    const st = useSessions.getState();
+    expect(st.activeSessionId).toBe("next");
+    expect(st.messages).not.toHaveProperty("left");
+    expect(st.history).not.toHaveProperty("left");
+    expect(st.messages["next"]).toHaveLength(1);
+  });
+
+  it("selectSpace onto a Space with NO session of its own frees every transcript it leaves behind", async () => {
+    // The `id === undefined` arm: `openSession` is never reached, so the sweep
+    // has to run here or an empty Space — the surface with NO transcript on
+    // screen — would keep every transcript the user has left mounted in the
+    // store.
+    useSessions.setState({
+      spaces: [row("/x", 1000), row("/z", 2000)],
+      historySessions: [info("left", "/x")],
+      activeSessionId: "left",
+      activeSpacePath: "/x",
+      messages: { left: [{ kind: "user", text: "left", at: 10 }] },
+      history: { left: windowOf(10) },
+    });
+
+    useSessions.getState().selectSpace("/z");
+    await tick();
+
+    const st = useSessions.getState();
+    expect(st.activeSessionId).toBeNull();
+    expect(st.messages).toEqual({});
+    expect(st.history).toEqual({});
+  });
+
+  it("the boot auto-select route (setSpaces → openSession) frees a transcript loaded before it", async () => {
+    // The `setSpaces` auto-select call site is named in the plan as an eviction
+    // owner. It routes through `openSession`, so what this pins is that the
+    // route LANDS on the sweep: a transcript loaded, then the landing Session
+    // resolving to a DIFFERENT id, must free the first.
+    useSessions.setState({
+      sessions: [],
+      historySessions: [info("landed", "/y"), info("loaded", "/x")],
+      activeSessionId: null,
+      activeSpacePath: null,
+      messages: { loaded: [{ kind: "user", text: "loaded", at: 10 }] },
+      history: { loaded: windowOf(10) },
+    });
+
+    useSessions.getState().setSpaces([row("/y", 3000), row("/x", 1000)]);
+    await tick();
+
+    const st = useSessions.getState();
+    expect(st.activeSessionId).toBe("landed");
+    expect(st.messages).not.toHaveProperty("loaded");
+    expect(st.history).not.toHaveProperty("loaded");
+  });
+
+  it("closeSpace frees the transcript of the Space it closed (its rows are unreachable)", async () => {
+    seedTwoClosed();
+    useSessions.setState({
+      spaces: [row("/x", 1000), row("/y", 2000)],
+      historySessions: [info("left", "/x"), info("next", "/y")],
+      activeSpacePath: "/x",
+    });
+
+    await useSessions.getState().closeSpace("/x");
+    await tick();
+
+    const st = useSessions.getState();
+    expect(st.activeSessionId).toBe("next");
+    expect(st.messages).not.toHaveProperty("left");
+  });
+
+  it("a close that leaves the session DISPLAYED does not free it, and re-opening it does not either", async () => {
+    // `handleSessionClosed` deliberately keeps the closed session DISPLAYED (a
+    // pause, not a discard) and does NOT sweep — that is the allowed-subset pin
+    // this task must not widen. And the sweep `openSession` runs keeps the
+    // session it NAMES, so landing on the session the user is already looking
+    // at must not free it: otherwise closing a session blanks the transcript
+    // the window is still showing.
+    seedTwoClosed();
+    useSessions.getState().handleSessionClosed("left", "user");
+    expect(useSessions.getState().activeSessionId).toBe("left");
+    expect(useSessions.getState().messages["left"]).toEqual([
+      { kind: "user", text: "the left transcript", at: 10 },
+    ]);
+
+    useSessions.getState().openSession("left");
+    await tick();
+
+    // No re-fetch over the finalized transcript, and no eviction of the kept id.
+    expect(loadHistory).not.toHaveBeenCalled();
+    expect(useSessions.getState().messages["left"]).toEqual([
+      { kind: "user", text: "the left transcript", at: 10 },
+    ]);
+    expect(useSessions.getState().history["left"]).toEqual(windowOf(10));
   });
 });
 
