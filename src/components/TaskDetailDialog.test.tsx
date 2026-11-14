@@ -295,6 +295,30 @@ describe("TaskDetailDialog — what the card cannot show", () => {
     expect(within(dialog()).queryByText("spec")).toBeNull();
   });
 
+  it("renders no spec row for an empty spec path — an empty pointer is not a pointer", () => {
+    // `""` is what a cleared field looks like on the wire. The gate asked only "is
+    // this not null", so an empty pointer painted a `spec` MetaRow with an empty
+    // value — a row claiming the card has a spec document when it has nothing. The
+    // card hides `""` for the same reason; the two surfaces give one answer.
+    //
+    // The positive control is the case above (a real path renders the row); this is
+    // the second half of that pair, so the absence is proven to measure a real
+    // conditional render rather than a row that never existed.
+    renderDialog({ task: taskRow({ specPath: "" }) });
+    expect(within(dialog()).queryByText("spec")).toBeNull();
+  });
+
+  it("renders no body region for an empty body — an empty body is not a body", () => {
+    // The card hides `""` through truthiness (`{task.body && …}`); the modal gated on
+    // `!== null` and so rendered an empty body region for an empty string. One
+    // field, one answer, on both surfaces.
+    const first = renderDialog({ task: taskRow({ body: "A body" }) });
+    expect(within(dialog()).getByTestId("task-body")).toBeTruthy();
+    first.unmount();
+    renderDialog({ task: taskRow({ body: "" }) });
+    expect(within(dialog()).queryByTestId("task-body")).toBeNull();
+  });
+
   it("prints the summed cost, and prints NOTHING for a cost never reported", () => {
     // ADR 0082, and the rule is `moneyOf`'s rather than re-spelled here: `null` is
     // "no linked Session ever reported a cost" and `0` is "a real zero". A `0` that
