@@ -98,19 +98,36 @@ export function extractDiffs(content: ToolCallContent[] | undefined): DiffRef[] 
  * key `{stamp}:truncate:N` whose `payload_json` carries `disposition` — so this
  * is a pure READ of a row that exists, not new persistence.
  *
- * ONLY the last row of the page, and that rule is load-bearing (Decision 4 —
- * ROW IDENTITY, not row order). Both arms of `messages_page` return ascending
- * ids (the limited arm does `ORDER BY id DESC LIMIT n+1` → truncate →
- * `rows.reverse()`; the unlimited arm is plain `ORDER BY id`), so the last
- * element is the newest. The truncation notice is an INSERT on a key that never
- * existed before, while every row its own turn can write AFTER it is an UPSERT
- * onto a key that already exists — a `tool_execution_end` close updates the
- * pre-existing `tool-call` row in place, an `auto_retry_end` one-liner upserts
- * onto `{stamp}:system` — and neither gains a newer `id`. So when the NEWEST
- * turn was truncated, the notice is still the page's last element even though a
- * later frame re-wrote an older row. Do NOT "simplify" this to "find the newest
- * truncate row and compare ids": the notice is almost never the newest truncate
- * row in a session that truncates often, so that rule is dead on arrival.
+ * ONLY the last row of the page, and the rule is load-bearing (Decision 4). What
+ * it exists to prevent is DROPPING THE SUPPRESSION GUARD: a page that carries a
+ * disposition row anywhere OTHER than its tail belongs to a turn that a NEWER
+ * turn has already superseded, so scanning the page for "any row with a
+ * disposition" would render the truncated-turn line for a turn the footer no
+ * longer describes. That is the refactor this rule forbids, and it is pinned by
+ * `looks ONLY at the last row — a newer row after the notice suppresses it` and
+ * `suppresses when a NEW row is inserted after the notice`.
+ *
+ * The read itself is POSITIONAL — index `length - 1` — and that is correct
+ * because both arms of `messages_page` return ascending ids (the limited arm does
+ * `ORDER BY id DESC LIMIT n+1` → truncate → `rows.reverse()`; the unlimited arm
+ * is plain `ORDER BY id`), so the last element IS the id-max element. Position
+ * and id keep agreeing when a frame re-writes an older row: the notice is an
+ * INSERT on a key that never existed before, while every row its own turn can
+ * write AFTER it is an UPSERT onto a key that already exists — a
+ * `tool_execution_end` close updates the pre-existing `tool-call` row in place,
+ * an `auto_retry_end` one-liner upserts onto `{stamp}:system` — and that
+ * `ON CONFLICT … DO UPDATE` sets `payload_json`/`created_at`, never `id`, so
+ * neither gains a newer `id`. Hence when the NEWEST turn was truncated, the
+ * notice is still the page's last element even though a later frame re-wrote an
+ * older row.
+ *
+ * So "find the newest truncate row and compare ids" is NOT the hazard, and it is
+ * NOT dead on arrival: under the ascending-id invariant above it agrees with
+ * reading the tail on every page `messages_page` can return, and is simply more
+ * verbose and less direct. The positional contract is nonetheless a contract, so
+ * it is pinned by name in `reads the LAST element by position, not the highest
+ * id`, which feeds a tail `messages_page` cannot produce today — making a switch
+ * to id-max a deliberate decision rather than a silent one.
  *
  * The vocabulary mapping is deliberate: the row carries the PROVIDER spelling
  * (`"length"`) and the client vocabulary is `StopReason`, so `"length"` maps to

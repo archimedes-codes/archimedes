@@ -603,9 +603,13 @@ describe("src/lib/transcript", () => {
       // Decision 4. The notice is an INSERT on a fresh unique key; every row
       // its own turn can write AFTER it is an UPSERT onto a key that already
       // exists — a `tool_execution_end` close updates the pre-existing
-      // `tool-call` row IN PLACE, gaining no newer `id`. So the page's last
-      // element is still the notice and the line must render. A "find the
-      // newest truncate row and compare ids" refactor fails HERE.
+      // `tool-call` row IN PLACE, gaining no newer `id` (the `ON CONFLICT …
+      // DO UPDATE` sets `payload_json`/`created_at`, never `id`). So the page's
+      // last element is still the notice and the line must render. Note what
+      // this does NOT pin: a "find the newest truncate row and compare ids"
+      // refactor also passes HERE, because the upserted row holds no newer id
+      // either way — the positional contract is pinned by
+      // `reads the LAST element by position, not the highest id`.
       const tool = toolRow({ toolCallId: "t1", title: "bash", status: "completed" });
       // Same `id`, same `messageKey` — the row was UPSERTED in place after the
       // notice landed, so it holds no newer identity.
@@ -623,6 +627,26 @@ describe("src/lib/transcript", () => {
         id: 10,
       };
       expect(dispositionFromRows([truncateRow({ id: 9 }), inserted])).toBeUndefined();
+    });
+
+    it("reads the LAST element by position, not the highest id", () => {
+      // This page CANNOT arise from `messages_page` today — both arms return
+      // ascending ids, so the last element is always the id-max element and this
+      // input is unreachable. It exists to pin the CONTRACT itself: the rule is
+      // "the last row of the page", read positionally. If the SQL ordering ever
+      // changes (or a caller feeds a differently-sorted page), this is the test
+      // that says the function still reads the tail and not `max(id)` — i.e. a
+      // "pick the row with the newest id" rewrite is a behaviour change, not a
+      // no-op, and would have to be decided deliberately.
+      const olderThanTheNoticeButLast = msgRowBase({
+        id: 8,
+        kind: "agent-text",
+        messageKey: "a3f9c1:m1",
+        payloadJson: JSON.stringify({ text: "A normal, complete reply." }),
+      });
+      expect(
+        dispositionFromRows([truncateRow({ id: 9 }), olderThanTheNoticeButLast]),
+      ).toBeUndefined();
     });
   });
 });
