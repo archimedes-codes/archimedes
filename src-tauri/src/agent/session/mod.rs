@@ -305,7 +305,10 @@ struct LiveWorkerSession {
     /// `cancel_requested` — this registry guards independent per-key rows, so a
     /// poison is recovered, never panicked (`AGENTS.md`; the `db.rs`
     /// panic-on-poison pattern is deliberately NOT copied here). Cleared by
-    /// `send_prompt` (a fresh turn is not a truncation) and NEVER set by an idle
+    /// `send_prompt` (a fresh turn is not a truncation), and ALSO by
+    /// `resolve_turn_forced` — a crash / close ends the turn the flag describes,
+    /// and a settle can go missing (the transport's `Lagged` arm drops frames),
+    /// so a forced resolve must not strand it. NEVER set by an idle
     /// path — the router reads it only while a turn slot is occupied.
     truncated: Arc<StdMutex<bool>>,
     pending_modal_ids: StdMutex<HashSet<String>>,
@@ -1961,13 +1964,25 @@ impl SessionManager {
         // Reset the cancel flag (a fresh turn is not a cancel).
         *cancel_requested.lock().unwrap_or_else(|p| p.into_inner()) = false;
         // Reset the truncation flag (issue #190 — a fresh turn is not a
-        // truncation). Deliberately AFTER the `pending_turn` claim above, so a
-        // settle racing this call can never observe a stale `true` from the
-        // PREVIOUS turn and mis-resolve this one as `MaxTokens`. Like
-        // `cancel_requested`, only a turn-starting path clears it: an idle path
-        // must never touch a per-turn flag, because the router reads it only
-        // while a turn slot is occupied (`compact_session`'s documented
-        // invariant).
+        // truncation). The order is DELIBERATE but NOT for the reason it looks
+        // like: clearing AFTER the claim does NOT make a racing settle unable to
+        // see a stale `true` — claiming first is precisely what puts THIS turn's
+        // sender in the slot a late settle from the PREVIOUS turn can find, so a
+        // settle landing in the window between the claim and this line resolves
+        // the new turn with the old turn's `MaxTokens`. That residual window is
+        // accepted because the alternative is worse: clearing BEFORE the claim
+        // would run on the `a turn is already in flight` rejection path too, and
+        // a REJECTED `send_prompt` does not own the turn in flight — it would
+        // clear a live turn's disposition and turn its real truncation into a
+        // silent `EndTurn`, the exact bug this flag exists to fix. So the rule
+        // is ownership-first: touch the per-turn flags only once the slot is
+        // yours (the same invariant `compact_session` documents for an idle
+        // path), and accept a wrong reason over corrupting a turn you do not
+        // own. The window this ordering leaves is closed where it actually
+        // matters — a flag stranded by a turn that ended WITHOUT a settle (the
+        // dropped-frame / crash / close shapes) is cleared by
+        // `resolve_turn_forced`, so it is not sitting there to be read at claim
+        // time. Like `cancel_requested`, only a turn-starting path clears it.
         *truncated.lock().unwrap_or_else(|p| p.into_inner()) = false;
 
         // Level-triggered titling (#143): a new prompt is the "catch up on

@@ -512,8 +512,24 @@ async fn resuming_legacy_bare_uuid_session_preserves_id() {
 /// the whole desktop suite — and the footer rendering `Turn ended: max_tokens`
 /// — could sit on a `resolve_turn` that never produced the value. This drives
 /// the real pipe (a spawned `fake_worker`, the real `route_event`, the real
-/// `resolve_turn`, the real `send_prompt` return) with the real frame ORDER the
-/// engine guarantees: `turn_truncated` BEFORE `turn_end` / `agent_settled`.
+/// `resolve_turn`, the real `send_prompt` return) through the fixture's real
+/// truncated-turn scenario, and asserts the one thing the desktop owns: the
+/// `StopReason` the composer is handed.
+///
+/// ⚠ What it does NOT prove: the FRAME ORDER. The assertion reads only the
+/// resolved `StopReason`, and the ordering is not observable at the sink for
+/// this scenario — `turn_truncated` is an `RpcEvent`, which `route_event` treats
+/// as INTERNAL bookkeeping (never re-emitted; the UI contract is the
+/// `SinkFrame`s), and the fixture's canned stream emits the event directly
+/// rather than through `normalize`, which is what would mint the notice
+/// `SinkFrame`. So the frames this sink records for a truncated turn are
+/// `session_info` + `cost_update` and nothing carries an index to compare. The
+/// `turn_truncated`-before-`turn_end` / `agent_settled` invariant is pinned
+/// ENGINE-side by `harness/loop/tests/turn_lifecycle.rs`'s
+/// `a_turn_cut_off_by_the_output_cap_settles_as_truncated_and_persists_its_text`
+/// (it asserts the position of each kind in the drained event stream); what
+/// THIS test adds is that the desktop maps an already-correctly-ordered pair to
+/// `MaxTokens` rather than the silent `EndTurn`.
 ///
 /// The scenario is NOT subagent-gated: it lives in the fixture's `Inbound::Prompt`
 /// text match beside every other scenario (`fulcrum_harness::fixtures::worker`),

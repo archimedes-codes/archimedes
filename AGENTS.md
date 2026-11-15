@@ -543,17 +543,22 @@ workflow can do — is writing notes a person would read.
   genuinely unusable. **Both existing behaviours are correct and must not change.** The session
   registry recovers, and documents why in the comment block above its per-session state accessors in
   `src-tauri/src/agent/session/mod.rs` ("a panic while holding a registry lock must not wedge every
-  later session read") — one map of independent per-session rows, **25 production recovery sites**
+  later session read") — one map of independent per-session rows, **29 production recovery sites**
   across `agent/session/`: `grep -rn "unwrap_or_else(|p| p.into_inner())" src-tauri/src/agent/session/
-  | grep -vE ':\s*//' | wc -l` → **29** call-site lines, of which 4 sit in test modules. Per file:
-  `session/mod.rs` **15** (all production), `naming.rs` **6** = 3 production + 3 inside its
-  `#[cfg(test)] mod tests`, `router.rs` **7** (all production), `session/tests/mod.rs` **1** (test).
-  Production = 15 + 3 + 7 = **25**. **Read the 29 as a RAW line count, never as the production count** —
-  a reader who runs the command and stops at 29 will "correct" 25 to 29 and be wrong; the 4 to drop are
-  the ones inside `naming.rs`'s and `session/tests/mod.rs`'s test modules, and only the per-file split
+  | grep -vE ':\s*//' | wc -l` → **36** call-site lines, of which 7 sit in test modules. Per file:
+  `session/mod.rs` **16** (all production), `naming.rs` **6** = 3 production + 3 inside its
+  `#[cfg(test)] mod tests`, `router.rs` **11** = 10 production + 1 inside its `#[cfg(test)] mod tests`,
+  `session/tests/mod.rs` **3** (test). Production = 16 + 3 + 10 = **29**. **Read the 36 as a RAW line count, never as the production count** —
+  a reader who runs the command and stops at 36 will "correct" 29 to 36 and be wrong; the 7 to drop are
+  the ones inside `naming.rs`'s, `router.rs`'s and `session/tests/mod.rs`'s test modules, and only the per-file split
   above says which. Use the comment-anchored filter, not `grep -v "//"`: the raw grep
-  prints **30** because a prose comment in `session/mod.rs` quotes the very pattern, and `grep -v "//"`
-  happens to give 29 today but would silently drop any real call site carrying a trailing `//` comment.
+  prints **37** because a prose comment in `session/mod.rs` quotes the very pattern, and `grep -v "//"`
+  happens to give 36 today but would silently drop any real call site carrying a trailing `//` comment.
+  **These session figures are this branch's own drift, and it is bounded.** At `f1d9501f` — identical to
+  `main` — the same commands gave `mod.rs` **15**, `naming.rs` **6**, `router.rs` **7**, `session/tests/mod.rs`
+  **1**, anchored **29**, production **25**. This branch added **7** anchored lines: **4** production
+  (`mod.rs` +1, `router.rs` +3 — the issue #190 truncation flag's lock sites) and **3** test (`router.rs` +1,
+  `session/tests/mod.rs` +2). `naming.rs` is unchanged at 6 = 3 + 3.
   `src-tauri/src/storage/db.rs` panics with
   `.expect("db mutex poisoned")` at **51 production sites** (`grep -c 'expect("db mutex poisoned")'
   src-tauri/src/storage/db.rs` → **51**; note the path goes OUTSIDE the quotes — with it inside, the
@@ -573,13 +578,17 @@ workflow can do — is writing notes a person would read.
   unchanged: any NEW panic-on-poison site must carry a one-line rationale for
   why its resource is single and shared** — `record_messages_batch` is now the in-repo example of what
   that looks like, and the 50 older sites are what it replaces. (Do not conflate counts: the tree-wide
-  `grep -rn "into_inner()" src-tauri/src/ | wc -l` → **48** includes test modules and non-lock uses;
+  `grep -rn "into_inner()" src-tauri/src/ | wc -l` → **69** includes test modules and non-lock uses;
   that is the
   figure the review attributed to `agent/session/*`, which is a mis-attribution — `agent/session/`
-  itself holds **30** raw / **29** after dropping the comment line above, 25 of them production. Still
+  itself holds **37** raw / **36** after dropping the comment line above, 29 of them production. Still
   verify with the tree-wide command, since it is the one that reproduces. That tree-wide figure moved
-  **40 → 48** on this branch, and every one of the 8 is in `src-tauri/src/storage/batching.rs` — the
-  per-session map the batching decorator adds, which recovers by design.)
+  **40 → 48** on the branch that wrote this bullet, and every one of the 8 is in `src-tauri/src/storage/batching.rs` — the
+  per-session map the batching decorator adds, which recovers by design. **The rest of the drift since
+  is NOT this branch's, and the baseline matters:** `main` measures **62**, so of the **48 → 69** gap
+  only the last **7** are ours (the 4 production + 3 test session sites above) and **14 pre-date this
+  branch entirely** — writing "48 → 69" without the `main` = 62 baseline reads as though this branch
+  caused all of it.)
 - **Docs**: durable design decisions live in `docs/decisions/NNNN-slug.md`
   (ADR format); in-flight plans live in `docs/roadmap/<feature>.md` and are
   deleted on ship. Anything a roadmap records that must survive that deletion
