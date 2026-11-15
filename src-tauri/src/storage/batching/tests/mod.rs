@@ -1479,8 +1479,11 @@ fn a_write_through_cannot_be_overwritten_by_an_older_row_the_timer_still_holds()
 /// re-inserts it. Letting it proceed after a refused pre-flush means the rows that
 /// were just dropped belonged to a transcript that no longer exists in its old form,
 /// and nothing will ever re-emit them: the loss stops being deferred and becomes
-/// permanent. The choice is a compaction the caller can retry against a transcript
-/// nobody can rebuild.
+/// permanent. The choice is a rewrite withheld — the transcript stays intact for the
+/// next compaction to rewrite from — against a transcript nobody can rebuild. Note the
+/// limit of that choice on the shipped wire: the `Err` never reaches the Worker (the
+/// crate's `IpcStore::replace_messages` is fire-and-forget) and nothing retries it, so
+/// what heals the lost batch is the next successful `Replace`, not this error.
 ///
 /// THE INSTRUMENT, and why it is this one. A batch refuses its own flush when its
 /// `messages` rows hit the foreign key (the file's own idiom, see

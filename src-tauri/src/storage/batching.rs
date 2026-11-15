@@ -90,7 +90,8 @@
 //! whole-buffer drain takes it EXCLUSIVELY, because `flush()` must be serialised
 //! against every per-session drain — including one that starts halfway through it,
 //! which is why a walk over "the gates that look busy" is not sufficient. The
-//! [`drain_lock`] docs carry the lock-ordering rule and the sizing argument.
+//! [`drain_lock`] docs carry the lock-ordering rule and the `drains` field doc carries
+//! the sizing argument.
 //!
 //! What this does NOT do is turn a flush point into something that waits for the
 //! interval. A gate is held only by a drain that has ALREADY passed its `take`, so
@@ -131,8 +132,15 @@
 //!    one case: `Replace` is the atomic rewrite that DELETES the session's transcript
 //!    and re-inserts it, so the dropped rows are not merely deferred — they belonged to
 //!    a transcript that ceases to exist in its old form, and nothing will re-emit them.
-//!    Refusing costs a compaction the caller can retry; proceeding costs a transcript
-//!    nobody can rebuild. Pinned by
+//!    What propagation buys is LOCAL, and the shipped wire says exactly how local: the
+//!    `Err` never reaches the harness (`worker/store.rs:89-98` sends the
+//!    `TranscriptReplace` fire-and-forget and returns `Ok(())`, so the Worker never
+//!    learns a rewrite was refused) and no one retries it (`persist.rs:166` ends the
+//!    decorator's `Err` in an `eprintln!`). What it does guarantee is that the DELETE
+//!    half of the rewrite did not run on a session whose pending display rows were just
+//!    dropped — the transcript stays intact, and the NEXT successful `Replace` rewrites
+//!    from it. That is the whole reason to propagate: a refused rewrite is recoverable
+//!    by the next one, a completed one on a lost-batch session is not. Pinned by
 //!    `tests::replace_refuses_its_atomic_rewrite_when_the_pre_flush_fails`, with the
 //!    `Insert` half of the divergence pinned by
 //!    `tests::the_two_pass_through_arms_diverge_on_a_failed_pre_flush_by_construction`
@@ -324,10 +332,17 @@ struct Inner {
     /// a gate stored inside `SessionPending` would be taken away with the rows and
     /// there would be nothing left for a second drain to contend with.
     ///
-    /// Values are `Weak` and dead entries are pruned on every lookup, so this map
-    /// cannot grow with the number of sessions the app has ever opened: an entry
-    /// survives only while a drain holds it, or briefly between two drains of the
-    /// same session where it is one idle empty mutex.
+    /// Values are `Weak` so a gate does not keep a session's mutex alive once no
+    /// drain needs it. Dead entries are pruned by [`drain_lock`] — and that is the
+    /// ONLY prune site, reached only from `drain_one` (`drain_all` never touches this
+    /// map), so the honest bound is: an entry is dropped at the next per-session drain
+    /// of ANY session, and a session that is never drained again leaves exactly one
+    /// dead `Weak` behind until some other session's drain clears it. No correctness
+    /// impact either way — a dead `Weak` upgrades to `None` and is replaced by a fresh
+    /// gate — so this is a bounded-ness note and not a leak to fix: one empty mutex per
+    /// session that drained once and never drained again. While a drain holds a gate,
+    /// or briefly between two drains of the same session, the entry is one live empty
+    /// mutex.
     ///
     /// A gate IS held across SQLite I/O, and that is the point — it is never held
     /// across an `.await`, and the `sessions` lock is never held while acquiring
@@ -712,13 +727,23 @@ impl BatchingPersistence {
     ///   whose display rows are already gone — and a rewrite is the one operation
     ///   that makes that permanent. A deferred row can still land later; a row whose
     ///   transcript has just been replaced cannot, because nothing will ever re-emit
-    ///   a payload for a message that no longer exists in its old form. Refusing the
-    ///   rewrite costs a compaction the caller can retry; performing it costs a
-    ///   transcript nobody can rebuild. So: log it AND fail the write.
-    fn flush_before_passthrough(&self, session_id: &str, where_: &str) -> Result<(), DbError> {
+    ///   a payload for a message that no longer exists in its old form. So: log it
+    ///   AND fail the write.
+    ///
+    ///   WHAT PROPAGATION Buys, stated against the shipped wire and no further. The
+    ///   `Err` does NOT inform the harness and there is NO caller retry: the crate's
+    ///   `IpcStore::replace_messages` (`worker/store.rs:89-98`) sends the
+    ///   `TranscriptReplace` fire-and-forget and returns `Ok(())`, so the Worker never
+    ///   learns a rewrite was refused, and the desktop side ends this error in an
+    ///   `eprintln!` (`persist.rs:166`). What propagating guarantees is local and
+    ///   enough: the DELETE half of the atomic rewrite did NOT run on a session whose
+    ///   pending display rows were just dropped, so the transcript stays intact and a
+    ///   later compaction rewrites from it. What heals the lost batch is the next
+    ///   successful `Replace`, not this error.
+    fn flush_before_passthrough(&self, session_id: &str, caller: &str) -> Result<(), DbError> {
         if let Err(e) = self.flush_session(session_id) {
             fulcrum_harness::debuglog::log(&format!(
-                "batching flush (before a pass-through write, {where_}, session \
+                "batching flush (before a pass-through write, {caller}, session \
                  {session_id}): deferred write failed: {e}"
             ));
             return Err(e);
@@ -1069,6 +1094,13 @@ impl Drop for BatchingPersistence {
     /// It covers the last-owner cases that are not a process exit (a test's local
     /// `Arc`, a replaced `SessionManager`), and it cannot report a failure to
     /// anyone — which is itself part of why it is not a guarantee.
+    ///
+    /// The routing through `drain_all` (and therefore the exclusive barrier) is
+    /// asserted by review and not by a test: no seam test drops the decorator
+    /// mid-park, so a revert to a raw `take`+`write` here would still land the
+    /// buffer and stay invisible to the suite — silently losing the ordering
+    /// guarantee that a drain still in flight when the last `Arc` dies must not
+    /// commit behind this one.
     fn drop(&mut self) {
         // A poisoned map at `Drop` time: nothing is left to protect, and a panic
         // inside a destructor aborts the process. Leave it. Probed HERE rather
@@ -1245,8 +1277,13 @@ impl FulcrumPersistence for BatchingPersistence {
     /// THE ONE PASS-THROUGH ARM THAT FAILS WHEN ITS PRE-FLUSH FAILS. A deferred
     /// display row can still land later; a row whose transcript has just been
     /// replaced cannot, because nothing will re-emit a payload for a message that no
-    /// longer exists in its old form. So a refused pre-flush refuses the rewrite —
-    /// the caller can compact again, and the transcript is still intact to compact.
+    /// longer exists in its old form. So a refused pre-flush refuses the rewrite, and
+    /// the transcript is left intact for the NEXT compaction to rewrite from. Note
+    /// what this `Err` does NOT do on the shipped wire — the Worker never sees it
+    /// (`worker/store.rs:89-98` is fire-and-forget) and nothing retries it
+    /// (`persist.rs:166` logs it); see
+    /// [`BatchingPersistence::flush_before_passthrough`] for what propagation is
+    /// actually for.
     fn replace_native_messages(
         &self,
         session_id: &str,
