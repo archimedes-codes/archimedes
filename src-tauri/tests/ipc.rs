@@ -1835,3 +1835,386 @@ async fn set_config_option_on_a_closed_session_persists_and_returns_populated_op
     )
     .await;
 }
+
+// ── The exit flush (#155, Task 3) ───────────────────────────────────────────
+//
+// The one behaviour of the batching decorator that NO unit test can reach: the
+// `RunEvent::Exit` arm of the `app.run` callback. `App::run` never returns and
+// exits through `std::process::exit` (`tauri-2.12.2/src/app.rs:1364`), so the
+// real `run()` is untestable — but `MockRuntime`'s OWN `run` loop delivers
+// `RunEvent::Exit` for real (closing the last window breaks the loop and calls
+// the callback with `Exit`, `tauri-2.12.2/src/test/mock_runtime.rs:1419`). So a
+// mock app run with the PRODUCTION callback reaches the exit arm, and the flush
+// it performs is observable. `Drop` on the decorator cannot stand in for this and
+// is not claimed to: on a real quit the last `Arc` never dies, so `Drop` never
+// runs — which is exactly the defect the plan's reviewer flagged.
+
+/// The same app as [`build_app`], but run with the PRODUCTION `app.run` callback
+/// (`archimedes_lib::run_event_callback`) instead of the no-op `|_h, _e| {}` the
+/// other tests use.
+fn build_app_with_exit_callback(dirs: &TestDirs) -> TestApp {
+    let config_dir = dirs.config_dir.clone();
+    let app_data_dir = dirs.app_data_dir.clone();
+    let app = mock_builder()
+        .invoke_handler(tauri::generate_handler![
+            archimedes_lib::commands::sessions::start_session,
+            archimedes_lib::commands::sessions::send_prompt,
+            archimedes_lib::commands::sessions::close_session,
+        ])
+        .setup(move |app| {
+            setup_dirs_with_factory(
+                app,
+                config_dir.clone(),
+                app_data_dir.clone(),
+                Some(Arc::new(FixtureFactory)),
+            )
+        })
+        .build(tauri::generate_context!())
+        .expect("the app should build");
+    let handle = app.handle().clone();
+    let thread = std::thread::spawn(move || {
+        app.run(archimedes_lib::run_event_callback);
+    });
+    // The same bounded setup wait `build_app` uses (a missing setup must be a
+    // failure, not a hang).
+    for _ in 0..200 {
+        if handle
+            .try_state::<Arc<archimedes_lib::agent::SessionManager>>()
+            .is_some()
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        handle
+            .try_state::<Arc<archimedes_lib::agent::SessionManager>>()
+            .is_some(),
+        "the setup completed (the SessionManager is managed state)"
+    );
+    let webview = handle
+        .get_webview_window("main")
+        .expect("the config window exists after the setup");
+    TestApp {
+        handle,
+        webview,
+        thread: Some(thread),
+    }
+}
+
+/// (#155, Task 3) THE EXIT FLUSH IS REACHED — "a flush is reachable on the exit
+/// path", proven rather than asserted.
+///
+/// EVERY OTHER WAY THE ROW COULD HAVE LANDED IS CLOSED, and that is the whole
+/// content of the test — an earlier version of it passed with the exit flush
+/// DELETED, because `drop(app)` takes ~3 s (the reap grace) and the 250 ms
+/// interval fired inside it. What is excluded here, and how:
+///
+/// * **The interval.** The row is buffered on a private current-thread runtime
+///   that is DROPPED before the window closes. Dropping a `current_thread`
+///   runtime cancels its tasks, so the armed timer is dead and cannot commit
+///   anything. (This is also why no `start_session` happens: the router path
+///   would arm the timer on the app's own long-lived runtime.)
+/// * **`Drop` on the decorator.** The test holds its OWN `Arc<BatchingPersistence>`
+///   (cloned out of managed state), so the decorator is still alive — with a
+///   live strong count its `Drop` cannot have run when the assertion reads.
+/// * **The router's flush points** (settle / `Exited` / `apply_interactive_event`).
+///   No session is started, so there is no Worker, no turn, no frame and no
+///   `Exited`. `reap_all` iterates an empty registry.
+///
+/// What is left is the `RunEvent::Exit` arm, and nothing else.
+///
+/// NON-VACUITY, MEASURED: with `flush_batched(handle, "exit")` deleted from
+/// `lib.rs`'s `Exit` arm this test goes RED (row absent); with it restored it
+/// goes GREEN. That pair is the proof; the reasoning above is only why the pair
+/// is meaningful.
+///
+/// WHAT THIS DOES NOT PROVE, stated so nobody over-reads it: it does not prove
+/// the real `run()` calls this callback — `App::run` ends in
+/// `std::process::exit` and cannot be driven from a test at all. It proves the
+/// arm is reached when tauri's event loop delivers `RunEvent::Exit`, which is the
+/// strongest form available, and `tauri-2.12.2/src/app.rs:1449-1452` is where the
+/// production loop makes that same delivery.
+#[test]
+fn the_exit_run_event_flushes_the_buffered_rows() {
+    // NO `seed_default_model` and NO `start_session`, and not for tidiness: a
+    // started session would put a Worker on the app's long-lived runtime, whose
+    // `Exited` is one of the router's flush points — the one thing this test must
+    // exclude. It is a plain `#[test]` for the same reason: the buffering has to
+    // happen on a runtime the test can KILL, and `#[tokio::test]` would make the
+    // ambient runtime that one.
+    let dirs = TestDirs::new();
+    let app = build_app_with_exit_callback(&dirs);
+
+    let d = db(&app);
+    // The managed decorator — the SAME object `RunEvent::Exit` will flush. Held
+    // here for two reasons: it keeps the decorator alive past the app's own
+    // teardown (so `Drop` cannot be what flushed the row), and it is how the test
+    // puts a row in the buffer without going through the router.
+    // Read straight from the state registry (not a `test_support` accessor):
+    // `test_support.rs` is not one of this task's files, and `Manager::state`
+    // needs no helper — the decorator is managed under its own concrete TypeId
+    // precisely so a flush point (and this test) can find it.
+    let batched = app
+        .handle
+        .try_state::<Arc<archimedes_lib::storage::BatchingPersistence>>()
+        .expect("the batching decorator is managed state")
+        .inner()
+        .clone();
+    use fulcrum_harness::seams::FulcrumPersistence;
+
+    d.record_session(&SessionInfo {
+        session_id: "exit-flush-session".to_string(),
+        cwd: dirs.cwd(),
+        capabilities: serde_json::Value::Null,
+        config_options: None,
+        archived: false,
+        title: None,
+        context_usage: None,
+        cost_usd: None,
+        is_subagent: false,
+    })
+    .expect("the sessions row (the `messages` FK source)");
+
+    {
+        // A runtime of its own, DROPPED below: the timer this write arms lives
+        // and dies here, so the interval provably cannot be the writer.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        rt.block_on(async {
+            batched
+                .record_message(
+                    "exit-flush-session",
+                    "agent-text",
+                    Some("exit-flush-probe"),
+                    r#"{"text":"buffered at exit"}"#,
+                )
+                .expect("the write is buffered");
+        });
+        drop(rt);
+    }
+
+    // The premise, pinned: buffered, not on disk.
+    assert!(
+        d.messages_for("exit-flush-session")
+            .expect("the display rows load")
+            .is_empty(),
+        "the premise: the row is BUFFERED (a written-through row would make the \
+         exit flush unobservable)"
+    );
+
+    // The quit: `TestApp::Drop` closes the window → `MockRuntime`'s loop breaks →
+    // the callback is called with `RunEvent::Exit` → the production arm flushes
+    // (and reaps an empty registry). The `join` inside `Drop` is what makes the
+    // run thread's write visible to this thread.
+    drop(app);
+
+    let rows = d
+        .messages_for("exit-flush-session")
+        .expect("the display rows load");
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.message_key.as_deref() == Some("exit-flush-probe"))
+            .count(),
+        1,
+        "`RunEvent::Exit` reached the batching decorator's flush: the buffered row \
+         is on disk after the event loop exited, with the interval, `Drop` and the \
+         router's flush points all excluded. If this fails, check whether the \
+         `flush_batched` call is still in `lib.rs`'s `Exit` arm — deleting it is \
+         exactly the mutation this test exists to catch."
+    );
+    // The claim above that `Drop` was not the writer, checked rather than
+    // assumed: this `Arc` outlived the app, so the decorator was alive when the
+    // row was read and its `Drop` cannot have run.
+    assert!(
+        Arc::strong_count(&batched) >= 1,
+        "the decorator outlived the app — so `Drop` cannot be what wrote the row"
+    );
+}
+
+/// (#155 review, Finding 1) THE UPDATE-RELAUNCH TEARDOWN FLUSHES THE BUFFER.
+///
+/// The relaunch path replays the `Exit` teardown BY HAND and then calls
+/// `std::process::exit(0)`, which runs no destructors — so before this fix an
+/// app update discarded whatever the batch was holding.
+/// `relaunch_through_the_mount` itself cannot be driven from a test: it never
+/// returns, it spawns a real successor, and it calls `cleanup_before_exit()`
+/// (after which no Tauri API is usable). So the batch-draining half is factored
+/// into `commands::update::drain_batch_and_reap_workers` and THIS drives that,
+/// against the PRODUCTION decorator from managed state — the same shape as
+/// [`the_exit_run_event_flushes_the_buffered_rows`] above, and it excludes the
+/// same ways a row could have landed for an unrelated reason:
+///
+/// * **The interval.** The row is buffered on a private current-thread runtime
+///   that is DROPPED before the teardown runs, so its armed timer is cancelled.
+/// * **`Drop` on the decorator.** The test holds its own `Arc` clone, so the
+///   decorator is alive when the row is read.
+/// * **The router's flush points.** No session is started (no Worker, no turn,
+///   no frame, no `Exited`) — `reap_all` walks an empty registry.
+/// * **`RunEvent::Exit`.** This app runs with the NO-OP callback (`build_app`,
+///   not `build_app_with_exit_callback`) and the window is never closed, so the
+///   `Exit` arm is provably not what flushed it. That is what keeps this a test
+///   of the RELAUNCH path and not a second copy of the exit test.
+///
+/// NON-VACUITY, MEASURED, and its exact reach: with BOTH `crate::flush_batched`
+/// calls deleted from `drain_batch_and_reap_workers` this test goes RED (row
+/// absent); with them restored it goes GREEN. Deleting only ONE of the two does
+/// NOT redden it — the registry is empty here, so the reap produces nothing for
+/// the second flush to catch, and the surviving flush writes the row either way.
+/// So this test pins "the relaunch teardown drains the buffer"; the ORDER and the
+/// count of the two calls are pinned by the source-shape test
+/// `commands::update::tests::the_relaunch_path_drains_the_batch_before_it_exits`,
+/// which reads the file rather than running it.
+///
+/// WHAT THIS DOES NOT PROVE, so nobody over-reads it: it does not prove
+/// `relaunch_through_the_mount` CALLS this function (that edge is `-> !` and
+/// unrunnable in a test — the source-shape test above pins it), and it does not
+/// prove the second flush catches what the reap PRODUCES (that needs a live
+/// Worker emitting frames during `close`, which this harness's empty registry
+/// cannot supply; the ordering is argued in the function's own doc, and the
+/// exit-arm twin `the_exit_run_event_flushes_the_buffered_rows` runs the same
+/// triad through the real `RunEvent::Exit` path).
+#[test]
+fn the_relaunch_teardown_flushes_the_buffered_rows() {
+    let dirs = TestDirs::new();
+    // The NO-OP-callback app, deliberately — see the `RunEvent::Exit` bullet above.
+    let app = build_app(&dirs);
+
+    let d = db(&app);
+    let batched = app
+        .handle
+        .try_state::<Arc<archimedes_lib::storage::BatchingPersistence>>()
+        .expect("the batching decorator is managed state")
+        .inner()
+        .clone();
+    use fulcrum_harness::seams::FulcrumPersistence;
+
+    d.record_session(&SessionInfo {
+        session_id: "relaunch-flush-session".to_string(),
+        cwd: dirs.cwd(),
+        capabilities: serde_json::Value::Null,
+        config_options: None,
+        archived: false,
+        title: None,
+        context_usage: None,
+        cost_usd: None,
+        is_subagent: false,
+    })
+    .expect("the sessions row (the `messages` FK source)");
+
+    {
+        // A runtime of its own, DROPPED below: the timer this write arms lives
+        // and dies here, so the interval provably cannot be the writer.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        rt.block_on(async {
+            batched
+                .record_message(
+                    "relaunch-flush-session",
+                    "agent-text",
+                    Some("relaunch-flush-probe"),
+                    r#"{"text":"buffered at relaunch"}"#,
+                )
+                .expect("the write is buffered");
+        });
+        drop(rt);
+    }
+
+    // The premise, pinned: buffered, not on disk.
+    assert!(
+        d.messages_for("relaunch-flush-session")
+            .expect("the display rows load")
+            .is_empty(),
+        "the premise: the row is BUFFERED (a written-through row would make the \
+         relaunch flush unobservable)"
+    );
+
+    // The relaunch teardown, minus the two things a test must not do: spawn a
+    // real successor, and `cleanup_before_exit`.
+    archimedes_lib::commands::update::drain_batch_and_reap_workers(&app.handle);
+
+    let rows = d
+        .messages_for("relaunch-flush-session")
+        .expect("the display rows load");
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.message_key.as_deref() == Some("relaunch-flush-probe"))
+            .count(),
+        1,
+        "the relaunch teardown reached the batching decorator's flush: the \
+         buffered row is on disk, with the interval, `Drop`, the router's flush \
+         points and `RunEvent::Exit` all excluded. If this fails, check whether \
+         the `flush_batched` calls are still in \
+         `commands::update::drain_batch_and_reap_workers` — an app update that \
+         discards the buffer is exactly the defect this test exists to catch."
+    );
+    assert!(
+        Arc::strong_count(&batched) >= 1,
+        "the decorator outlived the teardown — so `Drop` cannot be what wrote the row"
+    );
+}
+
+/// (#155, Task 3) THE LOSS WINDOW, MEASURED — the number the decorator's doc
+/// comment names as the price of batching, checked against reality rather than
+/// asserted from the constant.
+///
+/// No flush point is involved at all: no settle, no interactive frame, no
+/// `Replace`, no quit. One buffered row, and the interval is the only thing that
+/// can commit it. The bound asserted is generous (2 s against a documented
+/// 250 ms) because this runs on a machine that may be loading a 187-file vitest
+/// suite beside it; the printed measurement is what a reader compares to the
+/// documented number.
+#[test]
+fn a_buffered_row_with_no_flush_point_lands_within_the_interval() {
+    let dir = archimedes_lib::test_support::ScratchDir::in_env_temp("ipc-loss-window-", "scratch");
+    let db = Arc::new(Db::open(&dir.join("t.db")).expect("the db opens"));
+    db.record_session(&SessionInfo {
+        session_id: "s".to_string(),
+        cwd: dir.to_path_buf(),
+        capabilities: serde_json::Value::Null,
+        config_options: None,
+        archived: false,
+        title: None,
+        context_usage: None,
+        cost_usd: None,
+        is_subagent: false,
+    })
+    .expect("the session row");
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    rt.block_on(async {
+        use fulcrum_harness::seams::FulcrumPersistence;
+        let batched = Arc::new(archimedes_lib::storage::BatchingPersistence::new(
+            db.clone(),
+        ));
+        batched
+            .record_message("s", "agent-text", Some("k"), r#"{"text":"idle"}"#)
+            .expect("buffered");
+        let started = std::time::Instant::now();
+        loop {
+            if !db.messages_for("s").expect("the read").is_empty() {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "the loss window blew its bound: still buffered after {:?} \
+                 (documented interval: {:?})",
+                started.elapsed(),
+                archimedes_lib::storage::DEFAULT_FLUSH_INTERVAL
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        println!(
+            "LOSS WINDOW: buffered row reached disk in {:?} (documented interval {:?})",
+            started.elapsed(),
+            archimedes_lib::storage::DEFAULT_FLUSH_INTERVAL
+        );
+    });
+}

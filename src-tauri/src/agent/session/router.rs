@@ -93,6 +93,29 @@ impl SessionManager {
                         };
                         if let Some(p) = self.persister.get() {
                             p.apply_interactive_event(target, is_subagent, &payload);
+                            // (#155, Task 3) Flush the row this frame just
+                            // wrote. THREE reasons this is a flush point when the
+                            // `Store` arm above deliberately is not:
+                            //
+                            // * `cost_update` / `todos_update` arrive a few times
+                            //   per TURN, not ~60/sec — flushing here costs a
+                            //   handful of commits per turn, so it does not
+                            //   re-create the pressure the batching removes.
+                            // * The stored figure is READ BACK on paths that do
+                            //   not go through this decorator: `list_sessions`
+                            //   after a close, and `resume_session` seeding
+                            //   `StartEnv.cost_usd`. A buffered cost would make a
+                            //   closed session's row disagree with the card the
+                            //   user just watched — the exact contract
+                            //   `a_stored_cost_survives_a_close_and_a_list` pins.
+                            // * `target`, NOT `session_id`: a child's frames are
+                            //   delivered under the PARENT's delivery id, so
+                            //   flushing `session_id` here would drain the
+                            //   parent's buffer and leave the child's money
+                            //   sitting there. `target` is the row that was just
+                            //   written — the same distinction the block above
+                            //   exists to make.
+                            self.flush_batched(target, "after apply_interactive_event");
                         }
                     }
                 }
@@ -111,6 +134,23 @@ impl SessionManager {
                 // `agent_settled` arrives under the parent's delivery id with
                 // `is_subagent: true` and must NEVER settle the parent turn early.
                 if !is_subagent && matches!(e, RpcEvent::agent_settled) {
+                    // (#155, Task 3) THE TURN-BOUNDARY FLUSH — and it must run
+                    // BEFORE `resolve_turn`, which is the load-bearing detail.
+                    // `resolve_turn` completes the `send_prompt` oneshot, and a
+                    // test (or a user's next command) that reads the transcript
+                    // after `send_prompt` returns is therefore reading AFTER this
+                    // point and not before it. Flush after the resolve and the
+                    // read can land inside the window, which is the failure mode
+                    // the plan warns about: a test that passes because the write
+                    // was deferred, and a UI that shows a transcript the disk has
+                    // not got yet.
+                    //
+                    // Why the settle and not every frame: "everything the app was
+                    // told about this turn is on disk" is the contract a reader
+                    // can actually rely on, it fires once per turn (not ~60/sec),
+                    // and it is the point after which nothing about the turn can
+                    // change the buffered rows.
+                    self.flush_batched(session_id, "agent_settled");
                     self.resolve_turn(session_id);
                 }
                 // Session naming: `agent_end` is the turn's last frame
@@ -230,6 +270,36 @@ impl SessionManager {
                 });
             }
             WorkerInboundEvent::Exited(code) => {
+                // (#155, Task 3) The LAST frame this session will ever produce.
+                // Drain it before anything else in this arm — the teardown below
+                // removes the session's registry row, and `RunEvent::Exit`'s
+                // whole-buffer flush is then the only thing left between these
+                // rows and the disk. Flushing here costs one commit per session
+                // per lifetime.
+                //
+                // THIS LINE ALSO DRAINS A CHILD'S BUFFER — but under which KEY is
+                // a RACE in the crate, and it is worth naming rather than
+                // guessing, because it decides whether a child's last display
+                // rows wait for this line or for the interval. `finish_subagent`
+                // calls `reap_worker(handle).await` and only THEN does
+                // `drives.remove(child_id)` (`subagent_flow.rs:1681` then `:1688`), while
+                // the child's `Exited` reaches the pump as soon as the process is
+                // gone — so the pump's `drives` lookup either still HITS (the
+                // delivery id is the PARENT's, `pump.rs:81-90`) or already MISSES
+                // (the fallback is the CHILD's own id). Both are possible.
+                //
+                // That is acceptable here, and the reason is worth keeping:
+                // NOTHING a test or the UI asserts about a child's row waits on
+                // it. The child's `native_messages` are pass-through (written
+                // immediately), its `cost_update` flushes with its own frame, and
+                // its `ensure_session_row` is immediate — so the ephemeral row,
+                // the transcript and the money are all on disk before
+                // `subagent-closed` fires. What a race over the key can delay is
+                // the child's buffered DISPLAY rows, and the bound on that is the
+                // interval, or the next whole-buffer flush. `RunEvent::Exit`'s
+                // `flush()` takes the WHOLE map precisely because it never has to
+                // know which key a row is under.
+                self.flush_batched(session_id, "Exited");
                 // EXPECTED (a `detach` / `reap_all` was in flight) → the
                 // `session-closed` cleanup. UNEXPECTED (a crash — the `WorkerManager`
                 // fired `on_crash`) → `is_exit_expected` is `false` → no-op (the

@@ -20,6 +20,51 @@ export function mapStatus(status: AcpToolCallStatus | undefined): ToolCallUiStat
   }
 }
 
+/**
+ * The HYDRATE-path status mapper — a row read back off disk, not a live frame.
+ *
+ * Deliberately NOT `mapStatus`, and the two must not be collapsed back into
+ * one. `mapStatus` answers "is this call still open?" for the LIVE stream,
+ * where `in_progress` is the honest answer: the wire announces every call at
+ * `in_progress` (`normalize.rs` — `toolcall_start`, `tool_execution_start`), so
+ * treating it as settled would render every freshly-announced, genuinely-
+ * running call as FINISHED until its settle frame lands seconds later, deleting
+ * the live progress cue.
+ *
+ * A persisted row asks a different question. Disk only ever holds a status the
+ * worker wrote, and a row that still reads unresolved is a call whose settle
+ * frame NEVER arrived — the process died, the attempt was abandoned, the row was
+ * written and never updated. `finalizeSessionMessages` already rules on exactly
+ * this case for the in-memory transcript: a still-pending call becomes `failed`
+ * "so the transcript doesn't show a spinner forever". Hydration must agree, or
+ * every orphan re-opens on load and the transcript claims work is happening
+ * that stopped before this process started.
+ *
+ * So: the two settled statuses pass through, EVERYTHING ELSE (including
+ * `in_progress`, `pending` and `undefined`) is `failed`. This function can
+ * never return `"pending"`.
+ *
+ * `failed` and not `completed`, for two reasons. It matches the ruling above,
+ * and a `completed` card with no output renders the `(no output)` placeholder
+ * that `normalizeToolOutput` shows for a non-failed call — a success-looking
+ * card standing in for a call that never reported failure or success.
+ */
+export function mapPersistedStatus(
+  status: AcpToolCallStatus | undefined,
+): ToolCallUiStatus {
+  switch (status) {
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    default:
+      // An unresolved status ON DISK is not "still open" — it is a call whose
+      // settle frame never arrived. See the doc comment above; do not widen
+      // this to share `mapStatus`'s default.
+      return "failed";
+  }
+}
+
 /** Pull every `ToolCallContent::Diff` out of a tool call's content list. */
 export function extractDiffs(content: ToolCallContent[] | undefined): DiffRef[] {
   if (!content) return [];
@@ -310,7 +355,7 @@ export function rowToMessages(row: MessageRow): Message[] {
         kind: "tool-call",
         id,
         title,
-        status: mapStatus(payload.status as AcpToolCallStatus | undefined),
+        status: mapPersistedStatus(payload.status as AcpToolCallStatus | undefined),
         diff: diffs[0],
         rawInput: payload.rawInput,
         rawOutput: payload.rawOutput,

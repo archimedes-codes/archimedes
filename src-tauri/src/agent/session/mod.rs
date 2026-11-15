@@ -32,6 +32,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
+use fulcrum_harness::seams::FulcrumPersistence;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
@@ -632,6 +634,13 @@ pub struct SessionManager {
     /// The store-frame applier (the Supervisor's sole-writer persistence).
     /// Late-wired in `attach_db` (it needs the `Db`).
     persister: Arc<OnceLock<Arc<TranscriptPersister>>>,
+    /// The batching decorator behind that persister (#155, Task 3), held so the
+    /// router's flush points can reach `flush_session` — a method that is NOT on
+    /// `FulcrumPersistence` (adding it there would teach the crate's seam about
+    /// a `Db` it cannot name), and unreachable from the `Arc<dyn …>` the
+    /// persister stores. `None` only when no `Db` was ever attached, in which
+    /// case there is nothing buffered and every flush is a no-op.
+    batched: Arc<OnceLock<Arc<crate::storage::BatchingPersistence>>>,
     /// The directory the crash logs land in — the app data dir
     /// (`…/archimedes`), which is exactly what the crash hook was handed at
     /// install time. Late-wired (`set_crash_log_dir`), because a router that
@@ -744,6 +753,7 @@ impl SessionManager {
             subagent_manager: Arc::new(OnceLock::new()),
             sink: Arc::new(OnceLock::new()),
             persister: Arc::new(OnceLock::new()),
+            batched: Arc::new(OnceLock::new()),
             crash_log_dir: Arc::new(OnceLock::new()),
             sessions: Arc::new(StdMutex::new(HashMap::new())),
             app_handle: Arc::new(OnceLock::new()),
@@ -1051,7 +1061,46 @@ impl SessionManager {
         // it needs the `Db`). Late-wired here (the `Db` is attached after
         // `new`), unless already installed (e.g. via `SessionManagerBuilder`).
         if self.persister.get().is_none() {
-            let _ = self.persister.set(Arc::new(TranscriptPersister::new(db)));
+            // (#155, Task 3) The batching decorator wraps the `Db` HERE too, so
+            // a manager that never went through the builder gets batching as
+            // well — and the decorator handle is kept beside the persister
+            // because the router's flush points need `flush_session`, which the
+            // trait does not carry.
+            //
+            // The ONE case that must not build a second decorator is the
+            // builder path, where the persister is already installed with its
+            // OWN decorator: a second one here would be a buffer nobody writes
+            // to and every flush point would flush the wrong object. That is
+            // why the decorator is created inside this `is_none()` guard and not
+            // beside it, and why `with_batched` exists for the builder path.
+            let batched = Arc::new(crate::storage::BatchingPersistence::new(db));
+            let as_seam: Arc<dyn FulcrumPersistence> = batched.clone();
+            let _ = self.batched.set(batched);
+            let _ = self
+                .persister
+                .set(Arc::new(TranscriptPersister::new(as_seam)));
+        }
+    }
+
+    /// Drain one session's buffered writes (#155, Task 3). The router's flush
+    /// points call this; a manager with no decorator (a test that installed a
+    /// `TranscriptPersister` straight on the `Db`) has nothing buffered, so this
+    /// is a no-op there rather than a special case at every call site.
+    ///
+    /// A failure is LOGGED, not returned. Every call site is inside the router's
+    /// frame handling, which has one `Result` to hand back and it belongs to the
+    /// frame; a dropped batch must be loud in the debug log, which is the
+    /// discipline the decorator's doc comment states as the price of "errors move
+    /// to the flush".
+    pub(crate) fn flush_batched(&self, session_id: &str, where_: &str) {
+        let Some(batched) = self.batched.get() else {
+            return;
+        };
+        if let Err(e) = batched.flush_session(session_id) {
+            crate::agent::debuglog::log(&format!(
+                "batching flush ({where_}, session {session_id}) FAILED — buffered \
+                 rows for that session are lost: {e}"
+            ));
         }
     }
 
@@ -1147,6 +1196,11 @@ pub struct SessionManagerBuilder {
     worker_factory: Option<Arc<dyn WorkerFactory>>,
     dead_bound: std::time::Duration,
     persister: Arc<TranscriptPersister>,
+    /// The batching decorator `persister` wraps (#155, Task 3). `None` when the
+    /// caller supplied a persister built straight on the `Db` (the test call
+    /// sites in `tests/mod.rs` and `tests/worker_e2e.rs` do exactly that) — and
+    /// then there is no buffer, so every flush point is a no-op.
+    batched: Option<Arc<crate::storage::BatchingPersistence>>,
 }
 
 impl SessionManagerBuilder {
@@ -1167,7 +1221,22 @@ impl SessionManagerBuilder {
             worker_factory: None,
             dead_bound: DEFAULT_SUBAGENT_DEAD_BOUND,
             persister,
+            batched: None,
         }
+    }
+
+    /// Hand the builder the decorator that `persister` wraps (#155, Task 3).
+    ///
+    /// REQUIRED for batching to be reachable at all on this path: `attach_db`
+    /// deliberately does NOT build a second decorator when a persister is
+    /// already installed (a second buffer nobody writes to would be flushed by
+    /// every flush point while the real one filled up and was never drained), so
+    /// a caller that wraps the `Db` itself must hand over the handle. `lib.rs`
+    /// does; the persister-shaped test call sites do not, and get the unbatched
+    /// behaviour they were written against.
+    pub fn with_batched(mut self, batched: Arc<crate::storage::BatchingPersistence>) -> Self {
+        self.batched = Some(batched);
+        self
     }
 
     pub fn with_crash_log_dir(mut self, dir: PathBuf) -> Self {
@@ -1220,6 +1289,9 @@ impl SessionManagerBuilder {
             );
 
             let mut sm = SessionManager::new(self.config_dir);
+            if let Some(batched) = self.batched {
+                let _ = sm.batched.set(batched);
+            }
             let _ = sm.persister.set(self.persister);
             sm.attach_db(self.db);
             sm.set_catalog(self.catalog);
@@ -1654,10 +1726,30 @@ impl SessionManager {
         let db = self.driver.db.clone().ok_or_else(|| {
             SessionError::Io("list_sessions requires an attached database".to_string())
         })?;
-        let rows = db
-            .list_sessions(include_archived)
+        // (#155 Task 4) The read takes the `StdMutex<Connection>` the per-token
+        // writer holds, so it runs on a worker thread — otherwise it blocked a
+        // **tokio worker** on that mutex (head-of-line blocking against the
+        // transcript write). The house precedent and the dialect rule:
+        // `commands/spaces.rs::space_for_path`, stated at
+        // `commands/files/mod.rs` — `tauri::async_runtime::spawn_blocking`, NOT
+        // `tokio::task::spawn_blocking`. `Arc<Db>` is `Send + Sync` and NO lock is
+        // held across this `.await` (`Db::list_sessions`' guard is function-local),
+        // which is what makes the crossing safe. The `JoinError` arm is UNTESTABLE
+        // for the reason `spaces.rs` states — the closure is pure against an
+        // `Arc<Db>` and a `bool`, so it dies only on a genuine mutex poison — and
+        // it maps to this family's own `SessionError`, NOT to `HistoryError`: the
+        // two commands sit in different files and speak different wires, and the
+        // error type is chosen by the WIRE, not by the file (ADR 0063).
+        let rows = tauri::async_runtime::spawn_blocking(move || db.list_sessions(include_archived))
+            .await
+            .map_err(|join| SessionError::Io(join.to_string()))?
             .map_err(|e| SessionError::Io(e.to_string()))?;
         let catalog = self.effective_catalog(None, true).await;
+        // NOTE (#155, deliberately NOT this task): `load_settings` is sync file
+        // I/O and still runs on the async worker. One read of a small JSON file on
+        // a path the frontend hits once per boot, so it is not this task's
+        // blocking source; it is named here so the next pass does not have to
+        // rediscover it.
         let settings = load_settings(&self.config_dir);
         Ok(rows
             .into_iter()

@@ -104,9 +104,13 @@ a split is done when no `describe` spans two subjects, not when the file count w
 subject-named `describe`s living in one file is a legitimate outcome and costs no new mocks. The
 shape that works is `mod tests;` + a `tests/` directory (e.g. `src/foo/tests/mod.rs`), **not** a
 `tests.rs` sibling — `find src-tauri/src -name 'tests.rs'` reports **0** sites, while the directory
-shape already exists at `src-tauri/src/commands/files/tests`, `src-tauri/src/storage/db/tests` and
-`src-tauri/src/agent/session/tests` — `find src-tauri/src -type d -name tests` → **3**. The last of the
-three is this rule being applied: `936dcafe` moved the session registry's inline test module out to
+shape exists at **5** sites — `find src-tauri/src -type d -name tests` → `commands/files/tests`,
+`commands/tasks/tests`, `storage/db/tests`, `storage/batching/tests`, `agent/session/tests`. This list
+named only three of them and claimed **3**, which was already wrong at the base of issue #155 (that tree
+held **4** — `commands/tasks/tests` was never listed); **issue #155 added the fifth,
+`storage/batching/tests`**, so the count is 3 → 4 → 5 with one of those two steps this branch's and one a
+pre-existing under-count. `agent/session/tests` is this rule being applied: `936dcafe` moved the session
+registry's inline test module out to
 exactly that shape.
 
 Do **not** use the old trigger "split when the test body exceeds the production body". The 2026-11-07
@@ -161,6 +165,18 @@ and `chatAttachments` (37) alongside the first bullet below as candidates to ins
   swallowing, the Archived section's collapse/ordering/empty-state, unarchive, and the collapsed rail's
   marks and icons. Re-run: `npx vitest list src/components/SpacesList.test.tsx | grep -c "archive, ADR
   0016"` → `38`.
+- `src-tauri/src/storage/db/tests/mod.rs` holds **131 test attributes flat** — more than any other entry in
+  this list and the largest single test block in the repo — across at least the sessions, tasks, spaces,
+  board, artifacts and message-record subjects (`session` appears in 35 test names, `task` in 26, `space` in
+  22, `board` in 15, `artifact` in 9). Re-run:
+  `grep -cE '#\[(tokio::)?test\]' src-tauri/src/storage/db/tests/mod.rs` → `131`, and to see it is the
+  largest, the same instrument over every tracked file:
+  `git ls-files '*.rs' | xargs grep -cE '#\[(tokio::)?test\]' | awk -F: '$2>=25'` → **8** files, headed by
+  this one at 131, then `naming.rs` 77, `session/tests/mod.rs` 73, `config.rs` 47 — so 131 is the largest
+  single test block in the repo, and the two entries below are second and third. It is the same cautionary
+  shape as `session/tests/mod.rs` below: one flat module, no inner grouping, every table in the schema
+  sharing one file. **This branch added 5 of the 131** (126 at the base of issue #155 → 131 — the batched
+  write's tests), so the entry is this branch's, not merely a pre-existing one it walked past.
 - `src-tauri/src/agent/session/naming.rs`'s `#[cfg(test)] mod tests` holds **77 test attributes** across
   several subjects — excerpt construction, quote/whitespace trimming, title capping (incl. multi-byte),
   reasoning-level forwarding, and composed-key resolution. Re-run:
@@ -532,24 +548,38 @@ workflow can do — is writing notes a person would read.
   | grep -vE ':\s*//' | wc -l` → **29** call-site lines, of which 4 sit in test modules. Per file:
   `session/mod.rs` **15** (all production), `naming.rs` **6** = 3 production + 3 inside its
   `#[cfg(test)] mod tests`, `router.rs` **7** (all production), `session/tests/mod.rs` **1** (test).
-  Production = 15 + 3 + 7 = **25**. Use the comment-anchored filter, not `grep -v "//"`: the raw grep
+  Production = 15 + 3 + 7 = **25**. **Read the 29 as a RAW line count, never as the production count** —
+  a reader who runs the command and stops at 29 will "correct" 25 to 29 and be wrong; the 4 to drop are
+  the ones inside `naming.rs`'s and `session/tests/mod.rs`'s test modules, and only the per-file split
+  above says which. Use the comment-anchored filter, not `grep -v "//"`: the raw grep
   prints **30** because a prose comment in `session/mod.rs` quotes the very pattern, and `grep -v "//"`
   happens to give 29 today but would silently drop any real call site carrying a trailing `//` comment.
   `src-tauri/src/storage/db.rs` panics with
-  `.expect("db mutex poisoned")` at **28 production sites** (`grep -c 'expect("db mutex poisoned")
-  src-tauri/src/storage/db.rs` → 28) because `Db` holds ONE `rusqlite::Connection` in a `StdMutex`
-  and a panic mid-transaction can leave that single connection unusable. Note the asymmetry in the
-  evidence, not just the code: `db.rs` carries **no rationale anywhere in the file** — `grep -n
-  "poison" src-tauri/src/storage/db.rs | grep -v 'expect("db mutex poisoned")'` prints nothing — so a
-  new file that opens `session/mod.rs` first copies recovery and one that opens `db.rs` first copies
-  panic, and the written discriminator above is what makes the choice deliberate rather than
-  inherited. Hence the obligation: **any NEW panic-on-poison site must carry a one-line rationale for
-  why its resource is single and shared**, so `db.rs`'s bare `.expect("db mutex poisoned")` — which
-  asserts rather than argues — does not propagate. (Do not conflate counts: the tree-wide `grep -rn
-  "into_inner()" src-tauri/src/ | wc -l` → **37** includes test modules and non-lock uses; that is the
+  `.expect("db mutex poisoned")` at **51 production sites** (`grep -c 'expect("db mutex poisoned")'
+  src-tauri/src/storage/db.rs` → **51**; note the path goes OUTSIDE the quotes — with it inside, the
+  pattern is a literal that matches nothing and the command prints **0**) because `Db` holds ONE
+  `rusqlite::Connection` in a `StdMutex`
+  and a panic mid-transaction can leave that single connection unusable. All 51 are production: `db.rs`
+  holds no inline test module (its tests live in `storage/db/tests/mod.rs`, a separate file). The figure
+  was **28** when this bullet was written and **50** at this issue's base — the 28 is the stale one, and
+  this branch added 1 (`record_messages_batch`). **The asymmetry in the evidence has now closed, and it
+  closed because this bullet's own obligation was applied.** This bullet used to say `db.rs` carries
+  **no rationale anywhere in the file**, evidenced by `grep -n "poison" src-tauri/src/storage/db.rs |
+  grep -v 'expect("db mutex poisoned")'` printing nothing. **That grep now prints one line** — the
+  rationale comment `record_messages_batch` carries, which names this rule and says why that lock's
+  resource is single and shared. So the "no rationale anywhere" evidence is gone, and that is the
+  intended outcome, not a regression: the file's other 50 sites still assert without arguing, so a
+  new file that opens `db.rs` first still copies a bare panic. **The obligation therefore stands
+  unchanged: any NEW panic-on-poison site must carry a one-line rationale for
+  why its resource is single and shared** — `record_messages_batch` is now the in-repo example of what
+  that looks like, and the 50 older sites are what it replaces. (Do not conflate counts: the tree-wide
+  `grep -rn "into_inner()" src-tauri/src/ | wc -l` → **48** includes test modules and non-lock uses;
+  that is the
   figure the review attributed to `agent/session/*`, which is a mis-attribution — `agent/session/`
   itself holds **30** raw / **29** after dropping the comment line above, 25 of them production. Still
-  verify with the tree-wide command, since it is the one that reproduces.)
+  verify with the tree-wide command, since it is the one that reproduces. That tree-wide figure moved
+  **40 → 48** on this branch, and every one of the 8 is in `src-tauri/src/storage/batching.rs` — the
+  per-session map the batching decorator adds, which recovers by design.)
 - **Docs**: durable design decisions live in `docs/decisions/NNNN-slug.md`
   (ADR format); in-flight plans live in `docs/roadmap/<feature>.md` and are
   deleted on ship. Anything a roadmap records that must survive that deletion
@@ -588,6 +618,20 @@ workflow can do — is writing notes a person would read.
   shape existed and was wrong" — **quote the text verbatim** so the claim survives the object.
   `AGENTS.md` itself was the source of this trap: it told the run to squash, and the docs it
   inherits already cite pre-squash hashes.
+  **And the instrument above is under-counting, by construction: `[0-9a-f]{7}` with `\b` on both ends
+  matches EXACTLY seven hex characters, so it is blind to every 8-hex citation — and 8 is what `git
+  rev-parse --short` emits in this repo (`git rev-parse --short HEAD` → 8 chars), so 8-hex is the form
+  `git log --oneline` hands a writer, meaning the docs are being fed the form this regex cannot see.**
+  Measured on the same tracked set both ways (`docs/decisions` + `docs/features`, this worktree, kept =
+  resolves AND is not an ancestor of `HEAD`, identical normalisation on both sides):
+  `\b[0-9a-f]{7}\b` → **113** resolve / **71** kept; `\b[0-9a-f]{7,8}\b` → **144** resolve / **91** kept.
+  So **31 citations that resolve, and 20 of the kept-orphan class, are invisible to the command as
+  written** — which is also why the four 8-hex #155 hashes removed from the #155 docs on 2026-11-15 move
+  neither figure above: they are invisible to `{7}` by definition. Under `{7,8}` the same removal takes the
+  distinct-token count from **174** (at `HEAD`) to **170** (this worktree) and the resolving count from
+  **148** to **144**, while the kept-orphan count stays **91** — correct, since those four are still
+  ancestors of `HEAD` and only become orphans at the squash. Use `{7,8}` when you re-measure; the numbers in
+  the paragraph above are the `{7}` figures at their stated commit and are left as recorded.
 - **`gh api` writes its error body to STDOUT, not stderr.** So `2>/dev/null` does not suppress a
   404/422, and a `-n "$(...)"` truthiness test is **true for every failure** — a loop built that
   way reported "all 11 commits present on GitHub" for 11 commits that were all absent. Branch on
@@ -786,6 +830,111 @@ These are properties of the repo, not of any branch:
   step gets — this test passes with OR without `closed_stdin`."* So its pass/fail depends on the
   inherited handle, and the behaviour proof lives in the `execute_tool` test that re-execs the
   binary with a real pipe. Re-run before investigating.
+- **`src-tauri/tests/provider_gcloud_adc.rs` flakes under concurrent load — this file names it once
+  already, but only as a source-text-lint MOVE HAZARD (the "Moving a file between the two packages"
+  bullet below), never as a flake — and it needs an owner, not a drive-by fix.** Two of its
+  tests intermittently fail with
+  `left: None` where an ADC-minted bearer was expected: `env_override_beats_the_provider_flag`
+  (`assertion \`left == right\` failed: an unrecognised env value defers to the provider flag`,
+  `right: Some("ya29.env-token")`) and `resolve_bearer_serves_the_minted_adc_token` (`the ADC token
+  is the effective bearer`, `right: Some("ya29.arm-token")`). **Three observations on 2026-11-14,
+  two distinct tests.** The run logs were in `/tmp` and are ephemeral, so per the squash-orphan rule
+  above the quoted assertions are the durable handle, not the paths or the lines. Match on the test
+  NAME: the file is byte-identical to `main` (below), which is why both
+  `resolve_bearer_serves_the_minted_adc_token` panics landed on the same `provider_gcloud_adc.rs:337`
+  — the line is not evidence of anything and it moves the moment the file is edited.
+  **Pre-existing, not this branch's, and no storage change can reach it.** `git log main..HEAD --
+  src-tauri/tests/provider_gcloud_adc.rs` prints nothing and `git diff --stat main...HEAD --` that
+  same path prints nothing — identical to `main` — and the file has zero database contact:
+  `grep -cE 'Db::open|rusqlite|Connection' src-tauri/tests/provider_gcloud_adc.rs` → **0** (and
+  case-insensitive `sqlite` and `\bDb\b`: also 0). So do not go hunting for a storage fix here.
+  **The load signature is a correlation, not a discriminator — and the control run refutes it.** The box
+  is 8 cores (`nproc`). All three failures overlapped a `vitest` run. In two of them the cargo log's last
+  write lands inside the paired `pnpm test`'s window — 16:01:14 against a `Start at 16:01:04` for a 130 s
+  run, and 17:46:28 against a vitest ending 17:48:28 — and `provider_gcloud_adc` is that cargo run's LAST
+  target, so its tail executed while vitest was running. The third (a cargo run ending 14:55:50) overlaps
+  a vitest in a SIBLING worktree, and that one is a **weak** witness: it did not run the app's suite at
+  all, it **failed on module resolution** (`Cannot find package '@earendil-works/pi-tui'`; 103 of its 154
+  test files failed, only 38 tests actually failed while 868 passed, and the whole run lasted 24 s against
+  the ~130–138 s a real `pnpm test` takes here), so it applied far less load than a full 187-file run. **The control
+  run breaks the theory outright: a run in THIS tree PASSED 979/0 across 39 test binaries with every one
+  of this file's 14 tests `ok` (`test result: ok. 14 passed; 0 failed`), and its cargo test phase sits
+  entirely inside its own vitest window.** Reconstruct such a window without timestamps by summing the
+  per-target `finished in N s` lines — 58.3 s over that run's 40 `test result:` lines (39 test binaries
+  plus one doc-test) — and subtracting from the log's mtime: 15:54:16–15:55:15 against a vitest window of
+  15:54:02–15:56:20. So concurrency plausibly raises the odds and is nowhere near sufficient; a 981/0 run
+  probably overlapped too but its vitest log survives only as a 60-byte tail with no `Start at`, so that
+  is not provable. **Two runs are provably alone: a 981/0 at 18:28:10 and a 1003/0 at 20:01:46.** "Alone"
+  means no other SUITE ran alongside, so check it on suite-ness, not on any-file-in-`/tmp` — list the `.log`
+  files in the window and show which carry a `cargo test` result:
+
+  ```bash
+  alone() {   # alone <window-start> <window-end>
+    find /tmp -maxdepth 1 -name '*.log' -newermt "$1" ! -newermt "$2" -printf "%T+ %p\n" | sort |
+      while read -r t f; do printf "%s %-26s test-result-lines=%s\n" "$t" "$(basename "$f")" \
+        "$(grep -ac 'test result:' "$f" 2>/dev/null)"; done
+  }
+  alone "2026-11-14 18:10:00" "2026-11-14 18:45:00"   # around the 18:28:10 run
+  alone "2026-11-14 19:31:46" "2026-11-14 20:31:46"   # around the 20:01:46 run
+  ```
+
+  Around 18:28:10 (window `18:10`–`18:45`) that prints **one line** — the run's own log, 40 result lines.
+  Around 20:01:46 (window `19:31:46`–`20:31:46`) it prints three, and only the run's own log plus a second
+  1003/0 at 20:16:04 carry `test-result-lines=40`; the third is a clippy capture with `0`, which is not a
+  suite. **Run that check yourself before repeating this sentence:
+  these logs are ephemeral and the day they are gone the sentence is unfalsifiable, which is exactly why the
+  assertions up top are the durable handle.** Two corrections while I am here, both to claims this bullet
+  used to make: the clippy log it named as "the only thing between" the two 1003/0 runs is in fact dated
+  19:48:25, **before both of them** (so it was not between them at all, and the claim was right by accident),
+  and `/tmp` was **not** empty between 17:50 and 18:35 — three non-suite entries are dated inside that window
+  — though no second SUITE log is, which is all the claim ever needed. Corollary, and it
+  bit once already: **all three failing runs are 26-target and all three passing runs are 39-target.**
+  Cargo's fail-fast stops the binary list at `error: test failed, to rerun pass \`--test
+  provider_gcloud_adc\``, so the 13 targets after it (`worker_e2e`, `storage`, `skills`,
+  `provider_oidc`, …) never ran. A 26-target `cargo test` log is a TRUNCATED run, not a smaller
+  suite, and its 856/857/859 totals are not comparable to 981/1003.
+  **CI is safe and cannot hit this, so a red on CI is never "unexplained" here.**
+  `.github/workflows/ci.yml` holds two jobs; `cargo test` and `pnpm test` are sequential STEPS of
+  the one `lint-test-build` job (the three `cargo test` steps are mutually exclusive —
+  `if: runner.os == 'linux'`, `'macos'`, `'windows'` — and `pnpm test` is a later step of that same
+  job), and the `scripts` job runs neither. Running the two suites at once is the only reproduction
+  anyone has, but read the paragraph above first: it raises the odds and does not reliably
+  reproduce.
+  **The mechanism this file's sibling doc carries does not fit the evidence — start there.**
+  `docs/features/improvement-boundary-residue-closeout.md` §7 names this file's flake (that entry is
+  the only prior documentation, and it names `env_override_beats_the_provider_flag` alone) and
+  attributes it to "process-global `LITELLM_GCLOUD_TOKEN_AUTH` bleed under parallel harnesses". That
+  cannot explain `resolve_bearer_serves_the_minted_adc_token`, which never touches that variable;
+  and intra-process bleed is excluded by construction, because every env-mutating test in the file
+  holds the SAME `test_support::ENV_LOCK` whether it spells it `env_lock()` or `adc_serial()`, so
+  they are mutually exclusive — and the lib-test binary that also drives the override
+  (`agent/session/tests/mod.rs`) is a different PROCESS holding its own copy of that static, so a
+  cross-binary env bleed is arithmetically impossible. What the evidence does fit: both failures are
+  a MINT resolving to `None` and the target binary reports `finished in 0.05–0.08 s` — far inside the
+  `HTTP_TIMEOUT` of **30 s** that `fulcrum-harness`'s `provider_auth/gcloud.rs` sets (line 47 at the pinned
+  **0.2.0**; re-check it on any bump, since the constant lives in the published crate and NOT in this tree —
+  `grep -rn HTTP_TIMEOUT src-tauri/src src-tauri/tests` prints nothing), so the ADC leg failed fast rather than timing out:
+  an absent-or-unreadable ADC file, a
+  parse rejection, or a refused POST to the in-process `wiremock` server under CPU starvation. Both tests
+  that mint can lose; the tests that assert `None` cannot, which is why they never show up here.
+  **The two bare-lock tests, located by content, and the trap in the obvious fix.**
+  `env_override_beats_the_provider_flag` and `token_is_none_when_no_adc_file_exists_anywhere` are the
+  only two of the file's twelve `#[tokio::test]`s that take a bare `env_lock()`; the other ten split
+  **9 on `adc_serial()`** and one (`the_refresher_passes_a_gcloud_adc_credential_through_unchanged`)
+  on neither, correctly, because it mutates no env. Both bare-lock tests mutate process-global state
+  (`HOME`, `LITELLM_GCLOUD_TOKEN_AUTH`, `gcloud::ADC_ENV_VAR`) across `.await`s. But moving both onto
+  `adc_serial()` is WRONG for the second, and that is the trap: `adc_serial()` installs
+  `AdcFileSource::Explicit(None)`, which REPLACES discovery, so running
+  `token_is_none_when_no_adc_file_exists_anywhere` — whose entire subject is the PRODUCTION discovery
+  path over a scratch `HOME` — through it would pass having tested nothing. And a second bare
+  `env_lock()` in one thread deadlocks: the file's own note on
+  `an_ordinary_row_never_touches_the_adc_flow` records `ENV_LOCK` as a non-reentrant
+  `std::sync::Mutex` and calls that "the one way this suite can hang". So the real fix is a
+  thread-local override (or a reentrant-aware serialization), not a re-lock. **Isolation is green —
+  the close-out records `env_override_beats_the_provider_flag` as green standalone 3× and green as a
+  target 3×, green on the next 4 full runs — but those runs left no artifact I could find (no
+  single-target `cargo test` log survives in `/tmp`), so that figure is the close-out's, not a
+  re-measurement here.** Re-run alone before investigating.
 - **ADR numbers collide on disk, and a plan will confidently name one that is taken.** `0086` is used by
   TWO files (`0086-glossary-names-govern-new-code-and-are-repaired-on-touch-not-by-sweep.md` and
   `0086-two-stage-async-session-titling-with-wire-isolation.md`) — pre-existing, and the only collision
