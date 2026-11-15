@@ -1560,8 +1560,11 @@ impl Db {
     /// caller a connection of unknown state (an open transaction, or a rolled-back
     /// batch it believes landed). AGENTS.md's poisoned-mutex rule — recover when
     /// the lock guards independent per-key state, panic when it guards one shared
-    /// resource — and this is the file's own 28 sites, now arguing for itself
-    /// instead of merely asserting.
+    /// resource — and this is the file's own sites, now arguing for itself instead
+    /// of merely asserting. NO COUNT IS QUOTED HERE, deliberately: an earlier
+    /// revision of this sentence named how many sites there were, named the wrong
+    /// number, and had to be corrected in the very next commit. A count in a comment
+    /// rots while the rule it illustrates does not.
     pub fn record_messages_batch(
         &self,
         rows: &[(&str, &str, Option<&str>, &str)],

@@ -22,11 +22,12 @@
 //! that test goes red.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use fulcrum_harness::seams::FulcrumPersistence;
 
+use super::{DrainReason, DrainStage};
 use crate::storage::{BatchingPersistence, Db, DEFAULT_FLUSH_INTERVAL};
 use crate::types::SessionInfo;
 
@@ -851,6 +852,66 @@ async fn a_failed_session_does_not_strand_the_sessions_it_was_batched_with() {
             );
         }
     }
+
+    // ONE ROUND WITH THE ORDER FORCED, because eight rolls of a `HashMap` are still
+    // eight rolls. A reviewer's point, and it is fair: rounds catch a permutation
+    // that HIDES the defect only probabilistically, so a future refactor that made
+    // `take()`'s order DETERMINISTIC — sorted, insertion-ordered, anything stable —
+    // could put the failing session last every single time and this test would go
+    // permanently green over a `?` that strands every sibling. No number of rounds
+    // fixes that, because the exposure is a property of the ORDER and the rounds
+    // only ever sample it.
+    //
+    // So this round does not sample: it drains through the real `take()`, then puts
+    // the failing session FIRST in the batch by construction and hands that order to
+    // the real `write()`. Only the ORDER is fixed — every other part of the path is
+    // the production one. Ghost-first is the direction that EXPOSES the defect (the
+    // abandoned sessions are the ones queued AFTER the failure), so pinning that
+    // direction is what makes the test fail by construction rather than by luck, and
+    // it is the direction a deterministic-but-unlucky `take()` would have to be lucky
+    // to produce on its own.
+    {
+        for sid in ["s1", "s2", "s3"] {
+            seed_session(&db, sid);
+        }
+        let p = Arc::new(BatchingPersistence::with_interval(db.clone(), LONG));
+        p.record_message(
+            "ghost-forced",
+            "agent-text",
+            Some("k"),
+            r#"{"text":"orphan"}"#,
+        )
+        .expect("buffered");
+        for sid in ["s1", "s2", "s3"] {
+            p.record_message(sid, "agent-text", Some("k-forced"), r#"{"text":"fine"}"#)
+                .expect("buffered");
+        }
+
+        let mut drained = super::take(&p.inner, None);
+        assert_eq!(drained.len(), 4, "all four sessions are in the batch");
+        // The forcing: the failing session FIRST, the three innocent ones after it.
+        drained.sort_by_key(|(sid, _)| if sid == "ghost-forced" { 0 } else { 1 });
+        let ghost_at = drained
+            .iter()
+            .position(|(sid, _)| sid == "ghost-forced")
+            .expect("the ghost is in the batch it was buffered into");
+        assert_eq!(
+            ghost_at, 0,
+            "the forced order puts the failing session first"
+        );
+
+        super::write(&p.inner, &drained, super::DrainReason::FlushAll)
+            .expect_err("the ghost's FK violation is still reported");
+        for sid in ["s1", "s2", "s3"] {
+            assert_eq!(
+                db.messages_for(sid).expect("the read").len(),
+                ROUNDS + 1,
+                "the CONSTRUCTED ordering: {sid} was queued behind a failing session \
+                 and must still have landed. A `?` in `write`'s loop fails this every \
+                 time and not a quarter of the time"
+            );
+        }
+    }
 }
 
 // ── The pass-through half of the surface ─────────────────────────────────────
@@ -954,5 +1015,667 @@ async fn coalescing_keeps_first_seen_order_and_last_wins_payload() {
     assert_eq!(
         rows[0].payload_json, r#"{"text":""}"#,
         "with the LAST payload"
+    );
+}
+
+// ── (g) Commit order must equal buffer order (#155 review, Finding 1) ─────────
+
+/// An interval short enough that a real timer fires inside a test's polling budget.
+/// The tests in this section are NOT measuring the window — they are pinning the
+/// ORDER of two commits — so a short interval costs them nothing and lets the
+/// interval timer itself be one of the two competing drains, which is the whole
+/// point: the defect is specifically about the timer and not about a flush racing
+/// another flush.
+const SHORT: Duration = Duration::from_millis(20);
+
+/// The seam's waits are not races to be won: a parked drain is parked until the
+/// test says otherwise, and an unparked one always finishes. So this is a HANG
+/// GUARD, not a bet — a miss is reported as itself ("this stage never happened",
+/// i.e. the seam is not firing and the test would prove nothing) and the payload
+/// assertion below carries the real diagnosis.
+const SEAM_BUDGET: Duration = Duration::from_secs(5);
+
+/// One line of the drain trace the seam produces.
+type DrainEvent = (DrainStage, DrainReason);
+
+/// Wait until the drain trace contains `want`.
+///
+/// Polling the shared log rather than draining a channel keeps this order-blind: a
+/// test that popped events off a queue would have to consume a `Committed` it was
+/// not looking for to reach one it was, and then put it back.
+fn saw(events: &Arc<StdMutex<Vec<DrainEvent>>>, want: DrainEvent, budget: Duration) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if events
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(&want)
+        {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// The drain trace so far, in the order it was recorded.
+fn trace(events: &Arc<StdMutex<Vec<DrainEvent>>>) -> Vec<DrainEvent> {
+    events.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+/// A park a seam hook can hold a drain in, and release.
+///
+/// A PARK AND NOT AN `await`. The window Finding 1 is about is a drain sitting
+/// between its `take` and its commit while it waits on the `Db` `conn` mutex, and
+/// that wait BLOCKS A THREAD. Modelling it as a blocked thread is the faithful
+/// reproduction; modelling it as a yield would hand the scheduler the interleaving,
+/// which is the luck this seam exists to remove.
+struct Park {
+    gate: (StdMutex<bool>, std::sync::Condvar),
+}
+
+impl Park {
+    fn new() -> Self {
+        Self {
+            gate: (StdMutex::new(false), std::sync::Condvar::new()),
+        }
+    }
+
+    /// Block here until [`Park::release`].
+    fn wait(&self) {
+        let mut parked = self.gate.0.lock().unwrap_or_else(|p| p.into_inner());
+        while !*parked {
+            parked = self
+                .gate
+                .1
+                .wait(parked)
+                .expect("the park's condvar is never poisoned by a test");
+        }
+    }
+
+    fn release(&self) {
+        *self.gate.0.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        self.gate.1.notify_all();
+    }
+}
+
+/// A multi-thread runtime with real threads, for the tests that must BLOCK (wait on
+/// a park, join a plain thread) while a timer task runs.
+///
+/// `#[tokio::test]` + `block_on` would put the test body and the timer on ONE
+/// thread, and a blocked park would then starve the very drain it is waiting for.
+/// These tests ENTER the runtime and keep the current thread free.
+fn real_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("a multi-thread runtime")
+}
+
+/// Install a seam hook that records every drain of `s1` and PARKS the drain matching
+/// `park_at`. Returns the event log and the gate that holds the parked drain.
+///
+/// Park ONLY the drain and stage named: parking the competing drain too, or parking
+/// at a stage before the rows are in hand, would test the seam instead of the
+/// decorator.
+fn park_one_drain(
+    p: &BatchingPersistence,
+    park_at: (DrainStage, DrainReason),
+) -> (Arc<StdMutex<Vec<DrainEvent>>>, Arc<Park>) {
+    let events: Arc<StdMutex<Vec<DrainEvent>>> = Arc::new(StdMutex::new(Vec::new()));
+    let released = Arc::new(Park::new());
+    let (log, down) = (events.clone(), released.clone());
+    p.set_drain_hook(move |sid, stage, reason| {
+        if sid != "s1" {
+            return;
+        }
+        log.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((stage, reason));
+        // Record FIRST, then park: the event log is how the test knows the drain has
+        // arrived, so parking before the push would deadlock the test on `saw`.
+        if (stage, reason) == park_at {
+            down.wait();
+        }
+    });
+    (events, released)
+}
+
+/// (g, THE INVERSION) A flush point must not have a STALE payload committed on top
+/// of the one it just committed.
+///
+/// THE INTERLEAVING, reproduced rather than raced:
+///
+/// 1. `P1` is buffered for key `K` and the interval timer is armed.
+/// 2. The timer fires: it releases its timer slot, takes `K=P1` OUT of the map, and
+///    now sits in the window between the take and the commit — the window the real
+///    `Db` `conn` mutex wait opens under SQLite contention. The seam PARKS it there,
+///    `P1` in hand and nothing committed.
+/// 3. `P2` arrives (newer; it supersedes `P1` on the same key).
+/// 4. `flush_session` — a router flush point, e.g. `agent_settled`, "the turn is
+///    over" — takes `K=P2` and commits it.
+/// 5. The timer resumes and commits `P1`.
+///
+/// `record_messages_batch` upserts with `DO UPDATE SET payload_json = excluded…`, so
+/// the LAST COMMIT wins, and unguarded the last commit is the stale `P1`. On a
+/// streaming accumulator key the payload IS the full text so far, so that is a
+/// PERMANENTLY TRUNCATED assistant message — and step 4 means there may be no later
+/// frame to heal it.
+///
+/// WHY THIS IS DETERMINISTIC AND NOT A RACE: the seam parks step 2 until the test
+/// says otherwise, so steps 3–5 happen strictly INSIDE that park. Timing decides
+/// only how long the park is held, never what order anything lands in.
+///
+/// THE TRACE ASSERTION IS THE MECHANISM, NOT THE OUTCOME: an outcome assertion alone
+/// could be satisfied by a decorator that got lucky, so the test also requires the
+/// stale drain's commit to be the FIRST commit of the run and the flush to have
+/// QUEUED behind it. `Queued` is the proof the two drains were serialised rather
+/// than interleaved.
+#[test]
+fn a_flush_cannot_commit_a_newer_payload_that_an_in_flight_timer_then_overwrites() {
+    let (_dir, db) = temp_db("batching-inversion-");
+    seed_session(&db, "s1");
+    let rt = real_runtime();
+    let _entered = rt.enter();
+
+    let p = Arc::new(BatchingPersistence::with_interval(db.clone(), SHORT));
+    let (events, released) = park_one_drain(&p, (DrainStage::Taken, DrainReason::IntervalTimer));
+
+    // (1)–(2) buffer `P1`; the timer takes it and is parked before committing.
+    p.record_message("s1", "agent-text", Some("k1"), r#"{"text":"P1"}"#)
+        .expect("buffered");
+    assert!(
+        saw(
+            &events,
+            (DrainStage::Taken, DrainReason::IntervalTimer),
+            SEAM_BUDGET
+        ),
+        "the interval timer never reached its take — the seam is not firing, so \
+         this test would say nothing about ordering"
+    );
+    assert!(
+        db.messages_for("s1").expect("the read").is_empty(),
+        "the premise: the timer holds `P1` in hand and has committed nothing"
+    );
+
+    // (3) the NEWER payload arrives and supersedes `P1` on the same key.
+    p.record_message("s1", "agent-text", Some("k1"), r#"{"text":"P2"}"#)
+        .expect("buffered");
+    assert!(
+        db.messages_for("s1").expect("the read").is_empty(),
+        "`P2` is buffered and not written through — a drain, not this call, commits it"
+    );
+
+    // (4) a flush point drains the session. Off on its own thread, because the
+    // parked drain must be able to run while this one waits.
+    let for_flush = p.clone();
+    let flusher = std::thread::spawn(move || for_flush.flush_session("s1"));
+
+    // (5) the flush must QUEUE behind the drain in flight rather than race it.
+    let queued = saw(
+        &events,
+        (DrainStage::Queued, DrainReason::FlushSession),
+        Duration::from_millis(500),
+    );
+
+    released.release();
+    let flushed = flusher
+        .join()
+        .expect("the flushing thread does not panic")
+        .expect("the flush commits");
+    // `0` or `1`, and deliberately not `== 1`: the newer row was re-armed with its
+    // own timer when it was buffered, so on a slow enough machine that timer can
+    // reach the gate first and take it, leaving the flush nothing to do. EITHER
+    // drain committing `P2` is correct — the invariant under test is the ORDER of
+    // the commits, which the trace assertions below pin by name, and not which
+    // caller happened to win.
+    assert!(
+        flushed <= 1,
+        "a per-session drain issues at most one row write here, got {flushed}"
+    );
+
+    // The STALE drain must have finished committing before the disk is read. This
+    // is what makes the payload assertion below a result rather than a stopwatch
+    // reading: waiting for the FLUSH would let a broken decorator pass simply
+    // because the stale commit had not landed yet at read time. Waiting for the
+    // drain that holds the OLD payload is the wait that matters — after it, whatever
+    // is on disk is the final answer, and a decorator with no ordering guard fails
+    // here every time and not most times.
+    //
+    // The flush's own commit needs no wait: `flush_session` returns after its write,
+    // so the `join` above already ordered it.
+    assert!(
+        saw(
+            &events,
+            (DrainStage::Committed, DrainReason::IntervalTimer),
+            SEAM_BUDGET
+        ),
+        "the parked drain never reported its commit, so the payload below was read \
+         with the stale write still in flight and proves nothing about order"
+    );
+
+    // THE INVARIANT: for one key, commit order equals buffer order — what is on disk
+    // is the LAST payload BUFFERED, not the last one some drain reached SQLite with.
+    let rows = db.messages_for("s1").expect("the display rows load");
+    assert_eq!(rows.len(), 1, "one key, one row");
+    assert_eq!(
+        rows[0].payload_json, r#"{"text":"P2"}"#,
+        "a stale payload a timer had already taken was committed AFTER the newer one \
+         a flush point committed — `agent_settled` means the turn is over, so on a \
+         streaming accumulator key that is a permanently truncated assistant message \
+         with no later frame to heal it"
+    );
+
+    // THE MECHANISM: the stale drain's commit is the FIRST commit of the run, so
+    // whatever committed `P2` did so after it.
+    let commits: Vec<DrainEvent> = trace(&events)
+        .into_iter()
+        .filter(|(stage, _)| *stage == DrainStage::Committed)
+        .collect();
+    assert_eq!(
+        commits.first(),
+        Some(&(DrainStage::Committed, DrainReason::IntervalTimer)),
+        "the drain holding the OLDER payload must commit first; the trace is {commits:?}"
+    );
+    assert!(
+        queued,
+        "the flush never reported QUEUING behind the in-flight drain: it raced it, so \
+         the ordering above is a scheduling coincidence and not a property"
+    );
+}
+
+/// (g, the REVERSE direction) A row buffered between the timer's SLOT RELEASE and
+/// its `take` must get a timer of its own.
+///
+/// This is the OTHER hole — the one the release-before-take ordering closes, and the
+/// one the fix above must not reopen by serialising drains. Pinning it by name here
+/// is deliberate: the fix touches exactly this ordering, and "I only added a lock" is
+/// how a loss-window regression hides inside an ordering fix.
+///
+/// The seam parks the timer AFTER the release and BEFORE the take, the test buffers
+/// a row into that window, and the assertion is STRUCTURAL — the session has an armed
+/// timer again — followed by the row actually reaching the disk.
+///
+/// THIS IS ALSO THE TEST THAT COVERS "a row buffered between the slot release and the
+/// take is not orphaned", which is the reverse-direction case the review asked to see
+/// accounted for. Before this commit it was NOT covered: `arm_timer`'s release-first
+/// ordering was argued in a comment and pinned only by its ABSENCE-from-the-other-
+/// order, and no test ever buffered a row into that specific window.
+#[test]
+fn a_row_buffered_between_the_slot_release_and_the_take_gets_its_own_timer_and_is_not_orphaned() {
+    let (_dir, db) = temp_db("batching-orphan-window-");
+    seed_session(&db, "s1");
+    let rt = real_runtime();
+    let _entered = rt.enter();
+
+    let p = Arc::new(BatchingPersistence::with_interval(db.clone(), SHORT));
+    let (events, released) =
+        park_one_drain(&p, (DrainStage::ReleasedSlot, DrainReason::IntervalTimer));
+
+    p.record_message("s1", "agent-text", Some("k1"), r#"{"text":"P1"}"#)
+        .expect("buffered");
+    assert!(
+        saw(
+            &events,
+            (DrainStage::ReleasedSlot, DrainReason::IntervalTimer),
+            SEAM_BUDGET
+        ),
+        "the timer never reached the slot release, so the window this test is about \
+         was never opened"
+    );
+
+    // The row that lands IN THE WINDOW: the slot is free, the take has not run.
+    p.record_message("s1", "agent-text", Some("k2"), r#"{"text":"P2"}"#)
+        .expect("buffered");
+    let armed = p
+        .inner
+        .sessions
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get("s1")
+        .is_some_and(|entry| entry.timer.is_some());
+    assert!(
+        armed,
+        "a row buffered between the slot release and the take found NO timer to arm: \
+         it would then sit behind nothing until some later write or the quit, which \
+         is a hole in the 250 ms bound this timer exists to hold"
+    );
+
+    released.release();
+    let landed = {
+        let deadline = std::time::Instant::now() + SEAM_BUDGET;
+        loop {
+            if !db.messages_for("s1").expect("the read").is_empty() {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+    assert!(
+        landed,
+        "the row buffered in the window never reached the disk: it was orphaned"
+    );
+    let rows = db.messages_for("s1").expect("the display rows load");
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.message_key.clone())
+            .collect::<Vec<_>>(),
+        vec![Some("k1".to_string()), Some("k2".to_string())],
+        "both keys landed in first-seen order — the drain took the window's row too"
+    );
+}
+
+// ── (h) The no-runtime write-through cannot land under a newer buffered row ───
+
+/// (h, #155 review Finding 2) The write-through branch writes to SQLite IMMEDIATELY,
+/// so anything still buffered for that session is by definition older and must go
+/// first — otherwise the buffered-then-stale row is committed on top of the
+/// write-through-newer one and last-commit-wins keeps the stale value.
+///
+/// THE INTERLEAVING:
+///
+/// 1. Thread A (ON a runtime) buffers `P1`; the session's timer is armed.
+/// 2. The timer fires, takes `K=P1`, and the seam parks it before its commit.
+/// 3. Thread B (NO runtime — a plain `std` thread, the case the write-through branch
+///    exists for) writes `P2` through, straight to SQLite.
+/// 4. The timer resumes and commits `P1`.
+///
+/// `P2` is on disk at step 3 and `P1` overwrites it at step 4. The fix is the same
+/// ordering flush `Insert` and `Replace` already do: `flush_before_passthrough` runs
+/// first, and it aborts this session's armed timer rather than waiting for it, so it
+/// costs the loss window nothing.
+///
+/// DETERMINISTIC IN BOTH DIRECTIONS, not only in the failing one: the park makes step
+/// 4 happen strictly after step 3, so a decorator with no pre-flush lands `P1` LAST
+/// every run, and a decorator with one lands `P2` last every run (its pre-flush
+/// drains `P1` and aborts the timer, and if the timer had already got there first the
+/// answer is still `P2`). No timing decides the outcome in either build.
+#[test]
+fn a_write_through_cannot_be_overwritten_by_an_older_row_the_timer_still_holds() {
+    let (_dir, db) = temp_db("batching-passthrough-order-");
+    seed_session(&db, "s1");
+    let rt = real_runtime();
+    let _entered = rt.enter();
+
+    let p = Arc::new(BatchingPersistence::with_interval(db.clone(), SHORT));
+    let (events, released) = park_one_drain(&p, (DrainStage::Taken, DrainReason::IntervalTimer));
+
+    // (1)–(2) `P1` is buffered on a thread WITH a runtime, and its timer is parked
+    // with the row in hand.
+    p.record_message("s1", "agent-text", Some("k1"), r#"{"text":"P1"}"#)
+        .expect("buffered");
+    assert!(
+        saw(
+            &events,
+            (DrainStage::Taken, DrainReason::IntervalTimer),
+            SEAM_BUDGET
+        ),
+        "the timer never reached its take, so nothing was in flight to overwrite the \
+         write-through below and the test would prove nothing"
+    );
+
+    // (3) a NO-RUNTIME thread writes the newer payload through. A fresh `std` thread
+    // has no tokio runtime, which is exactly what makes `arm_timer` decline and the
+    // write-through branch run.
+    let through = {
+        let p = p.clone();
+        std::thread::spawn(move || {
+            p.record_message("s1", "agent-text", Some("k1"), r#"{"text":"P2"}"#)
+        })
+    };
+    // The write-through cannot complete on the fixed build until the parked drain is
+    // released (it pre-flushes, and the pre-flush queues behind that drain), so this
+    // is where the test lets it through. A thread that had no runtime AND no pending
+    // batch would not block here at all; this one has both.
+    released.release();
+    through
+        .join()
+        .expect("the write-through thread does not panic")
+        .expect("the write-through reports its own SQLite result, immediately");
+
+    // (4) Nothing may be committed after this point: the timer was aborted by the
+    // pre-flush, and `P1` went out ahead of `P2`.
+    assert_eq!(
+        db.messages_for("s1").expect("the display rows load").len(),
+        1,
+        "one key, one row"
+    );
+    assert_eq!(
+        db.messages_for("s1").expect("the display rows load")[0].payload_json,
+        r#"{"text":"P2"}"#,
+        "the write-through (newer) must be what survives; the buffered row the timer \
+         was holding is older by construction and must have been committed first"
+    );
+    // The pre-flush actually QUEUED behind the in-flight drain rather than skipping
+    // past it — the mechanism, not just the outcome.
+    assert!(
+        saw(
+            &events,
+            (DrainStage::Queued, DrainReason::FlushSession),
+            Duration::from_millis(500)
+        ),
+        "the write-through never flushed the pending batch (it did not even queue \
+         behind the drain in flight), so the ordering above was luck"
+    );
+}
+
+// ── (i) `Replace` refuses its rewrite when the pre-flush fails (Finding 3) ─────
+
+/// (i, #155 review Finding 3) `Replace` is the ONE pass-through arm that fails when
+/// its pre-flush fails, where `Insert` logs and proceeds.
+///
+/// THE ASYMMETRY IS THE DECISION, so both halves are pinned. A deferred display row
+/// can still land later, so `Insert` logs its pre-flush failure and carries on: it
+/// upserts one row of the provider transcript on its own `(session_id, seq)` key, the
+/// crate has no retry for a refused `Insert` frame, and refusing it would turn a
+/// deferred loss into a hard one. `Replace` is different in kind — it is the atomic
+/// compaction rewrite, one transaction that DELETES the session's transcript and
+/// re-inserts it. Letting it proceed after a refused pre-flush means the rows that
+/// were just dropped belonged to a transcript that no longer exists in its old form,
+/// and nothing will ever re-emit them: the loss stops being deferred and becomes
+/// permanent. The choice is a compaction the caller can retry against a transcript
+/// nobody can rebuild.
+///
+/// THE INSTRUMENT, and why it is this one. A batch refuses its own flush when its
+/// `messages` rows hit the foreign key (the file's own idiom, see
+/// [`a_batched_error_surfaces_at_the_flush_and_not_at_the_write`]) — which needs a
+/// session with NO `sessions` row. That same missing row makes a `Replace` carrying
+/// rows fail its OWN insert, so both the fixed and the broken build would return
+/// `Err` and the test would pass either way (an earlier version of this test did
+/// exactly that, and was deleted as vacuous). A `Replace` with an EMPTY row list is
+/// the DELETE half alone, which no foreign key objects to — so `Err` here means
+/// "the rewrite was withheld", and `Ok` would mean "it ran on a session whose
+/// pending batch had just been lost". That is the whole difference, and it is
+/// observable.
+#[tokio::test]
+async fn replace_refuses_its_atomic_rewrite_when_the_pre_flush_fails() {
+    let (_dir, db) = temp_db("batching-replace-preflush-");
+    // NO `seed_session`: the FK is the instrument that makes the batch refuse.
+    let p = Arc::new(BatchingPersistence::with_interval(db.clone(), LONG));
+    p.record_message("ghost", "agent-text", Some("k1"), r#"{"text":"undead"}"#)
+        .expect("the buffered write reports Ok optimistically");
+
+    let err = p
+        .replace_native_messages("ghost", &[])
+        .expect_err("a refused pre-flush must refuse the compaction rewrite too");
+    let text = err.to_string().to_lowercase();
+    assert!(
+        text.contains("constraint") || text.contains("foreign key"),
+        "and it comes back naming what failed, got {err}"
+    );
+
+    // The counterpart, which is what makes the `Err` above mean "withheld" and not
+    // "the caller's own write was impossible": with nothing buffered there is no
+    // pre-flush to fail, and the very same call succeeds. Without this half the
+    // assertion above could be satisfied by a `Replace` that simply cannot run.
+    p.replace_native_messages("ghost", &[])
+        .expect("with nothing pending, the same rewrite is not refused");
+}
+
+/// (i, the other half) `Insert` keeps LOGGING-AND-PROCEEDING where `Replace` refuses,
+/// and the divergence is pinned rather than left to a comment.
+///
+/// WHY THIS HALF IS A SOURCE PIN AND NOT A ROUND-TRIP. The behavioural instrument
+/// this file uses for a refused batch is the foreign key: a `messages` row whose
+/// `sessions` row is absent is a constraint violation, and that is what makes a
+/// deferred batch refuse its own flush. But `native_messages` references the SAME
+/// `sessions(id)` with the same `ON DELETE CASCADE`, so on a session with no `sessions`
+/// row `insert_native_message` fails for its OWN reason and its pre-flush failure is
+/// unobservable — the `Ok` the test would need to see is unreachable. Every other
+/// column the batch can fail on (`context_usage_json`, `cost_usd`, `todos_json`) is an
+/// `UPDATE` that reports `Ok(0)` for a missing row, so there is no way to fail the
+/// batch without also failing the write. The two halves therefore need two different
+/// instruments: `Replace`'s refusal IS observable, because a `Replace` with an EMPTY
+/// row list is the DELETE half alone and no foreign key objects to that — so its
+/// `Err` can only mean "withheld", and that half is pinned by a round-trip above;
+/// `Insert`'s proceed-past-it is not observable at all, and is pinned here.
+///
+/// This is the same instrument the schema guards in `storage/db.rs`'s tests and
+/// `commands/update.rs::the_relaunch_path_drains_the_batch_before_it_exits` use, for
+/// the same stated reason: the alternative to a source pin is a comment, and a comment
+/// is exactly what was wrong here — the docs claimed `Insert` and `Replace` behaved
+/// alike when `Replace` needed the opposite. It asserts the CALL SHAPE of the two arms
+/// and nothing more, and it is deliberately narrow: it would not catch a broken
+/// `flush_session`, which the round-trip above does.
+#[test]
+fn the_two_pass_through_arms_diverge_on_a_failed_pre_flush_by_construction() {
+    let source = include_str!("../../batching.rs");
+    let arm = |name: &str| -> String {
+        source
+            .split(&format!("fn {name}("))
+            .nth(1)
+            .unwrap_or_else(|| panic!("the `{name}` arm of `FulcrumPersistence`"))
+            // Stop at the next item so a later function cannot satisfy the search.
+            .split("\n    }\n")
+            .next()
+            .expect("the arm body")
+            // Comments excluded: the pin is about the code, and these docs discuss
+            // both policies by name, so prose would satisfy either assertion.
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let insert = arm("insert_native_message");
+    assert!(
+        insert.contains("let _ = self.flush_before_passthrough("),
+        "`insert_native_message` must LOG-AND-PROCEED past a failed pre-flush (it          upserts one row on its own key and the crate has no retry for it) — if this          reads as an oversight, read `flush_before_passthrough`'s doc first"
+    );
+    let replace = arm("replace_native_messages");
+    assert!(
+        replace.contains("flush_before_passthrough(session_id, \"replace\")?"),
+        "`replace_native_messages` must PROPAGATE a failed pre-flush: proceeding would          delete and re-insert a transcript whose pending display rows are already lost,          which is a permanent loss rather than a deferred one"
+    );
+    // And the pre-flush really does hand its error back — otherwise the `?` above is
+    // pinning a function that can never fail, and the divergence is fiction.
+    let helper = source
+        .split("fn flush_before_passthrough(")
+        .nth(1)
+        .expect("the pre-flush helper")
+        .split("\n    }\n")
+        .next()
+        .expect("the pre-flush helper body");
+    assert!(
+        helper.contains("return Err(e)"),
+        "`flush_before_passthrough` must be able to report a failure for either arm's          policy to mean anything"
+    );
+}
+
+/// (h, the half the other test cannot reach) The write-through pre-flush must be able
+/// to abort a timer that has NOT fired yet, from a thread with NO runtime — and must
+/// not wait for it.
+///
+/// WHY THIS IS A SEPARATE TEST AND NOT A LINE IN the one above: there the timer had
+/// already fired and released its slot, so `flush_session` found nothing to abort and
+/// the abort path never ran. Here the interval is long, so a real, armed,
+/// not-yet-fired handle is in the map, and a plain `std` thread — one with no tokio
+/// context at all — has to `abort()` it. That is the exact call the write-through
+/// pre-flush introduced, and it is worth pinning on its own: `JoinHandle::abort` is a
+/// `remote_abort`, which hands the cancellation to the task's OWN scheduler rather
+/// than the calling thread's runtime, so it is safe from a thread that has none — but
+/// "safe by reading tokio's source" is a claim, and this is the durability path.
+///
+/// The other thing it pins is the cost: the write-through returns immediately. Waiting
+/// for the interval here would be the `join()`-the-handle design this module rejects,
+/// and a 600-second interval would turn this test into a hang rather than a failure —
+/// which is the point of making the interval absurd.
+#[test]
+fn a_write_through_aborts_a_live_timer_from_a_thread_with_no_runtime_and_does_not_wait() {
+    let (_dir, db) = temp_db("batching-passthrough-abort-");
+    seed_session(&db, "s1");
+    let rt = real_runtime();
+    let _entered = rt.enter();
+
+    // Long enough that no timer can fire during the test: if the pre-flush WAITED for
+    // the interval instead of aborting the handle, this test hangs and the interval
+    // name says why.
+    let p = Arc::new(BatchingPersistence::with_interval(db.clone(), LONG));
+    p.record_message("s1", "agent-text", Some("k1"), r#"{"text":"P1"}"#)
+        .expect("buffered on a thread WITH a runtime");
+    assert!(
+        p.inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get("s1")
+            .is_some_and(|entry| entry.timer.is_some()),
+        "the premise: a timer is armed and has NOT fired"
+    );
+    assert!(
+        db.messages_for("s1").expect("the read").is_empty(),
+        "the premise: `P1` is still buffered"
+    );
+
+    let started = std::time::Instant::now();
+    let through = {
+        let p = p.clone();
+        std::thread::spawn(move || {
+            p.record_message("s1", "agent-text", Some("k1"), r#"{"text":"P2"}"#)
+        })
+    };
+    through
+        .join()
+        .expect("aborting a live timer from a no-runtime thread does not panic")
+        .expect("the write-through reports its own SQLite result, immediately");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the write-through waited on something it should have aborted: it took {:?} \
+         against a {:?} interval",
+        started.elapsed(),
+        LONG
+    );
+
+    let rows = db.messages_for("s1").expect("the display rows load");
+    assert_eq!(rows.len(), 1, "one key, one row");
+    assert_eq!(
+        rows[0].payload_json, r#"{"text":"P2"}"#,
+        "the older buffered row went first (the pre-flush), then the write-through"
+    );
+    // THE STRUCTURAL HALF, and the race-free way to pin the abort. Asking "did the
+    // timer later overwrite `P2`?" cannot work here: with a 600-second interval a
+    // timer that was never aborted would simply not have fired yet, so the answer
+    // would be `P2` either way and the assertion would be vacuous. What IS observable
+    // is that the pre-flush TOOK the handle out of the map — which is the only thing
+    // that can abort it — so the session must be left with nothing armed. Without the
+    // pre-flush the timer is still sitting there, armed, and will commit `P1` the
+    // moment its interval expires: the inversion, deferred rather than fixed.
+    let still_armed = p
+        .inner
+        .sessions
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get("s1")
+        .is_some_and(|entry| entry.timer.is_some());
+    assert!(
+        !still_armed,
+        "the write-through left this session's timer armed: it will commit the older \
+         payload when its interval expires, on top of the row just written through"
     );
 }
