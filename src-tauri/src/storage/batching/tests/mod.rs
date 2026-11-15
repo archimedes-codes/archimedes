@@ -1429,6 +1429,27 @@ fn a_write_through_cannot_be_overwritten_by_an_older_row_the_timer_still_holds()
             p.record_message("s1", "agent-text", Some("k1"), r#"{"text":"P2"}"#)
         })
     };
+    // (5) the write-through's pre-flush must QUEUE behind the drain in flight rather
+    // than race it — and it must be seen to queue WHILE the timer is still parked.
+    //
+    // Releasing first and asserting `Queued` afterwards is a race, not a sequence:
+    // the parked drain is what holds the gate, so once it is released the competing
+    // thread has to reach `drain_one`'s probe before that drain commits and drops the
+    // gate, or no `Queued` event is recorded at all and the assertion below fails on
+    // correct persistence. Under machine load the spawn can lose that race. Waiting
+    // here makes the interleaving a sequence again, and it is the same order the
+    // neighbouring inversion test uses.
+    let queued = saw(
+        &events,
+        (DrainStage::Queued, DrainReason::FlushSession),
+        Duration::from_millis(500),
+    );
+    assert!(
+        queued,
+        "the write-through never queued behind the drain in flight: it either raced it \
+         or never flushed the pending batch at all"
+    );
+
     // The write-through cannot complete on the fixed build until the parked drain is
     // released (it pre-flushes, and the pre-flush queues behind that drain), so this
     // is where the test lets it through. A thread that had no runtime AND no pending
@@ -1588,6 +1609,65 @@ fn the_two_pass_through_arms_diverge_on_a_failed_pre_flush_by_construction() {
     assert!(
         helper.contains("return Err(e)"),
         "`flush_before_passthrough` must be able to report a failure for either arm's          policy to mean anything"
+    );
+}
+
+/// (the arm-then-add hole, module docs' THIRD timer hole) `buffer_or_write` must add
+/// the row to the buffer BEFORE it claims the timer, and the runtime probe must run
+/// before BOTH.
+///
+/// WHY A SOURCE PIN AND NOT A ROUND-TRIP: the hole is a lost race between this call's
+/// early return from `arm_timer` and its own `add`, and the window is one scheduler
+/// tick wide. Reproducing it needs a seam parked between two lines of ONE function —
+/// a seam that exists for nothing else, on a hot path, forever. This repo has already
+/// decided the trade-off once, in
+/// [`the_two_pass_through_arms_diverge_on_a_failed_pre_flush_by_construction`]: "the
+/// alternative to a source pin is a comment, and a comment is exactly what was wrong
+/// here". The behavioural half of this ordering — a row buffered while a drain is in
+/// flight still gets its own timer and still reaches the disk — IS covered by a
+/// round-trip,
+/// [`a_row_buffered_between_the_slot_release_and_the_take_gets_its_own_timer_and_is_not_orphaned`];
+/// what nothing covered was the ORDER inside `buffer_or_write`, which is the thing a
+/// future edit can flip back in one line while every behavioural test stays green.
+///
+/// The pin is about the CODE and not the prose, so comment lines are filtered out
+/// first: this function's own doc comment discusses both orderings by name, and prose
+/// would satisfy either assertion.
+#[test]
+fn a_buffered_row_is_added_before_the_timer_is_claimed() {
+    let source = include_str!("../../batching.rs");
+    let body = source
+        .split("fn buffer_or_write(")
+        .nth(1)
+        .unwrap_or_else(|| panic!("`buffer_or_write` is gone — update this pin with it"))
+        // Stop at the next item so a later function cannot satisfy the search.
+        .split("\n    }\n")
+        .next()
+        .expect("the body of `buffer_or_write`")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let added = body
+        .find("add(&mut sessions")
+        .expect("`buffer_or_write` must add the row to the buffer");
+    let armed = body
+        .find("self.arm_timer(session_id)")
+        .expect("`buffer_or_write` must still claim the timer through `arm_timer`");
+    let probed = body.find("Handle::try_current()").expect(
+        "`buffer_or_write` must probe for a runtime BEFORE it buffers, or the \
+                 no-runtime write-through would run after the row was already added",
+    );
+
+    assert!(
+        probed < added && added < armed,
+        "`buffer_or_write` must run in this order: probe for a runtime, ADD the row, \
+         then claim the timer. Arm-then-add reopens the third timer hole: `arm_timer` \
+         returns early on a timer it sees as armed, that timer can take the rows and \
+         REMOVE the session's entry, and the later `add` re-creates an entry with \
+         nothing armed behind it — a buffered row with no bound on how long it sits. \
+         (probe={probed}, add={added}, arm={armed})"
     );
 }
 

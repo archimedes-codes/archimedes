@@ -4934,6 +4934,90 @@ describe("history window and pagination (ADR 0073)", () => {
     expect(useSessions.getState().messages["s1"]).toBeUndefined();
   });
 
+  it("loadOlderHistory discards an older page whose window was released and re-opened while it was in flight", async () => {
+    // Greptile finding 2 (P1). The generation/epoch guard alone does not cover
+    // this one, because RELEASE deletes the counters along with the window: the
+    // re-opened window starts at `generation: 1, epoch: 0`, which is exactly what
+    // an in-flight request captured before the release. So the stale reply passes
+    // both guards and gets prepended into a window that does not connect to it —
+    // a transcript whose head and tail are two disjoint pieces with everything
+    // between them missing, and the old reply replaces the fresh cursor.
+    //
+    // The guard that survives a release is the DATA the request was made against:
+    // `beforeId`. A re-opened tail window points at a different oldest row, so the
+    // reply is refused without needing any counter to outlive the window.
+    let resolveOlder: (page: HistoryPage) => void = () => {};
+    vi.mocked(loadHistory).mockImplementationOnce(
+      () => new Promise<HistoryPage>((r) => (resolveOlder = r)),
+    );
+    useSessions.setState({
+      activeSessionId: "s1",
+      historySessions: [info("s1", "/x"), info("other", "/x")],
+      history: {
+        s1: {
+          oldestRowId: 10,
+          hasMore: true,
+          loadingMore: false,
+          generation: 1,
+          epoch: 0,
+        },
+      },
+      messages: {
+        s1: [
+          { kind: "user", text: "middle-9", at: 9 },
+          { kind: "user", text: "tail-500", at: 500 },
+        ],
+      },
+    });
+
+    // The older-page request is in flight, asking for rows before row 10.
+    const older = useSessions.getState().loadOlderHistory("s1");
+
+    // Navigate away: this releases BOTH `messages[s1]` and `history[s1]`.
+    vi.mocked(loadHistory).mockResolvedValueOnce({
+      rows: [msgRow({ id: 700, kind: "user", payloadJson: JSON.stringify({ text: "other" }) })],
+      hasMore: false,
+      todos: null,
+    });
+    useSessions.getState().openSession("other");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(useSessions.getState().history).not.toHaveProperty("s1");
+
+    // Re-open before the older page lands: a FRESH tail window, counters restarted.
+    vi.mocked(loadHistory).mockResolvedValueOnce({
+      rows: [
+        msgRow({ id: 499, kind: "user", payloadJson: JSON.stringify({ text: "tail-499" }) }),
+        msgRow({ id: 500, kind: "user", payloadJson: JSON.stringify({ text: "tail-500" }) }),
+      ],
+      hasMore: true,
+      todos: null,
+    });
+    useSessions.getState().openSession("s1");
+    await new Promise((r) => setTimeout(r, 0));
+
+    const reopened = useSessions.getState().history["s1"]!;
+    // The premise that makes this a bug and not a covered case: the re-opened
+    // window's counters COLLIDE with the ones the in-flight request captured.
+    expect({ generation: reopened.generation, epoch: reopened.epoch }).toEqual({
+      generation: 1,
+      epoch: 0,
+    });
+    const beforeRows = useSessions.getState().messages["s1"]!;
+
+    // The stale reply finally lands — rows from BEFORE the release.
+    resolveOlder({
+      rows: [msgRow({ id: 2, kind: "user", payloadJson: JSON.stringify({ text: "ancient" }) })],
+      hasMore: true,
+      todos: null,
+    });
+    await older;
+
+    const st = useSessions.getState();
+    expect(st.messages["s1"]).toEqual(beforeRows);
+    // And the cursor is the FRESH one, not the stale reply's.
+    expect(st.history["s1"]!.oldestRowId).toBe(499);
+  });
+
   it("loadOlderHistory resets loadingMore to false on error while preserving generation and hasMore", async () => {
     vi.mocked(loadHistory).mockRejectedValueOnce(new Error("network error"));
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});

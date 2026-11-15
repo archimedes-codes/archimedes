@@ -2427,6 +2427,17 @@ export const useSessions = create<SessionsState>((set, get) => ({
     }
     const gen = sessionHistory.generation;
     const ep = sessionHistory.epoch;
+    // The cursor THIS request is paginating from, captured for the commit check
+    // below. `generation`/`epoch` catch a resume and a delete, but NOT a release:
+    // `releaseUnseenTranscripts` deletes `history[sessionId]` outright, so a
+    // re-opened window restarts its counters at the very values an in-flight
+    // request captured, and its stale page then passes both guards. `beforeId` is
+    // the one identity of the request that a release cannot reset, because the
+    // released window's cursor is gone with it — a fresh tail window points at a
+    // different oldest row, so the reply is refused on the DATA rather than on a
+    // counter that has to outlive the window (adding a 12th session-keyed map for
+    // that is forbidden by the `SESSION_KEYED_FIELDS` pin).
+    const beforeId = sessionHistory.oldestRowId;
     set((state) => ({
       history: {
         ...state.history,
@@ -2439,12 +2450,18 @@ export const useSessions = create<SessionsState>((set, get) => ({
         beforeId: sessionHistory.oldestRowId,
       });
       set((state) => {
-        // Bail if session resumed (generation or epoch bumped) or deleted in the interim
+        // Bail if session resumed (generation or epoch bumped) or deleted in the
+        // interim, or if the window has since been RELEASED and re-opened (its
+        // cursor no longer points at the row this page was requested before — see
+        // `beforeId` above). Prepending into that window would splice rows from a
+        // conversation the current window is not connected to, and would replace
+        // the fresh cursor with the stale one.
         const current = state.history[sessionId];
         if (
           !current ||
           current.generation !== gen ||
-          current.epoch !== ep
+          current.epoch !== ep ||
+          current.oldestRowId !== beforeId
         ) {
           return state;
         }
@@ -2474,7 +2491,8 @@ export const useSessions = create<SessionsState>((set, get) => ({
         if (
           !current ||
           current.generation !== gen ||
-          current.epoch !== ep
+          current.epoch !== ep ||
+          current.oldestRowId !== beforeId
         ) {
           return state;
         }

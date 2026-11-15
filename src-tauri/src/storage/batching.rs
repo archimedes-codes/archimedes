@@ -63,7 +63,7 @@
 //! the race is a truncated assistant message, and if the inversion was caused by the
 //! `agent_settled` flush point there may be no later frame to heal it.
 //!
-//! Two holes live in the timer path, and they are DIFFERENT holes closed by
+//! Three holes live in the timer path, and they are DIFFERENT holes closed by
 //! DIFFERENT orderings. Conflating them is how this module got this wrong once:
 //!
 //! * **The orphaned-timer hole — a hole in the BOUND.** If the interval timer took
@@ -83,6 +83,20 @@
 //!   `tests::a_flush_cannot_commit_a_newer_payload_that_an_in_flight_timer_then_overwrites`
 //!   and, for the write-through path,
 //!   `tests::a_write_through_cannot_be_overwritten_by_an_older_row_the_timer_still_holds`.
+//! * **The arm-then-add hole — a THIRD hole in the BOUND, and the mirror image of the
+//!   first.** `buffer_or_write` used to claim the timer and THEN add the row, under
+//!   two separate acquisitions of the `sessions` lock. `arm_timer` returns early when
+//!   it sees a timer already armed; between that early return and the `add`, that
+//!   timer could fire, take the rows, and `take()` REMOVES the session's whole entry —
+//!   so the `add` re-created an entry with no timer behind it. A stream that stalled
+//!   at that moment sat unwritten until a later frame or the quit, past the interval.
+//!   Closed by **adding the row first, then arming** (the runtime probe moves ahead of
+//!   both, so the write-through decision still precedes any mutation). Adding first is
+//!   sound because of the release-before-take ordering above: a drain that beat the
+//!   `add` had already released its slot, so the arm check finds it free and arms a
+//!   fresh timer; a check that finds a timer armed means that drain has not taken yet,
+//!   so the row is in the batch it will take. Pinned by
+//!   `tests::a_buffered_row_is_added_before_the_timer_is_claimed`.
 //!
 //! The gate is a per-session mutex in a map SEPARATE from `sessions`, and the barrier
 //! is a reader/writer lock: per-session drains take the barrier SHARED (two sessions
@@ -821,7 +835,14 @@ impl BatchingPersistence {
         add: impl FnOnce(&mut Pending),
         through: impl FnOnce() -> Result<(), DbError>,
     ) -> Result<(), DbError> {
-        if !self.arm_timer(session_id) {
+        // The runtime is probed HERE, before the buffer is touched, because the
+        // probe is what decides buffer-vs-write-through, and the row must not be
+        // added before that decision exists (a row added and then written through
+        // would be written twice, and the buffered copy would be the one with no
+        // bound). `arm_timer` probes again below; `Handle::try_current` is a
+        // thread-local read, so paying for it twice is cheaper than splitting the
+        // decision across two functions.
+        if tokio::runtime::Handle::try_current().is_err() {
             // Logged and discarded, exactly as `Insert` does: the rows this failed
             // to write are OLDER than the write about to land, they have already
             // been taken out of the buffer, and refusing a row the caller can retry
@@ -829,12 +850,44 @@ impl BatchingPersistence {
             let _ = self.flush_before_passthrough(session_id, "write-through");
             return through();
         }
-        let mut sessions = self
-            .inner
-            .sessions
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        add(&mut sessions.entry(session_id.to_string()).or_default().pending);
+
+        // THE ROW GOES IN FIRST, under the map lock, and the timer is claimed
+        // AFTER it. The other order — arm, then add, under two separate lock
+        // passes — is the third hole in the timer path, and it is a hole in the
+        // BOUND like the orphaned-timer one: `arm_timer` could observe a timer
+        // already armed and return early, that timer could then take every row and
+        // REMOVE the session's entry, and the `add` below would re-create the entry
+        // with nothing armed behind it. A stream that stalled right there would sit
+        // unwritten until a later frame or the quit, past the interval this module
+        // promises.
+        //
+        // Adding first closes it, and the argument rests on the release-before-take
+        // ordering `arm_timer` already holds: a drain that beat this `add` must have
+        // released its slot BEFORE it took, so by the time the arm check runs the
+        // slot is free and a fresh timer is armed for the row that just landed. If
+        // instead the check finds a timer still armed, that timer has not taken yet,
+        // so this row is in the batch it will take. Either way the row has a timer.
+        //
+        // Nothing here weakens the other two holes: the lock is still released
+        // before `arm_timer` spawns (no `std` guard crosses a spawn), it is still
+        // never held across SQLite or an `await`, and the drain gate and barrier
+        // still decide commit order.
+        {
+            let mut sessions = self
+                .inner
+                .sessions
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            add(&mut sessions.entry(session_id.to_string()).or_default().pending);
+        }
+
+        if !self.arm_timer(session_id) {
+            // Unreachable on a thread the probe above just accepted — a runtime
+            // does not vanish underneath its own thread. Kept because the shape of
+            // the failure is an unbounded row: drain it now rather than leave it
+            // buffered behind nothing.
+            let _ = self.flush_before_passthrough(session_id, "declined arm");
+        }
         Ok(())
     }
 
