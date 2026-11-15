@@ -3,6 +3,7 @@ import type {
   AcpSessionUpdate,
   AcpToolCallStatus,
   MessageRow,
+  StopReason,
   ToolCallContent,
 } from "../tauri";
 import type { DiffRef, Message, ToolCallUiStatus } from "../sessionTypes";
@@ -82,6 +83,63 @@ export function extractDiffs(content: ToolCallContent[] | undefined): DiffRef[] 
     }
   }
   return diffs;
+}
+
+/**
+ * The provider disposition persisted on the transcript's LAST row, mapped to the
+ * client `StopReason` — or undefined when the last row carries none.
+ *
+ * WHY THIS EXISTS. `useSessions.stopReasons` is an in-memory map with no
+ * `persist` middleware and it is a member of `SESSION_KEYED_FIELDS`, so it is
+ * CLEARED on restart and never restored. `TranscriptFooter`'s predicate
+ * short-circuits on `!stopReason`, so after a restart the truncated-turn line
+ * vanishes for every session. The disposition is ALREADY durable — ADR 0108 made
+ * the engine persist the notice as a `kind='agent-text'` row on the fresh unique
+ * key `{stamp}:truncate:N` whose `payload_json` carries `disposition` — so this
+ * is a pure READ of a row that exists, not new persistence.
+ *
+ * ONLY the last row of the page, and that rule is load-bearing (Decision 4 —
+ * ROW IDENTITY, not row order). Both arms of `messages_page` return ascending
+ * ids (the limited arm does `ORDER BY id DESC LIMIT n+1` → truncate →
+ * `rows.reverse()`; the unlimited arm is plain `ORDER BY id`), so the last
+ * element is the newest. The truncation notice is an INSERT on a key that never
+ * existed before, while every row its own turn can write AFTER it is an UPSERT
+ * onto a key that already exists — a `tool_execution_end` close updates the
+ * pre-existing `tool-call` row in place, an `auto_retry_end` one-liner upserts
+ * onto `{stamp}:system` — and neither gains a newer `id`. So when the NEWEST
+ * turn was truncated, the notice is still the page's last element even though a
+ * later frame re-wrote an older row. Do NOT "simplify" this to "find the newest
+ * truncate row and compare ids": the notice is almost never the newest truncate
+ * row in a session that truncates often, so that rule is dead on arrival.
+ *
+ * The vocabulary mapping is deliberate: the row carries the PROVIDER spelling
+ * (`"length"`) and the client vocabulary is `StopReason`, so `"length"` maps to
+ * `"max_tokens"`. Anything else is `undefined`, INCLUDING `"cancelled"` — which
+ * would suppress a settled OS alert in `attention.ts` — and INCLUDING the client
+ * spelling `"max_tokens"`, which never appears in a row.
+ *
+ * Never throws: `payloadJson` is disk bytes, parsed defensively exactly as
+ * `rowToMessages` parses it.
+ */
+export function dispositionFromRows(
+  rows: MessageRow[],
+): StopReason | undefined {
+  // The LAST row of the page is the newest (both arms of `messages_page` return
+  // ascending ids — see the doc comment). Spelled as an index, not `rows.at(-1)`:
+  // `tsconfig.json` compiles against `lib: ["ES2020", …]` and `Array.prototype.at`
+  // is ES2022, so `.at` is a type error here (`TS2550`) even though it exists at
+  // runtime. Same value, and `undefined` for an empty page just as `.at(-1)` is.
+  const last = rows[rows.length - 1];
+  if (!last || last.kind !== "agent-text") return undefined;
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(last.payloadJson) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  if (typeof payload?.disposition !== "string") return undefined;
+  // Provider spelling → client vocabulary. Every other value is refused.
+  return payload.disposition === "length" ? "max_tokens" : undefined;
 }
 
 /**

@@ -7003,3 +7003,181 @@ describe("the eviction keep-set's ONE gap: the two statements between addUserMes
     });
   });
 });
+
+describe("the truncated-turn disposition survives a restart (ADR 0108)", () => {
+  // `stopReasons` is an in-memory map with NO `persist` middleware and it is a
+  // member of `SESSION_KEYED_FIELDS`, so it is CLEARED by a restart and never
+  // restored — after which `TranscriptFooter`'s `!stopReason` short-circuit
+  // renders nothing for EVERY session, truncated or not. The disposition is
+  // already durable (the engine persists the notice as a `kind='agent-text'`
+  // row on the fresh key `{stamp}:truncate:N` whose payload carries
+  // `disposition: "length"`), so the fix is a READ: `dispositionFromRows` maps
+  // the last row of the history page and `openSession` / `resumeSession` seed
+  // the EXISTING map from it. No twelfth session-keyed field (the pin below),
+  // no `stopReason` column on `sessions`.
+  beforeEach(() => {
+    resetStores();
+    vi.mocked(loadHistory).mockClear();
+    vi.mocked(loadHistory).mockResolvedValue({ rows: [], hasMore: false, todos: null });
+  });
+  afterEach(() => resetStores());
+
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  /** The persisted truncation notice — the LAST row of the page. */
+  const truncateRow = (id: number): MessageRow =>
+    msgRow({
+      id,
+      kind: "agent-text",
+      messageKey: "a3f9c1:truncate:0",
+      payloadJson: JSON.stringify({
+        text: "Response was truncated before completion",
+        disposition: "length",
+      }),
+      createdAt: 2000,
+    });
+
+  it("openSession seeds stopReasons from a truncation notice on the last row", async () => {
+    // A STORED (closed) session — a live id returns before the fetch, because a
+    // live transcript is owned by its frames, not by a history page.
+    useSessions.setState({
+      activeSessionId: null,
+      historySessions: [info("s1", "/x")],
+      stopReasons: {},
+    });
+    vi.mocked(loadHistory).mockResolvedValueOnce({
+      rows: [
+        msgRow({ id: 7, kind: "user", payloadJson: JSON.stringify({ text: "go" }) }),
+        truncateRow(8),
+      ],
+      hasMore: false,
+      todos: null,
+    });
+
+    useSessions.getState().openSession("s1");
+    await tick();
+
+    expect(useSessions.getState().stopReasons["s1"]).toBe("max_tokens");
+  });
+
+  it("resumeSession seeds stopReasons from a truncation notice on the last row", async () => {
+    useSessions.setState({
+      activeSessionId: "s1",
+      historySessions: [info("s1", "/x")],
+      stopReasons: {},
+    });
+    vi.mocked(loadHistory).mockResolvedValueOnce({
+      rows: [truncateRow(9)],
+      hasMore: false,
+      todos: null,
+    });
+
+    await useSessions.getState().resumeSession("s1");
+    await tick();
+
+    expect(useSessions.getState().stopReasons["s1"]).toBe("max_tokens");
+  });
+
+  it("openSession writes NOTHING when the last row carries no disposition", async () => {
+    // Two failure modes this pins at once. Writing `undefined` for "no row"
+    // would CLOBBER the value the pin `a Flush whose attachment READ fails
+    // settles NO turn and keeps the previous stop reason` protects; writing
+    // `"end_turn"` would RESURRECT a reason for a turn that never reported one
+    // (and `TranscriptFooter` renders for anything but `end_turn`/absent, so a
+    // fabricated value is a fabricated footer).
+    useSessions.setState({
+      activeSessionId: null,
+      historySessions: [info("s1", "/x")],
+      stopReasons: { s1: "end_turn" as const },
+    });
+    vi.mocked(loadHistory).mockResolvedValueOnce({
+      rows: [
+        truncateRow(8),
+        msgRow({
+          id: 9,
+          kind: "agent-text",
+          messageKey: "b7d2e0:m1",
+          payloadJson: JSON.stringify({ text: "A complete reply." }),
+        }),
+      ],
+      hasMore: false,
+      todos: null,
+    });
+
+    useSessions.getState().openSession("s1");
+    await tick();
+
+    expect(useSessions.getState().stopReasons["s1"]).toBe("end_turn");
+  });
+
+  it("openSession leaves the key ABSENT (not undefined, not end_turn) when nothing was seeded", async () => {
+    useSessions.setState({
+      activeSessionId: null,
+      historySessions: [info("s1", "/x")],
+      stopReasons: {},
+    });
+    vi.mocked(loadHistory).mockResolvedValueOnce({
+      rows: [
+        msgRow({ id: 9, kind: "user", payloadJson: JSON.stringify({ text: "go" }) }),
+      ],
+      hasMore: false,
+      todos: null,
+    });
+
+    useSessions.getState().openSession("s1");
+    await tick();
+
+    expect(useSessions.getState().stopReasons, "a no-disposition page wrote a key").not.toHaveProperty("s1");
+  });
+
+  it("resumeSession writes NOTHING when the last row carries no disposition", async () => {
+    useSessions.setState({
+      activeSessionId: "s1",
+      historySessions: [info("s1", "/x")],
+      stopReasons: { s1: "refusal" as const },
+    });
+    vi.mocked(loadHistory).mockResolvedValueOnce({
+      rows: [
+        msgRow({
+          id: 9,
+          kind: "agent-text",
+          messageKey: "b7d2e0:m1",
+          payloadJson: JSON.stringify({ text: "A complete reply." }),
+        }),
+      ],
+      hasMore: false,
+      todos: null,
+    });
+
+    await useSessions.getState().resumeSession("s1");
+    await tick();
+
+    expect(useSessions.getState().stopReasons["s1"]).toBe("refusal");
+  });
+
+  it("seeds UNCONDITIONALLY when a disposition is found, overwriting a stale map entry", async () => {
+    // THE DELIBERATE DEVIATION from the `todos` / `seedCostFromRow` precedent
+    // above, which seeds only when NO entry exists so a live value is never
+    // clobbered. Here the direction is reversed on purpose: after a crash or a
+    // restart the ROW is the record of what actually ended the newest turn and
+    // it is FRESHER than whatever the in-memory map survived with. Harmonising
+    // this back to `!(sessionId in …)` restores the bug this block exists to
+    // fix — a stale `end_turn` (or a stale reason for a different turn) would
+    // outlive the truncation the row says happened.
+    useSessions.setState({
+      activeSessionId: null,
+      historySessions: [info("s1", "/x")],
+      stopReasons: { s1: "end_turn" as const },
+    });
+    vi.mocked(loadHistory).mockResolvedValueOnce({
+      rows: [truncateRow(9)],
+      hasMore: false,
+      todos: null,
+    });
+
+    useSessions.getState().openSession("s1");
+    await tick();
+
+    expect(useSessions.getState().stopReasons["s1"]).toBe("max_tokens");
+  });
+});

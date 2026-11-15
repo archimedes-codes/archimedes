@@ -36,6 +36,7 @@ import type { Message } from "../lib/sessionTypes";
 import { isStaleCompactionStart, mergeDedupeKey } from "../lib/transcript/identity";
 import {
   applySessionUpdate,
+  dispositionFromRows,
   finalizeSessionMessages,
   rowToMessages,
 } from "../lib/transcript/reducer";
@@ -2133,6 +2134,28 @@ export const useSessions = create<SessionsState>((set, get) => ({
             .getState()
             .applyTodoUpdate(sessionId, { todos: page.todos as ChecklistItem[] });
         }
+        // Seed the disposition FIRST, then write the transcript (ADR 0042's no-pop
+        // ordering, same as the `todos` block above). ADR 0108: the truncated-turn
+        // footer reads `stopReasons`, which is an in-memory map with no `persist`
+        // and a member of `SESSION_KEYED_FIELDS`, so a restart leaves it `{}` and
+        // the line vanishes for every session — the row is the durable record and
+        // this is the read that restores it.
+        //
+        // Seeded UNCONDITIONALLY when one is found — a DELIBERATE deviation from
+        // the `todos` / `seedCostFromRow` rule above, which seeds only when no
+        // entry exists so a live value is never clobbered. After a crash or a
+        // restart the ROW is fresher than whatever the map survived with, so
+        // overwriting is the right direction here; harmonising this back to
+        // `!(sessionId in …)` restores the bug this exists to fix. And NEVER
+        // writing `undefined`/`"end_turn"` for "no row": that would clobber the
+        // value the "keeps the previous stop reason" pin protects and resurrect a
+        // reason for a turn that never reported one.
+        const disposition = dispositionFromRows(page.rows);
+        if (disposition) {
+          set((state) => ({
+            stopReasons: { ...state.stopReasons, [sessionId]: disposition },
+          }));
+        }
         const messages = page.rows.flatMap(rowToMessages);
         const prevHist = get().history[sessionId];
         const prevGen = prevHist?.generation ?? 0;
@@ -2269,6 +2292,18 @@ export const useSessions = create<SessionsState>((set, get) => ({
             };
           });
           return;
+        }
+        // Seed the disposition FIRST, then write the transcript — the same
+        // ordering `openSession` uses, and the same deliberate deviation from the
+        // `todos` / `seedCostFromRow` "only when absent" rule documented there:
+        // the row is the record of what actually ended the newest turn, so after a
+        // restart it overwrites a stale map entry, and a page with no disposition
+        // writes NOTHING.
+        const disposition = dispositionFromRows(page.rows);
+        if (disposition) {
+          set((state) => ({
+            stopReasons: { ...state.stopReasons, [sessionId]: disposition },
+          }));
         }
         const reloaded = page.rows.flatMap(rowToMessages);
         // WHAT ARRIVED WHILE WE WERE LOADING — selected by IDENTITY, never by
