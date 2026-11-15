@@ -307,9 +307,15 @@ struct LiveWorkerSession {
     /// panic-on-poison pattern is deliberately NOT copied here). Cleared by
     /// `send_prompt` (a fresh turn is not a truncation), and ALSO by
     /// `resolve_turn_forced` — a crash / close ends the turn the flag describes,
-    /// and a settle can go missing (the transport's `Lagged` arm drops frames),
-    /// so a forced resolve must not strand it. NEVER set by an idle
-    /// path — the router reads it only while a turn slot is occupied.
+    /// so a forced resolve must not strand it (a settle CAN go missing: the
+    /// transport's `Lagged` arm drops frames — though that shape never reaches
+    /// this clear; see `send_prompt_with_images` for what the two clears cover
+    /// and what they do not). NEVER set by an idle
+    /// path — the router reads it only while a turn slot is occupied. A SECOND
+    /// disposition (any non-`Length` finish reason that should reach
+    /// `resolve_turn`) wants an `Option<TurnDisposition>` here, NOT a sibling
+    /// `bool` — and the `Cancelled > MaxTokens > EndTurn` chain in
+    /// `resolve_turn` is where a new rung lands.
     truncated: Arc<StdMutex<bool>>,
     pending_modal_ids: StdMutex<HashSet<String>>,
 }
@@ -1978,11 +1984,18 @@ impl SessionManager {
         // is ownership-first: touch the per-turn flags only once the slot is
         // yours (the same invariant `compact_session` documents for an idle
         // path), and accept a wrong reason over corrupting a turn you do not
-        // own. The window this ordering leaves is closed where it actually
-        // matters — a flag stranded by a turn that ended WITHOUT a settle (the
-        // dropped-frame / crash / close shapes) is cleared by
-        // `resolve_turn_forced`, so it is not sitting there to be read at claim
-        // time. Like `cancel_requested`, only a turn-starting path clears it.
+        // own. Like `cancel_requested`, only a turn-starting path clears it.
+        // What closes the window this ordering leaves, and what does NOT:
+        // `resolve_turn_forced` clears the flag on the shapes where a turn ends
+        // WITHOUT a settle AND a forced resolve actually runs — the crash and
+        // the close / expected `Exited`. Those two are not sitting there to be
+        // read at claim time. The third no-settle shape is not covered: an
+        // `agent_settled` dropped off a LIVING Worker's 256-slot broadcast
+        // (`worker/client.rs`'s `Lagged` arm logs and `continue`s; no forced
+        // resolve happens and the session stays live) leaves the flag set, so it
+        // lands in exactly this claim→clear window. That is the residual race
+        // this ordering ACCEPTS — clearing before the claim would trade it for
+        // the worse failure above.
         *truncated.lock().unwrap_or_else(|p| p.into_inner()) = false;
 
         // Level-triggered titling (#143): a new prompt is the "catch up on

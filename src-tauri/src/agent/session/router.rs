@@ -137,6 +137,30 @@ impl SessionManager {
                 // turn is not a success — `resolve_turn` maps the flag to
                 // `StopReason::MaxTokens` (ADR 0108).
                 if !is_subagent && matches!(e, RpcEvent::turn_truncated) {
+                    // UNSEQUENCED against the forced clear (issue #190, round-2
+                    // finding): this SET and `resolve_turn_forced`'s clear run
+                    // on DIFFERENT tasks (this pump vs the crash-watch) with no
+                    // ordering between them, so a dying Worker's posthumous
+                    // `turn_truncated` can arrive AFTER the crash cleared the
+                    // flag — the flag goes back to `true`, the row stays live,
+                    // and the NEXT turn's claim→clear window inherits a stale
+                    // `MaxTokens`. Before the forced clear existed this
+                    // direction of the race could not happen. The consequence
+                    // is BOUNDED and wrong-direction only — one dead Worker,
+                    // one turn, an over-reported `MaxTokens` — and it cannot
+                    // chain, because every turn-start clears the flag. The real
+                    // fix sequences this stash and that clear through ONE lock;
+                    // that is a separate change, not this one. A reviewer's
+                    // suggested `!stalled` gate was REJECTED on evidence:
+                    // `stalled` is written only by `handle_crash` and NEVER
+                    // removed (ADR 0025; pinned by
+                    // `a_stalled_row_is_frozen_until_the_next_crash`), while a
+                    // resumed session re-uses the SAME id with a fresh live
+                    // Worker — gating here would silently drop a legitimate
+                    // truncation on a session that has every right to hit the
+                    // output cap again, reintroducing the silent `EndTurn` this
+                    // flag exists to eliminate.
+                    //
                     // Clone the `Arc` OUT under the `sessions` lock and lock it
                     // AFTER the lock is released — the `cancel_requested`
                     // discipline, and a poisoned lock is RECOVERED (the registry
@@ -514,7 +538,11 @@ impl SessionManager {
             // the flag must not outlive it either: the next `send_prompt` clears
             // it only AFTER claiming `pending_turn`, so a late settle arriving in
             // that window would resolve the NEW turn with THIS turn's
-            // `MaxTokens`. Clearing it here closes that window.
+            // `MaxTokens`. Clearing it here closes that window on the shapes
+            // this helper actually runs on — the crash and the close. The third
+            // no-settle shape (a settle dropped off a LIVING Worker's broadcast)
+            // never reaches this path, so it stays open; see the note in
+            // `send_prompt_with_images`.
             //
             // `cancel_requested` is deliberately LEFT ALONE: `close_session`
             // sets it BEFORE forcing `Cancelled` and its docblock documents that
