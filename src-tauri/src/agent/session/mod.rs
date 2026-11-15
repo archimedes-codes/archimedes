@@ -286,7 +286,9 @@ pub struct StalledInfo {
 /// (first-set-wins — `close_session` sets `User`), the in-flight turn's
 /// resolver (`send_prompt` stores a sender; the router resolves it on
 /// `agent_settled` / `Exited` / crash), the `cancel_requested` flag (a
-/// late settle maps to `Cancelled`), and the UNANSWERED request ids (the
+/// late settle maps to `Cancelled`), the `truncated` flag (issue #190 — the
+/// engine reported `turn_truncated` for this turn, so a late settle maps to
+/// `MaxTokens`), and the UNANSWERED request ids (the
 /// `PermissionRequest` / `InteractiveRequest` frames relayed MINUS the
 /// `*Response`s sent — the pending-modal cleanup on session end: a session
 /// ending with an open prompt must NOT leave a stuck modal).
@@ -295,6 +297,26 @@ struct LiveWorkerSession {
     close_kind: Arc<StdMutex<Option<CloseKind>>>,
     pending_turn: Arc<StdMutex<Option<oneshot::Sender<StopReason>>>>,
     cancel_requested: Arc<StdMutex<bool>>,
+    /// (issue #190) Set when the Worker reports `turn_truncated` for the turn
+    /// in flight — the provider cut the reply off at its output cap, so the
+    /// turn is NOT a success. `resolve_turn` maps it to `StopReason::MaxTokens`
+    /// (behind `cancel_requested`: Decision 6 puts a user Stop first). Same
+    /// `Arc<StdMutex<_>>` shape and the same poisoned-lock RECOVERY as
+    /// `cancel_requested` — this registry guards independent per-key rows, so a
+    /// poison is recovered, never panicked (`AGENTS.md`; the `db.rs`
+    /// panic-on-poison pattern is deliberately NOT copied here). Cleared by
+    /// `send_prompt` (a fresh turn is not a truncation), and ALSO by
+    /// `resolve_turn_forced` — a crash / close ends the turn the flag describes,
+    /// so a forced resolve must not strand it (a settle CAN go missing: the
+    /// transport's `Lagged` arm drops frames — though that shape never reaches
+    /// this clear; see `send_prompt_with_images` for what the two clears cover
+    /// and what they do not). NEVER set by an idle
+    /// path — the router reads it only while a turn slot is occupied. A SECOND
+    /// disposition (any non-`Length` finish reason that should reach
+    /// `resolve_turn`) wants an `Option<TurnDisposition>` here, NOT a sibling
+    /// `bool` — and the `Cancelled > MaxTokens > EndTurn` chain in
+    /// `resolve_turn` is where a new rung lands.
+    truncated: Arc<StdMutex<bool>>,
     pending_modal_ids: StdMutex<HashSet<String>>,
 }
 
@@ -715,7 +737,7 @@ pub(crate) struct SessionState {
     naming: Option<naming::NamingState>,
     /// The live, Worker-backed session (the coordinator state — the
     /// `cwd` / `close_kind` / `pending_turn` / `cancel_requested` /
-    /// `pending_modal_ids`).
+    /// `truncated` / `pending_modal_ids`).
     live: Option<LiveWorkerSession>,
     /// The stalled record (a Worker crash marks the session stalled; the
     /// frontend reads it via `stalled_info`). Retained for the process
@@ -1672,7 +1694,7 @@ impl SessionManager {
         }
         // The per-session coordinator state (the config-state mirror — the
         // `set_config_option` re-synthesizer source; the `live` entry — the
-        // `pending_turn` / `cancel_requested` / `close_kind` /
+        // `pending_turn` / `cancel_requested` / `truncated` / `close_kind` /
         // `pending_modal_ids`). ONE row write, and it SETS SLICES rather than
         // replacing the row: a RESUMED session re-uses the SAME id and a
         // pre-existing `stalled` row must survive the re-seed (today's
@@ -1689,6 +1711,7 @@ impl SessionManager {
                 close_kind: Arc::new(StdMutex::new(None)),
                 pending_turn: Arc::new(StdMutex::new(None)),
                 cancel_requested: Arc::new(StdMutex::new(false)),
+                truncated: Arc::new(StdMutex::new(false)),
                 pending_modal_ids: StdMutex::new(HashSet::new()),
             });
         });
@@ -1892,8 +1915,9 @@ impl SessionManager {
     /// would show a duplicate user bubble). The turn resolves on
     /// `agent_settled` (the driver's `pending_turn` oneshot): a
     /// `success: false` prompt response maps to `Refusal`, a cancel maps to
-    /// `Cancelled` (the `cancel_requested` flag), everything else to
-    /// `EndTurn`.
+    /// `Cancelled` (the `cancel_requested` flag), a turn the engine reported as
+    /// cut off maps to `MaxTokens` (the `truncated` flag — issue #190),
+    /// everything else to `EndTurn`.
     pub async fn send_prompt_with_images(
         &self,
         session_id: &str,
@@ -1906,11 +1930,15 @@ impl SessionManager {
         let wm = self.worker_manager.get().cloned().ok_or_else(|| {
             SessionError::Io("the session's WorkerManager is not attached".to_string())
         })?;
-        let (pending_turn, cancel_requested) = self
+        let (pending_turn, cancel_requested, truncated) = self
             .with_session(session_id, |s| {
-                s.live
-                    .as_ref()
-                    .map(|live| (live.pending_turn.clone(), live.cancel_requested.clone()))
+                s.live.as_ref().map(|live| {
+                    (
+                        live.pending_turn.clone(),
+                        live.cancel_requested.clone(),
+                        live.truncated.clone(),
+                    )
+                })
             })
             .flatten()
             .ok_or_else(|| SessionError::UnknownSession {
@@ -1941,6 +1969,34 @@ impl SessionManager {
         }
         // Reset the cancel flag (a fresh turn is not a cancel).
         *cancel_requested.lock().unwrap_or_else(|p| p.into_inner()) = false;
+        // Reset the truncation flag (issue #190 — a fresh turn is not a
+        // truncation). The order is DELIBERATE but NOT for the reason it looks
+        // like: clearing AFTER the claim does NOT make a racing settle unable to
+        // see a stale `true` — claiming first is precisely what puts THIS turn's
+        // sender in the slot a late settle from the PREVIOUS turn can find, so a
+        // settle landing in the window between the claim and this line resolves
+        // the new turn with the old turn's `MaxTokens`. That residual window is
+        // accepted because the alternative is worse: clearing BEFORE the claim
+        // would run on the `a turn is already in flight` rejection path too, and
+        // a REJECTED `send_prompt` does not own the turn in flight — it would
+        // clear a live turn's disposition and turn its real truncation into a
+        // silent `EndTurn`, the exact bug this flag exists to fix. So the rule
+        // is ownership-first: touch the per-turn flags only once the slot is
+        // yours (the same invariant `compact_session` documents for an idle
+        // path), and accept a wrong reason over corrupting a turn you do not
+        // own. Like `cancel_requested`, only a turn-starting path clears it.
+        // What closes the window this ordering leaves, and what does NOT:
+        // `resolve_turn_forced` clears the flag on the shapes where a turn ends
+        // WITHOUT a settle AND a forced resolve actually runs — the crash and
+        // the close / expected `Exited`. Those two are not sitting there to be
+        // read at claim time. The third no-settle shape is not covered: an
+        // `agent_settled` dropped off a LIVING Worker's 256-slot broadcast
+        // (`worker/client.rs`'s `Lagged` arm logs and `continue`s; no forced
+        // resolve happens and the session stays live) leaves the flag set, so it
+        // lands in exactly this claim→clear window. That is the residual race
+        // this ordering ACCEPTS — clearing before the claim would trade it for
+        // the worse failure above.
+        *truncated.lock().unwrap_or_else(|p| p.into_inner()) = false;
 
         // Level-triggered titling (#143): a new prompt is the "catch up on
         // whatever is due" moment, so nudge the naming pass here. The

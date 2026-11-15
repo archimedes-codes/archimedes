@@ -2546,6 +2546,7 @@ mod tests {
                 close_kind: Arc::new(StdMutex::new(None)),
                 pending_turn: Arc::new(StdMutex::new(None)),
                 cancel_requested: Arc::new(StdMutex::new(false)),
+                truncated: Arc::new(StdMutex::new(false)),
                 pending_modal_ids: StdMutex::new(HashSet::new()),
             });
             row.naming = Some(NamingState {

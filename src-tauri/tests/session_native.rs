@@ -503,3 +503,61 @@ async fn resuming_legacy_bare_uuid_session_preserves_id() {
 
     let _ = manager.close_session(&legacy_id).await;
 }
+
+/// (issue #190) THE end-to-end truncation proof: a MAIN session prompted with
+/// the fixture's `"__truncated__"` scenario resolves its turn to
+/// `StopReason::MaxTokens`.
+///
+/// Why this test is the valuable one: everything above it asserts `EndTurn`, so
+/// the whole desktop suite — and the footer rendering `Turn ended: max_tokens`
+/// — could sit on a `resolve_turn` that never produced the value. This drives
+/// the real pipe (a spawned `fake_worker`, the real `route_event`, the real
+/// `resolve_turn`, the real `send_prompt` return) through the fixture's real
+/// truncated-turn scenario, and asserts the one thing the desktop owns: the
+/// `StopReason` the composer is handed.
+///
+/// ⚠ What it does NOT prove: the FRAME ORDER. The assertion reads only the
+/// resolved `StopReason`, and the ordering is not observable at the sink for
+/// this scenario — `turn_truncated` is an `RpcEvent`, which `route_event` treats
+/// as INTERNAL bookkeeping (never re-emitted; the UI contract is the
+/// `SinkFrame`s), and the fixture's canned stream emits the event directly
+/// rather than through `normalize`, which is what would mint the notice
+/// `SinkFrame`. So the frames this sink records for a truncated turn are
+/// `session_info` + `cost_update` and nothing carries an index to compare. The
+/// `turn_truncated`-before-`turn_end` / `agent_settled` invariant is pinned
+/// ENGINE-side by `harness/loop/tests/turn_lifecycle.rs`'s
+/// `a_turn_cut_off_by_the_output_cap_settles_as_truncated_and_persists_its_text`
+/// (it asserts the position of each kind in the drained event stream); what
+/// THIS test adds is that the desktop maps an already-correctly-ordered pair to
+/// `MaxTokens` rather than the silent `EndTurn`.
+///
+/// The scenario is NOT subagent-gated: it lives in the fixture's `Inbound::Prompt`
+/// text match beside every other scenario (`fulcrum_harness::fixtures::worker`),
+/// and the desktop's `fake_worker` bin is a shim onto that `worker_main`, so the
+/// frames reach a MAIN session unchanged. The crate's own tests drive it as a
+/// CHILD's turn (the #122 capture-reclassification work); asserting it on a main
+/// session is this repo's contribution — the parent-side disposition mapping.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_truncated_turn_on_a_main_session_resolves_as_max_tokens() {
+    let dir = temp_config_dir();
+    let (sink_tx, _sink_rx) = mpsc::unbounded_channel();
+    let sink: Arc<dyn EventSink> = Arc::new(RecSink { tx: sink_tx });
+    let (manager, _wm, _db) = build_manager(&dir, &sink);
+
+    let info = manager
+        .start_session(dir.to_path_buf(), &sink)
+        .await
+        .expect("the native session starts");
+
+    let reason = manager
+        .send_prompt(&info.session_id, "__truncated__".to_string())
+        .await
+        .expect("the truncated turn resolves (the fixture does settle)");
+
+    assert_eq!(
+        reason,
+        StopReason::MaxTokens,
+        "a turn the Worker reported `turn_truncated` must settle as max_tokens \
+         — the silent `end_turn` is the bug issue #190 is about"
+    );
+}
