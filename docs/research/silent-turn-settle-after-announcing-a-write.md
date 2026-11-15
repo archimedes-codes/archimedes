@@ -576,7 +576,8 @@ Ranked by cost-to-coverage. Items 1 and 2 are near-free and **both ends already 
 2. **Persist the finish reason** — one `#[serde(default, skip_serializing_if = "Option::is_none")]
    finish_reason: Option<String>` on `ChatMessage`, riding `content_json`. **No migration**, ~25 B ×
    assistant rows ≈ **3.6 MB = 0.15%** of the 2.33 GB, and old rows deserialize as `None`. Makes the
-   question answerable **retroactively over the data already on disk**. ⚠ `ChatMessage` is also the
+   question answerable **for incidents from here on, from the row itself** — it recovers nothing for
+   the rows already on disk, which never stored the field. ⚠ `ChatMessage` is also the
    transcript type — the request bodies are built fresh per wire, so verify on **all three** builders
    that the field cannot leak into a provider request.
 3. **Send `max_tokens` deliberately** instead of omitting it, sized against the thinking budget — the
