@@ -503,3 +503,45 @@ async fn resuming_legacy_bare_uuid_session_preserves_id() {
 
     let _ = manager.close_session(&legacy_id).await;
 }
+
+/// (issue #190) THE end-to-end truncation proof: a MAIN session prompted with
+/// the fixture's `"__truncated__"` scenario resolves its turn to
+/// `StopReason::MaxTokens`.
+///
+/// Why this test is the valuable one: everything above it asserts `EndTurn`, so
+/// the whole desktop suite — and the footer rendering `Turn ended: max_tokens`
+/// — could sit on a `resolve_turn` that never produced the value. This drives
+/// the real pipe (a spawned `fake_worker`, the real `route_event`, the real
+/// `resolve_turn`, the real `send_prompt` return) with the real frame ORDER the
+/// engine guarantees: `turn_truncated` BEFORE `turn_end` / `agent_settled`.
+///
+/// The scenario is NOT subagent-gated: it lives in the fixture's `Inbound::Prompt`
+/// text match beside every other scenario (`fulcrum_harness::fixtures::worker`),
+/// and the desktop's `fake_worker` bin is a shim onto that `worker_main`, so the
+/// frames reach a MAIN session unchanged. The crate's own tests drive it as a
+/// CHILD's turn (the #122 capture-reclassification work); asserting it on a main
+/// session is this repo's contribution — the parent-side disposition mapping.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_truncated_turn_on_a_main_session_resolves_as_max_tokens() {
+    let dir = temp_config_dir();
+    let (sink_tx, _sink_rx) = mpsc::unbounded_channel();
+    let sink: Arc<dyn EventSink> = Arc::new(RecSink { tx: sink_tx });
+    let (manager, _wm, _db) = build_manager(&dir, &sink);
+
+    let info = manager
+        .start_session(dir.to_path_buf(), &sink)
+        .await
+        .expect("the native session starts");
+
+    let reason = manager
+        .send_prompt(&info.session_id, "__truncated__".to_string())
+        .await
+        .expect("the truncated turn resolves (the fixture does settle)");
+
+    assert_eq!(
+        reason,
+        StopReason::MaxTokens,
+        "a turn the Worker reported `turn_truncated` must settle as max_tokens \
+         — the silent `end_turn` is the bug issue #190 is about"
+    );
+}
