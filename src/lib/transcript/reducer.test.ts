@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applySessionUpdate,
+  dispositionFromRows,
   extractDiffs,
   finalizeSessionMessages,
   mapPersistedStatus,
@@ -20,6 +21,18 @@ function toolRow(payload: Record<string, unknown>): MessageRow {
     messageKey: null,
     payloadJson: JSON.stringify(payload),
     createdAt: 1000,
+  };
+}
+
+/** A bare `MessageRow` fixture — every field overridable, no payload encoding. */
+function msgRowBase(overrides: Partial<MessageRow> & { kind: MessageRow["kind"] }): MessageRow {
+  return {
+    id: 1,
+    sessionId: "s1",
+    messageKey: null,
+    payloadJson: "{}",
+    createdAt: 1000,
+    ...overrides,
   };
 }
 
@@ -457,6 +470,183 @@ describe("src/lib/transcript", () => {
       const [msg] = messages;
       if (msg?.kind !== "tool-call") throw new Error("no tool-call message");
       expect(msg.status).toBe("pending");
+    });
+  });
+
+  describe("dispositionFromRows", () => {
+    // ADR 0108: a Truncated turn is TERMINAL and VISIBLE. The engine persists
+    // the notice as an ordinary `agent-text` row on its own fresh key
+    // (`{stamp}:truncate:N`) whose `payload_json` carries the provider
+    // disposition `"length"`; the footer needs the CLIENT vocabulary
+    // (`"max_tokens"`) and needs it AFTER a restart, when the in-memory
+    // `stopReasons` map is `{}`. This function is the whole read side.
+
+    /** The persisted truncation notice, exactly as the display store writes it. */
+    const truncateRow = (overrides: Partial<MessageRow> = {}): MessageRow => ({
+      id: 9,
+      sessionId: "s1",
+      kind: "agent-text",
+      messageKey: "a3f9c1:truncate:0",
+      payloadJson:
+        '{"text":"Response was truncated before completion","disposition":"length"}',
+      createdAt: 2000,
+      ...overrides,
+    });
+
+    it("reads the last row's disposition and maps the provider spelling to max_tokens", () => {
+      expect(dispositionFromRows([truncateRow()])).toBe("max_tokens");
+    });
+
+    it("ignores an agent-text row that carries no disposition key", () => {
+      const plain = msgRowBase({
+        kind: "agent-text",
+        messageKey: "a3f9c1:m1",
+        payloadJson: JSON.stringify({ text: "A normal, complete reply." }),
+      });
+      expect(dispositionFromRows([plain])).toBeUndefined();
+    });
+
+    it("ignores a tool-call row even when its payload carries a disposition", () => {
+      expect(
+        dispositionFromRows([
+          toolRow({ toolCallId: "t1", title: "bash", disposition: "length" }),
+        ]),
+      ).toBeUndefined();
+    });
+
+    it("refuses \"cancelled\" — it would suppress a settled OS alert", () => {
+      expect(
+        dispositionFromRows([
+          truncateRow({
+            payloadJson: JSON.stringify({
+              text: "Response was truncated before completion",
+              disposition: "cancelled",
+            }),
+          }),
+        ]),
+      ).toBeUndefined();
+    });
+
+    it("refuses the client spelling — the row carries the PROVIDER spelling only", () => {
+      expect(
+        dispositionFromRows([
+          truncateRow({
+            payloadJson: JSON.stringify({
+              text: "Response was truncated before completion",
+              disposition: "max_tokens",
+            }),
+          }),
+        ]),
+      ).toBeUndefined();
+    });
+
+    it("refuses a disposition the mapping does not know", () => {
+      expect(
+        dispositionFromRows([
+          truncateRow({
+            payloadJson: JSON.stringify({
+              text: "Response was truncated before completion",
+              disposition: "refusal",
+            }),
+          }),
+        ]),
+      ).toBeUndefined();
+    });
+
+    it("refuses a non-string disposition", () => {
+      expect(
+        dispositionFromRows([
+          truncateRow({
+            payloadJson: JSON.stringify({
+              text: "Response was truncated before completion",
+              disposition: 7,
+            }),
+          }),
+        ]),
+      ).toBeUndefined();
+    });
+
+    it("never throws on an unparseable payload", () => {
+      expect(
+        dispositionFromRows([truncateRow({ payloadJson: "{not json" })]),
+      ).toBeUndefined();
+    });
+
+    it("never throws when the payload parses to a non-object", () => {
+      // `JSON.parse("null")` SUCCEEDS and hands back `null`, so a bare property
+      // read on the parsed value would throw right here — and this runs on the
+      // `openSession` / `resumeSession` path, where a throw would take the
+      // transcript load with it. Disk bytes, so every parse outcome is reachable.
+      for (const payloadJson of ["null", "7", '"a string"', "true", "[]"]) {
+        expect(
+          dispositionFromRows([truncateRow({ payloadJson })]),
+          `payloadJson ${payloadJson} must read as no disposition, not throw`,
+        ).toBeUndefined();
+      }
+    });
+
+    it("returns undefined for an empty page", () => {
+      expect(dispositionFromRows([])).toBeUndefined();
+    });
+
+    it("looks ONLY at the last row — a newer row after the notice suppresses it", () => {
+      const newer = msgRowBase({
+        id: 10,
+        kind: "user",
+        messageKey: null,
+        payloadJson: JSON.stringify({ text: "a newer prompt" }),
+      });
+      expect(dispositionFromRows([truncateRow(), newer])).toBeUndefined();
+    });
+
+    it("reads a re-written (upserted) older tool row as NO suppression — row identity, not row order", () => {
+      // Decision 4. The notice is an INSERT on a fresh unique key; every row
+      // its own turn can write AFTER it is an UPSERT onto a key that already
+      // exists — a `tool_execution_end` close updates the pre-existing
+      // `tool-call` row IN PLACE, gaining no newer `id` (the `ON CONFLICT …
+      // DO UPDATE` sets `payload_json`/`created_at`, never `id`). So the page's
+      // last element is still the notice and the line must render. Note what
+      // this does NOT pin: a "find the newest truncate row and compare ids"
+      // refactor also passes HERE, because the upserted row holds no newer id
+      // either way — the positional contract is pinned by
+      // `reads the LAST element by position, not the highest id`.
+      const tool = toolRow({ toolCallId: "t1", title: "bash", status: "completed" });
+      // Same `id`, same `messageKey` — the row was UPSERTED in place after the
+      // notice landed, so it holds no newer identity.
+      const reWrittenAfterTheNotice = { ...tool, id: 8 };
+      expect(
+        dispositionFromRows([reWrittenAfterTheNotice, truncateRow({ id: 9 })]),
+      ).toBe("max_tokens");
+    });
+
+    it("suppresses when a NEW row is inserted after the notice", () => {
+      // The inverse pin: a genuinely newer turn INSERTS at least one new row
+      // (a newer `id`), and the footer belongs to the NEWEST turn.
+      const inserted = {
+        ...toolRow({ toolCallId: "t2", title: "bash" }),
+        id: 10,
+      };
+      expect(dispositionFromRows([truncateRow({ id: 9 }), inserted])).toBeUndefined();
+    });
+
+    it("reads the LAST element by position, not the highest id", () => {
+      // This page CANNOT arise from `messages_page` today — both arms return
+      // ascending ids, so the last element is always the id-max element and this
+      // input is unreachable. It exists to pin the CONTRACT itself: the rule is
+      // "the last row of the page", read positionally. If the SQL ordering ever
+      // changes (or a caller feeds a differently-sorted page), this is the test
+      // that says the function still reads the tail and not `max(id)` — i.e. a
+      // "pick the row with the newest id" rewrite is a behaviour change, not a
+      // no-op, and would have to be decided deliberately.
+      const olderThanTheNoticeButLast = msgRowBase({
+        id: 8,
+        kind: "agent-text",
+        messageKey: "a3f9c1:m1",
+        payloadJson: JSON.stringify({ text: "A normal, complete reply." }),
+      });
+      expect(
+        dispositionFromRows([truncateRow({ id: 9 }), olderThanTheNoticeButLast]),
+      ).toBeUndefined();
     });
   });
 });
