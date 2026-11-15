@@ -300,7 +300,7 @@ struct LiveWorkerSession {
     /// (issue #190) Set when the Worker reports `turn_truncated` for the turn
     /// in flight — the provider cut the reply off at its output cap, so the
     /// turn is NOT a success. `resolve_turn` maps it to `StopReason::MaxTokens`
-    /// (behind `cancel_requested`: Decision 6 puts a user Stop first). Same
+    /// (behind `cancel_requested`: ADR 0108's amendment puts a user Stop first). Same
     /// `Arc<StdMutex<_>>` shape and the same poisoned-lock RECOVERY as
     /// `cancel_requested` — this registry guards independent per-key rows, so a
     /// poison is recovered, never panicked (`AGENTS.md`; the `db.rs`

@@ -492,7 +492,7 @@ impl SessionManager {
         drop(cancelled_guard);
         // (issue #190) `Cancelled` > `MaxTokens` > `EndTurn`. A user who pressed
         // Stop on a turn whose reply was ALSO cut off cancelled it — the more
-        // specific fact about what happened (Decision 6). Both guards are dropped
+        // specific fact about what happened (ADR 0108's amendment). Both guards are dropped
         // BEFORE the `pending_turn` lock, as the `cancel_requested` guard always
         // was: never hold two of these at once.
         let truncated_guard = truncated.lock().unwrap_or_else(|p| p.into_inner());
@@ -1182,7 +1182,7 @@ mod tests {
         );
     }
 
-    /// (issue #190 Decision 6) `Cancelled` BEATS `MaxTokens`: a user who
+    /// (issue #190, ADR 0108's amendment) `Cancelled` BEATS `MaxTokens`: a user who
     /// pressed Stop on a turn whose reply was also cut off cancelled it — the
     /// more specific fact about what happened.
     #[test]
@@ -1210,7 +1210,7 @@ mod tests {
         assert_eq!(
             rx.try_recv().unwrap(),
             StopReason::Cancelled,
-            "Stop beats a truncation (Decision 6)"
+            "Stop beats a truncation (ADR 0108 amendment)"
         );
     }
 

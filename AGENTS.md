@@ -972,6 +972,20 @@ These are properties of the repo, not of any branch:
   nothing errors, the command just checks less than you think. So write `cargo …` at the root,
   and still read the TEXT of a `cargo` failure before concluding a test flaked: "could not find
   Cargo.toml" means the command never ran, and re-running it to confirm a flake will simply fail again.
+- **The engine is a SIBLING checkout, and the desktop does not build from it — so editing it and then
+  testing here tests nothing.** `/home/daniel/Coding/Archimedes/fulcrum` (origin
+  `archimedes-codes/fulcrum`) sits one directory from this repo (origin `archimedes-codes/archimedes`),
+  and `.cargo/config.toml` is ABSENT here (only the `.example`), so `cargo tree -i fulcrum-harness`
+  prints a bare `fulcrum-harness v0.3.0` with **no path suffix** — the build consumes the
+  crates.io-pinned crate, never the sibling. Two hazards follow, both silent (exit 0): an edit to the
+  sibling followed by `cargo test` in THIS tree reports green having tested none of that edit — the same
+  "a pin that passes on the broken thing" class as the bullet on vacuous fixtures; and a shell with no
+  `cd` inside a subagent commits into whichever of the two repos the session cwd happens to be, with no
+  error at all. So a task that spans both says which repo each command runs in, `git rev-parse
+  --show-toplevel` before the first write and again before the first commit, and remember the engine's
+  own tests are not runnable from here at all (the `cannot be tested because it requires
+  dev-dependencies` line above). The engine's warm `target/` is **11 G** and `/home` had **58 G free**
+  when this was written — re-measure with `df -h` before deciding a sibling build is affordable.
 - **Plans carry stale baselines within hours** on a busy branch: re-measure test
   counts at your own HEAD rather than trusting the plan's.
 - **Moving a file between the two packages breaks three things that no path grep finds.** The crate

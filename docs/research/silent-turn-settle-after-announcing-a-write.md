@@ -118,9 +118,14 @@ tests excluded): `Refusal` ×1, `Cancelled` ×4, `EndTurn` ×2 — **`MaxTokens`
 declared in `agent/session/mod.rs`; `chat/TranscriptFooter.tsx` renders `Turn ended: {stopReason}`;
 and `TranscriptFooter.test.tsx` **asserts the string `"Turn ended: max_tokens"`**. So wiring
 `FinishReason::Length → StopReason::MaxTokens` is a two-line change at both ends that converts the
-invisible case into a visible one, and the test that proves it already exists. Note
-`transcriptFooterIsEmpty` additionally suppresses the whole line for `end_turn`, so it must learn not
-to suppress this one.
+invisible case into a visible one, and the test that proves it already exists. **Corrected at ship — the
+sentence that followed this one was wrong.** It claimed `transcriptFooterIsEmpty` "must learn not to
+suppress this one". Its actual predicate is
+`(props.inTurn || !props.stopReason || props.stopReason === "end_turn")`, which suppresses `end_turn` and
+NOTHING ELSE: `max_tokens` already rendered, and the whole TS chain
+`send_prompt` → `turnCompleted` → `stopReasons` → `ChatStream` → `MessageList` → `TranscriptFooter` was
+built and tested before this work existed. **No TypeScript change was needed** — the desktop's entire half
+was one Rust construction site. (ADR 0108's 2026-11-15 amendment carries the measurement.)
 
 **1d. There is no frame that expresses failure.** `settle_error` and `settle_cancelled` are
 **byte-identical in the frames they emit** (`close_announced_tool_calls` + `turn_abandoned` +
@@ -571,8 +576,10 @@ Ranked by cost-to-coverage. Items 1 and 2 are near-free and **both ends already 
 
 1. **Stop accepting a `Length` turn as a clean stop** in `handle_turn`, and map
    `FinishReason::Length → StopReason::MaxTokens`. Two lines at each end; the footer test already
-   asserts the string; `transcriptFooterIsEmpty` must stop suppressing it. Converts the highest-fit
-   invisible case into a visible one.
+   asserts the string. Converts the highest-fit invisible case into a visible one. **SHIPPED** as
+   issue #190 / PR #194 / ADR 0108 — and one clause of this item was wrong: it also said
+   `transcriptFooterIsEmpty` "must stop suppressing it", but that predicate suppresses `end_turn` only,
+   so `max_tokens` already rendered and **no TypeScript change was needed** (§1c carries the measurement).
 2. **Persist the finish reason** — one `#[serde(default, skip_serializing_if = "Option::is_none")]
    finish_reason: Option<String>` on `ChatMessage`, riding `content_json`. **No migration**, ~25 B ×
    assistant rows ≈ **3.6 MB = 0.15%** of the 2.33 GB, and old rows deserialize as `None`. Makes the

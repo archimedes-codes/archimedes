@@ -147,3 +147,55 @@ incompatibility with a frame whose only effect on it is to be skipped.
   number is materially above the second, terminal-and-never-retry is costing users more than it is
   protecting them, and the fuse is owed. Until someone publishes both halves of that comparison, this
   stands.
+
+## Amendment (2026-11-15) — the three seams this plan held that the decision text did not, and one claim that was wrong
+
+Folded out of the deleted plan (`docs/roadmap/silent-turn-settle.md`, gitignored, the only copy) at ship.
+Four facts lived only there. All four are re-runnable as written.
+
+**`Cancelled` > `MaxTokens` > `EndTurn` in `resolve_turn`.** A user who pressed Stop on a turn whose
+reply was *also* cut off cancelled it — the more specific fact about what happened. The precedence is the
+`if cancelled / else if was_truncated` order in `router.rs::resolve_turn` and is pinned by
+`cancel_requested_wins_over_truncated` (its assertion reads "Stop beats a truncation"); the code comments that cited this as "Decision 6" cited the plan, which is now gone, so this paragraph
+is its home. Both guards are dropped BEFORE the `pending_turn` lock — never hold two of these at once.
+
+**A new `RpcEvent` variant does not redden the desktop by itself — only *naming* it does.** `route_event`
+matches `WorkerInboundEvent` exhaustively with no `_` arm, but it touches `RpcEvent` only through
+`matches!`. So the additive-variant pattern is safe to *emit* from a newer crate and invisible to the
+desktop until an arm names it — which is also why the pin bump and that arm must be one commit (the
+Consequences bullet above): the reverse order is a compile error, not a warning. This was a correction,
+not a restatement — a grounding report had claimed the exhaustive match would break on any new variant.
+
+**The desktop needed NO TypeScript change, and the research report said otherwise.**
+`transcriptFooterIsEmpty`'s predicate is `(props.inTurn || !props.stopReason || props.stopReason === "end_turn")`,
+so it suppresses `end_turn` and **nothing else** — `max_tokens` already rendered. The whole chain
+`send_prompt` → `turnCompleted` → `stopReasons` → `ChatStream` → `MessageList` → `TranscriptFooter` was
+built and tested before this work existed (`TranscriptFooter.test.tsx`, `MessageList.test.tsx` and
+`MessageList.emptyFilm.test.tsx` all assert `"Turn ended: max_tokens"`). The research report's §1c and its
+fix list both said the footer "must learn not to suppress this one"; that is false, and its two
+occurrences are corrected in place. The desktop's entire half was one Rust construction site. **A
+grounding report's claim is a hypothesis — re-measure the predicate before acting on it.**
+
+**The notice rides a UNIQUE `{stamp}:truncate:N` id, and `truncate` is now the third bookkeeping word.**
+`compute_display_rows` appends same-`messageId` `agent_message_chunk`s with no separator, so a second line
+on the shared `{stamp}:system` key **welds** into one bubble (ADR 0048's mechanism). The notice therefore
+mints through a new `TurnState::truncate_seq` counter mirroring `retract_seq`, and its id must be
+recognised by `is_bookkeeping_message_id` or the harness's own sentence is handed to a PARENT model as its
+child's answer. Accepted consequence, stated because it is a trade-off and not an oversight: a parent does
+not read the line in a child's captured text — it sees the child's own card. Copy is **"Response was
+truncated before completion"** — deliberately neutral (pi #7540's lesson), because a normalised `length`
+can also mean context overflow or a provider-mislabeled cut, so the line must not claim it was the
+configured limit. ADR 0049's word-set enumeration is amended alongside.
+
+**Two more that lived only in the plan.** (a) The **per-call** refinement of the never-executes rule —
+run the calls that arrived *complete* in a `length`-stopped turn, on cline's argument that *"a closed JSON
+object cannot be the prefix of a longer one, so a call that arrived complete is what the model meant"* —
+is **rejected**, not overlooked. It is the one genuinely strong counter-argument to the blanket gate above,
+and it loses on cost, not on merit: `close_announced_tool_calls` already gives the model a precise per-call
+error either way, so the refinement buys no additional signal for the extra state. If a future measurement
+shows complete calls being stranded in a `length` turn often enough to matter, reopen it here. (b) The
+protocol-version pin `the_task_frames_are_additive_so_the_protocol_version_stays_one` **must not be
+"corrected"** when a new `RpcEvent` variant lands. It is the assertion that `PROTOCOL_VERSION` stays 1
+across additive frames, and the crate has already shipped new variants without bumping
+(`task-request` / `task-response`) — so a run that adds a variant and finds that test green has found the
+expected state, not a test that failed to notice its new frame.

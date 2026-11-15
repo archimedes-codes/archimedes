@@ -25,3 +25,16 @@ A **Session** outlives its **Worker**: a **Stalled session** is resumed by a fre
 - **Seed the counters at start** — the **Supervisor** reads the highest persisted `m{n}` / `retract:{n}` / thought segment for the session and the new `TurnState` resumes numbering from it. Rejected: it needs a query over a TEXT column (`MAX(message_key)` is lexicographic, so `m10 < m2`) parsing three key families, couples session-start to the display table that the resume path deliberately never reads, and leaves `system` and `default` colliding — because neither is a counter. Its only real advantage is that ~40 existing id assertions keep their exact values, which is not the expensive part of this change.
 - **Let the loop mint its own token** at construction — no protocol change at all, and the boundary is auto-correct. Rejected: every id assertion in the suite (`"m1"`, `"m1#1"`, `"retract:2"`) degrades from an exact value to a prefix matcher — and the reason this defect shipped is that no assertion was strong enough to span two Workers — while the Worker would decide for itself the one fact the start envelope exists to tell it.
 - **Stamp only the counter-derived ids** and leave the constants bare — smallest diff, half the fix, and the half it leaves is the one with no counter to seed.
+
+## Amendment (2026-11-15) — `truncate` joins the bookkeeping word-set (issue #190, ADR 0108 amended)
+
+The id families this ADR stamps gained a third bookkeeping counter: `{stamp}:truncate:N`, the notice a
+**Truncated turn** writes about its own turn (ADR 0108's 2026-11-15 amendment). So
+`is_bookkeeping_message_id`'s word-set is now `system` / `retract` / **`truncate`** —
+`id.split(':').any(|f| f == "system" || f == "retract" || f == "truncate")`. The word-set-not-position
+rule is what makes this a one-token change: it still accepts the bare shape (a test fixture's
+`truncate:0`, or `TurnState::default()`'s EMPTY stamp), and the hex-alphabet argument still holds —
+`truncate` is eight chars and carries `r`/`u`/`n`, so a six-hex stamp can never equal it. The consequence
+that matters is the one this ADR already established: without the word in the set, the **Subagent
+capture** hands a parent model its child's harness-written sentence as if the child had said it.
+Re-run: `grep -n 'field == "truncate"' <fulcrum-harness>/src/normalize.rs`.
