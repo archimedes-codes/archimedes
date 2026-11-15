@@ -4,12 +4,13 @@ last-verified: 2026-11-14
 task: tsk_c2b9389e-258f-4c1b-ba0a-c6f9af6eea06
 verified-by: >-
   Six parallel research angles + parent forensics, 2026-11-14. (a) SQLite forensics against a
-  READ-ONLY SNAPSHOT of this machine's real `archimedes.db` (2,332,728,768 B; 325,929 rows; 2,259
+  READ-ONLY SNAPSHOT of this machine's real `archimedes.db` (2,333,728,768 B; 325,929 rows; 2,259
   sessions; 2026-10-04 → 2026-11-14) — the live DB was LOCKED by the running desktop, so every
   figure below comes from `sqlite3 "file:/home/daniel/arch-research-write-stall/snap.db?mode=ro"`
   (a `cp` of the live file, 2.33 GB, taken 15:12 local). That snapshot is a WORKING FILE, not a
-  durable artifact: it is outside the repo and unrecoverable if deleted. Re-take it the same way to
-  re-run the census. (b) Engine source read at the sibling checkout
+  durable artifact: it is outside the repo and unrecoverable if deleted. It is STILL ON DISK and
+  queryable as of 2026-11-14, and the figures below are pinned to it — read the Appendix preamble
+  before re-taking it. (b) Engine source read at the sibling checkout
   `/home/daniel/Coding/Archimedes/fulcrum` (HEAD `7f21099` = tag `v0.2.0`), which IS the source of
   the pinned `fulcrum-harness = "0.2.0"` the desktop links — verified by md5-comparing
   `worker/client.rs`, `harness/loop.rs`, `harness/loop/turn.rs`, `harness/loop/emit.rs`,
@@ -473,8 +474,9 @@ contains the cure"*. **False as of desktop `v0.13.0`**, which pins `fulcrum-harn
 **Local, primary (highest credibility — this is the system under investigation):**
 
 - `/home/daniel/arch-research-write-stall/snap.db` — read-only `cp` of the live 2.33 GB
-  `~/.local/share/archimedes/archimedes.db`. **A working file outside the repo; not durable.** Every
-  figure here is reproducible with `sqlite3 "file:…/snap.db?mode=ro"` and the queries in the Appendix.
+  `~/.local/share/archimedes/archimedes.db`. **A working file outside the repo; not durable** — but
+  present and queryable, dated and hashed in the Appendix preamble. Every figure here is reproducible
+  with `sqlite3 "file:…/snap.db?mode=ro"` and the queries in the Appendix.
 - Engine `/home/daniel/Coding/Archimedes/fulcrum` @ `7f21099` (= tag `v0.2.0`), md5-verified identical
   to the vendored `fulcrum-harness-0.2.0` for all five files the argument turns on.
 - Desktop `/home/daniel/Coding/Archimedes/archimedes` @ `60033785`-era working tree.
@@ -504,7 +506,10 @@ third-party issue):**
 - Academic: Cemri et al., *"Why Do Multi-Agent LLM Systems Fail?"*, arXiv:2503.13657 — `FM-3.1
   Premature termination`.
 
-**Claim grades used below:** **VERIFIED** = read in source or measured by a command in the Appendix.
+**Claim grades used below:** **VERIFIED** = read in source, measured by a command in the Appendix, or
+produced by the named CTE in the referenced angle report (the four figures that rest on an angle
+report's CTE rather than a command printed here are the 212,742-char reasoning volume, the 6-of-9
+pre-fix / 3 post-fix split, the 29× median-length ratio, and the 72.1 KiB/s + 99.95% log figures).
 **INFERRED** = reasoned from multiple verified facts, stated as such.
 
 ---
@@ -601,6 +606,18 @@ Ranked by cost-to-coverage. Items 1 and 2 are near-free and **both ends already 
 ---
 
 ## Appendix — re-runnable instruments
+
+**The snapshot exists and is queryable.** `/home/daniel/arch-research-write-stall/snap.db` —
+2,333,728,768 B, mtime **2026-11-14 15:12:40 +0100**, sha256
+`90dcae62725146978ee58f5e24a83a6fbb68aacfa68edf0f546d940724212316`; whoever holds *a* snapshot of
+that path can confirm it is *the* one against that hash. **The expected outputs below are pinned to
+the 2026-11-14 15:12 snapshot, not to the live DB.** A re-taken `cp` of the live file is a different,
+larger, drifted population: re-taking re-runs the *queries*, it does not recover the *numbers* — 566,
+924, 126,713 and the 212,742-character case will all differ. And some outputs below are no longer
+reproducible from the live file at all, because the post-fix binary persists truncated text and mints
+`{stamp}:truncate:N` notice rows: #1's `0|0` ("no provider disposition persisted") and #14's
+"`StopReason::MaxTokens` never constructed" describe a **pre-fix** world the live system has moved
+past.
 
 All DB queries against the read-only snapshot:
 
