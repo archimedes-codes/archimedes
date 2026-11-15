@@ -362,6 +362,147 @@ fn a_compaction_pair_persists_one_card_per_compaction_with_its_summary() {
     );
 }
 
+/// (issue #190 / ADR 0108, the DURABILITY half) A Truncated turn's
+/// `agent-text` row carries the provider's `disposition` in the QUERYABLE
+/// form — `json_extract(payload_json, '$.disposition') = 'length'` — so a
+/// client can re-seed `stopReasons` after a restart and the census can count
+/// truncated turns with a KEY-level SQL predicate.
+///
+/// The seam is the whole pipeline, not any one function: a real
+/// `RpcEvent::turn_truncated` decoded off the wire shape (`ev`), through
+/// `normalize` (which mints `{stamp}:truncate:N`), through
+/// `compute_display_rows` (which builds the payload), through
+/// `SessionStore::persist_display` → `db.record_message`, and read back from
+/// the `messages` TABLE. Every earlier assertion in this file stops at the
+/// frame or the in-memory `DisplayRow`; the claim here is about what the
+/// database row says, because that is the only thing that survives a restart.
+///
+/// # This test is RED against `fulcrum-harness` 0.3.0 BY DESIGN
+///
+/// 0.3.0's `agent_message_chunk` arm builds `json!({ "text": entry })` — the
+/// frame `normalize` emits for `turn_truncated` is `unique_system_chunk`,
+/// which carries ONLY `content.text` + `messageId`, so no disposition key
+/// exists anywhere downstream and the `json_extract` reads SQL `NULL`. The
+/// engine publishes the key in 0.3.1 and this file's pin is bumped in the
+/// same PR; a pin that passed on 0.3.0 would pin nothing (AGENTS.md: "a pin
+/// that passes on the broken thing is worse than no pin", applied in reverse).
+///
+/// # Why `json_extract` and never `LIKE`
+///
+/// This repo's own research rules `payload_json LIKE '%disposition%'`
+/// unsound as an instrument in both directions: it FALSE-POSITIVES on
+/// transcript text that merely quotes the word `disposition` (a real reply
+/// can contain it), and FALSE-NEGATIVES on any other spelling or placement.
+/// `json_extract` asks SQLite's JSON parser about ONE KEY, which is exactly
+/// the predicate the design's census uses and the only assertion that can
+/// distinguish "the key is there" from "the word is in the blob".
+///
+/// The `$.text` assertion is the other half of the claim: the prose the
+/// render path shows must SURVIVE the change that adds the key — the
+/// disposition is ADDED to the payload, not substituted for the text.
+#[test]
+fn a_truncated_turn_persists_its_provider_disposition_where_a_client_can_read_it() {
+    let (db, dir) = temp_db();
+    let store = SessionStore::new(db.clone());
+    let mut st = TurnState::stamped("t");
+    let text = StdMutex::new(HashMap::new());
+    let tools = StdMutex::new(HashMap::new());
+    let thoughts = StdMutex::new(ThoughtState::default());
+
+    // The real event off the wire — `ev` is the actual
+    // `serde_json::from_value` decode path, so an RpcEvent variant that
+    // stopped decoding would fail HERE rather than silently no-op below.
+    persist_frames(
+        &store,
+        "s1",
+        normalize(&ev(json!({ "type": "turn_truncated" })), &mut st),
+        &text,
+        &tools,
+        &thoughts,
+    );
+
+    // ── what the `messages` table holds (the `Db` accessor, as every other
+    // test in this file reads rows back) ─────────────────────────────────
+    let rows: Vec<(String, String, String)> = db
+        .messages_for("s1")
+        .unwrap()
+        .into_iter()
+        .map(|m| (m.kind, m.message_key.unwrap_or_default(), m.payload_json))
+        .collect();
+    let row = rows
+        .iter()
+        .find(|(_, key, _)| key.ends_with("truncate:0"))
+        .unwrap_or_else(|| {
+            panic!("no `truncate:0` display row was persisted; the table is {rows:?}")
+        });
+
+    // (1) The row is an `agent-text` row — the kind the reader hydrates into
+    // a transcript bubble, and the first half of the UNIQUE key.
+    assert_eq!(
+        row.0, "agent-text",
+        "the truncation notice persists as an `agent-text` row (the kind a \
+         client reads back as a transcript bubble), the table is {rows:?}"
+    );
+    // (2) Stamped and counter-seeded: `{stamp}:truncate:0`, the first notice
+    // of this incarnation (ADR 0049 — an unstamped key would collide across
+    // Worker lives).
+    assert_eq!(
+        row.1, "t:truncate:0",
+        "the notice is keyed `{{stamp}}:truncate:0` (stamped, so a Resume's \
+         own first notice cannot overwrite it)"
+    );
+    // (4) The human prose is still there — the render path is unaffected by
+    // the key this test pins.
+    let payload: Value = serde_json::from_str(&row.2).expect("payload_json is JSON");
+    assert_eq!(
+        payload["text"], "Response was truncated before completion",
+        "the notice's prose survives into the persisted payload (the render \
+         path reads `$.text`), got {}",
+        row.2
+    );
+
+    // (3) THE QUERYABLE FORM — the instrument the census uses. An
+    // INDEPENDENT connection to the same file (the
+    // `fulcrum_seams.rs::artifact_rows` / `storage.rs` precedent) because the
+    // claim is "a client can run this SQL", and `Db` deliberately exposes no
+    // raw query path. `temp_db` builds the file at `t.db` inside the `TempDir`
+    // guard, which this test keeps alive.
+    let db_path = dir.path().join("t.db");
+    let conn = rusqlite::Connection::open(&db_path).expect("an independent connection");
+    let (sql_text, sql_disposition): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT json_extract(payload_json, '$.text'),
+                    json_extract(payload_json, '$.disposition')
+             FROM messages
+             WHERE session_id = ?1 AND kind = 'agent-text'
+               AND message_key = 't:truncate:0'",
+            rusqlite::params!["s1"],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the truncate:0 agent-text row is queryable by (kind, message_key)");
+
+    // The same instrument proves the prose is a real JSON key — and that the
+    // `NULL` below is about the DISPOSITION and not about a missing row or a
+    // payload the JSON parser cannot read.
+    assert_eq!(
+        sql_text.as_deref(),
+        Some("Response was truncated before completion"),
+        "`json_extract(payload_json, '$.text')` reads the prose back (this \
+         also proves the row exists and parses as JSON, so a NULL \
+         disposition below means the KEY is absent, not the row)"
+    );
+    // THE PIN. Absent on `fulcrum-harness` 0.3.0 (reads SQL `NULL` → `None`);
+    // `'length'` on the 0.3.1 pin bump.
+    assert_eq!(
+        sql_disposition.as_deref(),
+        Some("length"),
+        "`json_extract(payload_json, '$.disposition')` must read 'length' on \
+         the persisted truncation notice — this is the machine-queryable form \
+         the truncated-turn census and the post-restart `stopReasons` re-seed \
+         both depend on (RED by design on fulcrum-harness 0.3.0)"
+    );
+}
+
 /// The `persist_update` split (ADR 0025) GOLDEN test:
 /// `compute_display_rows` on a canned normalized update + canned
 /// accumulators yields the same `Vec<DisplayRow>` the old
