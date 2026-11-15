@@ -1444,21 +1444,30 @@ fn a_write_through_cannot_be_overwritten_by_an_older_row_the_timer_still_holds()
         (DrainStage::Queued, DrainReason::FlushSession),
         Duration::from_millis(500),
     );
-    assert!(
-        queued,
-        "the write-through never queued behind the drain in flight: it either raced it \
-         or never flushed the pending batch at all"
-    );
 
     // The write-through cannot complete on the fixed build until the parked drain is
     // released (it pre-flushes, and the pre-flush queues behind that drain), so this
     // is where the test lets it through. A thread that had no runtime AND no pending
     // batch would not block here at all; this one has both.
+    //
+    // RELEASE AND JOIN BEFORE ASSERTING `queued`, and it is not tidiness: the wait
+    // above can legitimately time out on a loaded runner, and a panic here would
+    // leave the timer task parked in `Park::wait()` forever — dropping the runtime at
+    // the end of the test waits for its workers, so a failing assertion would become
+    // a hung suite with no report. The neighbouring inversion test releases before it
+    // asserts for the same reason. The WAIT still happens before the release, which is
+    // the whole point of the reordering; only the verdict is deferred.
     released.release();
     through
         .join()
         .expect("the write-through thread does not panic")
         .expect("the write-through reports its own SQLite result, immediately");
+
+    assert!(
+        queued,
+        "the write-through never queued behind the drain in flight: it either raced it \
+         or never flushed the pending batch at all"
+    );
 
     // (4) Nothing may be committed after this point: the timer was aborted by the
     // pre-flush, and `P1` went out ahead of `P2`.
@@ -1474,16 +1483,10 @@ fn a_write_through_cannot_be_overwritten_by_an_older_row_the_timer_still_holds()
          was holding is older by construction and must have been committed first"
     );
     // The pre-flush actually QUEUED behind the in-flight drain rather than skipping
-    // past it — the mechanism, not just the outcome.
-    assert!(
-        saw(
-            &events,
-            (DrainStage::Queued, DrainReason::FlushSession),
-            Duration::from_millis(500)
-        ),
-        "the write-through never flushed the pending batch (it did not even queue \
-         behind the drain in flight), so the ordering above was luck"
-    );
+    // past it — the mechanism, not just the outcome — which is what the `queued`
+    // assertion above established before the release. Not re-polled here: the two
+    // checks read the same event, and a second copy would only add a second place
+    // for the same claim to be wrong.
 }
 
 // ── (i) `Replace` refuses its rewrite when the pre-flush fails (Finding 3) ─────
