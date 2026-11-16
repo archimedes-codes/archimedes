@@ -436,13 +436,19 @@ export default function SpacesList({
   const deleteTargetMessages = useSessions(
     (s) => (deleteTarget ? s.messages[deleteTarget.sessionId] : undefined),
   );
+  // The title comes from the LIVE row, not the frozen `deleteTarget` snapshot —
+  // a title minted by the naming pass while this dialog is open must relabel it
+  // (the snapshot would keep naming the session the way it looked at click time).
+  // `sessionFieldOf` is a primitive selector over the one three-list walk, so
+  // this does not fall foul of the fresh-object re-render rule (sessionLookup.ts).
+  const deleteTargetStoredTitle = useSessions((s) =>
+    sessionFieldOf(s, deleteTarget?.sessionId, "title"),
+  );
   const deleteTargetTitle = deleteTarget
     ? titleFor(
         deleteTargetMessages,
         spaceNameFor(deleteTarget.cwd, spaces),
-        // The target IS a `SessionInfo`, so its title is already in hand —
-        // the SAME label the row the user clicked shows.
-        deleteTarget.title,
+        deleteTargetStoredTitle ?? deleteTarget.title,
       )
     : "";
 
