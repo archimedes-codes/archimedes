@@ -8,8 +8,8 @@
 //!    pure functions, so each rule is testable on its own.
 //! 2. The WIRE-UP: `maybe_name_session` (the `agent_end` hook the router calls)
 //!    and the `name_session` task it spawns (the model call with `{id}-title` wire
-//!    isolation, bounded `max_tokens: 100`, atomic `title_stage` transition in
-//!    SQLite, `session-titled` emit, and per-session bookkeeping).
+//!    isolation, atomic `title_stage` transition in SQLite, `session-titled` emit,
+//!    and per-session bookkeeping).
 //!
 //! Like `router.rs`, this is a CHILD module of `session`, so it may see the
 //! parent's private items (the `SessionManager` fields, the naming bookkeep‐
@@ -712,11 +712,6 @@ pub(crate) async fn name_session(request: NamingRequest) {
 
     let reasoning_effort =
         resolve_naming_reasoning(&model, request.settings.session_naming_reasoning.as_deref());
-    let max_tokens = if reasoning_effort.is_some() {
-        None
-    } else {
-        Some(100)
-    };
 
     let model_request = ModelRequest {
         // The BARE id, NOT the composed `provider/id` key — the wire wants
@@ -731,7 +726,7 @@ pub(crate) async fn name_session(request: NamingRequest) {
         tools: Vec::new(),
         options: ModelOptions {
             temperature: Some(0.0),
-            max_tokens,
+            max_tokens: None,
             reasoning_effort,
             stream: true,
         },
@@ -1972,7 +1967,8 @@ mod tests {
         );
         assert!(req.tools.is_empty());
         assert_eq!(req.options.temperature, Some(0.0));
-        assert_eq!(req.options.max_tokens, Some(100));
+        // NO cap: a bounded `max_tokens` starves a reasoning route (ADR 0109).
+        assert_eq!(req.options.max_tokens, None);
         assert!(req.options.stream);
         assert_eq!(
             req.messages,
@@ -2922,7 +2918,7 @@ mod tests {
             req.session_id.as_deref(),
             Some(format!("{id}-title").as_str())
         );
-        assert_eq!(req.options.max_tokens, Some(100));
+        assert_eq!(req.options.max_tokens, None);
         assert_eq!(h.stored_title(id).as_deref(), Some("First stage title"));
         assert_eq!(h.stored_stage(id), 1);
         assert_eq!(
@@ -2965,7 +2961,7 @@ mod tests {
             req2.session_id.as_deref(),
             Some(format!("{id}-title").as_str())
         );
-        assert_eq!(req2.options.max_tokens, Some(100));
+        assert_eq!(req2.options.max_tokens, None);
         let prompt_text = match &req2.messages[0].content {
             MessageContent::Text(t) => t,
             _ => panic!("expected text prompt"),

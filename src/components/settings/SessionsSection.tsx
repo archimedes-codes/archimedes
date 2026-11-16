@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import type { SessionInfo } from "@/lib/tauri";
 import { basenameOfPath } from "@/lib/paths";
 import { titleFor } from "@/lib/sessionTitle";
+import { sessionFieldOf } from "@/lib/sessionLookup";
 import { relativeTimeFor } from "@/lib/sessionTime";
 import { detachedSessions, useSessions } from "@/store/sessions";
 import DeleteSessionDialog from "../DeleteSessionDialog";
@@ -157,6 +158,16 @@ export default function SessionsSection({
   const [clearOpen, setClearOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<SessionInfo | null>(null);
 
+  // The delete confirm's title, from the LIVE row — a title minted by the naming
+  // pass while the dialog is open must relabel it, so the frozen `deleteTarget`
+  // snapshot cannot be the source. A hook call, so it lives HERE (unconditional)
+  // and not inside the JSX; `sessionFieldOf` returns a primitive through the one
+  // three-list walk, so this stays the stable-value selector zustand v5 requires
+  // (`lib/sessionLookup.ts`).
+  const deleteTargetLiveTitle = useSessions((s) =>
+    sessionFieldOf(s, deleteTarget?.sessionId, "title"),
+  );
+
   /**
    * Clear all: best-effort, one delete per listed row. The ids are captured
    * BEFORE the first `await` — the store mutates as each delete lands, so a
@@ -223,11 +234,12 @@ export default function SessionsSection({
       {deleteTarget && (
         <DeleteSessionDialog
           // The SAME title rule the row used, so the confirm names exactly the
-          // row it deletes.
+          // row it deletes — with the LIVE title winning over the click-time
+          // snapshot (`deleteTargetLiveTitle`).
           title={titleFor(
             messages[deleteTarget.sessionId],
             basenameOfPath(deleteTarget.cwd),
-            deleteTarget.title,
+            deleteTargetLiveTitle ?? deleteTarget.title,
           )}
           onConfirm={() => {
             // Closes on success AND on failure (a stuck-open dialog is worse);
