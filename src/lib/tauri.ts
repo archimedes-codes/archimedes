@@ -156,6 +156,15 @@ export type {
   TaskCardView,
   TaskRow,
   TaskSessionRow,
+  // (spec D3/D12) The **Task badge** pair. TYPE-ONLY — they vanish at runtime, so
+  // `TAURI_RUNTIME_API` does NOT gain them (the `AccessRule`/`AccessDirection`
+  // precedent, and the `SessionRecency` precedent for a boot-map row type); the
+  // `taskNumbers` wrapper below enters BOTH lists. `TaskNumberRow` is the wire
+  // shape; `TaskBadge` is the frontend view type the store map holds — it lives
+  // HERE because it leaves through this barrel, so the pin and the import site
+  // agree about where the name lives.
+  TaskNumberRow,
+  TaskBadge,
   MoveTaskOutcome,
   // (issue #180 D1, spec §1, ADR 0100) The two Task-artifact wire shapes.
   // TYPE-ONLY — they vanish at runtime, so `TAURI_RUNTIME_API` does NOT gain them
@@ -254,6 +263,12 @@ export {
   // pins that from the source text.
   writeArtifact,
   getArtifact,
+  // (spec D3/D9/D12) The app-wide **Task badge** read — a RUNTIME wrapper, and it
+  // is this `invoke("task_numbers")` literal that `scripts/check-commands.sh`
+  // counts as the command's consumer. It enters `TAURI_RUNTIME_API` AND
+  // `TAURI_PUBLIC_API`; the two TYPE names it traffics in stay in
+  // `TAURI_PUBLIC_API` only (the `Artifact`/`ArtifactMeta` precedent).
+  taskNumbers,
 } from "./tauri/commands/tasks";
 
 export {

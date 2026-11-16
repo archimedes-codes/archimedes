@@ -5693,7 +5693,7 @@ describe("transcript eviction on navigation (ADR 0073 amendment, issue #155)", (
     // `messages` to read. So the answer to that arm is written onto the row's
     // `title` — the field `lib/sessionLookup`'s walk already reads for the
     // sidebar row, the tab strip's confirm, Settings → Detached, the Task detail
-    // dialog and the side pane. A twelfth session-keyed map is forbidden by the
+    // dialog and the side pane. A thirteenth session-keyed map is forbidden by the
     // `SESSION_KEYED_FIELDS` pin, which is why this rides on the row.
     useSessions.setState({
       spaces: [row("/x", 1000)],
@@ -6124,6 +6124,83 @@ describe("sessionRecency (the recency + order side-channel, ADR 0075)", () => {
       s1: 9_500_000_000_000,
     });
     expect(useSessions.getState().sessionOrder).toEqual({ s1: 0 });
+  });
+});
+
+describe("taskNumbers (the Task badge map, spec D3/D9/D12)", () => {
+  // Same shape as the `sessionRecency` block above: the assertions are about the
+  // store's INITIAL shape and a wholesale replace, so the shared `resetStores()`
+  // owns the store on both sides of every case.
+  beforeEach(() => resetStores());
+  afterEach(() => resetStores());
+
+  it("the store starts with an empty taskNumbers map (absent key = no badge)", () => {
+    // `{}` and NOT a map with `null` values: the Rust read INNER JOINs `tasks`,
+    // so a Session with no live link sends no row at all, and the missing key is
+    // the whole negative answer (the ADR 0082 rule, same shape as cost).
+    expect(useSessions.getState().taskNumbers).toEqual({});
+  });
+
+  it("setTaskNumbers reduces rows into the per-id badge (number AND frozen lane)", () => {
+    useSessions.getState().setTaskNumbers([
+      { sessionId: "s1", taskNumber: 7, stageSlug: "implement" },
+      // A real number with a NULL lane (the column is nullable) — a DIFFERENT
+      // answer from "no row", and it must survive the reduce as a badge.
+      { sessionId: "s2", taskNumber: 3, stageSlug: null },
+    ]);
+    expect(useSessions.getState().taskNumbers).toEqual({
+      s1: { number: 7, stageSlug: "implement" },
+      s2: { number: 3, stageSlug: null },
+    });
+  });
+
+  it("setTaskNumbers REPLACES the map wholesale (a stale id cannot outlive its row)", () => {
+    useSessions.getState().setTaskNumbers([
+      { sessionId: "s1", taskNumber: 7, stageSlug: "implement" },
+      { sessionId: "s2", taskNumber: 3, stageSlug: null },
+    ]);
+    // A later read that answers only about `s1` must leave `s2` with NO badge:
+    // merge-only here would keep a badge on a Session whose link is gone. Same
+    // rule as the `sessionRecency` neighbour, for the same reason.
+    useSessions.getState().setTaskNumbers([
+      { sessionId: "s1", taskNumber: 9, stageSlug: "done" },
+    ]);
+    expect(useSessions.getState().taskNumbers).toEqual({
+      s1: { number: 9, stageSlug: "done" },
+    });
+    // And the empty read clears everything — the map is a snapshot, not a log.
+    useSessions.getState().setTaskNumbers([]);
+    expect(useSessions.getState().taskNumbers).toEqual({});
+  });
+
+  it("a Session CLOSE keeps its badge (a stored Session still has its Task)", () => {
+    // The close path names only `inTurn`/`stalled`/`compacting`; `taskNumbers` is
+    // not one of them, so a pause must not blank the badge. This is the mirror of
+    // the `deleteSession` residue assertion below.
+    useSessions.setState({
+      taskNumbers: { s1: { number: 4, stageSlug: "spec" } },
+      sessions: [info("s1", "/x")],
+      activeSessionId: "s1",
+    });
+    useSessions.getState().handleSessionClosed("s1", "user");
+    expect(useSessions.getState().taskNumbers).toEqual({
+      s1: { number: 4, stageSlug: "spec" },
+    });
+  });
+
+  it("deleteSession drops the badge's key", async () => {
+    // The narrow version of the residue pin below: `deleteSession` passes
+    // `maps: [...SESSION_KEYED_FIELDS]`, which is what makes this key go.
+    useSessions.setState({
+      taskNumbers: { s1: { number: 4, stageSlug: "spec" } },
+      sessions: [info("s1", "/x")],
+      historySessions: [info("s1", "/x")],
+      activeSessionId: "s1",
+    });
+    await useSessions.getState().deleteSession("s1");
+    expect(
+      useSessions.getState().taskNumbers,
+    ).not.toHaveProperty("s1");
   });
 });
 
@@ -6699,6 +6776,10 @@ describe("clearSessionState write-set contract (the session-keyed maps, finding 
     closeReasons: { s1: "error" as const },
     sessionRecency: { s1: 7 },
     sessionOrder: { s1: 3 },
+    // The 12th map (spec D3): seeded so the `deleteSession` residue loop below
+    // proves the KEY goes — an unseeded map would pass the loop for the wrong
+    // reason (a key that was never there).
+    taskNumbers: { s1: { number: 4, stageSlug: "spec" } },
     messages: {
       s1: [
         {
@@ -6731,7 +6812,7 @@ describe("clearSessionState write-set contract (the session-keyed maps, finding 
     activeSessionId: "s1",
   };
 
-  it("deleteSession clears ALL 11 session-keyed maps (failing-first: residue pin)", async () => {
+  it("deleteSession clears ALL 12 session-keyed maps (failing-first: residue pin)", async () => {
     useSessions.setState(seed);
     await useSessions.getState().deleteSession("s1");
     const st = useSessions.getState();
@@ -6775,6 +6856,9 @@ describe("clearSessionState write-set contract (the session-keyed maps, finding 
     expect(st.history["s1"]).toEqual(seed.history.s1); // untouched by close
     expect(st.sessionOrder["s1"]).toEqual(3); // untouched by close
     expect(st.sessionRecency["s1"]).toEqual(7); // untouched by close
+    // The Task badge survives a pause too: a stored Session still has its Task
+    // (spec D3), and the close path names only inTurn/stalled/compacting.
+    expect(st.taskNumbers["s1"]).toEqual({ number: 4, stageSlug: "spec" });
     expect(st.stopReasons["s1"]).toEqual("end_turn"); // untouched by close
     // A close is a PAUSE, not a discard: the row lists and the pointer are the
     // close's OWN retained writes (never the helper's `rows`/`activeSessionId`).
@@ -6786,7 +6870,7 @@ describe("clearSessionState write-set contract (the session-keyed maps, finding 
     expect(st.archivedSessions.length).toBe(1);
   });
 
-  it("enumeration pins: SESSION_KEYED_FIELDS is exactly the 11 session-keyed fields of SessionsState", () => {
+  it("enumeration pins: SESSION_KEYED_FIELDS is exactly the 12 session-keyed fields of SessionsState", () => {
     // Every session-keyed `Record<string, …>` field of the REAL store shape —
     // derived, not hand-listed, so it is the thing the list above is checked
     // against. A field added to `SessionsState` without being listed shows up
@@ -6801,12 +6885,13 @@ describe("clearSessionState write-set contract (the session-keyed maps, finding 
         ? true
         : false
       : false;
-    // The 11 names spelled a SECOND time, in interface order: the tamper seal on
+    // The 12 names spelled a SECOND time, in interface order: the tamper seal on
     // `SESSION_KEYED_FIELDS` (drop / add / reorder a key ⇒ `pnpm build` fails).
     type FrozenTuple = readonly [
       "closeReasons",
       "sessionRecency",
       "sessionOrder",
+      "taskNumbers",
       "messages",
       "configOptions",
       "contextUsage",
@@ -6817,7 +6902,7 @@ describe("clearSessionState write-set contract (the session-keyed maps, finding 
       "stalled",
     ];
     /** Typed `true` only while `typeof SESSION_KEYED_FIELDS` is exactly the
-     *  frozen 11-name tuple — a dropped/added/reordered key fails HERE. */
+     *  frozen 12-name tuple — a dropped/added/reordered key fails HERE. */
     const FROZEN_TUPLE_PIN: AssertEqual<
       typeof SESSION_KEYED_FIELDS,
       FrozenTuple
@@ -6829,7 +6914,7 @@ describe("clearSessionState write-set contract (the session-keyed maps, finding 
     type Guard = Missing extends never
       ? true
       : { MISSING_FROM_SESSION_KEYED_FIELDS: Missing };
-    // A 12th session-keyed `Record<string, …>` on `SessionsState` that is not in
+    // A 13th session-keyed `Record<string, …>` on `SessionsState` that is not in
     // `SESSION_KEYED_FIELDS` makes this `const`'s declared type
     // `{ MISSING_FROM_SESSION_KEYED_FIELDS: "theNewField" }`, so `true` stops
     // being assignable: TS2322 on `pnpm build`, not merely a red test.
@@ -6839,7 +6924,7 @@ describe("clearSessionState write-set contract (the session-keyed maps, finding 
     // pin `const` nobody reads (TS6133) — green code would not build.
     expect(FROZEN_TUPLE_PIN).toBe(true);
     expect(SESSION_KEYED_FIELDS_COMPLETENESS_PIN).toBe(true);
-    expect(SESSION_KEYED_FIELDS.length).toBe(11);
+    expect(SESSION_KEYED_FIELDS.length).toBe(12);
     expect(new Set(SESSION_KEYED_FIELDS).size).toBe(SESSION_KEYED_FIELDS.length);
     // The list is in INTERFACE order (the order a reader meets the fields in),
     // NOT alphabetical — so the sortedness pin the frozen-tuple idiom uses for
@@ -6849,6 +6934,7 @@ describe("clearSessionState write-set contract (the session-keyed maps, finding 
       "closeReasons",
       "sessionRecency",
       "sessionOrder",
+      "taskNumbers",
       "messages",
       "configOptions",
       "contextUsage",
@@ -7013,7 +7099,7 @@ describe("the truncated-turn disposition survives a restart (ADR 0108)", () => {
   // row on the fresh key `{stamp}:truncate:N` whose payload carries
   // `disposition: "length"`), so the fix is a READ: `dispositionFromRows` maps
   // the last row of the history page and `openSession` / `resumeSession` seed
-  // the EXISTING map from it. No twelfth session-keyed field (the pin below),
+  // the EXISTING map from it. No thirteenth session-keyed field (the pin below),
   // no `stopReason` column on `sessions`.
   beforeEach(() => {
     resetStores();

@@ -48,6 +48,7 @@ import type {
   SessionInfo,
   StageRow,
   StageWithTasks,
+  TaskNumberRow,
   TaskRow,
 } from "../types";
 
@@ -220,6 +221,13 @@ export async function startTaskSession(
     taskId,
     stageSlug: stageSlug ?? null,
   });
+}
+
+/** Every **Session** that has a **Task badge**, app-wide (spec D3: Settings → Detached
+ *  sessions lists Spaces with no tab, so a per-Space read cannot answer them). Each row
+ *  carries the frozen **Stage** the link was made in (spec D12). */
+export async function taskNumbers(): Promise<TaskNumberRow[]> {
+  return invoke<TaskNumberRow[]>("task_numbers");
 }
 
 

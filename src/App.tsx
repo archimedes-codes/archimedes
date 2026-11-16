@@ -13,6 +13,7 @@ import {
   listSessions,
   listSpaces,
   sessionRecency,
+  taskNumbers,
 } from "./lib/tauri";
 import { createBatchedSessionUpdate } from "./lib/batchSessionUpdates";
 import { INTERACTIVE_EVENTS } from "./lib/ipc/events";
@@ -396,6 +397,15 @@ function App() {
     // sidebar and the settings page share one fetch rather than one each — and
     // so a provider refresh has a single place to replace it.
     void useModelCatalog.getState().loadModels();
+    // The Task badge map (spec D9): deliberately NOT a fourth `Promise.all` arm. A
+    // rejection there would take `setHistorySessions` / `setSessionRecency` /
+    // `setSpaces` down with it and land the sidebar empty, so this reads like the
+    // model catalog below it — its own fetch, its own `.catch`, no shared fate.
+    // No ordering constraint either: a late arrival paints a badge a tick later and
+    // the Landing Session decision never reads it.
+    void taskNumbers()
+      .then((rows) => useSessions.getState().setTaskNumbers(rows))
+      .catch((err) => console.error("failed to load the task badge map", err));
   }, []);
 
   // The active **Session**'s `cwd` (= its **Space**'s folder), read through the

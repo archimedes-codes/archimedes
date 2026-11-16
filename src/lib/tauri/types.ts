@@ -195,6 +195,34 @@ export interface TaskSessionRow {
 }
 
 
+/** One **Session**'s **Task badge** (camelCase over IPC): the per-Space `tasks.number` of
+ *  the most recently LINKED Task that still resolves, plus the **Stage** it was in when
+ *  that link was made. ONE row per Session at most.
+ *
+ *  ABSENT — not `null` — when the Session has no link or its Task is gone: the Rust read
+ *  INNER JOINs `tasks`, so there is no row to send. That is why the frontend map is a
+ *  `Record` whose missing key is the whole negative answer, and why nothing here spells
+ *  `number | null`: an absent key and a real number must never be collapsible, the same
+ *  rule ADR 0082 holds for cost. */
+export interface TaskNumberRow {
+  sessionId: string;
+  /** `tasks.number` — the per-Space label a person says out loud, NEVER the `tsk_` key. */
+  taskNumber: number;
+  /** The FROZEN lane: `task_sessions.stage_slug`, the **Stage** the card was in when this
+   *  Session was linked — NOT where the card sits now (spec D12). Nullable because the
+   *  column is. A later drag does not change it, and that is the point. */
+  stageSlug: string | null;
+}
+
+/** What a **Task badge** renders: the number and the frozen lane, already paired. The
+ *  badge takes ONE prop so a caller cannot pass a number and forget the lane, and the
+ *  store map is `Record<string, TaskBadge>` rather than two parallel maps. */
+export interface TaskBadge {
+  number: number;
+  stageSlug: string | null;
+}
+
+
 /** One named **Task artifact** (spec §1, ADR 0100): a markdown document owned by
  *  a Task, stored as a row of `task_artifacts`. The TS mirror of Rust's
  *  `Artifact` (`src-tauri/src/storage/db.rs`).

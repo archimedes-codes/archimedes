@@ -20,6 +20,8 @@ import {
   type SessionRecency,
   type SpaceRow,
   type StopReason,
+  type TaskBadge,
+  type TaskNumberRow,
 } from "../lib/tauri";
 import { basenameOfPath } from "../lib/paths";
 import { firstPromptLabelOf } from "../lib/sessionTitle";
@@ -100,7 +102,7 @@ export function discardSessionMessages(sessionId: string): void {
 }
 
 export type SessionClearOpts = {
-  /** The 11 session-keyed maps to clear (an independent opt-in per map). */
+  /** The 12 session-keyed maps to clear (an independent opt-in per map). */
   maps: readonly SessionKeyedField[];
   /** Also clear the `sessions`/`historySessions`/`archivedSessions` row lists of this id. */
   rows?: boolean;
@@ -212,7 +214,7 @@ export function clearSessionState(
  * chain — ADR 0073's amendment enumerates all eight), so an unhandled version of
  * this degrades every untitled Session in
  * the sidebar, the tab strip's close-confirm, Settings → Detached, the Task
- * detail dialog and the side pane to a folder name at once. A twelfth
+ * detail dialog and the side pane to a folder name at once. A thirteenth
  * session-keyed map is forbidden by the `SESSION_KEYED_FIELDS` pin, so the label
  * goes where `costUsd` and `contextUsage` already go: onto the `SessionInfo` row
  * of every list holding the id, and `lib/sessionLookup`'s walk — which those
@@ -619,7 +621,7 @@ export function detachedSessions(
 
 /**
  * THE session-keyed fields of `SessionsState`, in interface order — the ONE
- * hand-written list of the store's session-keyed maps, current count **11**.
+ * hand-written list of the store's session-keyed maps, current count **12**.
  * Adding a session-keyed `Record<string, …>` field to `SessionsState` without
  * adding it here fails the type-level completeness pin in
  * `src/store/sessions.test.ts` (`pnpm build`, not merely a runtime test).
@@ -634,6 +636,10 @@ export const SESSION_KEYED_FIELDS = [
   "closeReasons",
   "sessionRecency",
   "sessionOrder",
+  // (spec D3/D12) The Task badge map, in INTERFACE order (right after
+  // `sessionOrder`, where the field is declared — the list is pinned to that
+  // order, so an append at the END fails `pnpm build`).
+  "taskNumbers",
   "messages",
   "configOptions",
   "contextUsage",
@@ -756,6 +762,26 @@ export interface SessionsState {
    * by `mergeSessionOrder` via `sortByManualOrder`.
    */
   sessionOrder: Record<string, number>;
+  /**
+   * The **Task badge** per Session id — the per-Space `tasks.number` of the most
+   * recently LINKED Task that still resolves, with the **Stage** the link was made
+   * in (spec D3/D12). Boot-fetched from the app-wide `taskNumbers()` command, and
+   * like `sessionRecency` it is a SNAPSHOT: `setTaskNumbers` replaces the WHOLE
+   * map, because the read answers "every Session with a live link as of now" and a
+   * stale badge must not outlive the link it described.
+   *
+   * A Session with no badge has NO KEY — never a `null` value. The Rust read
+   * INNER JOINs `tasks`, so there is no row to send, and an absent key and a real
+   * number must never be collapsible (ADR 0082's rule for cost, same shape).
+   *
+   * Read ONLY through `lib/taskNumber`'s `taskBadgeOf` — never indexed by a call
+   * site, or the one rule has two owners. Being a session-keyed `Record`, it is in
+   * `SESSION_KEYED_FIELDS`, which is what makes `deleteSession` drop the entry
+   * while a Session CLOSE keeps it: a stored Session still has its Task.
+   */
+  taskNumbers: Record<string, TaskBadge>;
+  /** Replace the whole badge map from `taskNumbers()`'s rows (boot, its OWN fetch — spec D9, not a `Promise.all` arm). */
+  setTaskNumbers: (rows: TaskNumberRow[]) => void;
   /** Replace BOTH maps from `sessionRecency()`'s rows (boot, alongside `setHistorySessions`). ONE call, ONE IPC round-trip's payload: the two maps must never be observable out of step. */
   setSessionRecency: (rows: SessionRecency[]) => void;
   /**
@@ -1324,6 +1350,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
   closeReasons: {},
   sessionRecency: {},
   sessionOrder: {},
+  taskNumbers: {},
   messages: {},
   history: {},
   configOptions: {},
@@ -1888,6 +1915,18 @@ export const useSessions = create<SessionsState>((set, get) => ({
     );
     committedReorder.sessions = sessionOrder;
     set({ sessionRecency, sessionOrder });
+  },
+
+  setTaskNumbers: (rows) => {
+    // WHOLESALE replace, the same shape as `setSessionRecency` (see the field
+    // doc): the read is a snapshot of every Session that has a live link NOW, so
+    // a badge must not outlive the link that produced it. The row's TWO fields
+    // are paired into one `TaskBadge` here — the only place the wire shape and the
+    // view shape meet — so no call site can hold a number without its lane.
+    const taskNumbers = Object.fromEntries(
+      rows.map((r) => [r.sessionId, { number: r.taskNumber, stageSlug: r.stageSlug }]),
+    );
+    set({ taskNumbers });
   },
 
   archiveSession: async (sessionId) => {
@@ -2470,7 +2509,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
     // the one identity of the request that a release cannot reset, because the
     // released window's cursor is gone with it — a fresh tail window points at a
     // different oldest row, so the reply is refused on the DATA rather than on a
-    // counter that has to outlive the window (adding a 12th session-keyed map for
+    // counter that has to outlive the window (adding a 13th session-keyed map for
     // that is forbidden by the `SESSION_KEYED_FIELDS` pin).
     const beforeId = sessionHistory.oldestRowId;
     set((state) => ({

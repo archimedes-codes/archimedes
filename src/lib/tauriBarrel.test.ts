@@ -448,9 +448,19 @@ const TAURI_PUBLIC_API = [
   "TaskCardView",
   "TaskRow",
   "TaskSessionRow",
+  // (spec D3/D12) The **Task badge** pair — TYPE-ONLY, so neither enters
+  // `TAURI_RUNTIME_API` (the `SessionRecency` precedent: a boot-map row type lives
+  // in this list alone). `TaskNumberRow` is the wire shape; `TaskBadge` is the
+  // view type the store map holds, and it lives in `lib/tauri/types.ts` because it
+  // leaves through this barrel.
+  "TaskNumberRow",
+  "TaskBadge",
   "TeamDto",
   "testMcpServer",
   "testSearchProvider",
+  // (spec D3/D9/D12) The app-wide **Task badge** read — a RUNTIME value, so it is
+  // here AND in `TAURI_RUNTIME_API` (the `writeArtifact`/`getArtifact` precedent).
+  "taskNumbers",
   // (issue #180 D1, spec §1, ADR 0100) The artifact WRITE wrapper — a RUNTIME
   // value (the two TYPE names it traffics in, `Artifact`/`ArtifactMeta`, are
   // declared above and stay out of the runtime list).
@@ -576,6 +586,11 @@ const TAURI_RUNTIME_API = [
   "startTaskSession",
   "testMcpServer",
   "testSearchProvider",
+  // (spec D3/D9/D12) The app-wide **Task badge** read — a RUNTIME wrapper. It is
+  // the ONLY name this commit adds to this list: the two TYPE names it traffics in
+  // (`TaskNumberRow`, `TaskBadge`) are in `TAURI_PUBLIC_API` ONLY, the
+  // `Artifact`/`ArtifactMeta` precedent.
+  "taskNumbers",
   // (issue #180 D1, spec §1, ADR 0100) The two Task-artifact command wrappers.
   // Both are RUNTIME values, so both enter this list AND `TAURI_PUBLIC_API`; the
   // two TYPE names they traffic in (`Artifact`, `ArtifactMeta`) are in
