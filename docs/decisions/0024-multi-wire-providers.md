@@ -44,7 +44,7 @@ The native harness spoke **OpenAI-compatible chat-completions only** (ADR 0012's
 
 **AMENDED 2026-11-16 — one clause of the thinking-levels Consequence is false of the code shipped today.** The clause in Consequences above — **"and the request's `max_tokens` is clamped above the budget (Anthropic requires `max_tokens` — a `None` option defaults to 32768)"** — is deliberately left standing exactly as written, preserving what was decided on 2026-10-06. Both halves of it are now untrue: `max_tokens` is not clamped *above* a budget (it is a **ceiling**, and the budget is clamped *down* beneath it), and there is no `None` default of 32768 — the constant that carried it, `pub const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 32768`, **no longer exists**. **This does not change this ADR's decision.** The multi-wire design stands in every particular: the three wire APIs, the `Model.api` discriminator, the known-providers picker and its pre-filled rows, discovery per wire, and the per-wire thinking-level mapping. What changed is the arithmetic inside one wire's request body. `status` is unchanged and this ADR is not superseded.
 
-**What replaced it.** In `fulcrum-harness` 0.3.2 (engine PR `archimedes-codes/fulcrum#26`, desktop pin `152419dd`, i.e. `fulcrum-harness = "0.3.2"` in `src-tauri/Cargo.toml`) the one public constant became **three private constants** in the Anthropic wire builder:
+**What replaced it.** In `fulcrum-harness` 0.3.2 (engine PR `archimedes-codes/fulcrum#26`; on the desktop it is the `fulcrum-harness = "0.3.2"` pin in `src-tauri/Cargo.toml` with the matching `Cargo.lock` version and checksum) the one public constant became **three private constants** in the Anthropic wire builder:
 
 | constant | value | role |
 |---|---|---|
