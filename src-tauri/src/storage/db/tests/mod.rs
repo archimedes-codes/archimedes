@@ -4680,8 +4680,19 @@ fn db_create_task_stores_the_cleaned_title() {
 /// answer that proves one cleaner ran; `"Foo"` is the answer that proves the
 /// command layer is still cleaning on the way down.
 ///
-/// MUTATION: re-add `let title = clean_title(...)` in `commands/tasks.rs::create_task`
-/// and this reddens with `"Foo"` while every other test in the workspace stays green.
+/// MUTATION: not from the command side. This drives `Db::create_task` on a raw
+/// handle and cannot see `commands::tasks::create_task`, so it pins the STORAGE
+/// half only: one clean, `" Foo "` in the row.
+///
+/// The command layer's not-cleaning IS pinned — on the EDIT door, not this one.
+/// `require_title` returns `Result<(), TasksError>`, so no value survives for a
+/// caller to re-clean, and `patch_title`'s raw `Option<&str>` is pinned raw by
+/// `commands/tasks/tests/board.rs`'s `Some("  Porting   the board  ")`.
+///
+/// The CREATE door is UNPINNED, and that is a disclosed gap, not a covered
+/// property: no test drives `commands::tasks::create_task` end-to-end and reads
+/// the stored title back, so a clean re-added there stores `"Foo"` and the whole
+/// suite — this test included — stays green.
 #[test]
 fn a_title_is_cleaned_once_not_twice() {
     let dir = crate::test_support::ScratchDir::in_env_temp("db-title-once-", "scratch");
