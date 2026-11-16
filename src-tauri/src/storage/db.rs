@@ -2439,13 +2439,12 @@ impl Db {
     ///
     /// The `Clear` refusal stays in the COMMAND layer, and that split is not an
     /// inconsistency. `tasks.title` is `NOT NULL`, so a card without a label is not
-    /// a thing — but the seam maps `None → Keep` and `fulcrum-harness = "0.2.0"` is a
-    /// registry pin, so NO wire value a model can send expresses a `Clear` on title.
-    /// That one refusal is genuinely about the WIRE — it refuses a state only the
-    /// IPC body can reach, so `patch_title` is the layer that can see it. A `Clear`
-    /// that slipped past
-    /// would still surface SQLite's constraint as [`BoardError::Sqlite`]:
-    /// defence-in-depth, not a hole to paper over here.
+    /// a thing — but the seam maps `None → Keep` and this crate consumes the published
+    /// `TaskCall` as a registry pin, so NO wire value a model can send expresses a
+    /// `Clear` on title. That one refusal is genuinely about the WIRE — it refuses a
+    /// state only the IPC body can reach, so `patch_title` is the layer that can see
+    /// it. A `Clear` that slipped past would still surface SQLite's constraint as
+    /// [`BoardError::Sqlite`]: defence-in-depth, not a hole to paper over here.
     ///
     /// Deliberately cannot touch `stage_slug` (that is `move_task`, which also
     /// runs the destination's `on_enter`), `number` (a label that is never
@@ -3751,11 +3750,12 @@ impl TaskStore for Db {
         spec_path: Option<&str>,
     ) -> Result<CrateTaskRow, TaskStoreError> {
         // The published seam is TWO-state: `Option<&str>` with `None` = leave that field
-        // alone, and `fulcrum-harness = "0.2.0"` is a registry pin, so there is no value the
-        // model can send that reaches `FieldPatch::Clear`. A model's `edit_task` therefore
-        // still clears nothing. Deliberate and deferred: ADR 0102 / issue #183 move this verb
-        // desktop-side over a vocabulary-free `HostToolCall`, which makes the third state
-        // reachable from the tool too. See docs/research/edit-task-cannot-clear-a-field.md.
+        // alone, and the published crate's `TaskCall` is that shape — this crate consumes
+        // it as a registry pin — so there is no value the model can send that reaches
+        // `FieldPatch::Clear`. A model's `edit_task` therefore still clears nothing.
+        // Deliberate and deferred: ADR 0102 / issue #183 move this verb desktop-side over
+        // a vocabulary-free `HostToolCall`, which makes the third state reachable from the
+        // tool too. See docs/research/edit-task-cannot-clear-a-field.md.
         let row = Db::edit_task(
             self,
             task_id,
