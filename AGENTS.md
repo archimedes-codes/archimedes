@@ -958,7 +958,7 @@ These are properties of the repo, not of any branch:
   cross-binary env bleed is arithmetically impossible. What the evidence does fit: both failures are
   a MINT resolving to `None` and the target binary reports `finished in 0.05–0.08 s` — far inside the
   `HTTP_TIMEOUT` of **30 s** that `fulcrum-harness`'s `provider_auth/gcloud.rs` sets (line 47 at the pinned
-  **0.2.0**; re-check it on any bump, since the constant lives in the published crate and NOT in this tree —
+  **0.3.3**; re-check it on any bump, since the constant lives in the published crate and NOT in this tree —
   `grep -rn HTTP_TIMEOUT src-tauri/src src-tauri/tests` prints nothing), so the ADC leg failed fast rather than timing out:
   an absent-or-unreadable ADC file, a
   parse rejection, or a refused POST to the in-process `wiremock` server under CPU starvation. Both tests

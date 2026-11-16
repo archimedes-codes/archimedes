@@ -88,7 +88,8 @@ pub struct MoveTaskOutcome {
 /// fails to fire.
 const NO_LIVE_SESSION: &str = "no live session to compact";
 
-/// Clean a Task title, or refuse it.
+/// Refuse a Task title that is not a title. A PRE-FLIGHT ONLY — it no longer
+/// produces the value that gets stored.
 ///
 /// `Err(EmptyTitle)` means "do not write this card": the raw input is NOT a
 /// fallback. A whitespace-only or bare-quote title would otherwise land in
@@ -96,24 +97,32 @@ const NO_LIVE_SESSION: &str = "no live session to compact";
 /// path (`naming.rs`) already refuses exactly that input, so a raw fallback would
 /// make the two title writers disagree about what a title is.
 ///
-/// Reuses the session namer's `clean_title` (whitespace runs collapse, ONE layer
-/// of matching quotes strips) rather than writing the chain a second time. It
-/// reaches here through the two-hop `pub(crate) use` chain in `agent/mod.rs` +
-/// `agent/session/mod.rs`, because `mod naming` and `mod session` are both
-/// private and stay that way.
+/// It reuses the shared `clean_title` (whitespace runs collapse, ONE layer of
+/// matching quotes strips) rather than writing the chain a second time, and it
+/// passes `max_chars: None` — a Task title is NOT capped. The namer's 80-char cut is
+/// pi parity on a title a MODEL invented; a card's title is the user's own sentence
+/// and `tasks.title` has nowhere to put the overflow, so a cut here would lose the
+/// rest for good (measured on a real card: a 132-char draft stored as 80, mid-word,
+/// `body` NULL). `None` is still worth stating explicitly at the call site: lifting
+/// the cut for tasks must never lift it for session titles.
 ///
-/// `max_chars` is `None`, so a Task title is NOT capped. The namer's 80-char cut
-/// is pi parity on a title a MODEL invented; a card's title is the user's own
-/// sentence and `tasks.title` has nowhere to put the overflow — a one-line draft
-/// truncated at 80 loses the rest for good, which is exactly what a user hit
-/// before this parameter existed (`body` was `NULL` because the draft had no
-/// second line to become a body). The cap lives at the CALL SITE, so lifting it
-/// for tasks could never lift it for session titles.
+/// THE OK PAYLOAD IS GONE. This used to return the cleaned `String` and callers
+/// stored it; the clean now happens in `Db::create_task` / `Db::edit_task`, because
+/// `impl TaskStore for Db` is a second door to `tasks` and a rule with two doors
+/// belongs on the single path both pass through. Cleaning in BOTH layers was the
+/// trap: `clean_title` is not idempotent (the trim runs before the quote strip, so
+/// `"  \" Foo \"  "` is `" Foo "` once and `"Foo"` twice), so a double clean
+/// silently rewrites a human's quote-padded title and no test can see it. This
+/// function refuses; storage cleans. `a_title_is_cleaned_once_not_twice` pins that.
 ///
-/// The Ok payload is the CLEANED title and that is what gets stored: the caller
-/// writes what this approved, never what it was handed.
-fn require_title(raw: &str) -> Result<String, TasksError> {
-    crate::agent::clean_title(raw, None).ok_or(TasksError::EmptyTitle)
+/// Kept as a pre-flight anyway, on the same reasoning `require_artifact_key`
+/// documents: it costs no `spawn_blocking` hop, and the envelope a caller gets from
+/// here is identical to the one `From<BoardError> for TasksError` produces from
+/// storage — so this is not defence, it is a refusal that spends no worker thread.
+fn require_title(raw: &str) -> Result<(), TasksError> {
+    crate::text::clean_title(raw, None)
+        .map(|_| ())
+        .ok_or(TasksError::EmptyTitle)
 }
 
 /// The JSON type of a body field, for a refusal sentence.
@@ -177,28 +186,36 @@ fn patch_field<'a>(
     }
 }
 
-/// [`patch_field`] for `title`, with the two title rules this layer owns applied.
+/// [`patch_field`] for `title`, with the title rules this layer still owns applied.
 ///
-/// Answers `Ok(None)` for KEEP (the column is not touched) and `Ok(Some(cleaned))`
-/// for a write — an owned `String` rather than a [`FieldPatch`] on purpose: the
-/// cleaner's output has to outlive the borrow of the body, so this is the one field
-/// whose patch is built from owned text (see the command for where that matters).
+/// Answers `Ok(None)` for KEEP (the column is not touched) and `Ok(Some(raw))` for a
+/// write — a `&str` BORROWED FROM `body`, not an owned `String`. It used to be owned
+/// because this layer ran the cleaner and the cleaner's output had to outlive the
+/// borrow; the clean moved to `Db::edit_task`, so the special case is gone and this
+/// is now the same borrowed shape `patch_field` returns for every other field. The
+/// borrow is sound because `patch_field` returns `FieldPatch<'a>` borrowed from
+/// `body` and `body` is a parameter that outlives every use of the answer.
 ///
-/// Two refusals, and both are WIRE rules that live here and not in `Db` — the same
-/// reason [`require_title`] was never pushed into storage:
+/// One refusal lives here, and it is a WIRE rule:
 ///
 ///  - `Clear` is refused. `tasks.title` is `NOT NULL`, so a card without a label is
-///    not a thing; `Db::edit_task` says it takes the refusal from the other side (a
-///    `Clear` that slipped past would surface SQLite's constraint as a bare
-///    `database` error).
-///  - a `Set` that cleans to nothing is `EmptyTitle`, the SAME refusal a create
-///    makes, so the two title writers cannot disagree about what a title is.
+///    not a thing, and the seam maps `None → Keep` — no wire value a model can send
+///    expresses a `Clear` on title, so this state is only reachable from an IPC body.
+///    `Db::edit_task` says it takes the refusal from the other side (a `Clear` that
+///    slipped past would surface SQLite's constraint as a bare `database` error).
+///
+/// The EMPTY refusal is NOT this layer's decision any more: it happens in `Db`, on
+/// the one path this door and the `TaskStore` seam both pass through. A `Set` whose
+/// raw text cleans to nothing still gets `EmptyTitle` here — as a pre-flight, so a
+/// bad title spends no worker thread — and it gets exactly the same answer from
+/// storage if it arrives through the seam. `patch_title` and `require_title` cannot
+/// drift because `require_title` is the same call in both.
 ///
 /// A KEPT title never reaches the cleaner: omitting the field must not be the same
 /// act as blanking it.
 fn patch_title(
     body: &serde_json::Map<String, serde_json::Value>,
-) -> Result<Option<String>, TasksError> {
+) -> Result<Option<&str>, TasksError> {
     match patch_field(body, "title")? {
         FieldPatch::Keep => Ok(None),
         FieldPatch::Clear => Err(TasksError::Other(
@@ -206,7 +223,10 @@ fn patch_title(
              (rename it, do not blank it)"
                 .to_string(),
         )),
-        FieldPatch::Set(raw) => Ok(Some(require_title(raw)?)),
+        FieldPatch::Set(raw) => {
+            require_title(raw)?;
+            Ok(Some(raw))
+        }
     }
 }
 
@@ -241,10 +261,14 @@ fn task_id_from(body: &serde_json::Map<String, serde_json::Value>) -> Result<Str
 /// label with no slug characters at all derives `""`, which `create_stage`
 /// refuses.
 ///
-/// A WIRE rule, so it lives here and not in `storage/db.rs` — the exact reason
-/// [`require_title`] is here too: text mangling belongs at the boundary, and the
-/// storage layer has no business importing the agent layer (nor a second copy of
-/// this chain). The rule is also why `rename_stage` does NOT call this: a rename
+/// A WIRE rule, so it lives here and not in `storage/db.rs`: a slug is derived from
+/// a label the user typed, and only this layer sees the label and the slug together
+/// (`rename_stage` changes one and freezes the other). Note that this is NOT the
+/// argument [`require_title`] used to rest on — that one has moved. The title
+/// CLEANER lives in `crate::text`, a neutral leaf module `storage/db.rs` may name,
+/// and the title rule is enforced in `Db`, because `tasks` has two doors. A slug
+/// derivation has one door and folds punctuation, which is a different rule with a
+/// different shape. The rule is also why `rename_stage` does NOT call this: a rename
 /// changes the LABEL only, and the slug is frozen (spec §5), so re-deriving it
 /// would move the key that every `tasks.stage_slug` in the column points at.
 ///
@@ -412,8 +436,23 @@ pub async fn get_board(
     board_call(tauri::async_runtime::spawn_blocking(move || db.get_board(&space_path)).await)
 }
 
-/// Create a card. `title` goes through [`require_title`] FIRST, so a title that
-/// cleans to nothing is a rejection (`empty_title`) and NO row is written.
+/// Create a card. `title` is REFUSED by [`require_title`] BEFORE the blocking hop if
+/// it cleans to nothing, and the RAW string is what goes down to `Db`.
+///
+/// Storage is the enforcement point, not this layer. The rule used to be enforced
+/// HERE and nowhere else, on the theory that a title is a wire rule and
+/// `storage/db.rs` has no business importing the agent layer to enforce it. Both
+/// halves of that reasoning are superseded: the cleaner now lives in `crate::text`,
+/// a neutral crate-root leaf module storage may name, and `impl TaskStore for Db` is
+/// a second door to `tasks` that reached `Db::create_task` with no title check at
+/// all — so a model could write a card with no label that a human could not. A rule
+/// with two doors belongs on the single path both pass through, and that is `Db`.
+///
+/// The pre-flight is KEPT for one reason only: a bad title costs no worker thread.
+/// It is not the guard, and it deliberately does not clean — passing the raw string
+/// down is what makes the title get cleaned exactly ONCE, which
+/// `a_title_is_cleaned_once_not_twice` pins (the cleaner is not idempotent, so a
+/// second pass would silently rewrite a person's quote-padded title).
 ///
 /// `stageSlug: None` lands the card in the Space's first stage; `number` is
 /// handed out per-Space, 1-based, never reused (ADR 0090).
@@ -425,12 +464,12 @@ pub async fn create_task(
     body: Option<String>,
     stage_slug: Option<String>,
 ) -> Result<TaskRow, TasksError> {
-    // BEFORE the blocking hop, and NOT inside `Db`: the title rule is a wire rule
-    // (the session namer's own), and `storage/db.rs` has no business importing the
-    // agent layer to enforce it. Returning early here is also what makes the
-    // rejection write nothing — the card is not created and then renamed, it is
-    // never created.
-    let title = require_title(&title)?;
+    // A pre-flight, and NOT the enforcement point: `Db::create_task` refuses the
+    // same input through the same chain, for both doors. Returning early here is
+    // what makes a bad title cost no `spawn_blocking` hop; the envelope is identical
+    // either way, because `From<BoardError> for TasksError` maps `EmptyTitle`
+    // variant-to-variant. The RAW title goes down — storage cleans it once.
+    require_title(&title)?;
     let db = state.inner().clone();
     board_call(
         tauri::async_runtime::spawn_blocking(move || {
@@ -469,8 +508,10 @@ pub async fn get_task(
 /// the FIRST command in the repo to take one — not a style choice.
 ///
 /// `title` is the exception: it is `NOT NULL`, so a `null` title is REFUSED rather
-/// than written, and a string title goes through the same [`require_title`] cleaner
-/// a create runs. Both rules are wire rules and live here — see [`patch_title`].
+/// than written — and that refusal IS a wire rule, because the seam maps `None →
+/// Keep` and no model can express a `Clear` on title. The EMPTY rule and the CLEAN
+/// are not this layer's: a string title goes down RAW and `Db::edit_task` cleans it
+/// once, the same refusal a create gets. See [`patch_title`].
 ///
 /// **The model cannot do any of this.** The harness's `edit_task` tool reaches
 /// `impl TaskStore for Db`, whose `Option<&str>` arguments are two-state: `None`
@@ -513,8 +554,8 @@ fn edit_task_core(
     // before the hop — a `FieldPatch` cannot cross a `'static` boundary.
     let body_patch = patch_field(body, "body")?;
     let spec_patch = patch_field(body, "specPath")?;
-    let title_patch = match title.as_deref() {
-        Some(cleaned) => FieldPatch::Set(cleaned),
+    let title_patch = match title {
+        Some(raw) => FieldPatch::Set(raw),
         None => FieldPatch::Keep,
     };
     db.edit_task(&task_id, title_patch, body_patch, spec_patch)
@@ -963,9 +1004,11 @@ pub(crate) const MAX_ARTIFACT_MARKDOWN_BYTES: usize = Db::MAX_ARTIFACT_MARKDOWN_
 /// grammar-shaped — which the tool's door was not holding, so a model could persist
 /// `My Spec` that a person could not, and the next surface that interpolates a key
 /// WITHOUT escaping inherits the bug from a row this grammar exists to make
-/// impossible. That is also why this rule REFUSES where [`require_title`] CLEANS —
-/// a mangled key is a different key, and silently renaming a document the caller
-/// asked for is the same class of lie as writing a title nobody typed.
+/// impossible. That is also why this rule is a pure PREDICATE where the title rule
+/// is a CLEAN-then-refuse — a mangled key is a different key, and silently renaming a
+/// document the caller asked for is the same class of lie as writing a title nobody
+/// typed. (Both now REFUSE at storage; only one of them also rewrites, and only the
+/// title ever did.)
 pub(crate) fn require_artifact_key(raw: &str) -> Result<String, TasksError> {
     if Db::artifact_key_is_well_formed(raw) {
         // Rejects, never cleans: the caller's spelling comes back UNCHANGED, which

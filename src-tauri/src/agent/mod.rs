@@ -114,13 +114,4 @@ pub use session::{
     user_message_payload, ClosedReason, EffectiveCatalog, ImagePayload, ProviderFactory,
     SessionManager, SessionManagerBuilder, StalledInfo, StopReason, MAX_IMAGE_BYTES,
 };
-// The second hop of the ONE symbol `commands/tasks.rs` needs (first hop:
-// `pub(crate) use naming::clean_title;` in `session/mod.rs`). Both hops are
-// `pub(crate) use` of ONE name, matching the one-symbol-per-line idiom above —
-// `mod session` itself stays private, so the whole title machinery does not
-// become reachable from `commands/`. `commands/attention.rs` carries a private
-// copy of `cap_chars` for exactly the reason this chain did not exist yet; a
-// third caller of THAT should hoist one shared helper.
-pub(crate) use session::clean_title;
-
 pub use tools::{ContentBlock, ImageRef, ToolCtx, ToolResult};

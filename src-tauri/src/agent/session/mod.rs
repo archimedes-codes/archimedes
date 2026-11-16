@@ -62,12 +62,6 @@ use crate::types::{ContextUsage, SessionInfo};
 // wiring live in the child module, which sees this module's private items
 // (`driver.db`, `sink`, the `sessions` per-session map) with no widening.
 mod naming;
-// ONE symbol out of the private `naming`, for the Task-board title helper in
-// `commands/tasks.rs`. A `pub(crate) use`, not a `pub(crate) mod naming`: the
-// module stays private and the exported surface is the single function the
-// second hop (`agent/mod.rs`) needs. `cap_chars` stays private here and in
-// `naming.rs` — the Task title cap is not a reason to widen it.
-pub(crate) use naming::clean_title;
 mod router;
 
 /// The `PermissionOutcome::Selected` option ids the desktop CONSUMES.

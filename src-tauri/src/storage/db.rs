@@ -299,6 +299,21 @@ pub enum BoardError {
     /// [`BoardError::BadArtifactKey`]'s does.
     #[error("artifact is {size} bytes, which exceeds the {max} bytes (256 KB) limit")]
     ArtifactTooLarge { size: usize, max: usize },
+
+    /// `create_task` / `edit_task` refuse a title that [`crate::text::clean_title`]
+    /// cleans to nothing (`""`, `"   "`, `"\n"`, and — the ones a naive
+    /// `trim().is_empty()` lets through — the bare quote pairs `"\"\""` and `"''"`).
+    ///
+    /// No payload, in the same style as [`BoardError::EmptyStageSlug`]: there is no
+    /// number to report and no name to echo back, because the offending value is
+    /// nothing. The sentence below is byte-identical to `TasksError::EmptyTitle`'s
+    /// in `agent/errors.rs`, and that is a requirement rather than tidiness — the
+    /// same argument [`BoardError::BadArtifactKey`]'s docblock makes: the command
+    /// layer maps this arm onto that variant FIELD-FOR-FIELD, so a person who breaks
+    /// the rule gets ONE sentence whichever door caught it (ADR 0063 — the message is
+    /// what the user reads).
+    #[error("task title is empty after trimming")]
+    EmptyTitle,
 }
 
 /// The `BoardError → TaskStoreError` map the D2 TaskStore seam runs through
@@ -336,6 +351,14 @@ pub enum BoardError {
 /// storage now enforces both rules for every door to `task_artifacts`. The crate's
 /// `Invalid` doc names exactly those two failures, so the mapping is the one F1
 /// anticipated rather than a coincidence.
+///
+/// `EmptyTitle` belongs with THAT paragraph, not with the stage refusals above it.
+/// It is REACHABLE through the seam — `create_task` and `edit_task` are both
+/// `TaskStore` verbs, and both now refuse a title that cleans to nothing before they
+/// touch a connection. `Invalid`'s own crate doc is "the call was well-formed JSON
+/// and still not admissible", and a title is exactly that: the arguments parsed, the
+/// card id is fine, and the label is not a label. Documenting this arm under the
+/// stage paragraph would leave a docblock arguing against the code beside it.
 impl From<BoardError> for TaskStoreError {
     fn from(e: BoardError) -> Self {
         // `Display` IS the sentence the model reads, so it is rendered ONCE from
@@ -352,9 +375,14 @@ impl From<BoardError> for TaskStoreError {
             // outside the artifact grammar, a markdown over the size cap") — this
             // arm is why that sentence is now true on the desktop side too. The
             // grammar and the numbers ride in `Display`, which is what the model
-            // reads as the tool result.
+            // reads as the tool result. `EmptyTitle` rides here too, and NOT for the
+            // reason the stage refusals below do: it is REACHABLE, because
+            // `create_task` and `edit_task` are `TaskStore` verbs. A title that
+            // cleans to nothing is a well-formed call whose argument is not
+            // admissible, which is `Invalid`'s own definition.
             BoardError::BadArtifactKey { .. }
             | BoardError::ArtifactTooLarge { .. }
+            | BoardError::EmptyTitle
             | BoardError::MissingStage { .. }
             | BoardError::StrictMoveRefused { .. }
             | BoardError::StageNotEmpty { .. }
@@ -758,8 +786,10 @@ pub struct TaskCardView {
 /// [`TaskCardView`] wrapper exists to prevent.
 ///
 /// `key` is a free-form slug, NOT an enum: `tool_specs()` returns a static `Vec`
-/// and cannot carry one, so the grammar is validated in the command layer (the
-/// `require_title` split) rather than closed here.
+/// and cannot carry one. But the grammar is enforced HERE, by [`Db::write_artifact`]
+/// — see "THE ONE OWNER" below it — for every door to `task_artifacts`, not in the
+/// command layer. The command's `require_artifact_key` pre-flight still runs and
+/// still answers first; it is not the guard.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Artifact {
@@ -2274,6 +2304,22 @@ impl Db {
     /// - `sort_order`: `COALESCE((SELECT MAX(sort_order) …), -1) + 1` — this
     ///   file's bottom-join idiom, floors at `-1`, so the first card is position
     ///   `0`. THE TWO FLOORS DIFFER ON PURPOSE; see the numbering note below.
+    ///
+    /// THE TITLE RULE LIVES HERE, and it now holds on BOTH doors. `title` is run
+    /// through [`crate::text::clean_title`] and a title that cleans to nothing is
+    /// `EmptyTitle` — the SAME refusal the command layer's pre-flight makes, mapped
+    /// variant-to-variant so both doors answer with one sentence. It used to live in
+    /// `commands/tasks.rs` alone, which was safe while the IPC command was the only
+    /// door; [`TaskStore::create_task`] below is the second, it delegates straight
+    /// here, and `tasks.title` is `TEXT NOT NULL` with no `CHECK` — so a model could
+    /// write a card with no label that a human could not, and `TaskCard.tsx` renders
+    /// `{task.title}` with no fallback. A rule with two doors belongs on the single
+    /// path both pass through.
+    ///
+    /// What is stored is the CLEANED title, and it is cleaned exactly ONCE — here.
+    /// Callers pass the raw string; see [`crate::text::clean_title`] for why a second
+    /// clean is not a no-op (the trim runs before the quote strip, so cleaning twice
+    /// quietly rewrites a person's title).
     pub fn create_task(
         &self,
         space_path: &str,
@@ -2281,6 +2327,10 @@ impl Db {
         body: Option<&str>,
         stage_slug: Option<&str>,
     ) -> Result<TaskRow, BoardError> {
+        // BEFORE the lock, exactly as `write_artifact`'s two pure refusals are: a
+        // rejection touches no connection at all, so the "a rejection writes
+        // NOTHING" rule holds for every door and not just the command's.
+        let title = crate::text::clean_title(title, None).ok_or(BoardError::EmptyTitle)?;
         let mut guard = self.conn.lock().expect("db mutex poisoned");
         // Seed inside the SAME guard as the read and the insert: a card cannot
         // be created in a Space with no columns, and the seed must not take a
@@ -2351,7 +2401,7 @@ impl Db {
             "INSERT INTO tasks (id, space_path, number, title, body, spec_path, stage_slug, \
              sort_order, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?8)",
-            params![id, space_path, number, title, body, stage, sort_order, now],
+            params![id, space_path, number, &title, body, stage, sort_order, now],
         )?;
         drop(guard);
         // Re-read rather than rebuild the struct from the arguments: the row
@@ -2377,10 +2427,23 @@ impl Db {
     /// carried over, not a regression — and it is why the `touched == 0` check below
     /// can only ever mean "no row matched `WHERE id`".
     ///
-    /// `title` is `NOT NULL` and this layer does NOT refuse [`FieldPatch::Clear`] on
-    /// it. The refusal lives in the command layer, beside `require_title` — one place
-    /// that decides what a valid title is, for both the empty and the absent case. A
-    /// `Clear` that slipped past would surface SQLite's constraint as
+    /// THE TITLE RULE: the CLEAN and the EMPTY-REFUSAL are decided HERE, on the
+    /// single path both doors pass through. A [`FieldPatch::Set`] title is run
+    /// through [`crate::text::clean_title`] and one that cleans to nothing is
+    /// `EmptyTitle`, refused BEFORE the statement; `Keep` and `Clear` are untouched
+    /// (a `Keep` must never re-clean what is stored, and `Clear` is refused upstream).
+    /// This mirrors [`Db::create_task`], and the two together are why the rule cannot
+    /// be bypassed: `TaskCall::EditTask { title: Some("") }` was a fully expressible
+    /// `FieldPatch::Set("")` and the `CASE` below writes `''` without complaint, so
+    /// the model's door could blank a label a person had typed.
+    ///
+    /// The `Clear` refusal stays in the COMMAND layer, and that split is not an
+    /// inconsistency. `tasks.title` is `NOT NULL`, so a card without a label is not
+    /// a thing — but the seam maps `None → Keep` and this crate consumes the published
+    /// `TaskCall` as a registry pin, so NO wire value a model can send expresses a
+    /// `Clear` on title. That one refusal is genuinely about the WIRE — it refuses a
+    /// state only the IPC body can reach, so `patch_title` is the layer that can see
+    /// it. A `Clear` that slipped past would still surface SQLite's constraint as
     /// [`BoardError::Sqlite`]: defence-in-depth, not a hole to paper over here.
     ///
     /// Deliberately cannot touch `stage_slug` (that is `move_task`, which also
@@ -2401,6 +2464,33 @@ impl Db {
         body: FieldPatch<'_>,
         spec_path: FieldPatch<'_>,
     ) -> Result<TaskRow, BoardError> {
+        // THE TITLE CLEAN — before the lock, before the statement, exactly as
+        // `create_task` and `write_artifact` do it, so a refused patch touches no
+        // connection and the stored title is provably untouched.
+        //
+        // A `Set` only: `Keep` must not re-clean what is stored (that would rewrite
+        // a title on an unrelated patch) and `Clear` is refused upstream. The cleaned
+        // `String` is OWNED BY THIS FUNCTION so the `FieldPatch` below can borrow it
+        // into `params!` — the bind needs a borrow that outlives the `execute`.
+        let cleaned_title: Option<String> = match &title {
+            FieldPatch::Set(raw) => {
+                Some(crate::text::clean_title(raw, None).ok_or(BoardError::EmptyTitle)?)
+            }
+            _ => None,
+        };
+        // Rebuilt rather than mutated in place, and with no `unreachable!()` /
+        // `expect()` anywhere: this runs inside `spawn_blocking`, where a panic is
+        // the `JoinError` the router reports as `Io` — the exact failure the
+        // `From<BoardError> for TaskStoreError` docblock refuses to introduce. A
+        // non-`Set` patch therefore maps to the state it arrived as, by a match the
+        // compiler checks and no runtime path can misreport.
+        let title = match cleaned_title.as_deref() {
+            Some(cleaned) => FieldPatch::Set(cleaned),
+            None => match title {
+                FieldPatch::Clear => FieldPatch::Clear,
+                _ => FieldPatch::Keep,
+            },
+        };
         let guard = self.conn.lock().expect("db mutex poisoned");
         let touched = guard.execute(
             "UPDATE tasks SET \
@@ -2709,13 +2799,24 @@ impl Db {
     /// the constant and the predicate are HERE and `commands/tasks.rs` now imports
     /// them: the direction is command → storage, never the reverse.
     ///
-    /// The `require_title` precedent does NOT argue the other way. `require_title`
-    /// refuses a title that `clean_title` cleans to nothing, and the cleaning is
-    /// genuinely a wire concern — it is what a person typed and what the session
-    /// namer will re-clean. Neither rule here cleans anything: a key either matches
-    /// a grammar or it does not, and a document either fits or it does not. Both are
-    /// pure data validation on the row about to be written, which is exactly what a
-    /// storage layer may own.
+    /// The `require_title` precedent argues this way TOO, and it no longer has to be
+    /// argued around. `require_title` used to refuse a title that `clean_title`
+    /// cleans to nothing HERE, in the command layer only, on the theory that the
+    /// cleaning was a wire concern — what a person typed, and what the session namer
+    /// would re-clean. That theory died the same way this one did: `tasks` gained a
+    /// second door through the seam, `title` is `TEXT NOT NULL` with no `CHECK`, and
+    /// a model could write a card with no label that a human could not. The title
+    /// rule then MOVED to storage for exactly the reason stated here — a rule with
+    /// two doors belongs on the single path both pass through — so it is now the
+    /// closest precedent this file has, not a counter-example. Both rules are pure
+    /// data validation on the row about to be written: a key either matches a grammar
+    /// or it does not, a document either fits or it does not, and a title either
+    /// cleans to something or it does not. That is what a storage layer may own.
+    ///
+    /// What stayed in the command layer is the one title rule that is genuinely a
+    /// wire concern: `FieldPatch::Clear` on `title` is refused by `patch_title`,
+    /// because the seam maps `None → Keep` and no wire value a model can send
+    /// expresses a clear. That refusal has no second door to be unreachable through.
     ///
     /// The cap is load-bearing for a reason that a reader must not lose: the
     /// markdown crosses a JSONL pipe on the way to the Worker (the Worker has no
@@ -3649,11 +3750,12 @@ impl TaskStore for Db {
         spec_path: Option<&str>,
     ) -> Result<CrateTaskRow, TaskStoreError> {
         // The published seam is TWO-state: `Option<&str>` with `None` = leave that field
-        // alone, and `fulcrum-harness = "0.2.0"` is a registry pin, so there is no value the
-        // model can send that reaches `FieldPatch::Clear`. A model's `edit_task` therefore
-        // still clears nothing. Deliberate and deferred: ADR 0102 / issue #183 move this verb
-        // desktop-side over a vocabulary-free `HostToolCall`, which makes the third state
-        // reachable from the tool too. See docs/research/edit-task-cannot-clear-a-field.md.
+        // alone, and the published crate's `TaskCall` is that shape — this crate consumes
+        // it as a registry pin — so there is no value the model can send that reaches
+        // `FieldPatch::Clear`. A model's `edit_task` therefore still clears nothing.
+        // Deliberate and deferred: ADR 0102 / issue #183 move this verb desktop-side over
+        // a vocabulary-free `HostToolCall`, which makes the third state reachable from the
+        // tool too. See docs/research/edit-task-cannot-clear-a-field.md.
         let row = Db::edit_task(
             self,
             task_id,

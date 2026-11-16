@@ -10,27 +10,12 @@ use std::sync::Arc;
 
 use crate::agent::errors::AttentionError;
 use crate::attention::{AlertText, AttentionTimer};
+use crate::text::cap_chars;
 
 /// The longest title the OS is asked to render, in CHARS.
 const MAX_TITLE_CHARS: usize = 120;
 /// The longest body the OS is asked to render, in CHARS.
 const MAX_BODY_CHARS: usize = 300;
-
-/// The first `n` CHARS of `s`, as a `String`.
-///
-/// A deliberately local copy of the private `cap_chars` in
-/// `agent/session/naming.rs:47` — that one is a plain `fn` inside the private
-/// `mod naming` of the private `mod session`, so `crate::commands` cannot reach
-/// it, and promoting it (and both `mod` declarations) is a wider change than
-/// this hardening pass should make. Any THIRD caller should hoist one shared
-/// helper rather than copy this a second time.
-///
-/// Char-wise and never a byte slice, for the original's reason: `&s[..n]` panics
-/// when `n` lands inside a multi-byte code point, and the text here arrives from
-/// a webview rendering user/model text from any script.
-fn cap_chars(s: &str, n: usize) -> String {
-    s.chars().take(n).collect()
-}
 
 /// Bound the text that flows into an OS notification: trim, then cap each field
 /// by its own char budget, and refuse a body that trims to nothing.

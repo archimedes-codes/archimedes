@@ -18,6 +18,7 @@ pub use agent::skills;
 pub mod storage;
 #[doc(hidden)]
 pub mod test_support;
+pub mod text;
 pub mod types;
 
 use std::path::PathBuf;

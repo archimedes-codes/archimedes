@@ -211,8 +211,9 @@ export interface TaskSessionRow {
 export interface Artifact {
   /** The owning card — one half of the composite primary key. */
   taskId: string;
-  /** The other half. A free-form slug, `[a-z0-9][a-z0-9-]{0,39}`, validated in
-   *  the command layer (the `require_title` split) and never in the schema. */
+  /** The other half. A free-form slug, `[a-z0-9][a-z0-9-]{0,39}`, enforced in
+   *  `Db::write_artifact` on the Rust side ("THE ONE OWNER") for every door to
+   *  `task_artifacts` — not in the command layer, and never in the schema. */
   key: string;
   /** The document. */
   markdown: string;

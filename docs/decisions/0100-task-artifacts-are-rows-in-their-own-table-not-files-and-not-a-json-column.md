@@ -80,3 +80,69 @@ to either join or lie.
   Per ADR 0099's own wording that Consequence was a statement about the state at its decision time
   and it remains true *of that change*; the board's model-facing tools are this one's to add, and
   `docs/features/task-board-known-gaps.md` §2 is the file that must be updated when they land.
+
+
+## Amendment (2026-11-16) — both artifact rules moved to storage, and the `require_title` split does not argue the other way
+
+**The body above is left as written, because it records the decision as it was made. Two of its
+Consequences bullets name the command layer as the owner of two rules, and the code that shipped in
+this ADR's own squash commit moved both rules to storage.**
+
+**1. The key grammar and the byte cap are owned by storage, not the command layer.**
+`Db::MAX_ARTIFACT_MARKDOWN_BYTES` and `Db::artifact_key_is_well_formed` in
+`src-tauri/src/storage/db.rs` are THE ONE OWNER of both rules, and `Db::write_artifact` runs both
+refusals — `BoardError::BadArtifactKey` and `BoardError::ArtifactTooLarge` — **before the lock and
+before the existence check**, so a rejection touches no connection at all and the "a rejection
+writes NOTHING" rule holds for every door rather than only the command's. `commands/tasks.rs` now
+*imports* both: its `MAX_ARTIFACT_MARKDOWN_BYTES` is a `pub(crate)` alias of the storage constant
+(Rust cannot `use` an associated const by path, so the value still comes from storage and a
+divergent pair is not constructible) and `require_artifact_key` calls
+`Db::artifact_key_is_well_formed` rather than re-spelling the character classes. **The direction is
+command → storage, never the reverse.** The reason is in the shipped docblock verbatim: *"a rule
+with two doors belongs on the single path both doors pass through, not duplicated beside each one."*
+D1 had one door — the IPC command — and "a shape rule is a wire rule" was true of it. D2's
+`impl TaskStore for Db` is the second door, the `write_artifact` TOOL reaches `task_artifacts`
+through it, and it called neither rule, so a model could persist a key outside the grammar and a
+markdown over the cap that a person could not. The move landed in `2814d561`, whose own message
+contains *"D2 fix: enforce key grammar + 256 KB cap in storage backstop (was bypassed)"* — that
+commit wrote this ADR and falsified these two bullets at the same time, and only the code was
+corrected.
+
+The `require_title` precedent argues the SAME way, and it is now the closest precedent this file
+has. `require_title` used to refuse a title that `clean_title` cleans to nothing in the command layer
+only, on the theory that the cleaning was a wire concern. That theory died the same way the one above
+did: `tasks` gained a second door through `impl TaskStore for Db`, `tasks.title` is `TEXT NOT NULL`
+with no `CHECK`, and a model could write a card labelled `""` that a person could not — so the title
+rule MOVED to storage for exactly the reason stated here. Neither rule cleans anything that the other
+does not: a key either matches a grammar or it does not, a document either fits or it does not, and a
+title either cleans to something or it does not. All three are pure data validation on the row about
+to be written, which is exactly what a storage layer may own. The artifact move is the shape the title
+rule later followed, and the shape is the argument.
+
+What stayed in the command layer is the one title rule that is genuinely about the WIRE: refusing
+`FieldPatch::Clear` on `title`, because the seam maps `None → Keep` and no wire value a model can
+send expresses a clear on title. That refusal has no second door to be unreachable through, so the
+split is by reachability, not by a difference in kind.
+
+**2. The command layer's checks are a redundant pre-flight, deliberately kept.**
+`require_artifact_key` and `require_artifact_size` still run in `commands/tasks.rs` ahead of the
+`spawn_blocking` hop, so a bad call costs no DB round trip and still answers the richer `TasksError`
+envelope (the `artifact_too_large` `size`/`max` keys, ADR 0063). They are not a second
+implementation of anything: `From<BoardError> for TasksError` maps `BadArtifactKey` and
+`ArtifactTooLarge` **variant to variant** onto the `TasksError` arms and re-spells no sentence, so
+both doors emit one sentence and the wire message cannot drift from storage's single `Display` —
+pinned by `the_storage_artifact_refusals_keep_the_command_envelope_exactly`, which tests the two
+doors against each other. What survives of the original bullet untouched is its other half: **the
+grammar is still not in the schema.** There is no `CHECK` constraint on `task_artifacts` nor anywhere
+else in `src-tauri/src/storage/db.rs` (measured: `grep -c "CHECK" src-tauri/src/storage/db.rs`
+answers `0`). Only the layer the bullet named moved; *never in the schema* is still true.
+
+**The forward obligation.** The grammar's load-bearing reason — an artifact's key is interpolated
+into the `<task>` launch block — is now enforced on the single path every writer passes through,
+which is the only place the sentence could be made true of the database rather than of one caller.
+Stated as plainly as the shipped docblock states it: `src/lib/taskPrompt.ts` already runs every key
+through `escapeAttr`, so an ill-formed key is **not** an injection hole in that block as it stands.
+What the grammar protects is the **invariant** — keys are grammar-shaped — and the harm it prevents
+is the next surface that interpolates a key without escaping inheriting a bug from a row this grammar
+was supposed to make impossible. That is also why the rule refuses where `require_title` cleans: a
+mangled key is a different key.
