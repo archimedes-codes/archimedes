@@ -23,7 +23,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use serde_json::json;
 
-use crate::agent::debuglog;
+use crate::agent::diagnostics;
 use crate::agent::events::EventSink;
 use crate::agent::harness::catalog::{Model, ModelCatalog};
 use crate::agent::harness::compact::is_compaction_summary;
@@ -425,7 +425,7 @@ pub(crate) fn resolve_naming_reasoning(model: &Model, configured: Option<&str>) 
         .find(|level| level.to_lowercase() == needle)
         .cloned()
         .or_else(|| {
-            debuglog::log(&unrecognized_reasoning_log(raw));
+            diagnostics::record(&unrecognized_reasoning_log(raw));
             None
         })
 }
@@ -703,7 +703,7 @@ pub(crate) async fn name_session(request: NamingRequest) {
     // more (#143): a user who set no key and gets no title needs the log line
     // to learn that is why, but it still consumes nothing.
     if model.api_key.is_empty() {
-        debuglog::log(&format!(
+        diagnostics::record(&format!(
             "session-name: no configured auth for model {}; skipping the title request for {session_id}",
             model.id
         ));
@@ -740,7 +740,7 @@ pub(crate) async fn name_session(request: NamingRequest) {
     let mut stream = match provider.complete(&model_request).await {
         Ok(stream) => stream,
         Err(e) => {
-            debuglog::log(&format!(
+            diagnostics::record(&format!(
                 "session-name: the title request failed for {session_id}: {e}"
             ));
             note_failure(&request.state, session_id);
@@ -774,7 +774,7 @@ pub(crate) async fn name_session(request: NamingRequest) {
     let finish = match drained {
         Drain::Done(finish) => finish,
         Drain::Failed(why) => {
-            debuglog::log(&format!("session-name: {why} for {session_id}"));
+            diagnostics::record(&format!("session-name: {why} for {session_id}"));
             note_failure(&request.state, session_id);
             return;
         }
@@ -783,7 +783,7 @@ pub(crate) async fn name_session(request: NamingRequest) {
     // For `Done(Length)`, only accept the cleaned title if it has at least 2 words
     // and contains no newlines; otherwise treat truncation as a failure.
     if finish == FinishReason::Error {
-        debuglog::log(&format!(
+        diagnostics::record(&format!(
             "session-name: the title answer had an error ({finish:?}) for {session_id}"
         ));
         note_failure(&request.state, session_id);
@@ -799,7 +799,7 @@ pub(crate) async fn name_session(request: NamingRequest) {
             None => false,
         };
         if !is_valid {
-            debuglog::log(&format!(
+            diagnostics::record(&format!(
                 "session-name: the title answer was truncated ({finish:?}) with no valid title for {session_id}"
             ));
             note_failure(&request.state, session_id);
@@ -809,7 +809,7 @@ pub(crate) async fn name_session(request: NamingRequest) {
     let Some(title) = cleaned else {
         // An answer that cleans to nothing is pi's `if (!title) onFailure()`:
         // writing `""` would label the session with nothing.
-        debuglog::log(&format!(
+        diagnostics::record(&format!(
             "session-name: the model answered with no usable title for {session_id}"
         ));
         note_failure(&request.state, session_id);
@@ -837,7 +837,7 @@ pub(crate) async fn name_session(request: NamingRequest) {
         }
         Ok(false) => {}
         Err(e) => {
-            debuglog::log(&format!(
+            diagnostics::record(&format!(
                 "session-name: failed to write title for {session_id}: {e}"
             ));
             note_failure(&request.state, session_id);
@@ -893,7 +893,7 @@ fn note_failure(state: &StdMutex<HashMap<String, SessionState>>, session_id: &st
     {
         state.fails += 1;
         if state.fails == MAX_FAILURES {
-            debuglog::log(&format!(
+            diagnostics::record(&format!(
                 "session-name: naming failed {MAX_FAILURES} times for {session_id}; \
                  check the model configuration or set sessionNamingModel"
             ));
@@ -2121,45 +2121,52 @@ mod tests {
         );
     }
 
-    // ── The naming pass's diagnostics reach the debug log (issue #143) ─────
+    // ── The naming pass's diagnostics reach the ALWAYS-ON log (issue #143) ───
     //
     // A declined title is invisible in a shipped build: there is no terminal,
     // and a Worker-stderr route does not exist for a pass that runs in the
     // SUPERVERVISOR (ADR 0037). These tests are the proof that the lines land in
-    // `supervisor.log` — the only file a user or supporter can read.
+    // `diagnostics.log` — the file a supporter can read WITHOUT the user having
+    // set `ARCHIMEDES_DEBUG` (ADR 0110). They asserted `supervisor.log` before,
+    // and that was true only of a build the user opted into; in the build a user
+    // actually runs, the pass was silent.
     //
     // Both tests own TWO scratch dirs: the harness's (the private `config_dir`
-    // + SQLite) and the LOG dir. They must stay separate: `debuglog::init`
-    // points the process-global `DIR` at whatever it is handed, and the
+    // + SQLite) and the LOG dir. They must stay separate: `diagnostics::init`
+    // points the process-global target at whatever it is handed, and the
     // harness's dir is a config dir full of a live SQLite file, not a log
     // target.
 
-    /// Restores the global debug log to DISABLED on scope exit — INCLUDING on a
-    /// panicking assertion, which the plain "call `init(false, None)` last"
-    /// shape does not (the `commands/sessions.rs` / `tests` guard, the
-    /// same reason `debuglog.rs`'s own tests keep the teardown).
-    struct DisableDebuglogOnExit;
-    impl Drop for DisableDebuglogOnExit {
+    /// Restores the global diagnostics target to UNARMED on scope exit —
+    /// INCLUDING on a panicking assertion, which the plain "call `init(None)`
+    /// last" shape does not (the `commands/sessions.rs` / `tests` guard, the
+    /// same reason the engine's own diagnostics tests keep the teardown).
+    ///
+    /// UNARMED, not merely redirected: the channel writes nowhere until a host
+    /// arms it, so leaving it aimed at a scratch dir that is about to be removed
+    /// would hand the next test an unwritable target.
+    struct DisableDiagnosticsOnExit;
+    impl Drop for DisableDiagnosticsOnExit {
         fn drop(&mut self) {
-            crate::agent::debuglog::init(false, None);
+            crate::agent::diagnostics::init(None);
         }
     }
 
     /// The `#[allow(clippy::await_holding_lock)]` is INTENTIONAL (the
     /// `tests` / `commands/sessions.rs` precedent): the guard holds the
-    /// process-global `debuglog` target for the whole test, so a sibling's
-    /// `debuglog::init` cannot repoint `DIR` between the spawn and the read.
+    /// process-global diagnostics target for the whole test, so a sibling's
+    /// `diagnostics::init` cannot repoint it between the spawn and the read.
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
-    async fn a_title_request_failure_is_written_to_the_debug_log() {
+    async fn a_title_request_failure_is_written_to_the_always_on_log() {
         // The order is the `commands/sessions.rs` one and it is load-bearing:
         // the lock is declared FIRST so it outlives both, and `_disable`
         // BEFORE the dir so it drops AFTER it (locals drop in reverse) — the
         // global `DIR` is cleared before the dir it names is removed.
         let _lock = crate::test_support::env_lock();
         let log_dir = ScratchDir::in_env_temp("naming-log-", "log");
-        let _disable = DisableDebuglogOnExit;
-        crate::agent::debuglog::init(true, Some(log_dir.to_path_buf()));
+        let _disable = DisableDiagnosticsOnExit;
+        crate::agent::diagnostics::init(Some(log_dir.to_path_buf()));
 
         // `Script::Refused` is the arm where `complete()` itself returns `Err`
         // — the "the title request failed" diagnostic (a stream that errors
@@ -2171,8 +2178,8 @@ mod tests {
         h.agent_end(id, false);
         h.await_request().await;
 
-        let content = std::fs::read_to_string(log_dir.join("supervisor.log"))
-            .expect("the naming pass wrote the debug log");
+        let content = std::fs::read_to_string(log_dir.join("diagnostics.log"))
+            .expect("a failed title request writes to the always-on log with NO env var set");
         // The FULL line, not a substring of the session id: the text is the
         // durable handle a supporter greps for (several of these sentences are
         // quoted in the docs), and the error's `Display` is what names the
@@ -2182,7 +2189,7 @@ mod tests {
                 "session-name: the title request failed for arch_logged_failure: \
                  fatal: the endpoint is down"
             ),
-            "the failure line is in supervisor.log:\n{content}"
+            "the failure line is in diagnostics.log:\n{content}"
         );
     }
 
@@ -2193,8 +2200,8 @@ mod tests {
     async fn an_unconfigured_model_logs_the_skip_and_counts_no_failure() {
         let _lock = crate::test_support::env_lock();
         let log_dir = ScratchDir::in_env_temp("naming-log-", "log");
-        let _disable = DisableDebuglogOnExit;
-        crate::agent::debuglog::init(true, Some(log_dir.to_path_buf()));
+        let _disable = DisableDiagnosticsOnExit;
+        crate::agent::diagnostics::init(Some(log_dir.to_path_buf()));
 
         let h = harness(vec![Script::answering("never")]);
         let id = "arch_logged_skip";
@@ -2207,14 +2214,14 @@ mod tests {
         h.agent_end(id, false);
         drain_tasks().await;
 
-        let content = std::fs::read_to_string(log_dir.join("supervisor.log"))
+        let content = std::fs::read_to_string(log_dir.join("diagnostics.log"))
             .expect("the skip is logged too — a silent decline is the bug");
         assert!(
             content.contains(
                 "session-name: no configured auth for model m1; skipping the title \
                  request for arch_logged_skip"
             ),
-            "the skip line is in supervisor.log:\n{content}"
+            "the skip line is in diagnostics.log:\n{content}"
         );
         // And it is still a SKIP, not a failure: the guard's consumption rule
         // is unchanged (`a_model_without_an_api_key_calls_nothing_and_counts_no_failure`
@@ -2222,6 +2229,44 @@ mod tests {
         let state = h.state_of(id).expect("the pass ran");
         assert_eq!(state.fails, 0, "an unconfigured model is NOT a failure");
         assert!(!state.in_flight, "the early exit still cleared the flag");
+    }
+
+    /// The migration MOVED these lines; it did not duplicate them.
+    ///
+    /// The separation is the whole reason the engine grew a second channel
+    /// (fulcrum ADR / ADR 0110): `supervisor.log` is the `ARCHIMEDES_DEBUG`
+    /// protocol transcript — every `→`/`←` frame, prompts included — and it
+    /// stays opt-in. A naming line written to BOTH would mean a user who
+    /// opted into the transcript is the only one whose refusals are recorded
+    /// twice, and a user who did not would still get nothing from the file
+    /// that matters. So: the line is in `diagnostics.log`, and the transcript
+    /// file is NOT CREATED at all by a naming pass that never opted in.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn a_naming_failure_writes_the_transcript_no_line_and_no_file() {
+        let _lock = crate::test_support::env_lock();
+        let log_dir = ScratchDir::in_env_temp("naming-log-", "log");
+        let _disable = DisableDiagnosticsOnExit;
+        crate::agent::diagnostics::init(Some(log_dir.to_path_buf()));
+
+        let h = harness(vec![Script::Refused("the endpoint is down".to_string())]);
+        let id = "arch_not_transcribed";
+        h.seed_session(id);
+        h.agent_end(id, false);
+        h.await_request().await;
+
+        assert!(
+            std::fs::read_to_string(log_dir.join("diagnostics.log"))
+                .expect("the always-on line lands")
+                .contains("the title request failed for arch_not_transcribed"),
+            "the always-on half of the assertion"
+        );
+        assert!(
+            !log_dir.join("supervisor.log").exists(),
+            "a naming failure creates NO protocol-log file: the transcript stays \
+             opt-in, and a refusal that appears in both channels means the \
+             separation was implemented by duplication"
+        );
     }
 
     #[tokio::test]

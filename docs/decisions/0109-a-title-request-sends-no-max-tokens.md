@@ -53,9 +53,18 @@ truly cannot produce a title still fails and still counts.
 
 ## What this does not decide
 
+> **Amended 2026-11-16 by ADR 0110.** The first gap below is **closed** — the naming pass's failure
+> lines are now always-on, in `diagnostics.log`, via a second engine channel added in
+> `archimedes-codes/fulcrum#27` and armed on the desktop at the `fulcrum-harness` 0.3.3 pin. The text
+> below is kept as it was written, because its *reasoning* is what made the gap interesting: the thing
+> that blocked it was not effort but the discovery that the gated log is a protocol transcript. Read
+> ADR 0110 for the resolution and for why flipping the existing switch would have been a privacy bug.
+
 The naming pass's failure diagnostics remain gated behind `ARCHIMEDES_DEBUG=1`, and `debuglog` lives in
 the pinned engine crate (`fulcrum-harness-0.3.2`), not in this repo — so "make a naming failure visible
 without the env var" is a separate decision that has to be made against the crate, not against this
 checkout. The same is true of the app-quit path: `RunEvent::Exit` reaps Workers and never reaches
 `close_session`, so a session closed by quitting the app gets no last-chance title nudge. Both are
 recorded here as *known gaps this decision does not close*, not as accepted defects.
+
+Of the two, only the second still stands.

@@ -89,8 +89,9 @@ pub mod worker;
 // `SubagentCancel`'s dispatch variant was renamed with its held type
 // (`Worker` → `Dispatcher`, the E2 re-plumb).
 pub use fulcrum_harness::{
-    agents, boundary, childproc, debuglog, definition_permission, events, hostenv, ids,
-    interactive, mcp, normalize, permission, persist, policy, skills, subagent, todo, tools, types,
+    agents, boundary, childproc, debuglog, definition_permission, diagnostics, events, hostenv,
+    ids, interactive, mcp, normalize, permission, persist, policy, skills, subagent, todo, tools,
+    types,
 };
 
 pub use crate::types::SessionInfo;
