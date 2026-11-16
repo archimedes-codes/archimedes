@@ -82,10 +82,11 @@
 # ignores `.cargo/config.toml` and the pin stays the only thing that reaches CI.
 #
 # HOW TO TELL IT IS ACTUALLY WORKING. `cargo tree -i fulcrum-harness` prints the
-# patched source as a PATH, e.g.
-#     fulcrum-harness v0.1.0 (/path/to/fulcrum)
-# and when the patch is NOT in effect it prints the bare
-#     fulcrum-harness v0.1.0
+# patched source as a PATH, e.g. (write `vX.Y.Z` for whatever the pin carries
+# today — the number is not the tell, the suffix is)
+#     fulcrum-harness vX.Y.Z (/path/to/fulcrum)
+# and when the patch is NOT in effect it prints that SAME version bare
+#     fulcrum-harness vX.Y.Z
 # with NO source suffix at all — that is how a registry dep prints unpatched, so
 # do not go looking for a URL there (the old instruction to expect the
 # `git+https://…?tag=…` form died with the git source). Machine-checkable
@@ -100,9 +101,9 @@
 # `[[patch.unused]]` stanza above. So `git checkout Cargo.lock` after deleting
 # `.cargo/config.toml` is required in BOTH directions now, not only the
 # successful one. Verify with `cargo tree -i fulcrum-harness`: it must print the
-# bare `fulcrum-harness v0.1.0` again, and `grep patch.unused Cargo.lock` must be
-# empty, before you commit anything. Remember the lock IS tracked and the config
-# is not.
+# bare `fulcrum-harness vX.Y.Z` again, with NO PATH suffix, and `grep
+# patch.unused Cargo.lock` must be empty, before you commit anything. Remember
+# the lock IS tracked and the config is not.
 #
 # HOW TO UNDO IT: delete `.cargo/config.toml`, then `git checkout Cargo.lock`.
 #
