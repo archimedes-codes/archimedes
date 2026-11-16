@@ -167,7 +167,7 @@ path_exists() { [[ -e "$1" ]] && printf 'yes\n' || printf 'no\n'; }
 # deleting `fail()`'s `rm -f` left all of them green, which is the difference
 # between pinning a policy and describing an empty room.
 #
-# It also models the flow the operator is actually in. AGENTS.md step 4 is
+# It also models the flow the operator is actually in. docs/agents/releasing.md step 4 is
 # download-then-compose: `gh release download -p latest.json` and then re-compose
 # over the downloaded file, so a real invocation of this script very often has a
 # real previous manifest sitting at `--out`. What that file must do when the run
@@ -818,7 +818,7 @@ assert_eq "no manifest survives an expected-but-unsigned target" "no" "$(path_ex
 # manifest before this run (run_compose does it for every case), so the line above
 # says a file that WAS there was REMOVED, and this one says the removal took the
 # previous document with it rather than leaving it half-written. This is the
-# download-then-compose shape of AGENTS.md step 4, where the file at `--out` is the
+# download-then-compose shape of docs/agents/releasing.md step 4, where the file at `--out` is the
 # manifest an operator downloaded moments ago — and the refusal used to leave it
 # there with a bare `exit 1`, so `gh release upload --clobber` would have published
 # the OLD manifest in place of the one this run refused to write, exit code ignored.

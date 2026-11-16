@@ -795,7 +795,7 @@ assert_eq "nothing is printed on stdout" "" "$stdout"
 # `$exe.sig` (no `$exe`) made the gate exit 0 and the composer emit FOUR keys, two
 # of them pointing at `…/download/v0.2.0/…-setup.exe` — a 404 every Windows client
 # downloads, at exit 0, on a release this gate certified. The reachable flow is
-# AGENTS.md step 4 with `--clobber`: `latest.json` is cacheable, so a stale `.sig`
+# docs/agents/releasing.md step 4 with `--clobber`: `latest.json` is cacheable, so a stale `.sig`
 # can outlive the installer it signs.
 # ---------------------------------------------------------------------------
 dir="$tmp_root/orphan-sig-404"
