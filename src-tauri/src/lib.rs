@@ -28,8 +28,8 @@ use tauri::Manager;
 use crate::agent::worker::client::WorkerHandle;
 use crate::agent::worker::manager::{WorkerFactory, WorkerManager};
 use crate::agent::{
-    crashlog, debuglog, provider_auth, EventSink, SessionManagerBuilder, SubagentSessionManager,
-    TranscriptPersister,
+    crashlog, debuglog, diagnostics, provider_auth, EventSink, SessionManagerBuilder,
+    SubagentSessionManager, TranscriptPersister,
 };
 use crate::storage::Db;
 use fulcrum_harness::seams::FulcrumPersistence;
@@ -541,6 +541,15 @@ pub fn run() {
     // skipping the hook here is belt-and-braces, not a mode.
     if let Some(base) = dirs::data_dir() {
         crashlog::install_panic_hook("supervisor", base.join("archimedes"));
+        // The always-on diagnostics channel (ADR 0110): armed HERE, beside the
+        // two inits it sits with, because the engine's channel is UNARMED until
+        // a host injects the directory — and unlike `debuglog` there is no env
+        // var to flip, by design (the gated log is the protocol transcript; this
+        // one carries the refusal lines that explain a silence, and it is read
+        // by a supporter for a user who never set anything). The directory is
+        // the SAME one the crash hook and the protocol log already use, resolved
+        // once here — this line adds no second `dirs::data_dir()` call.
+        diagnostics::init(Some(base.join("archimedes")));
     }
     debuglog::init_from_env();
     // The navigation guard (ADR 0051 Task 3): a navigation to anything that is
