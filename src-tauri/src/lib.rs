@@ -706,6 +706,9 @@ pub fn run() {
             // the Session through the SAME path plain `start_session` uses, the
             // `Db` records the `task_sessions` link.
             commands::tasks::start_task_session,
+            // The Session→Task badge read (spec D3). Takes `Arc<Db>` alone — no
+            // SessionManager, no sink: it is one app-wide SELECT and nothing else.
+            commands::tasks::task_numbers,
             commands::skills::list_skills,
             commands::clipboard::read_clipboard_image,
             commands::files::read_file_bytes,

@@ -1,13 +1,13 @@
 //! Tauri commands for the per-Space Task board (spec §2 — ADR 0090).
 //!
-//! EIGHTEEN commands. Seventeen of them are a `spawn_blocking` delegation to
+//! NINETEEN commands. Eighteen of them are a `spawn_blocking` delegation to
 //! `impl Db` in `storage/db.rs`, in the shape `commands/spaces.rs` sets:
 //! `State<'_, Arc<Db>>` first, `state.inner().clone()` into the closure,
-//! `Result<_, TasksError>` out. The eighteenth, [`start_task_session`], returns the
+//! `Result<_, TasksError>` out. The nineteenth, [`start_task_session`], returns the
 //! `SessionError` family instead because it is a Session command wearing board
 //! clothing — see its own doc.
 //!
-//! The seventeen delegations are the seven the board shipped with
+//! The eighteen delegations are the seven the board shipped with
 //! ([`get_board`], [`create_task`], [`get_task`], [`edit_task`], [`move_task`],
 //! [`reorder_tasks`], [`link_session`]) plus the eight issue #179 added: the six
 //! Stage verbs ([`create_stage`], [`rename_stage`], [`set_stage_skill`],
@@ -15,9 +15,11 @@
 //! Strict-workflow pair ([`set_board_strict`], [`get_board_strict`]) — plus the
 //! two issue #180 artifact commands ([`write_artifact`], [`get_artifact`]), which
 //! delegate too but refuse three things BEFORE the storage layer is reached (see
-//! the artifact section for why each refusal lives here).
+//! the artifact section for why each refusal lives here) — plus [`task_numbers`],
+//! the app-wide Session→Task badge read, the plainest of the eighteen: one
+//! `State<'_, Arc<Db>>` argument, nothing refused above the hop.
 //!
-//! FOUR of the seventeen do NOT go through [`board_call`], and it is not an
+//! FOUR of the eighteen do NOT go through [`board_call`], and it is not an
 //! oversight: [`set_board_strict`] and [`get_board_strict`] write and read the
 //! `spaces` table, so their storage layer answers `DbError` rather than
 //! `BoardError`, and `board_call` is typed to `BoardError`. They go through
@@ -55,7 +57,8 @@ use tauri::State;
 
 use crate::agent::{debuglog, EventSink, SessionError, SessionInfo, SessionManager, TasksError};
 use crate::storage::{
-    Artifact, ArtifactMeta, Db, FieldPatch, StageRow, StageWithTasks, TaskRow, TaskSessionRow,
+    Artifact, ArtifactMeta, Db, FieldPatch, StageRow, StageWithTasks, TaskNumberRow, TaskRow,
+    TaskSessionRow,
 };
 
 /// What a `move_task` reports: the destination stage's `on_enter`, plus — only
@@ -740,6 +743,24 @@ pub async fn link_session(
         })
         .await,
     )
+}
+
+/// The **Task badge** for every **Session** that has one: the per-Space
+/// `tasks.number` of the most recently LINKED Task that still resolves.
+///
+/// App-wide and NOT per-Space, and that is the whole design (spec D3): the badge
+/// also renders on Settings → **Detached sessions**, whose Spaces have no tab and
+/// therefore no loaded board. One row per Session, so the frontend holds one map
+/// and pays ONE round trip at boot — never one per Space tab.
+///
+/// The shape is [`get_board`]'s: `State<'_, Arc<Db>>` alone, no
+/// `Arc<SessionManager>` — this read touches no Session, starts nothing and
+/// compacts nothing, so it goes through [`board_call`] like the read it is the
+/// mirror of.
+#[tauri::command]
+pub async fn task_numbers(state: State<'_, Arc<Db>>) -> Result<Vec<TaskNumberRow>, TasksError> {
+    let db = state.inner().clone();
+    board_call(tauri::async_runtime::spawn_blocking(move || db.task_numbers()).await)
 }
 
 // ── issue #179 — the configurable Stage (spec §4/§4.1/§5, ADRs 0098 + 0099) ──

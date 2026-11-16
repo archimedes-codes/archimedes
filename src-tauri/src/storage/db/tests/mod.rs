@@ -4237,6 +4237,141 @@ fn link_session_records_the_task_and_stage_and_keeps_the_first() {
     );
 }
 
+/// (`Db::task_numbers`, the badge read) the Session→Task direction, app-wide:
+/// ONE row per Session, the winner among several links is the most recent by
+/// `rowid`, and a Session whose linked Task does not resolve produces NO row.
+///
+/// Five arms, one per assertion group:
+///   (a) one link → one row, carrying the Task's `number` AND the `stage_slug`
+///       the link was MADE with (the frozen lane, not the card's current one);
+///   (b) a Session linked to TWO Tasks → ONE row, the higher-`rowid` link (D5 —
+///       the badge has one slot and the tie-break lives in SQL, not the renderer);
+///   (c) a Session with no link at all → absent;
+///   (d) a link whose `task_id` names no `tasks` row → absent;
+///   (e) **the D6 consequence**: a Session whose NEWEST link dangles but whose
+///       OLDER link is live is **absent**, NOT the older Task's number.
+///
+/// (d) and (e) need a raw second `rusqlite::Connection` to the same file (the
+/// `link_rows` precedent in `commands/tasks/tests/seed.rs`, and the same idiom
+/// `commands/history.rs`'s recency test uses): `Db::link_session` resolves the
+/// Task before it inserts and refuses a missing one, so that refusal is exactly
+/// why the raw INSERT is the ONLY way to reach a dangling `task_id`. The column
+/// carries no foreign key (ADR 0090), so SQLite will not reject it either — the
+/// read is the only thing standing between such a row and a stale badge.
+///
+/// (e) is the arm a reasonable reader guesses wrong. The tempting "improvement"
+/// is a fallback to the newest *resolving* link, which would make the badge lie
+/// about a Session whose card is gone by showing a number it no longer wears.
+/// This test is what stops that fallback being helpfully added back.
+#[test]
+fn task_numbers_returns_the_most_recent_link_per_session_and_nothing_for_a_gone_task() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-task-numbers-", "scratch");
+    let path = dir.join("t.db");
+    let db = Db::open(&path).expect("db should open");
+    let space = board_space("numbers");
+    db.get_board(&space).expect("seed");
+    let first = db
+        .create_task(&space, "first card", None, None)
+        .expect("create");
+    let second = db
+        .create_task(&space, "second card", None, None)
+        .expect("create");
+
+    // (a) one link, made with an EXPLICIT stage so the read-back proves the
+    // frozen lane rather than the card's current `backlog`.
+    record_linkable_session(&db, "sess-1", "/tmp/x", None);
+    db.link_session(&first.id, "sess-1", Some("research"))
+        .expect("link with an explicit stage");
+
+    // (b) two links, second one LAST (rowid order is insert order here).
+    record_linkable_session(&db, "sess-2", "/tmp/x", None);
+    db.link_session(&first.id, "sess-2", Some("backlog"))
+        .expect("first link");
+    db.link_session(&second.id, "sess-2", Some("doing"))
+        .expect("second link (the higher rowid)");
+
+    // (c) a live Session with no link at all.
+    record_linkable_session(&db, "sess-3", "/tmp/x", None);
+
+    // (d) + (e): the Sessions first (the `session_id` FK IS live), then the
+    // dangling link rows RAW — see this test's doc for why raw is the only door.
+    record_linkable_session(&db, "sess-4", "/tmp/x", None);
+    record_linkable_session(&db, "sess-5", "/tmp/x", None);
+    // sess-5's OLDER link is LIVE (the lower rowid of its two).
+    db.link_session(&first.id, "sess-5", Some("research"))
+        .expect("sess-5's OLDER live link");
+    {
+        let conn = rusqlite::Connection::open(&path).expect("raw open of the fixture db");
+        // (d) sess-4's ONLY link dangles.
+        conn.execute(
+            "INSERT INTO task_sessions (task_id, session_id, stage_slug) \
+             VALUES ('tsk_never_existed', 'sess-4', 'research')",
+            [],
+        )
+        .expect("raw dangling link row");
+        // (e) sess-5's NEWER link dangles — this INSERT is the higher rowid.
+        conn.execute(
+            "INSERT INTO task_sessions (task_id, session_id, stage_slug) \
+             VALUES ('tsk_gone_away', 'sess-5', 'doing')",
+            [],
+        )
+        .expect("raw NEWER dangling link for sess-5");
+        drop(conn);
+    }
+
+    let rows = db.task_numbers().expect("task_numbers");
+
+    // (a) + (b) together, in the read's own `ORDER BY session_id` order.
+    assert_eq!(
+        rows.iter()
+            .map(|r| (
+                r.session_id.as_str(),
+                r.task_number,
+                r.stage_slug.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("sess-1", first.number, Some("research")),
+            ("sess-2", second.number, Some("doing")),
+        ],
+        "(a) a single link reads back its Task's `number` AND the `stage_slug` the \
+         link was MADE with (the frozen lane — a card dragged to `doing` later must \
+         not rewrite it), and (b) a Session linked to TWO Tasks yields ONE row \
+         holding the SECOND link's Task: `MAX(rowid)` decides in SQL (D5), never the \
+         renderer; got {rows:?}"
+    );
+    assert_eq!(
+        first.number, 1,
+        "(a) the number on the row is the per-Space `tasks.number`, not the rowid \
+         or the id — the label a person says out loud (ADR 0090)"
+    );
+
+    // (c) + (d) + (e): the three absences, asserted as the ABSENCE of the ids
+    // rather than only as the length above, so each arm names itself.
+    let ids: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
+    assert!(
+        !ids.contains(&"sess-3"),
+        "(c) a Session with no link row is absent — the badge renders nothing, and \
+         an invented `#0` would be a card that does not exist; got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"sess-4"),
+        "(d) a Session whose only link names a Task that does not resolve is ABSENT: \
+         the read INNER JOINs `tasks`, so a dangling `task_id` — which SQLite will \
+         not reject, `task_sessions.task_id` has no FK — produces absence rather \
+         than a stale number; got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"sess-5"),
+        "(e) D6, the arm a reader guesses wrong: sess-5's NEWEST link dangles and \
+         its OLDER link is live, and the answer is STILL no row at all — NOT the \
+         older Task's number. The winner is chosen by `MAX(rowid)` BEFORE the join, \
+         so an unresolvable winner kills the row; a 'helpful' fallback to the newest \
+         resolving link would put a number on a Session that no longer wears it. \
+         Got {ids:?}"
+    );
+}
+
 /// (`task_sessions.session_id` DOES carry the FK) the one FK the board has:
 /// deleting the Session removes the link row, deleting the Space does not.
 #[test]
