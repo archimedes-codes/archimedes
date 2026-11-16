@@ -96,11 +96,11 @@ const NO_LIVE_SESSION: &str = "no live session to compact";
 /// path (`naming.rs`) already refuses exactly that input, so a raw fallback would
 /// make the two title writers disagree about what a title is.
 ///
-/// Reuses the session namer's `clean_title` (whitespace runs collapse, ONE layer
-/// of matching quotes strips) rather than writing the chain a second time. It
-/// reaches here through the two-hop `pub(crate) use` chain in `agent/mod.rs` +
-/// `agent/session/mod.rs`, because `mod naming` and `mod session` are both
-/// private and stay that way.
+/// Reuses the shared `clean_title` (whitespace runs collapse, ONE layer of
+/// matching quotes strips) rather than writing the chain a second time. It lives
+/// in `crate::text`, the crate-root leaf module the cleaner was hoisted to — the
+/// module doc there says why (in short: `storage` must be able to use it and
+/// `storage → agent` is held at zero).
 ///
 /// `max_chars` is `None`, so a Task title is NOT capped. The namer's 80-char cut
 /// is pi parity on a title a MODEL invented; a card's title is the user's own
@@ -113,7 +113,7 @@ const NO_LIVE_SESSION: &str = "no live session to compact";
 /// The Ok payload is the CLEANED title and that is what gets stored: the caller
 /// writes what this approved, never what it was handed.
 fn require_title(raw: &str) -> Result<String, TasksError> {
-    crate::agent::clean_title(raw, None).ok_or(TasksError::EmptyTitle)
+    crate::text::clean_title(raw, None).ok_or(TasksError::EmptyTitle)
 }
 
 /// The JSON type of a body field, for a refusal sentence.
