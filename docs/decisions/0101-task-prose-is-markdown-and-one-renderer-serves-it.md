@@ -60,3 +60,32 @@ to a space, so a body typed as two short lines in the textarea becomes one wrapp
   `specPath` field itself renders as a read-only row, not as a `FileChip`. Two surfaces for one path
   with two behaviours is the disagreement this repo's own defect log is made of, so if the chip ever
   becomes a link it replaces the row rather than joining it.
+
+
+## Amendment (2026-11-16) — a Task title is NOT capped at 80
+
+**The body above is left as written, because it records the decision as it was made. The first
+Consequences bullet's parenthetical is false of the task path, and a reader who trusts it will look
+for a cut that does not exist.**
+
+**1. `require_title` passes `max_chars: None`.** The parenthetical — "`title` goes through
+`clean_title` (whitespace collapsed, capped at 80, one matching quote pair stripped)" — describes the
+session namer, not a card. `commands/tasks.rs::require_title` calls `crate::agent::clean_title(raw,
+None)`, so a **Task** title keeps the shared cleaning chain (whitespace runs collapse, one matching
+quote layer strips) and loses the cut. The 80-character bound is `TITLE_MAX_CHARS`, and it is pi
+parity on a title a **MODEL** invented, where a rambling answer has to be bounded somewhere. A card's
+title is the user's own sentence, and `tasks.title` (`NOT NULL`) has nowhere else to keep an overflow:
+a body is written only when the draft had a second line, so a long single-line draft loses every
+character past the cut permanently. That is the measured harm that motivated making the cut a
+parameter rather than a second function — a real card stored as `What is the default action for
+notifications, i want to be able to click a notif`, 80 chars, mid-word, `body` `NULL` (`9b9bbe7b`).
+The behaviour is pinned by
+`a_long_task_title_is_kept_whole_and_never_cut_at_the_session_namer_cap`, which asserts a 132-char
+title comes back whole, and `an_uncapped_title_still_gets_the_shared_cleaning`, which pins that
+lifting the cut did not quietly drop the two rules that are still shared.
+
+**2. The bullet is only false of tasks.** The **session** path still passes
+`Some(TITLE_MAX_CHARS)` and its titles are still capped at 80, so the parenthetical remains true
+there. The cap lives at the call site precisely so that lifting it for tasks could never lift it for
+session titles; nothing else in this ADR moves, and `body` is still markdown on trust with nothing
+enforcing it.
