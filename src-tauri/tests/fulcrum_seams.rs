@@ -1661,9 +1661,10 @@ fn the_task_store_refuses_a_title_that_cleans_to_nothing_and_writes_no_card() {
 /// because it destroys something that was already right.
 ///
 /// Note what this does NOT test: a `None` title. The seam is TWO-state
-/// (`None` = leave the field alone, and `fulcrum-harness = "0.2.0"` is a registry pin),
-/// so a model still cannot CLEAR a title — that third state stays unreachable, and
-/// the `Clear` refusal stays in the command layer where the only reachable door is.
+/// (`None` = leave the field alone, and the published crate's `TaskCall` is that
+/// shape — this crate consumes it as a registry pin), so a model still cannot
+/// CLEAR a title — that third state stays unreachable, and the `Clear` refusal
+/// stays in the command layer where the only reachable door is.
 /// ADR 0102 / issue #183 carries the deferral.
 ///
 /// MUTATION: move the clean in `Db::edit_task` below the `execute` and the `Ok` answer

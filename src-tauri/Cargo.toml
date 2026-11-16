@@ -99,11 +99,14 @@ tauri-build = { version = "2", features = [] }
 #     fetch); the bare `cargo test` / `cargo clippy` steps in `ci.yml` are NOT
 #     `--locked`, so they resolve FROM the lock but are free to re-resolve if the
 #     lock stops matching this line —
-#   * `fulcrum-harness = "0.2.0"` means `^0.2.0`, so a re-resolve could in
-#     principle land on a future `0.2.x`. What prevents that is the lock plus the
-#     checksum, and moving it is a `cargo update -p fulcrum-harness` — a desktop
-#     commit, visible in the diff. This line does NOT pin a single tree by
-#     itself; do not read it as though it did.
+#   * the requirement below is a CARET requirement, and a caret on a `0.x.y`
+#     pin with a non-zero minor means `>=` that version and `<` the next minor —
+#     it admits later PATCHES within the pinned minor and no minor bump. So a
+#     re-resolve could in principle land on a newer patch of the pinned minor.
+#     What prevents that is the lock plus the checksum, and moving it is a
+#     `cargo update -p fulcrum-harness` — a desktop commit, visible in the diff.
+#     This line does NOT pin a single tree by itself; do not read it as though it
+#     did.
 #
 # Read the `Cargo.lock` diff on every PR that touches it — that file is the review
 # surface now, and the rename is the proof: four lines changed (the package name,
