@@ -2017,6 +2017,15 @@ impl SessionManager {
         // legible — "name what the PREVIOUS turns earned" — and costs nothing.
         self.maybe_name_session(session_id);
 
+        // The FIRST message titles the session from ITSELF, without waiting for
+        // the turn to close. The nudge above cannot do this — it reads
+        // `native_messages`, which the Worker has not written for this message
+        // yet — so this call carries the text. A first turn that runs an hour
+        // (implement mode, subagents) would otherwise sit untitled for that
+        // whole hour with `agent_end` never once arriving. Same ladder, same
+        // idempotence, so it is safe on every prompt rather than only the first.
+        self.maybe_name_session_from_prompt(session_id, &text);
+
         // Record the user's message in the transcript (the client owns history)
         // before the turn begins — the USER DISPLAY ROW write stays Supervisor-side
         // (the Worker persists only the provider-transcript user row via the store

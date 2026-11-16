@@ -2924,3 +2924,198 @@ async fn first_turn_titles_the_session_over_the_real_wire() {
     );
     assert_eq!(emit["title"], title, "the emit carries the same title");
 }
+
+/// The FIRST message titles the session WHILE THE TURN IS STILL RUNNING: the
+/// real `archimedes --worker` is mid-turn (its own HTTP answer is deliberately
+/// delayed), and the title is already in the `Db` and on the UI sink.
+///
+/// # Why this is the case that matters
+///
+/// ADR 0086/0088 title a session from `agent_end` (plus a prompt-time and a
+/// close-time nudge that both read `native_messages`). Every one of those
+/// triggers needs the turn to be OVER, or its rows to be persisted — and the
+/// session the user actually stares at untitled is the one whose FIRST turn
+/// never ends: measured live on a real deployment, an implement-mode first turn
+/// ran 74 minutes with `agent_end` never once fired and `title_stage = 0`.
+///
+/// The prompt-time trigger takes its excerpt from the `text` argument instead of
+/// the transcript, so it needs neither. This test pins exactly that: the title
+/// arrives BEFORE the turn does.
+///
+/// # How "before" is proven, not asserted
+///
+/// The turn's provider answer carries a 6-second `set_delay`, so `send_prompt`
+/// cannot have returned while the title is being polled. The assertion order is
+/// the proof: title first, then `send_prompt` resolves. If the title only ever
+/// landed at `agent_end`, the poll would time out at 6s+ and this would fail —
+/// which is the mutation (drop the `maybe_name_session_from_prompt` call in
+/// `send_prompt_with_images`) and it reddens on the title assertion, not the turn.
+///
+/// # Two requests, one wiremock
+///
+/// The title mock is mounted FIRST and keyed on `title_prompt`'s first line,
+/// which no conversation turn contains. The session id is minted by
+/// `start_session`, so ADR 0086's `{id}-title` header cannot be matched at mount
+/// time; the body match is what keeps the turn's own request out of this mock.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_first_prompt_titles_the_session_before_the_turn_finishes() {
+    let _lock = archimedes_lib::test_support::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let home = temp_dir();
+    let original_home = std::env::var_os("HOME");
+    struct RestoreHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            match self.0.take() {
+                // SAFETY: the `ENV_LOCK` is still held — declared first, drops last.
+                Some(v) => unsafe { std::env::set_var("HOME", v) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+    // SAFETY: the `ENV_LOCK` is held for the whole set→assert→restore span.
+    unsafe { std::env::set_var("HOME", home.path()) };
+    let _restore = RestoreHome(original_home);
+
+    let server = MockServer::start().await;
+    let dir = temp_dir();
+    let db: Arc<Db> = Arc::new(Db::open(&dir.join("e2e.db")).expect("db opens"));
+
+    // Naming ON explicitly, and a `defaultModel` for `start_session` to resolve.
+    std::fs::write(
+        dir.path().join("settings.json"),
+        r#"{ "sessionNamingEnabled": true, "defaultModel": "e2e-prompt-model" }"#,
+    )
+    .expect("the settings file is written");
+
+    let model = wire_model(&server, "e2e-prompt-model");
+    let title = "I Like Poop";
+
+    // The TITLE request: answered immediately, so its latency is never what the
+    // poll is waiting on.
+    Mock::given(method("POST"))
+        .and(body_string_contains(
+            "Generate a concise title (3-8 words) for this conversation.",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(sse_final(title), "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+    // The TURN: delayed well past the title's whole round trip. This is the
+    // load-bearing line — it is what makes "the title came first" observable.
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(sse_final("here is the listing"), "text/event-stream")
+                .set_delay(std::time::Duration::from_secs(6)),
+        )
+        .mount(&server)
+        .await;
+    // `start_session` refreshes model metadata from `GET /v1/models`.
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data":[]})))
+        .mount(&server)
+        .await;
+
+    let (sink_tx, mut sink_rx) = mpsc::unbounded_channel::<(String, Value)>();
+    let sink: Arc<dyn EventSink> = Arc::new(RecSink { tx: sink_tx });
+    let persister = Arc::new(TranscriptPersister::new(db.clone()));
+    let mut sm = SessionManager::new(dir.path().to_path_buf());
+    sm.attach_db(db.clone());
+    sm.set_catalog(ModelCatalog {
+        models: vec![model],
+        ..Default::default()
+    });
+    sm.set_sink(sink.clone());
+    let sm = Arc::new(sm);
+    let wm = {
+        let m = sm.clone();
+        let m2 = sm.clone();
+        Arc::new(WorkerManager::new(
+            Arc::new(RealWorkerFactory),
+            Arc::new(move |s, c, p| m.handle_crash(&s, c, p)),
+            Arc::new(move |s, b, e| m2.route_event(&s, b, e)),
+            Arc::new(|_s| None),
+        ))
+    };
+    sm.attach_worker_manager(wm.clone());
+
+    let cwd = temp_dir();
+    let info = sm
+        .start_session(cwd.path().to_path_buf(), &sink)
+        .await
+        .expect("the native session starts on the REAL binary");
+    let sid = info.session_id.clone();
+    persister.set_cwd(&sid, cwd.path().to_str().expect("utf-8 cwd"));
+
+    // Send the FIRST message on a task, because `send_prompt` will not return
+    // for ~6s and the assertion has to happen INSIDE that window.
+    let prompt_sm = sm.clone();
+    let prompt_sid = sid.clone();
+    let prompt = tokio::spawn(async move {
+        prompt_sm
+            .send_prompt(&prompt_sid, "I like poop".to_string())
+            .await
+    });
+
+    let mut got_title: Option<String> = None;
+    let mut got_stage: i64 = -1;
+    for _ in 0..40 {
+        let rows = db.list_sessions(false).expect("list_sessions loads");
+        if let Some(r) = rows.iter().find(|r| r.id == sid) {
+            got_title = r.title.clone();
+            got_stage = r.title_stage;
+            if got_title.is_some() {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(
+        got_title.as_deref(),
+        Some(title),
+        "the FIRST message titled the session while the turn was still running \
+         (the turn's own answer is delayed 6s, so this cannot be the `agent_end` path)"
+    );
+    assert_eq!(got_stage, 1, "stage 1, from the first prompt");
+
+    // The turn was genuinely still open at that moment — otherwise the test
+    // above would be proving nothing about ORDER.
+    assert!(
+        !prompt.is_finished(),
+        "the delayed turn must still be in flight at the moment the title landed"
+    );
+
+    // And the UI was told, with the same title.
+    let mut saw_emit = None;
+    for _ in 0..60 {
+        match tokio::time::timeout(std::time::Duration::from_millis(100), sink_rx.recv()).await {
+            Ok(Some((event, payload))) => {
+                if event == "session-titled" {
+                    saw_emit = Some(payload);
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(_) => continue,
+        }
+    }
+    let emit = saw_emit.expect("the naming pass emitted `session-titled` to the sink");
+    assert_eq!(
+        emit["sessionId"],
+        sid.as_str(),
+        "the emit names the session"
+    );
+    assert_eq!(emit["title"], title, "the emit carries the same title");
+
+    // Close the turn out so the Worker is reaped by the normal path.
+    prompt
+        .await
+        .expect("the prompt task completes")
+        .expect("the delayed turn completes");
+}
