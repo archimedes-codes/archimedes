@@ -108,11 +108,21 @@ contains *"D2 fix: enforce key grammar + 256 KB cap in storage backstop (was byp
 commit wrote this ADR and falsified these two bullets at the same time, and only the code was
 corrected.
 
-The `require_title` precedent does **not** argue the other way. `require_title` refuses a title that
-`clean_title` cleans to nothing, and the cleaning is genuinely a wire concern — it is what a person
-typed and what the session namer will re-clean. Neither rule here cleans anything: a key either
-matches a grammar or it does not, and a document either fits or it does not. Both are pure data
-validation on the row about to be written, which is exactly what a storage layer may own.
+The `require_title` precedent argues the SAME way, and it is now the closest precedent this file
+has. `require_title` used to refuse a title that `clean_title` cleans to nothing in the command layer
+only, on the theory that the cleaning was a wire concern. That theory died the same way the one above
+did: `tasks` gained a second door through `impl TaskStore for Db`, `tasks.title` is `TEXT NOT NULL`
+with no `CHECK`, and a model could write a card labelled `""` that a person could not — so the title
+rule MOVED to storage for exactly the reason stated here. Neither rule cleans anything that the other
+does not: a key either matches a grammar or it does not, a document either fits or it does not, and a
+title either cleans to something or it does not. All three are pure data validation on the row about
+to be written, which is exactly what a storage layer may own. The artifact move is the shape the title
+rule later followed, and the shape is the argument.
+
+What stayed in the command layer is the one title rule that is genuinely about the WIRE: refusing
+`FieldPatch::Clear` on `title`, because the seam maps `None → Keep` and no wire value a model can
+send expresses a clear on title. That refusal has no second door to be unreachable through, so the
+split is by reachability, not by a difference in kind.
 
 **2. The command layer's checks are a redundant pre-flight, deliberately kept.**
 `require_artifact_key` and `require_artifact_size` still run in `commands/tasks.rs` ahead of the

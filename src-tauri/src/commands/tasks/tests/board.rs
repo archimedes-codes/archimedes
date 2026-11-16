@@ -20,36 +20,37 @@ fn link(session: &str, stage: Option<&str>) -> TaskSessionRow {
     }
 }
 
-/// (MANDATORY title contract) The Task title reuses the session namer's
-/// cleaner — whitespace collapses, ONE matching quote layer strips — and an
-/// input that cleans to nothing is a REJECTION, never a raw-string fallback.
+/// (MANDATORY title contract) `require_title` REFUSES every input that
+/// `clean_title` cleans to nothing — and nothing else.
 ///
-/// The `""` / `''` cases are the reachable ones the orchestrator measured
-/// against the real `clean_title`: both are non-empty after trimming, strip
-/// their matching quote pair, and clean to `None`. A `raw` fallback would
-/// have written a card whose label is a quote character.
+/// NARROWED, deliberately. This test used to assert the CLEANED string too
+/// (`Ok("Porting the board")`), which was true while this layer owned the clean. It
+/// no longer returns a value at all: the clean moved to `Db::create_task` /
+/// `Db::edit_task`, the one path both the IPC door and the `TaskStore` seam pass
+/// through. The CHAIN is pinned where the chain lives (`text::tests`) and the STORED
+/// result is pinned at storage (`db_create_task_stores_the_cleaned_title`); a test
+/// here that re-asserted the cleaned string would be asserting a contract this
+/// function no longer has.
+///
+/// The `""` / `''` cases are the reachable ones the orchestrator measured against
+/// the real `clean_title`: both are non-empty after trimming, strip their matching
+/// quote pair, and clean to `None`. `trim().is_empty()` alone — the predicate a
+/// shortcut would reach for — is `false` for both, so a refusal written from it
+/// would let a card labelled with a bare quote pair through.
 #[test]
 fn require_title_cleans_like_the_session_namer_and_refuses_an_empty_one() {
-    assert_eq!(
-        require_title("  Porting   the board \n").as_deref(),
-        Ok("Porting the board"),
-        "whitespace runs collapse and the ends trim — the same chain naming.rs runs"
-    );
-    assert_eq!(
-        require_title("\"Porting the board\"").as_deref(),
-        Ok("Porting the board"),
-        "one layer of matching double quotes strips"
-    );
-    assert_eq!(
-        require_title("'x'").as_deref(),
-        Ok("x"),
-        "and single quotes too"
-    );
-    assert_eq!(
-        require_title("\"a\" and \"b\"").as_deref(),
-        Ok("\"a\" and \"b\""),
-        "a title that quotes WITHIN itself is not a wrapped title, so it is left alone"
-    );
+    // Every input that survives the chain is ACCEPTED, whatever it becomes —
+    // including the ones whose cleaned form this layer no longer sees.
+    for raw in [
+        "  Porting   the board \n",
+        "\"Porting the board\"",
+        "'x'",
+        "\"a\" and \"b\"",
+        "  \" Foo \"  ",
+    ] {
+        require_title(raw)
+            .unwrap_or_else(|e| panic!("{raw:?} is a title and must pass; got {e:?}"));
+    }
 
     for raw in ["", "   ", "\n\t \n", "\"\"", "''"] {
         let err = require_title(raw).expect_err("{raw:?} cleans to nothing and must be refused");
@@ -58,13 +59,16 @@ fn require_title_cleans_like_the_session_namer_and_refuses_an_empty_one() {
     }
 }
 
-/// A Task title is NOT capped. The card's label is the user's own sentence, and
-/// cutting it at 80 characters DESTROYS TEXT: `tasks.title` is `NOT NULL`, the
-/// truncation is lossy, and nothing else stores the remainder — a body is only
-/// written when the draft had a second line, so a long single-line card loses
-/// everything past the cut with no way back. This was measured on a real card:
-/// `What is the default action for notifications, i want to be able to click a notif`
-/// — 80 chars, mid-word, `body` NULL.
+/// A Task title is NOT capped, and this asserts the half this layer can still see:
+/// a 132-char title is a legal title, so nothing on this path cuts it.
+///
+/// The assertion that the 132 characters arrive WHOLE in the COLUMN is now
+/// `db_create_task_stores_the_cleaned_title`'s — storage is what stores it, and
+/// `require_title` returns no string to measure any more. What this one still
+/// protects is the refusal side of the same rule: if someone reintroduced the
+/// namer's 80-char cut at this call site (`clean_title(raw, Some(80))`), a long
+/// title would still pass here, so this test alone cannot catch that. The storage
+/// test can, and it is the one the property is really pinned by.
 ///
 /// The cap belongs to the SESSION namer, where it is a pi parity rule
 /// (`replace(/\s+/g, " ").trim().replace(quoteRe).slice(0, 80)`) on a title a
@@ -74,35 +78,55 @@ fn require_title_cleans_like_the_session_namer_and_refuses_an_empty_one() {
 fn a_long_task_title_is_kept_whole_and_never_cut_at_the_session_namer_cap() {
     let long = "What is the default action for notifications, i want to be able to click a notification and have it open the session that raised it";
     // 132 chars. Spelled as a literal because `TITLE_MAX_CHARS` lives in the private
-    // `mod session` and is deliberately NOT re-exported through the `agent` hop to
-    // satisfy a test; naming.rs pins the constant's VALUE itself.
+    // `mod session` and is deliberately NOT re-exported to satisfy a test; naming.rs
+    // pins the constant's VALUE itself.
     assert!(
         long.chars().count() > 80,
         "the fixture must exceed the session namer's 80-char cap or this proves nothing"
     );
-    let got = require_title(long).expect("a long title is valid");
-    assert_eq!(
-        got, long,
-        "the user's sentence is stored as typed, not truncated"
-    );
-    assert_eq!(got.chars().count(), long.chars().count());
+    require_title(long).expect("a long title is a VALID title — the cut is not applied here");
 }
 
-/// The other half: whitespace still collapses and one quote layer still strips,
-/// so lifting the cut did not quietly drop the cleaning. Both rules are the
-/// session namer's and are still shared with it — this pins that the SHARED chain
-/// survived the change, which a test that only checked length could not see.
+/// A long title still gets the shared cleaning, and it is the CLEANED form that
+/// lands — asserted END TO END through storage, because that is where the clean
+/// happens now.
+///
+/// This is the uncapped-title property re-pointed at the layer that owns it. The
+/// fixture is over 80 chars AFTER cleaning, so the two halves of the claim — the
+/// chain ran, and the cut did not — are decided by one stored value rather than by
+/// a return value no longer handed back.
 #[test]
 fn an_uncapped_title_still_gets_the_shared_cleaning() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("cmd-title-uncapped-", "scratch");
+    let db = crate::storage::Db::open(&dir.join("t.db")).expect("db should open");
+    let space = "/board-space/uncapped-title";
     let padded = format!("  \"{}   keeps   its  inner spacing\"\n", "a".repeat(100));
-    let got = require_title(&padded).expect("valid");
+
+    // The pre-flight accepts it, and passes the RAW string down.
+    require_title(&padded).expect("a padded long title is a valid title");
+    let task = db
+        .create_task(space, &padded, None, None)
+        .expect("create_task with an uncapped padded title");
+
     assert!(
-        !got.starts_with('"') && !got.ends_with('"'),
-        "one quote layer strips: {got}"
+        !task.title.starts_with('"') && !task.title.ends_with('"'),
+        "one quote layer strips, at storage: {}",
+        task.title
     );
-    assert!(!got.contains("   "), "whitespace runs collapse: {got}");
-    assert_eq!(got.split_whitespace().count(), got.split(' ').count());
-    assert!(got.len() > 80, "and it is still uncapped: {}", got.len());
+    assert!(
+        !task.title.contains("   "),
+        "whitespace runs collapse, at storage: {}",
+        task.title
+    );
+    assert_eq!(
+        task.title.split_whitespace().count(),
+        task.title.split(' ').count()
+    );
+    assert!(
+        task.title.chars().count() > 80,
+        "and it is still uncapped — the session namer's cut is not applied to cards: {}",
+        task.title.chars().count()
+    );
 }
 
 /// The `empty_title` kind is the wire discriminator the frontend branches on
@@ -470,15 +494,18 @@ fn a_wrongly_typed_edit_task_field_is_refused_naming_the_key() {
 
 /// `title` is `NOT NULL`, so a `null` title is REFUSED rather than passed down.
 ///
-/// The refusal lives HERE, beside `require_title`, not in `Db`: this layer is the
-/// one that decides what a valid title is, for the empty case (`""` cleans to
-/// nothing → `empty_title`) and for the absent case alike. `Db::edit_task`'s doc
-/// says the same thing from the other side — a `Clear` that slipped past would
-/// surface SQLite's constraint as a bare `database` error, which is
+/// THE SPLIT, and it is not an inconsistency. The `Clear` refusal does stay HERE:
+/// the seam maps `None → Keep` and `fulcrum-harness`'s `Option<&str>` is a registry
+/// pin, so no wire value a model can send expresses a clear on title — this state is
+/// reachable only from an IPC body, which makes it genuinely a rule about the wire. The
+/// CLEAN and the EMPTY-REFUSAL have MOVED to `Db::edit_task`, because `tasks` has two
+/// doors and a rule with two doors belongs on the path both pass through.
+/// `Db::edit_task`'s doc says the same thing from the other side — a `Clear` that
+/// slipped past would surface SQLite's constraint as a bare `database` error, which is
 /// defence-in-depth and not a nicer answer.
 ///
-/// The three readings, and the one that must NOT reach the cleaner:
-/// absent → keep, `""` → refused, a string → cleaned.
+/// The three readings, and what each one now does: absent → keep, `""` → refused, a
+/// string → passed down RAW for storage to clean once.
 #[test]
 fn edit_task_refuses_to_clear_the_title_because_the_column_is_not_null() {
     use crate::commands::tasks::patch_title;
@@ -506,19 +533,21 @@ fn edit_task_refuses_to_clear_the_title_because_the_column_is_not_null() {
         "an absent title is kept, and never cleaned"
     );
 
-    // A SET title goes through the SAME cleaner a create runs, and comes back
-    // cleaned (the contract `require_title_cleans_like_the_session_namer…` pins).
+    // A SET title is passed down UNCHANGED. This assertion flipped when the clean
+    // moved to storage, and it is the flip that pins the whole design: the raw text
+    // is what reaches `Db`, which cleans it exactly once. "Fixing" this back to
+    // `Some("Porting the board")` by re-adding a clean here would restore the
+    // double-clean hazard — `clean_title` is not idempotent, so two passes silently
+    // rewrite a person's quote-padded title (`a_title_is_cleaned_once_not_twice`).
     let mut set = serde_json::Map::new();
     set.insert(
         "title".to_string(),
         serde_json::Value::String("  Porting   the board  ".to_string()),
     );
     assert_eq!(
-        patch_title(&set)
-            .expect("a real title is accepted")
-            .as_deref(),
-        Some("Porting the board"),
-        "the caller gets back what this layer approved, not what it was handed"
+        patch_title(&set).expect("a real title is accepted"),
+        Some("  Porting   the board  "),
+        "the RAW string goes down — storage cleans it once, and this layer must not"
     );
 
     // And the empty case keeps its OWN kind (`empty_title`), because the board
@@ -637,5 +666,116 @@ fn edit_task_still_reports_a_missing_card_as_not_found_after_the_wire_call_swap(
         envelope["message"],
         serde_json::json!("no task with id tsk_gone"),
         "and the storage layer's sentence passes through UNPREFIXED"
+    );
+}
+
+/// (the title rule keeps the SAME wire envelope on both doors) `BoardError::EmptyTitle`
+/// maps onto `TasksError::EmptyTitle` so that the serialized envelope is
+/// **byte-identical** to the one the command's own pre-flight produces for the same
+/// input — mirroring `the_storage_artifact_refusals_keep_the_command_envelope_exactly`
+/// one rule over.
+///
+/// WHY THIS IS A TEST AND NOT A CLAIM. Storage now enforces the title rule as the
+/// backstop for BOTH of its verbs, and the command layer keeps its pre-flight so a bad
+/// title spends no worker thread. That split is only safe while the two routes are
+/// indistinguishable on the wire: AGENTS.md records that the ADR 0063 envelope has
+/// several sites that must all agree, `kind` is what `store/tasks.ts` branches on, and
+/// `message` is what `TasksBoard.tsx` renders under `role="alert"`. The two sentences
+/// are byte-identical BY REQUIREMENT — a `Display` edit in one family and not the
+/// other would put two different messages on the screen for one mistake, and each
+/// family was previously pinned only against itself.
+///
+/// THE ROUTES ACTUALLY DRIVEN are the two real doors. The command's is
+/// [`require_title`], the pre-flight the `create_task` command runs before it hops; the
+/// storage door is `Db::create_task` / `Db::edit_task` called directly, which is the
+/// shape `impl TaskStore for Db` delegates to and therefore the shape the model's
+/// `create_task` / `edit_task` TOOL takes. Comparing the built `InvokeError` payloads
+/// with `==` rather than merely the `kind` covers `kind` AND the full `message`
+/// sentence in one assertion.
+///
+/// MUTATION: change the `Display` sentence on `BoardError::EmptyTitle` alone and every
+/// assertion here reddens on `message` while `kind` stays green — exactly the drift
+/// this test exists to catch. Re-spelling the sentence inside the `From` arm instead of
+/// mapping variant-to-variant reddens the same way.
+#[test]
+fn the_storage_title_refusal_keeps_the_command_envelope_exactly() {
+    use crate::commands::tasks::edit_task_core;
+    use crate::storage::Db;
+
+    let dir = crate::test_support::ScratchDir::in_env_temp("cmd-title-envelope-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = "/board-space/title-envelope";
+    let live = db
+        .create_task(space, "a card with a label", None, None)
+        .expect("create_task");
+
+    for raw in ["", "   ", "\n\t \n", "\"\"", "''"] {
+        // ── the CREATE door ───────────────────────────────────────────────────
+        let via_command = require_title(raw).expect_err("the command's pre-flight refuses `{raw}`");
+        let command_wire = tauri::ipc::InvokeError::from(via_command.clone()).0;
+        let via_storage = TasksError::from(
+            db.create_task(space, raw, None, None)
+                .expect_err("the storage backstop refuses `{raw}` too"),
+        );
+        assert!(
+            matches!(via_command, TasksError::EmptyTitle),
+            "the command route is the title refusal, not something downstream; \
+             got {via_command:?}"
+        );
+        assert!(
+            matches!(via_storage, TasksError::EmptyTitle),
+            "storage's refusal arrives as `EmptyTitle`, NOT as `Database` (a sqlite \
+             complaint) or `Other` (a flattened JoinError); got {via_storage:?}"
+        );
+        assert_eq!(
+            command_wire,
+            tauri::ipc::InvokeError::from(via_storage).0,
+            "a title refused by storage must reach the wire EXACTLY as one refused by \
+             the command — same kind, same sentence (ADR 0063); for {raw:?}"
+        );
+
+        // ── the EDIT door, through the core the command's closure calls ───────
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "taskId".to_string(),
+            serde_json::Value::String(live.id.clone()),
+        );
+        body.insert(
+            "title".to_string(),
+            serde_json::Value::String(raw.to_string()),
+        );
+        // The command's own pre-flight runs first inside `patch_title`, so the core
+        // answers with the SAME `TasksError` the storage door answers with.
+        let via_core = edit_task_core(&db, &body)
+            .expect_err("the edit door refuses `{raw}` as firmly as the create door");
+        assert_eq!(
+            command_wire,
+            tauri::ipc::InvokeError::from(via_core).0,
+            "an EDIT refused for its title carries the same envelope as a CREATE \
+             refused for the same title; for {raw:?}"
+        );
+    }
+
+    // The envelope itself, pinned rather than derived — `empty_title` is the string
+    // the board dialog branches on to re-show the title field.
+    let envelope = tauri::ipc::InvokeError::from(TasksError::EmptyTitle).0;
+    assert_eq!(
+        envelope,
+        serde_json::json!({"kind": "empty_title", "message": "task title is empty after trimming"}),
+        "one kind, one sentence, whichever door caught it"
+    );
+
+    assert_eq!(
+        db.get_task(&live.id)
+            .expect("get_task")
+            .expect("the card is still there")
+            .title,
+        "a card with a label",
+        "and none of the refused edits changed the stored label"
+    );
+    assert_eq!(
+        db.list_tasks(space).expect("list_tasks").len(),
+        1,
+        "five refused creates wrote NOTHING — the only row is the one this test made"
     );
 }

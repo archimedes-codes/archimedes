@@ -1367,6 +1367,23 @@ fn artifact_rows(db_path: &std::path::Path) -> Vec<(String, String, String)> {
     rows.collect::<Result<_, _>>().expect("maps")
 }
 
+/// Every `tasks` row (id, title, body), read through an INDEPENDENT connection to
+/// the same file (the `artifact_rows` idiom one function above, applied to the card
+/// table). The title-rule tests below ask whether a refusal wrote a CARD and whether
+/// the stored label changed, and both are facts about the DATABASE — not about what a
+/// `Db` method chose to report. A `create_task` that inserted and then returned an
+/// `Err` would pass every return-value assertion in this file.
+fn task_rows(db_path: &std::path::Path) -> Vec<(String, String, Option<String>)> {
+    let conn = rusqlite::Connection::open(db_path).expect("an independent connection");
+    let mut stmt = conn
+        .prepare("SELECT id, title, body FROM tasks ORDER BY rowid ASC")
+        .expect("prepares");
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .expect("queries");
+    rows.collect::<Result<_, _>>().expect("maps")
+}
+
 /// A `Db` with one seeded Space and one card, and the path its file lives at (so
 /// a test can read the table behind the `Db`'s back).
 fn db_with_one_card(
@@ -1547,6 +1564,164 @@ fn the_task_store_refuses_an_oversized_markdown_naming_limit_and_size() {
     let rows = artifact_rows(&path);
     assert_eq!(rows.len(), 1, "the legal write landed");
     assert_eq!(rows[0].2.len(), CAP, "the whole document is in the row");
+}
+
+/// (the title rule, ON THE SEAM) a title that `clean_title` cleans to nothing is
+/// refused through `<Db as TaskStore>::create_task` — the path the `create_task`
+/// TOOL takes — as `TaskStoreError::Invalid`, and writes NO CARD.
+///
+/// THIS IS THE DEFECT THE CARD SHOWS. `tasks.title` is `TEXT NOT NULL` with no
+/// `CHECK`, and the seam delegated straight to `Db::create_task`, which performed no
+/// title check at all. So `TaskCall::CreateTask { title: "   " }` wrote a row, and
+/// `TaskCard.tsx` renders `{task.title}` with no fallback anywhere in `src/` — the
+/// user got a card with a number, a timestamp and no sentence. A human could not do
+/// that through the command's pre-flight; the model could.
+///
+/// `TaskStoreError::Invalid` is the honest variant and it is the crate's own
+/// definition, not a stretch: the call was well-formed JSON and is still not
+/// admissible. The message is the `EmptyTitle` sentence, and it must be THAT sentence
+/// rather than a re-spelling — `From<BoardError> for TaskStoreError` renders `Display`
+/// once and dispatches on it, which is the same one-sentence argument the artifact
+/// refusals make on the command side.
+///
+/// `"   "` and `"\"\""` are the two the acceptance criterion names, and the second is
+/// the trap: `trim().is_empty()` is `false` for it, so a predicate written from
+/// `is_empty` alone passes it through and writes a card labelled with a bare quote
+/// pair. The rest of the list is the full set the shared cleaner empties.
+///
+/// MUTATION: delete the `clean_title` call in `Db::create_task` → every `expect_err`
+/// here reddens with an `Ok(row)` and the row count grows. Replace it with a
+/// `trim().is_empty()` predicate and only `"\"\""` and `"''"` redden — the partial fix
+/// this list exists to refuse.
+#[test]
+fn the_task_store_refuses_a_title_that_cleans_to_nothing_and_writes_no_card() {
+    use fulcrum_harness::seams::{TaskStore as CrateTaskStore, TaskStoreError};
+
+    let (_dir, db, _seed_id, path) = db_with_one_card("fulcrum-seams-title-", "/seams/empty-title");
+    let store: Arc<dyn CrateTaskStore> = db.clone();
+    let before = task_rows(&path).len();
+
+    for refused in ["", "   ", "\n\t \n", "\"\"", "''"] {
+        let err = store
+            .create_task(
+                "/seams/empty-title",
+                refused,
+                Some("a body a model wrote"),
+                None,
+            )
+            .expect_err(
+                "`{refused:?}` cleans to nothing, so the seam must refuse it — the \
+                 command layer refuses it and the tool path must not be wider",
+            );
+        match err {
+            TaskStoreError::Invalid { message } => {
+                assert_eq!(
+                    message, "task title is empty after trimming",
+                    "the refusal is the `EmptyTitle` sentence, byte for byte, so a \
+                     model reads one sentence whichever door caught it; got {message}"
+                );
+            }
+            other => panic!("a title that is not a title is `Invalid`, got {other:?}"),
+        }
+    }
+
+    assert_eq!(
+        task_rows(&path).len(),
+        before,
+        "a refused title writes NOTHING — no card exists under a blank title, and \
+         none was written and then renamed; got {:?}",
+        task_rows(&path)
+    );
+
+    // The legal set is UNCHANGED: a clean title still lands through the seam, and it
+    // lands CLEANED. Without this half, "make the seam refuse blank titles" could be
+    // satisfied by refusing titles generally.
+    let created = store
+        .create_task("/seams/empty-title", "  a   model's   title  ", None, None)
+        .expect("a real title must pass through the seam unchanged");
+    assert_eq!(
+        created.title, "a model's title",
+        "the seam stores the CLEANED title — one clean, at storage, for every door"
+    );
+    assert_eq!(
+        task_rows(&path).len(),
+        before + 1,
+        "and the legal create landed — the fix did not narrow the legal set"
+    );
+}
+
+/// (the title rule, on the seam's EDIT verb) `<Db as TaskStore>::edit_task` with
+/// `title: Some("   ")` is refused as `TaskStoreError::Invalid` and the card KEEPS
+/// its label.
+///
+/// The defect was on TWO verbs. `TaskCall::EditTask { title: Some("") }` is a fully
+/// expressible `FieldPatch::Set("")` (the seam maps `Some → Set`), and `edit_task`'s
+/// fixed-arity `CASE` wrote `''` into the column without SQLite complaining — so the
+/// model could blank a label a person had typed, which is worse than the create case
+/// because it destroys something that was already right.
+///
+/// Note what this does NOT test: a `None` title. The seam is TWO-state
+/// (`None` = leave the field alone, and `fulcrum-harness = "0.2.0"` is a registry pin),
+/// so a model still cannot CLEAR a title — that third state stays unreachable, and
+/// the `Clear` refusal stays in the command layer where the only reachable door is.
+/// ADR 0102 / issue #183 carries the deferral.
+///
+/// MUTATION: move the clean in `Db::edit_task` below the `execute` and the `Ok` answer
+/// still arrives here while the label assertion in the storage-layer twin reddens —
+/// which is why the "label unchanged" half is asserted on both doors.
+#[test]
+fn the_task_store_edit_refuses_a_title_that_cleans_to_nothing_and_keeps_the_label() {
+    use fulcrum_harness::seams::{TaskStore as CrateTaskStore, TaskStoreError};
+
+    let (_dir, db, task_id, path) =
+        db_with_one_card("fulcrum-seams-edittitle-", "/seams/edit-empty-title");
+    let store: Arc<dyn CrateTaskStore> = db.clone();
+
+    for refused in ["", "   ", "\n\t \n", "\"\"", "''"] {
+        let err = store
+            .edit_task(&task_id, Some(refused), None, None)
+            .expect_err(
+                "`{refused:?}` cleans to nothing, so the seam's edit verb must refuse \
+                 it rather than write it over a title somebody typed",
+            );
+        match err {
+            TaskStoreError::Invalid { message } => assert_eq!(
+                message, "task title is empty after trimming",
+                "the same sentence the create verb answers with, and the same one the \
+                 command door answers with; got {message}"
+            ),
+            other => panic!("a title that is not a title is `Invalid`, got {other:?}"),
+        }
+    }
+
+    let rows = task_rows(&path);
+    assert_eq!(rows.len(), 1, "five refused edits wrote no extra card");
+    assert_eq!(
+        rows[0].1, "a card the model writes to",
+        "and the stored label is EXACTLY what it was — refused before the UPDATE, \
+         not written and then complained about; got {:?}",
+        rows[0].1
+    );
+
+    // The legal half: a `Set` through the seam is stored cleaned, and a `None` still
+    // means "leave it" rather than "clear it".
+    let renamed = store
+        .edit_task(&task_id, Some("  renamed   by   the   model  "), None, None)
+        .expect("a real title is a legal edit");
+    assert_eq!(renamed.title, "renamed by the model");
+
+    let untouched = store
+        .edit_task(&task_id, None, Some("a new body"), None)
+        .expect("a None title is a KEEP, not a clear");
+    assert_eq!(
+        untouched.title, "renamed by the model",
+        "`None` leaves the title alone — the seam is still two-state"
+    );
+    assert_eq!(
+        untouched.body.as_deref(),
+        Some("a new body"),
+        "and the field it was given still lands"
+    );
 }
 
 /// The `DbError` / `BoardError → TaskStoreError` maps, pinned at the boundary.

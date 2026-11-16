@@ -833,6 +833,18 @@ impl From<crate::storage::BoardError> for TasksError {
             BoardError::ArtifactTooLarge { size, max } => {
                 TasksError::ArtifactTooLarge { size, max }
             }
+            // `EmptyTitle` maps the SAME way — VARIANT TO VARIANT, re-spelling
+            // nothing — for the identical reason: `BoardError::EmptyTitle`'s
+            // `Display` is byte-identical to `TasksError::EmptyTitle`'s by
+            // requirement, so there is no sentence to write here and therefore no
+            // second place for the wire message to drift. `kind()` needs no new
+            // arm; `"empty_title"` already exists and is already what
+            // `store/tasks.ts` and `IpcErrorLine` speak. Unlike the seven Stage
+            // refusals above, which each re-spell their own sentence into
+            // `NotFound`, this one has only ever had the one sentence, and
+            // `the_storage_title_refusal_keeps_the_command_envelope_exactly` pins
+            // the whole envelope with the two doors against each other.
+            BoardError::EmptyTitle => TasksError::EmptyTitle,
         }
     }
 }

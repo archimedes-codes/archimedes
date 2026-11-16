@@ -70,19 +70,32 @@ for a cut that does not exist.**
 
 **1. `require_title` passes `max_chars: None`.** The parenthetical — "`title` goes through
 `clean_title` (whitespace collapsed, capped at 80, one matching quote pair stripped)" — describes the
-session namer, not a card. `commands/tasks.rs::require_title` calls `crate::agent::clean_title(raw,
-None)`, so a **Task** title keeps the shared cleaning chain (whitespace runs collapse, one matching
-quote layer strips) and loses the cut. The 80-character bound is `TITLE_MAX_CHARS`, and it is pi
-parity on a title a **MODEL** invented, where a rambling answer has to be bounded somewhere. A card's
-title is the user's own sentence, and `tasks.title` (`NOT NULL`) has nowhere else to keep an overflow:
-a body is written only when the draft had a second line, so a long single-line draft loses every
-character past the cut permanently. That is the measured harm that motivated making the cut a
-parameter rather than a second function — a real card stored as `What is the default action for
-notifications, i want to be able to click a notif`, 80 chars, mid-word, `body` `NULL` (`9b9bbe7b`).
-The behaviour is pinned by
-`a_long_task_title_is_kept_whole_and_never_cut_at_the_session_namer_cap`, which asserts a 132-char
-title comes back whole, and `an_uncapped_title_still_gets_the_shared_cleaning`, which pins that
-lifting the cut did not quietly drop the two rules that are still shared.
+session namer, not a card. The call is `crate::text::clean_title(raw, None)` — `crate::text`, the
+crate-root leaf module the cleaner was hoisted to so `storage/db.rs` could name it without the
+forbidden `storage → agent` edge — so a **Task** title keeps the shared cleaning chain (whitespace
+runs collapse, one matching quote layer strips) and loses the cut. The 80-character bound is
+`TITLE_MAX_CHARS`, and it is pi parity on a title a **MODEL** invented, where a rambling answer has
+to be bounded somewhere. A card's title is the user's own sentence, and `tasks.title` (`NOT NULL`)
+has nowhere else to keep an overflow: a body is written only when the draft had a second line, so a
+long single-line draft loses every character past the cut permanently. That is the measured harm that
+motivated making the cut a parameter rather than a second function — a real card stored as `What is
+the default action for notifications, i want to be able to click a notif`, 80 chars, mid-word, `body`
+`NULL` (`9b9bbe7b`).
+
+**The call is now a refusal-only pre-flight, and storage stores the cleaned value.** `require_title`
+returns `Ok(())`, not the cleaned `String`: the clean itself moved to `Db::create_task` /
+`Db::edit_task`, the single path both the IPC command and `impl TaskStore for Db` pass through, so a
+model's door cannot write a blank label a human's door refuses. The pre-flight is kept only so a bad
+title costs no worker thread. Cleaning in both layers is the trap this closed: `clean_title` is **not
+idempotent** — the trim runs before the quote strip, because that is pi's chain order — so
+`"  \" Foo \"  "` is `" Foo "` once and `"Foo"` twice, and a double clean silently rewrites a human's
+quote-padded title with no test able to see it. `a_title_is_cleaned_once_not_twice` pins the one clean.
+
+The behaviour is pinned by `db_create_task_stores_the_cleaned_title`, which stores a 132-char title
+and reads it back whole, and `an_uncapped_title_still_gets_the_shared_cleaning`, which drives a padded
+long title end to end through storage and pins that lifting the cut did not quietly drop the two rules
+that are still shared. `a_long_task_title_is_kept_whole_and_never_cut_at_the_session_namer_cap` keeps
+the name and narrows to the refusal half, which is all the command layer can still observe.
 
 **2. The bullet is only false of tasks.** The **session** path still passes
 `Some(TITLE_MAX_CHARS)` and its titles are still capped at 80, so the parenthetical remains true
