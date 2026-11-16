@@ -6,10 +6,14 @@
 //!    Stage 2), how the model's answer is cleaned, which thinking level the
 //!    request asks for, and which model the `sessionNamingModel` override names —
 //!    pure functions, so each rule is testable on its own.
-//! 2. The WIRE-UP: `maybe_name_session` (the `agent_end` hook the router calls)
-//!    and the `name_session` task it spawns (the model call with `{id}-title` wire
-//!    isolation, atomic `title_stage` transition in SQLite, `session-titled` emit,
-//!    and per-session bookkeeping).
+//! 2. The WIRE-UP: the guard ladder `stage_and_excerpt` sits on, reached from
+//!    three triggers — `maybe_name_session` (the `agent_end` hook the router
+//!    calls, plus ADR 0088's two nudges) and `maybe_name_session_from_prompt`
+//!    (ADR 0111: the first message titles the session from its own `text`, since
+//!    every other trigger needs the turn to have ended) — and the `name_session`
+//!    task they spawn (the model call with `{id}-title` wire isolation, atomic
+//!    `title_stage` transition in SQLite, `session-titled` emit, and per-session
+//!    bookkeeping).
 //!
 //! Like `router.rs`, this is a CHILD module of `session`, so it may see the
 //! parent's private items (the `SessionManager` fields, the naming bookkeep‐
@@ -418,6 +422,57 @@ pub(crate) fn resolve_naming_model(catalog: &ModelCatalog, key: &str) -> Option<
     find_naming_match(catalog, key)
 }
 
+/// The USER half of an excerpt, from text the caller holds directly (the
+/// prompt-time trigger — see `maybe_name_session_from_prompt`).
+///
+/// Mirrors `first_exchange_text` exactly on the two things that make an excerpt
+/// comparable: the `"User: "` label and the `EXCERPT_CAP` bound. A blank message
+/// yields `None`, so a whitespace-only prompt spends no request and no slot of
+/// the failure budget.
+pub(crate) fn user_only_excerpt(text: &str) -> Option<String> {
+    let body = text.trim();
+    if body.is_empty() {
+        return None;
+    }
+    Some(format!("User: {}", cap_chars(body, EXCERPT_CAP)))
+}
+
+/// Guard 6 as a decision: which stage transition this transcript earns, and
+/// the excerpt to ask for. `None` means "decline this turn" — the caller
+/// returns without counting a failure or claiming `in_flight`.
+///
+/// `seed_user_text` is the prompt-time trigger's stand-in for a transcript the
+/// Worker has not written yet, and it is consulted in exactly ONE arm: stage 0
+/// with zero interactions, which is the state a session is in the moment its
+/// first prompt is sent. It deliberately does NOT override the
+/// `interactions >= 1` arm — once the transcript has landed, the real exchange
+/// (user line AND the assistant reply) is strictly better evidence than the
+/// prompt alone, and the prompt-time trigger on a later message must not
+/// downgrade it.
+fn stage_and_excerpt(
+    title_stage: i64,
+    messages: &[ChatMessage],
+    interactions: usize,
+    seed_user_text: Option<&str>,
+) -> Option<(i64, i64, String)> {
+    if title_stage == 0 {
+        if interactions >= 1 {
+            let exchange = first_exchange_text(messages)?;
+            return Some((0, 1, exchange));
+        }
+        // The FIRST prompt: nothing is persisted yet, so the caller's text IS
+        // the excerpt. `None` from the seed (a blank message, or the `agent_end`
+        // trigger, which has no seed) declines exactly as it always did.
+        let exchange = user_only_excerpt(seed_user_text?)?;
+        return Some((0, 1, exchange));
+    }
+    if title_stage == 1 && interactions >= 5 {
+        let exchange = multi_turn_exchange_text(messages, 5)?;
+        return Some((1, 2, exchange));
+    }
+    None
+}
+
 // ── The naming pass (the `agent_end` hook + the request) ──────────────────
 
 /// How long the title request's stream may run before the task gives up on
@@ -487,6 +542,35 @@ impl SessionManager {
     /// session in `in_flight` for ever — the very state the exit teardown
     /// exists to clear.
     pub(crate) fn maybe_name_session(&self, session_id: &str) {
+        self.name_session_if_due(session_id, None);
+    }
+
+    /// The PROMPT-TIME trigger: title the session from the message the user has
+    /// just sent, without waiting for the turn to close.
+    ///
+    /// Why a second trigger is needed at all. `agent_end` is the only other
+    /// stage-1 hook, and a long-running first turn never reaches it while the
+    /// user is watching: measured live, a 74-minute implement-mode first turn
+    /// sat at `title_stage = 0` with `agent_end` never fired. The ADR 0088
+    /// nudge inside `send_prompt` cannot cover this case either — it reads
+    /// `native_messages`, which the Worker populates asynchronously from store
+    /// frames, so the message being sent right now is not in it yet (its own
+    /// comment says so: "this prompt's own user row is invisible to the nudge").
+    ///
+    /// So this pass takes the excerpt from `text`, the argument the caller
+    /// already holds. Every other guard is the SAME ladder: the master switch,
+    /// the row, `is_subagent`, `title_stage`, the failure budget, the `in_flight`
+    /// claim, and ADR 0086's `WHERE title_stage = ?` write. It is therefore safe
+    /// to over-call, and it is called on EVERY prompt for exactly that reason —
+    /// a prompt that arrives while a title is already in flight declines at the
+    /// claim, and one that arrives after stage 1 landed declines at the row.
+    pub(crate) fn maybe_name_session_from_prompt(&self, session_id: &str, text: &str) {
+        self.name_session_if_due(session_id, Some(text));
+    }
+
+    /// The shared ladder. `seed_user_text` is `Some` only for the prompt-time
+    /// trigger, and only ever feeds guard 6 — see `stage_and_excerpt`.
+    fn name_session_if_due(&self, session_id: &str, seed_user_text: Option<&str>) {
         // 1. The master switch, and the two per-request settings read in the
         //    same breath (one `load_settings` for all three).
         let settings = load_settings(&self.config_dir);
@@ -537,17 +621,9 @@ impl SessionManager {
             return;
         };
         let interactions = count_user_interactions(&messages);
-        let (from_stage, to_stage, exchange) = if row.title_stage == 0 && interactions >= 1 {
-            let Some(exchange) = first_exchange_text(&messages) else {
-                return;
-            };
-            (0, 1, exchange)
-        } else if row.title_stage == 1 && interactions >= 5 {
-            let Some(exchange) = multi_turn_exchange_text(&messages, 5) else {
-                return;
-            };
-            (1, 2, exchange)
-        } else {
+        let Some((from_stage, to_stage, exchange)) =
+            stage_and_excerpt(row.title_stage, &messages, interactions, seed_user_text)
+        else {
             return;
         };
         // A spawn needs a runtime. The router runs on a Worker pump task in
@@ -1804,6 +1880,165 @@ mod tests {
         for _ in 0..3 {
             tokio::task::yield_now().await;
         }
+    }
+    // ── The PROMPT-TIME trigger (title the FIRST message) ──────────────────
+    //
+    // The user's first message is the moment they decide what a session is
+    // about, and it is the one text they typed themselves. Waiting for the
+    // turn to CLOSE before naming it is wrong on the sessions that matter
+    // most: an implement-mode turn runs subagents for an hour, so the first
+    // `agent_end` — and with it the only stage-1 trigger — never arrives
+    // while the user is looking at an untitled row. Measured live: a 74-minute
+    // first turn, `title_stage = 0`, `agent_end` never fired.
+    //
+    // The excerpt source is the problem this trigger solves. Guard 6 reads
+    // `native_messages`, which the WORKER writes asynchronously via store
+    // frames, so at send time the message just typed is NOT there yet — the
+    // existing `send_prompt` nudge is documented as a no-op on the first
+    // prompt for exactly this reason ("this prompt's own user row is invisible
+    // to the nudge"). The prompt-time pass therefore takes the excerpt from
+    // the `text` argument the caller already holds.
+
+    /// Seed the row + `config_state` but NO transcript rows — the state a
+    /// brand-new session is in when its very first prompt is sent.
+    impl Harness {
+        fn seed_fresh_session(&self, id: &str) {
+            self.record_row(id, None, false);
+            self.seed_config(id, &self.model());
+        }
+
+        /// Drive the prompt-time hook (the real one).
+        fn prompt(&self, id: &str, text: &str) {
+            self.manager.maybe_name_session_from_prompt(id, text);
+        }
+
+        /// Wait for the title request BOUNDED. The shared `await_request`
+        /// waits on a `Notify` forever, so against an unimplemented trigger it
+        /// HANGS the suite — and a hang is not a red. 5 s is far outside the
+        /// in-memory scripted provider's cost, so it can only trip on absence.
+        async fn await_prompt_request(&self) {
+            let wait = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                self.provider.started.notified(),
+            );
+            assert!(
+                wait.await.is_ok(),
+                "no title request was sent within 5 s — the prompt-time trigger                  never fired (not slow: the scripted provider answers in-memory)"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_very_first_prompt_titles_the_session_from_its_own_text() {
+        // The user's words, verbatim: a new session, one message, no reply
+        // yet, and the title must already be on its way.
+        let h = harness(vec![Script::answering("Affection For Scat")]);
+        let id = "s_prompt_first";
+        h.seed_fresh_session(id);
+
+        h.prompt(id, "I like poop");
+        h.await_prompt_request().await;
+
+        let req = h.one_request().await;
+        assert_eq!(
+            req.session_id.as_deref(),
+            Some(format!("{id}-title").as_str()),
+            "the title request rides ADR 0086's isolated pseudo-session"
+        );
+        let prompt_text = match &req.messages[0].content {
+            MessageContent::Text(t) => t,
+            _ => panic!("expected a text prompt"),
+        };
+        assert!(
+            prompt_text.contains("User: I like poop"),
+            "the excerpt is the user's OWN message verbatim — there is no \
+             assistant row to pair it with yet; got {prompt_text:?}"
+        );
+        assert_eq!(h.stored_title(id).as_deref(), Some("Affection For Scat"));
+        assert_eq!(h.stored_stage(id), 1, "stage 1, from the first prompt");
+    }
+
+    #[tokio::test]
+    async fn a_blank_first_prompt_titles_nothing() {
+        // The counterpart, so the test above is not just "any text works".
+        // An empty message has nothing to name, and spending a request (and a
+        // slot of the 3-failure budget) on it would be worse than no title.
+        let h = harness(vec![Script::answering("Should Never Be Asked")]);
+        let id = "s_prompt_blank";
+        h.seed_fresh_session(id);
+
+        h.prompt(id, "   \n  ");
+        drain_tasks().await;
+
+        assert_eq!(
+            h.request_count().await,
+            0,
+            "a blank message is not an excerpt"
+        );
+        assert_eq!(h.stored_title(id), None, "and nothing is written");
+    }
+
+    #[tokio::test]
+    async fn a_session_that_already_has_a_title_is_not_retitled_by_a_prompt() {
+        // The prompt-time trigger must not churn titles on every message.
+        // Stage 1 is the guard that does this work; the same pass fired from
+        // the SECOND prompt of an already-titled session must be a no-op.
+        let h = harness(vec![Script::answering("Only Once")]);
+        let id = "s_prompt_once";
+        h.seed_fresh_session(id);
+
+        h.prompt(id, "first message");
+        h.await_prompt_request().await;
+        assert_eq!(h.stored_stage(id), 1);
+
+        h.prompt(id, "second message");
+        drain_tasks().await;
+
+        assert_eq!(
+            h.request_count().await,
+            1,
+            "the second prompt asks again, NOT"
+        );
+        assert_eq!(h.stored_title(id).as_deref(), Some("Only Once"));
+    }
+
+    #[tokio::test]
+    async fn the_prompt_trigger_fires_on_a_transcript_seeded_session_too() {
+        // THE non-vacuity pin for the test above. That one runs on an empty
+        // transcript, where the inherited guard ladder declines for the
+        // `interactions == 0` reason — so it would pass identically against a
+        // trigger that does nothing at all. Here the transcript DOES carry a
+        // user row and the stage is still 0, so the ladder reaches guard 6 and
+        // the ONLY thing between "titled" and "not titled" is the trigger.
+        let h = harness(vec![Script::answering("From A Seeded Row")]);
+        let id = "s_prompt_seeded";
+        h.seed_session(id); // row + config_state + a user/assistant exchange
+
+        h.prompt(id, "carry on with the port");
+        h.await_prompt_request().await;
+
+        assert_eq!(h.stored_stage(id), 1);
+        assert_eq!(h.stored_title(id).as_deref(), Some("From A Seeded Row"));
+
+        // AND the excerpt is the REAL exchange, not the prompt. This is the
+        // pin for "the seed substitutes, it never overrides": the seeded
+        // transcript carries a user line and an assistant reply, and those are
+        // better evidence than the one message being sent. Reordering the arms
+        // in `stage_and_excerpt` so the seed wins reddens this and nothing else.
+        let req = h.one_request().await;
+        let prompt_text = match &req.messages[0].content {
+            MessageContent::Text(t) => t,
+            _ => panic!("expected a text prompt"),
+        };
+        assert!(
+            prompt_text.contains("User: Port the session namer")
+                && prompt_text.contains("Assistant: Here is how."),
+            "a landed transcript wins over the prompt; got {prompt_text:?}"
+        );
+        assert!(
+            !prompt_text.contains("carry on with the port"),
+            "the prompt text must NOT displace the real exchange; got {prompt_text:?}"
+        );
     }
 
     #[tokio::test]
