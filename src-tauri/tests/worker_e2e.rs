@@ -32,11 +32,11 @@ use archimedes_lib::agent::{EventSink, PermissionOutcome, TranscriptPersister};
 // The production `SessionManager` ↔ `WorkerManager` wiring (the `lib.rs` builder).
 // Only the D2 task-seam case needs it: every other case here drives `E2e`, whose
 // `WorkerManager` collects events instead of routing them.
-use archimedes_lib::agent::SessionManagerBuilder;
+use archimedes_lib::agent::{SessionManager, SessionManagerBuilder};
 use archimedes_lib::storage::Db;
 use serde_json::Value;
 use tokio::sync::mpsc;
-use wiremock::matchers::{body_string_contains, method};
+use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ── Shared helpers ───────────────────────────────────────────────────
@@ -2724,4 +2724,203 @@ async fn task_artifact_round_trips_through_a_real_worker() {
             "a task frame is never re-emitted to the UI"
         );
     }
+}
+
+/// Turn 1 titles the session OVER THE REAL WIRE: the real `archimedes --worker`
+/// runs a real turn through the production `start_session` → `send_prompt` path,
+/// its real `agent_end` frame reaches the real `SessionManager::route_event` arm,
+/// and a title lands in the desktop's `Db` (stage 1) and on the UI sink.
+///
+/// # Why this test has to exist
+///
+/// Turn-1 titling is otherwise proven only by the in-process unit suite
+/// (`agent/session/naming.rs`), whose harness builds a `SessionManager` with **no
+/// `WorkerManager`, no batcher and no real Worker**, and calls `route_event`
+/// directly. Three things are invisible to it, and they are what this case is
+/// about:
+///
+/// 1. the `agent_end` frame must cross a **process boundary** and survive the
+///    Supervisor's `broadcast` hop to reach the arm at all,
+/// 2. the excerpt is read from `native_messages` while the turn's own rows sit in
+///    the `BatchingPersistence` — the unit harness has no batcher, so a
+///    reads-stale-rows regression cannot redden it, and
+/// 3. the `config_state` the pass needs is set by `establish_worker_session`
+///    (`mod.rs`, via `start_session`) and by **nothing else** — a harness that
+///    attaches a Worker directly has `config_state: None`, and the pass declines
+///    there silently. Only the real `start_session` path exercises it.
+///
+/// And the fixture binary cannot trigger this path at all: it emits 42
+/// `agent_settled` and **zero** `agent_end`, which is why every other case here
+/// runs with `sessionNamingEnabled: false` (`task_artifact_round_trips_through_a_real_worker`
+/// documents the reason — an unnamed turn would steal a mounted body).
+///
+/// # Non-vacuity
+///
+/// The title is a sentinel that exists nowhere else, so an empty or fallback
+/// title cannot satisfy it; `title_stage == 1` is asserted separately, which is
+/// what distinguishes turn-1 titling from a stage-2 settle; and the
+/// `session-titled` emit is asserted on the sink, so a write that reached the DB
+/// but never the UI fails. Deleting the router's `agent_end` arm reddens all
+/// three, and so does dropping the `config_state` the pass reads.
+///
+/// # Routing two requests to one wiremock
+///
+/// The turn request and the title request both dial this server. The title
+/// request is told apart by its prompt body — `title_prompt`'s first line, which
+/// no conversation turn ever contains — rather than by ADR 0086's `-title`
+/// session header, because the session id is minted by `start_session` and is
+/// not known when the mocks are mounted. It is mounted FIRST: an overlapping
+/// match goes to the first mounted mock.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn first_turn_titles_the_session_over_the_real_wire() {
+    let _lock = archimedes_lib::test_support::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let home = temp_dir();
+    let original_home = std::env::var_os("HOME");
+    struct RestoreHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            match self.0.take() {
+                // SAFETY: the `ENV_LOCK` is still held — declared first, drops last.
+                Some(v) => unsafe { std::env::set_var("HOME", v) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+    // SAFETY: the `ENV_LOCK` is held for the whole set→assert→restore span.
+    unsafe { std::env::set_var("HOME", home.path()) };
+    let _restore = RestoreHome(original_home);
+
+    let server = MockServer::start().await;
+    let dir = temp_dir();
+    let db: Arc<Db> = Arc::new(Db::open(&dir.join("e2e.db")).expect("db opens"));
+
+    // Naming ON, explicitly: this case's whole subject is the enabled path, and a
+    // flipped `default_true` must not silently turn it into a test of the
+    // disabled one. `defaultModel` is the model `start_session` resolves.
+    std::fs::write(
+        dir.path().join("settings.json"),
+        r#"{ "sessionNamingEnabled": true, "defaultModel": "e2e-title-model" }"#,
+    )
+    .expect("the settings file is written");
+
+    let model = wire_model(&server, "e2e-title-model");
+    let title = "Listing Files In The Checkout";
+
+    // The TITLE request, mounted FIRST and keyed on its prompt's first line —
+    // text no conversation turn carries.
+    Mock::given(method("POST"))
+        .and(body_string_contains(
+            "Generate a concise title (3-8 words) for this conversation.",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(sse_final(title), "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+    // The turn itself: a plain final answer, so the loop takes the SUCCESS exit
+    // and emits `agent_end` (the tool-call exit continues the turn instead).
+    mount_request_script(&server, &[sse_final("here is the listing")]).await;
+    // `start_session` refreshes model metadata from `GET /v1/models`
+    // (best-effort, bounded). Answer it so the case is not silently exercising
+    // the failure path of that call.
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data":[]})))
+        .mount(&server)
+        .await;
+
+    // The PRODUCTION wiring, in the production ORDER: the catalog and the sink go
+    // on BEFORE the `Arc` (both are `&mut self`), and the `WorkerManager`'s
+    // `on_event` is `SessionManager::route_event` — the arm under test.
+    let (sink_tx, mut sink_rx) = mpsc::unbounded_channel::<(String, Value)>();
+    let sink: Arc<dyn EventSink> = Arc::new(RecSink { tx: sink_tx });
+    let persister = Arc::new(TranscriptPersister::new(db.clone()));
+    let mut sm = SessionManager::new(dir.path().to_path_buf());
+    sm.attach_db(db.clone());
+    sm.set_catalog(ModelCatalog {
+        models: vec![model.clone()],
+        ..Default::default()
+    });
+    sm.set_sink(sink.clone());
+    let sm = Arc::new(sm);
+    let wm = {
+        let m = sm.clone();
+        let m2 = sm.clone();
+        Arc::new(WorkerManager::new(
+            Arc::new(RealWorkerFactory),
+            Arc::new(move |s, c, p| m.handle_crash(&s, c, p)),
+            Arc::new(move |s, b, e| m2.route_event(&s, b, e)),
+            Arc::new(|_s| None),
+        ))
+    };
+    sm.attach_worker_manager(wm.clone());
+
+    let cwd = temp_dir();
+    let info = sm
+        .start_session(cwd.path().to_path_buf(), &sink)
+        .await
+        .expect("the native session starts on the REAL binary");
+    let sid = info.session_id.clone();
+    persister.set_cwd(&sid, cwd.path().to_str().expect("utf-8 cwd"));
+
+    // The real turn, through the real `send_prompt` (it resolves on
+    // `agent_settled`, so the turn's frames are all delivered when it returns).
+    sm.send_prompt(&sid, "list the files in the checkout".to_string())
+        .await
+        .expect("the turn completes");
+
+    // The title is written by a SPAWNED fire-and-forget task, so the turn can
+    // settle before it lands — poll the persisted row (and the point of the
+    // assertion is that it lands at all).
+    let mut got_title: Option<String> = None;
+    let mut got_stage: i64 = -1;
+    for _ in 0..200 {
+        let rows = db.list_sessions(false).expect("list_sessions loads");
+        if let Some(r) = rows.iter().find(|r| r.id == sid) {
+            got_title = r.title.clone();
+            got_stage = r.title_stage;
+            if got_title.is_some() {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    assert_eq!(
+        got_title.as_deref(),
+        Some(title),
+        "the FIRST turn titled the session end-to-end over the real Worker wire \
+         (the sentinel title is the wiremock's body and exists nowhere else)"
+    );
+    assert_eq!(
+        got_stage, 1,
+        "stage 1, not merely 'a title exists' — this is turn-1 titling, not a \
+         stage-2 settle; got stage {got_stage}"
+    );
+
+    // And the UI was TOLD: a row written without the emit is a title the sidebar
+    // never shows until a restart (issue #143's other half).
+    let mut saw_emit = None;
+    for _ in 0..60 {
+        match tokio::time::timeout(std::time::Duration::from_millis(100), sink_rx.recv()).await {
+            Ok(Some((event, payload))) => {
+                if event == "session-titled" {
+                    saw_emit = Some(payload);
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(_) => continue,
+        }
+    }
+    let emit = saw_emit.expect("the naming pass emitted `session-titled` to the sink");
+    assert_eq!(
+        emit["sessionId"],
+        sid.as_str(),
+        "the emit names the session"
+    );
+    assert_eq!(emit["title"], title, "the emit carries the same title");
 }
