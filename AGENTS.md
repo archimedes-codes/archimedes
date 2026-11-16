@@ -240,6 +240,26 @@ is validated with `pnpm test` + `pnpm -r exec -- tsc --noEmit` from its root.
 
 ## Releasing
 
+**A `feat:` in the payload does NOT force a minor bump — the level is the release's
+call, and a patch carrying features is permitted here.** This is a deliberate
+deviation from strict semver, recorded because the instruments here argue the other
+way and a careful releaser will otherwise "correct" it. Measured across ALL tag
+ranges (`git tag --sort=v:refname`, then per range
+`git log --format="%s" <prev>..<tag> | grep -cE '^feat'` against which part moved):
+**10 patch releases, 2 of them carried a `feat`** (`v0.3.2 → v0.3.3`, 1 feat;
+`v0.9.1 → v0.9.2`, 2 feat) — so this is permitted, not "routinely done", and the
+majority of patches are fix-only. Meanwhile every 0.10.0 → 0.14.0 bump containing a
+`feat` went MINOR. The rule is **not** derived from that history — the history is
+what makes the deviation look like an error, so it is stated as a decision, not
+inferred. What a bump level tracks here is *whether the release is worth upgrading
+for*, not whether a commit subject starts with `feat:`; a `feat` that adds no UI
+surface and changes no API may ship in a patch. `breaking!:` is still the one thing
+that must force a major. When the payload genuinely looks minor- or major-sized,
+ASK before tagging — the tag is the irreversible half of the ceremony, and the
+answer is not derivable from the commit subjects. Raised live: `v0.14.0 → v0.14.1`
+shipped 2 `feat` + 1 `fix` as a patch by that decision, against a measured history
+that would have said minor.
+
 **The version lives in THREE files**, and nothing but the check script knows
 all three: `package.json`, `src-tauri/Cargo.toml` and
 `src-tauri/tauri.conf.json`. The first two are the ones a bumping tool can
@@ -775,6 +795,23 @@ These are properties of the repo, not of any branch:
   investigating, and do not go hunting for a Rust fix when the diff is TypeScript. Note the
   assertion's line number moves with the file (`:1287` and `:1314` were both observed) — match on
   the test name, never the line.
+- **`src-tauri/tests/worker_e2e.rs::the_definition_permission_deny_refuses_the_child_real_worker`
+  flakes too — a SECOND test in that file, distinct from the one above, and it needs an owner.**
+  It fails at `assert!(!sub_is_error, "the dispatch Completed (the refusal is inside the capture),
+  got {sub_result:?}")` — the same real-worker rendezvous shape as `subagent_dispatch_end_to_end_real_workers`,
+  in a different test, so the file has TWO flaky real-worker dispatch tests and fixing one will not
+  fix the other. **Two observations: CI runs `43881764169` (ubuntu, `push`, at `ad86d157` / PR #200's
+  squash) and `43787599220` (ubuntu, `push`, at `74e38fa1`).** Cite the run IDs, not the SHAs, per the
+  squash-orphan rule. **The load signature here is stronger than a same-SHA split, and it is the one
+  that settles it: `74e38fa1` is a DOCS-ONLY commit** — `git show --stat` on it is one file,
+  `docs/features/anthropic-output-ceiling-known-gaps.md`, +158 lines — and a markdown file cannot break a
+  real-worker permission test. When a red appears at a commit whose diff cannot reach the failing test,
+  that is the proof, and the check is one command (`git show --stat --format="" <sha>`), so run it before
+  reading the assertion. The `ad86d157` case was additionally proven by tree-identity: its tree is
+  byte-identical to `c22936db`, which had already passed all three OS legs on BOTH its `push` and
+  `pull_request` runs. **`gh run rerun <id> --failed` went green on the first attempt both times.**
+  Unlike the bullet above, this one did NOT co-occur with the temp-dir census guard (`grep -c` over the
+  failed log printed `0`), so a red here is one incident and nothing else needs explaining.
 - **The `cargo test` temp-dir guard (`the Rust test suite left N new directories in … — #96's leak
   is back`) is often a CONSEQUENCE of the `worker_e2e` flake above, not a second failure.** Seven
   observations (runs `41052924099`, `41187113475`, `41188776833`, `41192896331`, `41195614333`,
