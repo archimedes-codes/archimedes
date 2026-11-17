@@ -445,7 +445,7 @@ describe("the board pills' fill, per palette (the default-dark collision)", () =
       label:
         "the card's `T{n}` pill, spec chip, sessions chip, next-step pill and artifact key chips",
     },
-    { file: "src/components/TasksBoard.tsx", label: "the column count pill" },
+    { file: "src/components/tasks/TaskColumn.tsx", label: "the column count pill" },
   ];
 
   for (const pill of PILLS) {
