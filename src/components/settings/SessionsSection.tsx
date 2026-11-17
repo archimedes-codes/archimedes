@@ -8,8 +8,10 @@ import { basenameOfPath } from "@/lib/paths";
 import { titleFor } from "@/lib/sessionTitle";
 import { sessionFieldOf } from "@/lib/sessionLookup";
 import { relativeTimeFor } from "@/lib/sessionTime";
+import { taskBadgeOf } from "@/lib/taskNumber";
 import { detachedSessions, useSessions } from "@/store/sessions";
 import DeleteSessionDialog from "../DeleteSessionDialog";
+import { TaskNumberBadge } from "../TaskNumberBadge";
 import ClearDetachedSessionsDialog from "./ClearDetachedSessionsDialog";
 import { SettingsBadge, SettingsDataRow, SettingsGroupCard } from "./primitives";
 
@@ -43,6 +45,16 @@ function DetachedSessionRow({
   recencyMap: Record<string, number>;
 }): ReactElement {
   const messages = useSessions((s) => s.messages[row.sessionId]);
+  // The **Task badge** map, read through the ONE reader. This is a per-ROW
+  // subscription and that is deliberate, unlike `recencyMap` above: the selector
+  // returns the map itself, whose identity changes only when `setTaskNumbers`
+  // replaces it whole (a boot snapshot, never a per-token slice), so it is the
+  // stable-value selector zustand v5 requires and it cannot re-render this row off
+  // an unrelated store write. Threading it as a prop instead would buy nothing a
+  // prop can buy here — the badge has no cross-row derivation to share, and the
+  // section already passes `recencyMap` for the one value rows DO share.
+  const badgeMap = useSessions((s) => s.taskNumbers);
+  const badge = taskBadgeOf(badgeMap, row.sessionId);
   const title = titleFor(messages, basenameOfPath(row.cwd), row.title);
   const time = relativeTimeFor(row.sessionId, messages, recencyMap);
   return (
@@ -50,6 +62,16 @@ function DetachedSessionRow({
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
         <div className="min-w-0 flex-1">
           <div className="truncate text-ui-base font-medium text-foreground">
+            {/* THE TASK BADGE (D7): the FIRST child inside the existing title div,
+                before `{title}` — the same nesting every other surface uses. This is
+                the surface no per-Space read could serve (these are the Sessions
+                whose **Space** has no tab), which is what D3's app-wide read is
+                for. NOT a `SettingsBadge`: that is the settings-section chip recipe
+                and this is the Task recipe (different fill rule, and it carries the
+                frozen Stage as its tooltip). No new level either — `primitives`
+                pins that `SettingsDataRow` adds none, and a wrapper div here would
+                move the flex row's children. */}
+            <TaskNumberBadge badge={badge} />
             {title}
           </div>
           <div className="truncate text-ui-sm text-foreground-subtle">

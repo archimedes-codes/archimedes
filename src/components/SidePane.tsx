@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { basenameOfPath } from "../lib/paths";
 import { sessionFieldOf } from "../lib/sessionLookup";
+import { taskBadgeOf } from "../lib/taskNumber";
 import { useSessions } from "../store/sessions";
 import ChecklistPanel from "./ChecklistPanel";
 import { cn } from "./lib/utils";
 import SessionConfigBlock from "./SessionConfigBlock";
 import { SessionCostLine } from "./SessionCostLine";
+import { TaskNumberBadge } from "./TaskNumberBadge";
 
 const WIDTH_KEY = "side-pane-width";
 const MIN_WIDTH = 240;
@@ -149,6 +151,16 @@ export default function SidePane() {
   // there is no frame-level gate left to disagree with the section's.
   const activeSessionId = useSessions((s) => s.activeSessionId);
 
+  // The **Task badge** map (boot-fetched, wholesale-replaced by `setTaskNumbers`),
+  // read through the ONE reader `lib/taskNumber`. The map is selected and not
+  // indexed here: the field's identity changes only when the action replaces it
+  // whole, so this is the stable-value selector zustand v5 requires (the same shape
+  // `sessionRecency` is read in at `settings/SessionsSection.tsx`).
+  // `taskBadgeOf` takes `string | null` precisely so the no-active-Session case
+  // below needs no local guard.
+  const badgeMap = useSessions((s) => s.taskNumbers);
+  const badge = taskBadgeOf(badgeMap, activeSessionId);
+
   // The session title (the top section — the old chat header's title moved
   // here, the header is gone): the session's GENERATED title when the naming
   // pass wrote one (`SessionInfo.title`, auto-generated only), else the first
@@ -251,6 +263,16 @@ export default function SidePane() {
                   "linear-gradient(to right, black calc(100% - 1.5rem), transparent)",
               }}
             >
+              {/* THE TASK BADGE (D7): the FIRST child inside the masked title div,
+                  immediately before the title's text — NOT a sibling of this div.
+                  The scroll column's child count is pinned at 2 and the cost line
+                  is pinned to be the column child immediately after the title's
+                  (`SidePane.test.tsx`'s #86/#87 pins), and a badge here has to
+                  survive both: a third column child reddens the count, and a badge
+                  pushed between the title and the cost line reddens the order.
+                  Nested, neither moves, and `null` renders no node at all — so an
+                  unlinked Session's header is byte-identical to what it was. */}
+              <TaskNumberBadge badge={badge} />
               {sessionTitle}
             </div>
           )}
