@@ -766,8 +766,9 @@ assert_eq "no manifest survives the orphaned rpm signature" "no" "$(path_exists 
 #
 # The PRIMARY gate is `scripts/check-release-signatures.sh`, which asks the
 # RELEASE whether every installer has its `.sig`. This flag is the SECONDARY one,
-# defence-in-depth for the path that never runs the release check: AGENTS.md step
-# 4, a human re-composing `latest.json` by hand after rewriting the notes. That
+# defence-in-depth for the path that never runs the release check:
+# docs/agents/releasing.md step 4, a human re-composing `latest.json` by hand
+# after rewriting the notes. That
 # path downloads `*.sig` into a directory and hands the composer whatever came
 # back, so without an expectation list the composer shrinks the manifest and
 # **exits 0** — the silent omission this task exists to end (reproduced below, in

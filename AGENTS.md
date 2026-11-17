@@ -252,8 +252,13 @@ builds, and the Linux DMABUF variables — is `README.md`'s `## Releasing`.
   avoids collisions but a gap-filler will not. **Verify against the DIRECTORY,
   not `git ls-files`** — two untracked neighbours have already held the numbers
   a tracked-only check declared free. After you pick, run
-  `ls docs/decisions/ | grep -oE '^[0-9]{4}' | sort | uniq -d` and require it to
-  print nothing.
+  `ls docs/decisions/ | grep -oE '^[0-9]{4}' | sort | uniq -d` and require that
+  **your chosen number is not in its output**. Do NOT require the output to be
+  empty: `0086` is already duplicated, so this prints `0086` on a perfectly
+  healthy directory and an "expect nothing" gate can never be satisfied — a gate
+  that always fails is worse than no gate, because it trains the next agent to
+  wave the check off as broken noise and skip it. The rule is **no NEW
+  duplicate**, not "no duplicate".
 - **Run cargo from the repository root — the workspace.** A stray `cd src-tauri`
   no longer fails loudly; it silently builds one member. Before T4 there was no
   root `Cargo.toml`, so a backgrounded `cargo` with no `cd` died with `could not
