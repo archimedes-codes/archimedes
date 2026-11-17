@@ -170,6 +170,29 @@ fixture() {
   git -C "$root" add -A
 }
 
+# `fixture()`, but with every walked PATH renamed to ~240 characters. The files,
+# the counts and the floors are identical — ONLY the path lengths differ, and that
+# difference is what makes the SIGPIPE race in the guard's success line visible.
+# The race depends on how many bytes `sort` still has left to write when the reader
+# downstream of it closes the pipe, so `measured_file`'s SIZE is the dial: the
+# short-path fixture gives ~3 KB of sort output and fires 0 times in 40 runs
+# against the buggy pipeline (it is blind to the defect), this one gives ~62 KB and
+# fires 20 times in 20. Padded to 240 and not longer, to stay under the 255-byte
+# per-component limit.
+fixture_long_paths() {
+  local name="$1"
+  fixture "$name"
+  local i stem pad
+  pad="$(printf '%237s' '')"
+  for ((i = 1; i <= 251; i++)); do
+    stem="$(printf 'paletteVariant%03d' "$i")"
+    mv "$root/src/f$i.ts" "$root/src/$stem${pad:0:237-${#stem}}.ts"
+  done
+  # The rename must reach the index: the walk IS `git ls-files`, and a path the
+  # index still holds at its old name is a file the guard cannot open.
+  git -C "$root" add -A
+}
+
 # ---------------------------------------------------------------------------
 # 1. THE TEETH: a production file over the hard 1,000 code-line gate with no
 #    baseline entry is a red, and the message names the file, its count, and how
@@ -616,6 +639,50 @@ assert_eq "a clean fixture exits 0" "0" "$status"
 assert_contains "the positive line names the walked count" "production file(s) walked" "$output"
 assert_contains "and the largest file with its figure" "src-tauri/src/largest.rs 730" "$output"
 
+# 16b. THE SUCCESS LINE CANNOT DIE OF SIGPIPE BEFORE IT PRINTS.
+#
+# WHY A REPEAT LOOP IS THE ONLY INSTRUMENT THAT CAN SEE THIS. The defect this case
+# pins was a short read: the guard computed its own success line through
+# `sort … | head -n1`, `head` exited after one line and closed the pipe, `sort`
+# died of SIGPIPE with output still buffered, `pipefail` propagated 141, and
+# `set -e` aborted the script BEFORE the positive line was printed — a guard whose
+# own green was intermittently a silent 141. Whether it fires is a RACE between
+# `sort`'s remaining write and `head` closing the pipe, so a single run is not
+# evidence of anything: 39 runs out of 40 on the real tree exited 0 having printed
+# the line, and the 40th printed nothing and exited 141. A case that runs the guard
+# once passes 97% of the time against the broken code, which is worse than no case
+# — it is a green that argues the defect is fixed. Only N consecutive runs, ALL of
+# which must hold, can see a race whose failure rate is below 1.
+#
+# Every run must satisfy all three: exit 0, stdout non-empty, and stdout carrying
+# `production file(s) walked`. One bad iteration FAILS the case; nothing is retried
+# away, because a retry would be the same flake-management this defect is.
+#
+# The fixture is `fixture_long_paths`, not `fixture`: the fire rate scales with the
+# bytes `sort` has left to write when `head` closes, and the short-path fixture's
+# ~3 KB of `measured_file` fires ZERO times in 40 runs against the broken pipeline.
+# Against that broken pipeline this fixture fired 20 times in 20, so this loop is
+# not hoping to catch the race — it is the shape that reproduces it. The real tree
+# fires ~1 run in 10 and is already covered once by case 18/18d; the loop runs
+# here, where it fires every time.
+fixture_long_paths sigpipe_pin
+emit_code 730 'const p' >"$root/src-tauri/src/largest.rs"   # 730 code lines
+git -C "$root" add -A
+run_check "$root" --update
+assert_eq "the SIGPIPE pin's fixture is seeded so its runs are green runs" "0" "$status"
+
+sigpipe_runs=25
+sigpipe_bad=0
+sigpipe_codes=""
+for ((sigpipe_i = 1; sigpipe_i <= sigpipe_runs; sigpipe_i++)); do
+  sigpipe_out="$("$check_script" "$root" 2>&1)" && sigpipe_code=0 || sigpipe_code=$?
+  if [[ "$sigpipe_code" != 0 ]] || [[ -z "$sigpipe_out" ]] || [[ "$sigpipe_out" != *"production file(s) walked"* ]]; then
+    sigpipe_bad=$((sigpipe_bad + 1))
+    sigpipe_codes="$sigpipe_codes run$sigpipe_i:exit=$sigpipe_code:len=${#sigpipe_out}"
+  fi
+done
+assert_eq "all $sigpipe_runs consecutive runs exit 0 AND print a non-empty positive line (a short read under pipefail is a silent 141)$sigpipe_codes" "0" "$sigpipe_bad"
+
 # 17. USAGE ERRORS (the check-versions.sh contract): a second positional root, an
 #     unknown flag, `--self-test` with a root, and `--update` with `--self-test`
 #     are all errors — never a silent "nothing was asked for".
@@ -668,7 +735,17 @@ fi
 #      which is exactly the choice this task made. Read from the file rather than
 #      by running `--update` against the real checkout: a test must not rewrite a
 #      tracked file in the tree it is testing.
-top3="$(awk -F'\t' '!/^#/ && NF == 2 { print }' "$real_baseline" | sort -rn | head -n3 | cut -f2)"
+#
+#      `awk 'NR <= 3'` and NOT `head -n3`: this pipeline runs under this file's own
+#      `set -euo pipefail` (line 37), and `head -n3` is the same short read that
+#      made check-file-size.sh's own success line die of SIGPIPE — `head` exits at
+#      3 lines, `sort` dies writing the rest, `pipefail` propagates 141 and `set -e`
+#      aborts the whole test file before the summary. Here the input is 11 lines so
+#      the race is unlikely, but "unlikely" is what case 16b is about, and a test
+#      file that can abort silently reports nothing at all. `awk 'NR <= 3'` prints
+#      the same three lines and reads to EOF, so nothing downstream of `sort` stops
+#      early.
+top3="$(awk -F'\t' '!/^#/ && NF == 2 { print }' "$real_baseline" | sort -rn | awk 'NR <= 3 { print }' | cut -f2)"
 expected_top3="$(printf '%s\n' 'src-tauri/src/agent/session/naming.rs' 'src-tauri/src/storage/db.rs' 'src-tauri/src/agent/session/mod.rs')"
 assert_eq "the baseline's three largest, in order, are naming.rs, db.rs, session/mod.rs" "$expected_top3" "$top3"
 

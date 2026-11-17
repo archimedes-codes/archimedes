@@ -437,8 +437,41 @@ run_guard() {
   # largest file make the claim checkable by eye: if the walked count falls off a
   # cliff, or the largest file is one nobody expected, the walk changed and this
   # green is not the green the guard advertises.
-  local largest_line largest_path largest_count
-  largest_line="$(LC_ALL=C sort -t"$TABS" -k1,1rn -k2,2 "$measured_file" | head -n1)"
+  #
+  # THE SORT WRITES A FILE AND THE FIRST LINE IS READ FROM IT, never
+  # `sort … | head -n1`. That was the shape here, and under `set -euo pipefail` it
+  # was a race that killed this very line: `head` exits after one line and closes
+  # the pipe, `sort` is still writing and dies of SIGPIPE (141), `pipefail`
+  # propagates the 141, the command substitution returns non-zero, and `set -e`
+  # aborts BEFORE the positive line prints — a guard whose green was intermittently
+  # a silent 141, measured at ~1 run in 10 on this tree. It is not a `head`
+  # peculiarity, it is any downstream reader that stops early: `sed -n 1q` short
+  # reads the same way. There is no pipe in the construction below, so there is no
+  # reader to close one — `sort`'s only destination is a file it writes to
+  # completion, and `read` takes one line from a FILE whose remaining bytes nobody
+  # has to consume. `head -n1 <"$largest_file"` would be a pipe again (to the
+  # command substitution) and is deliberately not used.
+  #
+  # Pinned by `check-file-size.test.sh` case 16b, which runs this 25 times in a
+  # row against a fixture sized so the old pipeline failed 24 of 25: one run of a
+  # race proves nothing.
+  local largest_file="$tmp_dir/largest"
+  LC_ALL=C sort -t"$TABS" -k1,1rn -k2,2 "$measured_file" >"$largest_file"
+  local largest_line="" largest_path="" largest_count=""
+  # `IFS=` (and not a tab IFS) keeps the line intact so the two cuts below still
+  # split at the FIRST tab, exactly as they did before. `|| true` is here because
+  # `read` returns 1 at an EOF that carries no newline — an empty sort output must
+  # reach the refusal below, not abort through `set -e` with 128+0.
+  IFS= read -r largest_line <"$largest_file" || true
+  if [[ -z "$largest_line" ]]; then
+    # Unreachable behind both vacuity floors (they refuse a walk under 250 files
+    # before this line), so this is not a guard against a real input, it is the
+    # refusal that keeps the positive line TRUE whenever it does print: a
+    # `largest  ` with nothing in either field is a confident green built on a
+    # measurement that read nothing, which is what this whole script exists to
+    # refuse.
+    fail "the walk measured no file to rank, so there is no largest file to report under $root" "the positive line would print an empty count and an empty path; a green that cannot name the biggest file it saw is not a green"
+  fi
   largest_count="${largest_line%%"$TABS"*}"
   largest_path="${largest_line#*"$TABS"}"
   printf 'file sizes within baseline: %s production file(s) walked, largest %s %s\n' "$n_walked" "$largest_path" "$largest_count"
