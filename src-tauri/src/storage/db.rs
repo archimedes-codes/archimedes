@@ -716,6 +716,73 @@ fn task_session_row_from(row: &Row<'_>) -> rusqlite::Result<TaskSessionRow> {
     })
 }
 
+/// Which **Task** one **Session** wears: the per-Space `tasks.number` of the most
+/// recently LINKED Task that still resolves, plus the **Stage** it was in when that
+/// link was made. ONE row per Session at most — the badge has one slot, and the
+/// tie-break is `MAX(rowid)` in SQL, never in the renderer (which would give the
+/// rule two owners).
+///
+/// NO row at all when the Session has no link, or when its linked Task is gone:
+/// the read INNER JOINs `tasks`, so a dangling `task_sessions.task_id` (which
+/// SQLite will not reject — that table has no FK on `task_id`) produces absence
+/// rather than a stale number. A **Task has no production delete verb**, so today
+/// that arm is unreachable; it is here so the read is honest if one lands.
+///
+/// All-scalar, so it derives `Eq` like every other all-scalar row in this region
+/// (only the two that carry an `f64` stop at `PartialEq`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskNumberRow {
+    pub session_id: String,
+    pub task_number: i64,
+    /// The FROZEN lane — `task_sessions.stage_slug`, the **Stage** the card was in
+    /// when this Session was linked, NOT where the card sits now. Nullable because
+    /// the column is nullable. It is already correct by construction:
+    /// `launchTaskSession` moves the card BEFORE starting the Session (its rule 1,
+    /// "Move before start") and passes `stage_slug: None` so RUST resolves it, so a
+    /// backlog → research launch records `research`. A card dragged to Done later
+    /// does NOT change this value, and that is the point — it answers "where was
+    /// this Session's work started", which is the only question a Session can answer
+    /// about a card it does not own.
+    pub stage_slug: Option<String>,
+}
+
+/// The three projection terms of `Db::task_numbers`, in the order
+/// [`task_number_row_from`] reads them by POSITION.
+///
+/// This is the ONE row type in the region whose SELECT list is NOT interpolated
+/// from this const, and the reason is the same one that makes
+/// `TASK_SESSION_COLUMNS` a const TWO statements cannot diverge on while this
+/// statement spells itself: the names here are table-QUALIFIED (`ts.`, `t.`)
+/// because the read joins `tasks`, and a `join(", ")` of unqualified column names
+/// cannot produce them. `TASK_SESSION_COLUMNS` serves two statements; there is
+/// ONE statement here, so the list is spelled inline in the SQL and this const
+/// carries the compile-time arity tie. THE GUARD IS THE TEST —
+/// `task_numbers_returns_the_most_recent_link_per_session_and_nothing_for_a_gone_task`
+/// asserts all three values positionally (`session_id`, then `number`, then the
+/// link's own `stage_slug`), so a projection edited apart from this ladder
+/// mis-assigns a field and reddens there. Same honest scope as every other arity
+/// tie in this file: the const cannot see the SQL text.
+const TASK_NUMBER_COLUMNS: [&str; 3] = ["ts.session_id", "t.number", "ts.stage_slug"];
+
+const TASK_NUMBER_ROW_FIELDS: usize = 3;
+// Compile-time arity tie ONLY — see SESSION_ROW_FIELDS for the honest scope.
+const _: [(); TASK_NUMBER_COLUMNS.len()] = [(); TASK_NUMBER_ROW_FIELDS];
+
+/// Map one row of [`TASK_NUMBER_COLUMNS`] onto a [`TaskNumberRow`], index for
+/// index.
+///
+/// `stage_slug` is a nullable column, so its `get::<_, Option<String>>` is a
+/// runtime conversion and not a compile-time check — the drift-guard test is what
+/// catches a projection edited apart from this ladder.
+fn task_number_row_from(row: &Row<'_>) -> rusqlite::Result<TaskNumberRow> {
+    Ok(TaskNumberRow {
+        session_id: row.get(0)?,
+        task_number: row.get(1)?,
+        stage_slug: row.get::<_, Option<String>>(2)?,
+    })
+}
+
 /// The board read payload: one stage plus its cards.
 ///
 /// ONE payload, not two lists the frontend joins — the board renders columns,
@@ -2780,6 +2847,79 @@ impl Db {
         Ok(rows)
     }
 
+    /// Which **Task** every **Session** wears — the badge read, app-wide.
+    ///
+    /// The other direction of `task_sessions` is what everything else in the file
+    /// reads: `Db::task_sessions(task_id)` and `get_board`'s link statement both
+    /// go task → sessions, so nothing here could answer "which card does THIS
+    /// Session belong to" without a per-Space board fetch. This is that read.
+    ///
+    /// App-wide, NO `space_path` filter (spec D3), and that is the design rather
+    /// than an oversight: the badge also renders on Settings → **Detached
+    /// sessions**, whose Spaces have no tab and therefore no loaded board to read
+    /// a number out of. One round trip at boot, one row per Session, so the
+    /// frontend holds ONE map and never pays per Space tab.
+    ///
+    /// The SQL, and the four rules it carries:
+    ///   - `WHERE ts2.session_id = ts.session_id` with `MAX(ts2.rowid)` picks the
+    ///     NEWEST link (D5). It is the CORRELATED form this file already uses in
+    ///     [`LAST_ACTIVITY`], and it stays that form — there is no `GROUP BY`
+    ///     anywhere in this file and this is not where one starts. `rowid` is
+    ///     SQLite's insert-order counter, so "newest" means "linked last", which is
+    ///     what a badge should follow when a Session has been handed between cards.
+    ///   - The winner is chosen BEFORE the join, which is the whole of D6: a
+    ///     Session whose NEWEST link names a Task that does not resolve gets NO
+    ///     row, not its older link's number. A `LEFT JOIN` or a fallback-to-the-
+    ///     newest-resolving-link would put a number on a Session that no longer
+    ///     wears one. `task_sessions_cascade_with_the_session_and_not_with_the_space`
+    ///     explains why a dangling `task_id` is even possible (no FK, by ADR 0090);
+    ///     `task_numbers_returns_the_most_recent_link_per_session_and_nothing_for_a_gone_task`
+    ///     pins this arm, both halves of it.
+    ///   - `JOIN` (INNER), per D6, for the reason `get_board`'s link statement
+    ///     gives for the same choice: an inner join DROPS a link it cannot resolve
+    ///     rather than inventing a row for it.
+    ///   - `ORDER BY ts.session_id` costs a temp b-tree and buys determinism:
+    ///     without it the row order is whatever the planner reaches first, and every
+    ///     assertion in this file's tests would be a set-comparison instead of an
+    ///     `assert_eq!` on a `Vec`.
+    ///
+    /// The projection is spelled INLINE, not interpolated from
+    /// [`TASK_NUMBER_COLUMNS`], for the reason documented on that const: every term
+    /// is table-qualified by the join. The guard is the behavioural test named
+    /// above, which asserts all three fields positionally.
+    ///
+    /// The `AS` on the outer alias is load-bearing for a test two files away:
+    /// `the_board_link_statement_selects_the_columns_the_const_owns` counts how
+    /// many times `db.rs` spells `task_sessions` with its bare `ts` alias, and
+    /// requires exactly ONE. Write this alias without `AS` and both this statement
+    /// and its inner `ts2` one match that literal — `ts2` starts with `ts` — the
+    /// count goes 1 → 3, and a pin about the board's link statement reddens with a
+    /// message pointing nowhere near this read. `AS` is plain SQLite and costs
+    /// nothing. (The same arithmetic is why this comment does not spell the anchor
+    /// out verbatim: that test greps the whole FILE, doc comments included, so
+    /// quoting its own anchor here would be the third occurrence.)
+    ///
+    /// PANICS ON A POISONED MUTEX, and this site is no exception to the file's own
+    /// rule: this lock guards `Db`'s ONE shared `rusqlite::Connection`, so
+    /// recovering would hand the next caller a connection of unknown state (see
+    /// `record_messages_batch` for the full statement of AGENTS.md's poisoned-mutex
+    /// rule — per-key state recovers, one shared resource does not).
+    pub fn task_numbers(&self) -> Result<Vec<TaskNumberRow>, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = guard.prepare(
+            "SELECT ts.session_id, t.number, ts.stage_slug \
+             FROM task_sessions AS ts \
+             JOIN tasks AS t ON t.id = ts.task_id \
+             WHERE ts.rowid = (SELECT MAX(ts2.rowid) FROM task_sessions AS ts2 \
+                               WHERE ts2.session_id = ts.session_id) \
+             ORDER BY ts.session_id",
+        )?;
+        let rows = stmt
+            .query_map([], task_number_row_from)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     // ── Task artifacts (issue #180, spec §1, ADR 0100) ───────────────────────
     //
     // D1 ships the STORAGE half only: no model-facing verb, no `trait TaskStore`,
@@ -4095,6 +4235,26 @@ CREATE TABLE IF NOT EXISTS task_sessions (
     stage_slug TEXT,
     PRIMARY KEY (task_id, session_id)
 );
+-- (D11) `Db::task_numbers` correlates a `MAX(rowid)` subquery per link row on
+-- `task_sessions.session_id`; without this index that subquery is a full scan for
+-- EVERY row (measured: 53.8 ms → 1.1 ms at 1000 Sessions × 3 links). The table's
+-- PRIMARY KEY is `(task_id, session_id)`, whose LEADING column is `task_id`, so
+-- SQLite cannot use it for a `session_id` lookup — hence a second, single-column
+-- index.
+--
+-- It sits HERE, directly after its own table, and that is not cosmetic: `SCHEMA`
+-- runs as ONE `execute_batch`, so a statement cannot reference a table a LATER
+-- statement in the same batch creates. The plan asked for it beside
+-- `idx_messages_session`, which is legal for `messages` (its table precedes it)
+-- and illegal here; putting it there fails every `Db::open` with
+-- `no such table: main.task_sessions`. `idx_messages_session`'s own position —
+-- immediately after the table it indexes — is the convention this follows.
+--
+-- An INDEX rides the same idempotent batch as the tables and gets NO `gate`
+-- entry, exactly as a new TABLE does: `gate` is a factory for adding a COLUMN to
+-- a table an older database already holds, and `IF NOT EXISTS` already covers
+-- re-open. It moves neither count the schema pins read.
+CREATE INDEX IF NOT EXISTS idx_task_sessions_session ON task_sessions(session_id);
 CREATE TABLE IF NOT EXISTS task_artifacts (
     task_id TEXT NOT NULL,
     key TEXT NOT NULL,

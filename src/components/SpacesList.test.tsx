@@ -1548,30 +1548,91 @@ describe("SpacesList (archive, ADR 0016)", () => {
   // -- (a `for` over expanded/collapsed); the collapsed state is retired with the
   // -- pane's collapse flag, so it is pinned once, for the one state the pane has. --
 
-  it("the command strip reads Tasks, Skills, Agents, Settings", () => {
-    // The strip is the app's ONE navigation surface, so its order is a fact worth
-    // pinning. **Tasks** leads it: the board is where work gets started, and a door
-    // that sits below three others is a door nobody finds.
+  it("the command row above the list is Tasks alone and the band below it reads Skills, Agents, Settings", () => {
+    // The strip used to be ONE four-command row at the top of the pane. It is now
+    // TWO surfaces, and this case pins the split rather than the old order:
     //
-    // This is a deliberate break with the order that came before
-    // (`Skills, Agents, Settings, Tasks`), whose rationale was that the two MODAL
-    // commands stay adjacent and the two VIEW doors stay adjacent. Tasks leading
-    // means the doors are no longer adjacent — Settings is last, with the two modal
-    // commands between it and Tasks. The adjacency was a tiebreaker for where
-    // `Settings` should go, not a property anything depends on: nothing reads
-    // neighbours, the `aria-pressed` behaviour each door carries is per-button and
-    // order-independent (pinned in `App.test.tsx`), and the two modal buttons still
-    // carry no `aria-pressed` at all (pinned below). What the split DOES cost is the
-    // grouping-by-kind cue — you can no longer tell modal from door by where it sits.
+    //  - **Tasks** sits ALONE above the `Sessions` header (D2) — the pane reads
+    //    tasks, then sessions;
+    //  - **Skills / Agents / Settings** form the COMMAND BAND pinned below the
+    //    list's scroller (D1), where a long Session list cannot push them off.
+    //
+    // The resolution idiom is unchanged and deliberate: reach the container
+    // THROUGH a button's `parentElement` rather than by a class or a positional
+    // `children[i]` walk, so the assertion is about "the box that holds this
+    // command" and survives any restyling of the box itself.
+    //
+    // The order-within-the-band fact this replaces (`Tasks, Skills, Agents,
+    // Settings`, one row) had a rationale — the two MODAL commands adjacent, the
+    // two VIEW doors adjacent — that Tasks leading already broke, and the move
+    // breaks further: Settings is now the pane's LAST element-bearing command and
+    // Tasks its FIRST, with the whole list between them. Nothing reads neighbours;
+    // the `aria-pressed` behaviour is per-button and order-independent (pinned in
+    // `App.test.tsx`), and the two modal buttons still carry no `aria-pressed` at
+    // all (pinned below).
     render(<SpacesList />);
-    const strip = screen
-      .getByRole("button", { name: "Skills" })
-      .parentElement!;
+    const tasksRow = screen.getByRole("button", { name: "Tasks" }).parentElement!;
     expect(
-      [...strip.querySelectorAll("button")].map(
+      [...tasksRow.querySelectorAll("button")].map(
         (b) => b.textContent?.trim() ?? "",
       ),
-    ).toEqual(["Tasks", "Skills", "Agents", "Settings"]);
+    ).toEqual(["Tasks"]);
+    const band = screen.getByRole("button", { name: "Skills" }).parentElement!;
+    expect(
+      [...band.querySelectorAll("button")].map(
+        (b) => b.textContent?.trim() ?? "",
+      ),
+    ).toEqual(["Skills", "Agents", "Settings"]);
+    // And they are genuinely two different boxes — a band merged back into the
+    // top row would satisfy one of the two assertions above by accident.
+    expect(band).not.toBe(tasksRow);
+  });
+
+  it("the command band is NOT inside the list scroller (D1: the doors never scroll away)", () => {
+    // THE D1 PROOF, and the one this whole move exists for. ADR 0095 was written
+    // about the Settings gear sitting in the chrome bar's `view === "settings"`
+    // ELSE-arm — a control absent on the very view it opened. Scrolling it off the
+    // bottom of a long Session list is the SAME failure in a different costume, so
+    // the band is a sibling of the scroller, not a descendant. A `className`
+    // assertion on the band would pass while the band sat inside the scroller;
+    // containment is the fact.
+    const { container } = render(<SpacesList />);
+    const scroller = container.querySelector(".overflow-y-auto");
+    expect(scroller).toBeTruthy();
+    // The rows are inside it (so the query found the real scroller and this case
+    // cannot pass on a `null` scroller). The `Sessions` header is NOT — it sits
+    // above the scroller, which is why the row is the sanity probe here.
+    expect(scroller!.contains(screen.getByText("Refactor the parser"))).toBe(true);
+    for (const name of ["Skills", "Agents", "Settings"]) {
+      const door = screen.getByRole("button", { name });
+      expect(
+        scroller!.contains(door),
+        `the ${name} door is inside the scrolling list`,
+      ).toBe(false);
+    }
+    // Tasks is above the list, so it is outside the scroller too (D2).
+    expect(scroller!.contains(screen.getByRole("button", { name: "Tasks" }))).toBe(
+      false,
+    );
+    // And BELOW it, not merely outside it — "outside" alone was already true of the
+    // old strip at the top, so the document-order half is what pins D1's `pinned
+    // BELOW the scroller`. jsdom has no layout, so position is document order.
+    const band = screen.getByRole("button", { name: "Skills" }).parentElement!;
+    expect(
+      scroller!.compareDocumentPosition(band) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "the command band sits above the list instead of below it",
+    ).toBeTruthy();
+    // The band is INSIDE the content region (the `<aside>`'s first child) — it is
+    // pane content, not a floating sibling, and moving it out to the `<aside>`'s
+    // `lastElementChild` would redden the "pane ends with the content region" pin.
+    const contentRegion = (container.firstChild as HTMLElement).firstElementChild!;
+    expect(contentRegion.contains(screen.getByRole("button", { name: "Skills" }))).toBe(
+      true,
+    );
+    // The hairline separator, and it is a STATIC class string (no `cn()` to merge a
+    // border away). `border-t border-border` is the repo's existing separator recipe.
+    expect(band.className).toContain("border-t");
+    expect(band.className).toContain("border-border");
   });
 
   it("a pressed view door wears the active row's bg-selected, and neither modal button ever does", () => {
@@ -1725,6 +1786,84 @@ describe("SpacesList (archive, ADR 0016)", () => {
     expect(() =>
       fireEvent.click(screen.getByRole("button", { name: "Tasks" })),
     ).not.toThrow();
+  });
+
+  it("renders the Task badge before the title on a badged row, and nothing on one the map has no entry for", () => {
+    // D5/D6/D7 for the LIVE/STORED rows. The map arrives at the pane as ONE
+    // subscription and travels DOWN as a prop (the `recencyMap` pattern), so this
+    // fixture seeds `taskNumbers` for exactly one Session id.
+    //
+    // THREE MEASURED FACTS the assertions below are built on, and the first is the
+    // one that makes a naive assertion wrong:
+    //  1. `element.textContent` IS recursive, so the badged title span reads
+    //     `"T12Pinning the badge"`, NOT `"Pinning the badge"`. An exact-equality
+    //     pin copied from a badge-less test above would fail on a row that is
+    //     rendering CORRECTLY.
+    //  2. `getByText` is NOT recursive in the same way — testing-library's
+    //     `getNodeText` concatenates only an element's DIRECT text nodes and
+    //     ignores element children — so `getByText("Pinning the badge")` still
+    //     resolves with the badge nested inside it. THAT is the D7 nesting proof:
+    //     the badge is a child ELEMENT of the title span, not a sibling of it.
+    //  3. Which is exactly why the row's own child count and the `children[2]`
+    //     time-slot read in `SessionListRow.test.tsx` do not move.
+    useSessions.setState({
+      taskNumbers: { "sess-x": { number: 12, stageSlug: "research" } },
+      historySessions: [
+        makeSessionRow({ sessionId: "sess-x", cwd: "/tmp/alpha", title: "Pinning the badge" }),
+        makeSessionRow({ sessionId: "h1", cwd: "/tmp/alpha", title: "Unbadged neighbour" }),
+      ],
+    });
+    render(<SpacesList />);
+
+    const title = screen.getByText("Pinning the badge");
+    // (2) — the query resolved, so the title's own DIRECT text is still exactly the
+    // title, and (1) — the element's recursive text carries the badge ahead of it.
+    expect(title.textContent).toBe("T12Pinning the badge");
+    // The badge is the span's FIRST CHILD ELEMENT and the title its last TEXT node:
+    // `T{n}` reads before the title, and nothing wrapped the title.
+    expect(title.firstChild!.nodeType).toBe(Node.ELEMENT_NODE);
+    expect(title.firstChild!.textContent).toBe("T12");
+    expect(title.lastChild!.nodeType).toBe(Node.TEXT_NODE);
+    expect(title.lastChild!.textContent).toBe("Pinning the badge");
+    // And the row as a whole wears it, ahead of the title in document order.
+    const row = title.closest('[role="button"]')!;
+    expect(row.textContent).toContain("T12");
+    expect(row.textContent!.indexOf("T12")).toBeLessThan(
+      row.textContent!.indexOf("Pinning the badge"),
+    );
+
+    // THE NEGATIVE, in the same render: the row the map has no entry for renders
+    // byte-identically to the row it was before this prop existed — no node, no
+    // character. `taskBadgeOf` answers `null` for an absent key, and
+    // `TaskNumberBadge` renders NOTHING for `null` (an empty element would eat a
+    // flex `gap` slot).
+    const plain = screen.getByText("Unbadged neighbour");
+    expect(plain.textContent).toBe("Unbadged neighbour");
+    expect(plain.firstChild!.nodeType).toBe(Node.TEXT_NODE);
+  });
+
+  it("renders the Task badge on an ARCHIVED row too (the same slot, so both sections stay aligned)", () => {
+    // The Archived section is the second call site of the same `SessionListRow`
+    // slot, and the two sections must stay title-aligned — which they only do if
+    // the badge nests in the same place in both. Wiring the live rows alone (the
+    // obvious half-implementation) leaves this red.
+    useSessions.setState({
+      sessions: [],
+      historySessions: [],
+      archivedSessions: [
+        makeSessionRow({ sessionId: "a-badge", cwd: "/tmp/alpha", archived: true, title: "Archiving with a badge" }),
+      ],
+      messages: {},
+      activeSessionId: null,
+      taskNumbers: { "a-badge": { number: 7, stageSlug: null } },
+    });
+    render(<SpacesList />);
+    // The section is collapsed by default (it holds no active row here).
+    fireEvent.click(screen.getByText("Archived"));
+    const title = screen.getByText("Archiving with a badge");
+    expect(title.textContent).toBe("T7Archiving with a badge");
+    expect(title.firstChild!.textContent).toBe("T7");
+    expect(title.lastChild!.nodeType).toBe(Node.TEXT_NODE);
   });
 
   it("the Sessions header + gets the no-Space dialog fallback", () => {

@@ -13,6 +13,7 @@ import {
   reorderTasks,
   sessionRecency,
   startTaskSession,
+  taskNumbers,
   listenAttentionAlertClicked,
   listenInteractiveRequestClose,
   listenSessionTitled,
@@ -70,6 +71,12 @@ vi.mock("./lib/tauri", async () => {
     // (The "~40 reds" this comment used to claim was never measured; the file's
     // other boot mocks do not gate the whole suite.)
     sessionRecency: vi.fn().mockResolvedValue([]),
+    // The Task badge fetch (spec D9). REQUIRED for the same reason as the three
+    // above: this factory spreads `importActual`, so an un-mocked `taskNumbers`
+    // fires a real `invoke` in jsdom. It is NOT part of the boot `Promise.all`, so
+    // its rejection would not blank the sidebar — but it would log a failure no
+    // one reads on every test in this file.
+    taskNumbers: vi.fn().mockResolvedValue([]),
     listSkills: vi.fn().mockResolvedValue([]),
     // `startSession`: required for the same reason as the catalog fetches below
     // — this factory spreads `importActual`, so the ⌘N chord's store command
@@ -2206,6 +2213,54 @@ describe("App (the ADR 0075 recency fetch at boot)", () => {
     // `sessions.test.ts`, which drives `setSpaces` directly. What THIS file can
     // pin is that the fetch happens, once, and that both maps are filled by the
     // single payload.
+  });
+});
+
+describe("App (the Task badge fetch at boot, spec D9)", () => {
+  // Same hand-written key list as the recency describe above, and it NAMES the
+  // new map: a badge map seeded by this block's boot fetch would otherwise
+  // survive into a later test in this file.
+  const clearStore = () =>
+    useSessions.setState({
+      sessions: [],
+      historySessions: [],
+      archivedSessions: [],
+      spaces: [],
+      activeSessionId: null,
+      activeSpacePath: null,
+      messages: {},
+      sessionRecency: {},
+      sessionOrder: {},
+      taskNumbers: {},
+    });
+  beforeEach(clearStore);
+  afterEach(clearStore);
+
+  it("boot fetches taskNumbers on its own and fills the badge map", async () => {
+    vi.mocked(taskNumbers).mockResolvedValueOnce([
+      { sessionId: "s1", taskNumber: 7, stageSlug: "implement" },
+      { sessionId: "s2", taskNumber: 3, stageSlug: null },
+    ]);
+    render(<App />);
+    // Drain the boot effect the way this file already does.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // EXACTLY once: one app-wide read at boot is the whole cost model (spec D3 —
+    // never one fetch per Space tab, and never one per rendered row).
+    expect(taskNumbers).toHaveBeenCalledTimes(1);
+    // The rows land PAIRED (number + frozen lane), keyed by Session — the shape
+    // `taskBadgeOf` reads.
+    expect(useSessions.getState().taskNumbers).toEqual({
+      s1: { number: 7, stageSlug: "implement" },
+      s2: { number: 3, stageSlug: null },
+    });
+    // And the trio is UNTOUCHED by this: the badge fetch is not a `Promise.all`
+    // arm, so it neither adds a round trip to the trio nor shares its fate. The
+    // trio's own count is pinned by the boot trio test above and stays as named.
+    expect(listSessions).toHaveBeenCalledTimes(1);
+    expect(listSpaces).toHaveBeenCalledTimes(1);
+    expect(sessionRecency).toHaveBeenCalledTimes(1);
   });
 });
 

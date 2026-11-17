@@ -36,6 +36,7 @@ import {
   reorderSpaces,
   reorderTasks,
   sessionRecency,
+  taskNumbers,
   type AgentDefinitionReportDto,
   type AttentionAlertClickedPayload,
   type WindowFrameState,
@@ -641,6 +642,36 @@ describe("sessionRecency (the ADR 0075 recency IPC boundary)", () => {
     // must not be able to look like a `now_ms()` value, so a wrapper that
     // invented or defaulted `lastActiveAt` cannot pass this green.
     expect(mockedInvoke).toHaveBeenCalledWith("session_recency");
+    expect(mockedInvoke).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe("taskNumbers (the Task badge IPC boundary, spec D3/D12)", () => {
+  beforeEach(() => {
+    mockedInvoke.mockReset();
+  });
+
+  it("invokes `task_numbers` with no payload", async () => {
+    // Same trap as `session_recency` above: the Rust command is
+    // `commands::tasks::task_numbers` and NOTHING in this repo drives it over IPC
+    // in a test (the Rust tests call `Db::task_numbers` directly), so a renamed
+    // command or a stray argument object is a runtime-only failure in the desktop
+    // app. Pinned to the ZERO-arg call: the command takes only
+    // `State<Arc<Db>>`, so `{}` would be a DIFFERENT call to `invoke`.
+    // The rows are the real wire shape — camelCase, and `stageSlug` carrying an
+    // explicit `null` for the nullable column, because a fixture that omitted it
+    // could not tell a `null` lane from an absent one.
+    const payload = [
+      { sessionId: "s1", taskNumber: 7, stageSlug: "implement" },
+      { sessionId: "s2", taskNumber: 3, stageSlug: null },
+    ];
+    mockedInvoke.mockResolvedValue(payload);
+    await expect(taskNumbers()).resolves.toEqual(payload);
+    // UNCHANGED: the store keys them by `sessionId` itself and pairs the number
+    // with the lane in `setTaskNumbers` — a wrapper that tidied or pre-keyed the
+    // rows would be red here.
+    expect(mockedInvoke).toHaveBeenCalledWith("task_numbers");
     expect(mockedInvoke).toHaveBeenCalledTimes(1);
   });
 });

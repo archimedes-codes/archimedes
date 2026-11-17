@@ -396,6 +396,20 @@ function App() {
     // sidebar and the settings page share one fetch rather than one each — and
     // so a provider refresh has a single place to replace it.
     void useModelCatalog.getState().loadModels();
+    // The Task badge map (spec D9): deliberately NOT a fourth `Promise.all` arm. A
+    // rejection there would take `setHistorySessions` / `setSessionRecency` /
+    // `setSpaces` down with it and land the sidebar empty, so this reads like the
+    // model catalog below it — its own fetch, its own `.catch`, no shared fate.
+    // No ordering constraint either: a late arrival paints a badge a tick later and
+    // the Landing Session decision never reads it.
+    //
+    // The fetch lives in the store now (`refreshTaskNumbers`), because the launch
+    // path reads the SAME map and the two must not each carry their own staleness
+    // rule: a whole-map replace whose replies can land in either order needs one
+    // owner for "which reply is still current". `refreshTaskNumbers` never rejects,
+    // so the no-shared-fate property holds by construction, not by this call site
+    // remembering to attach a `.catch`.
+    void useSessions.getState().refreshTaskNumbers();
   }, []);
 
   // The active **Session**'s `cwd` (= its **Space**'s folder), read through the

@@ -12,6 +12,7 @@ import {
   setSessionArchived as setSessionArchivedCommand,
   setSpaceTrusted as setSpaceTrustedCommand,
   startSession as startSessionCommand,
+  taskNumbers as taskNumbersCommand,
   type AcpSessionUpdate,
   type CloseReasonStr,
   type CompactionReason,
@@ -20,6 +21,8 @@ import {
   type SessionRecency,
   type SpaceRow,
   type StopReason,
+  type TaskBadge,
+  type TaskNumberRow,
 } from "../lib/tauri";
 import { basenameOfPath } from "../lib/paths";
 import { firstPromptLabelOf } from "../lib/sessionTitle";
@@ -100,7 +103,7 @@ export function discardSessionMessages(sessionId: string): void {
 }
 
 export type SessionClearOpts = {
-  /** The 11 session-keyed maps to clear (an independent opt-in per map). */
+  /** The 12 session-keyed maps to clear (an independent opt-in per map). */
   maps: readonly SessionKeyedField[];
   /** Also clear the `sessions`/`historySessions`/`archivedSessions` row lists of this id. */
   rows?: boolean;
@@ -212,7 +215,7 @@ export function clearSessionState(
  * chain — ADR 0073's amendment enumerates all eight), so an unhandled version of
  * this degrades every untitled Session in
  * the sidebar, the tab strip's close-confirm, Settings → Detached, the Task
- * detail dialog and the side pane to a folder name at once. A twelfth
+ * detail dialog and the side pane to a folder name at once. A thirteenth
  * session-keyed map is forbidden by the `SESSION_KEYED_FIELDS` pin, so the label
  * goes where `costUsd` and `contextUsage` already go: onto the `SessionInfo` row
  * of every list holding the id, and `lib/sessionLookup`'s walk — which those
@@ -619,7 +622,7 @@ export function detachedSessions(
 
 /**
  * THE session-keyed fields of `SessionsState`, in interface order — the ONE
- * hand-written list of the store's session-keyed maps, current count **11**.
+ * hand-written list of the store's session-keyed maps, current count **12**.
  * Adding a session-keyed `Record<string, …>` field to `SessionsState` without
  * adding it here fails the type-level completeness pin in
  * `src/store/sessions.test.ts` (`pnpm build`, not merely a runtime test).
@@ -634,6 +637,10 @@ export const SESSION_KEYED_FIELDS = [
   "closeReasons",
   "sessionRecency",
   "sessionOrder",
+  // (spec D3/D12) The Task badge map, in INTERFACE order (right after
+  // `sessionOrder`, where the field is declared — the list is pinned to that
+  // order, so an append at the END fails `pnpm build`).
+  "taskNumbers",
   "messages",
   "configOptions",
   "contextUsage",
@@ -756,6 +763,38 @@ export interface SessionsState {
    * by `mergeSessionOrder` via `sortByManualOrder`.
    */
   sessionOrder: Record<string, number>;
+  /**
+   * The **Task badge** per Session id — the per-Space `tasks.number` of the most
+   * recently LINKED Task that still resolves, with the **Stage** the link was made
+   * in (spec D3/D12). Boot-fetched from the app-wide `taskNumbers()` command, and
+   * like `sessionRecency` it is a SNAPSHOT: `setTaskNumbers` replaces the WHOLE
+   * map, because the read answers "every Session with a live link as of now" and a
+   * stale badge must not outlive the link it described.
+   *
+   * A Session with no badge has NO KEY — never a `null` value. The Rust read
+   * INNER JOINs `tasks`, so there is no row to send, and an absent key and a real
+   * number must never be collapsible (ADR 0082's rule for cost, same shape).
+   *
+   * Read ONLY through `lib/taskNumber`'s `taskBadgeOf` — never indexed by a call
+   * site, or the one rule has two owners. Being a session-keyed `Record`, it is in
+   * `SESSION_KEYED_FIELDS`, which is what makes `deleteSession` drop the entry
+   * while a Session CLOSE keeps it: a stored Session still has its Task.
+   */
+  taskNumbers: Record<string, TaskBadge>;
+  /** Replace the whole badge map from `taskNumbers()`'s rows (boot, its OWN fetch — spec D9, not a `Promise.all` arm). */
+  setTaskNumbers: (rows: TaskNumberRow[]) => void;
+  /**
+   * Read the badge map and publish it — the ONE owner of that fetch, so both call
+   * sites (boot's own read, and a Task launch's refetch) share one staleness rule
+   * instead of each inventing one.
+   *
+   * A reply is applied only if no LATER refresh has been dispatched since it
+   * started (`taskNumbersEpoch`), which is what stops an older snapshot from
+   * erasing badges a newer one already published. Never rejects: the badge is
+   * cosmetic next to a Session that has genuinely started, so a failed read logs
+   * and resolves.
+   */
+  refreshTaskNumbers: () => Promise<void>;
   /** Replace BOTH maps from `sessionRecency()`'s rows (boot, alongside `setHistorySessions`). ONE call, ONE IPC round-trip's payload: the two maps must never be observable out of step. */
   setSessionRecency: (rows: SessionRecency[]) => void;
   /**
@@ -1314,6 +1353,22 @@ function clientSystemMessageId(): string {
   return `client:${++clientMessageSeq}`;
 }
 
+// The **Task badge** map's publish epoch — the same shape `store/tasks.ts`'s
+// `loadEpoch` uses, for the same reason. `taskNumbers()` is a SNAPSHOT read and
+// `setTaskNumbers` replaces the WHOLE map, so with two reads in flight (boot's,
+// and a Task launch's refetch — two independent call sites that never see each
+// other) whichever reply arrives LAST would own the map. Arrival order is
+// precisely what the bug is made of, so it cannot also be the tie-breaker: the
+// ticket is taken at DISPATCH, and a reply is applied only while it is still the
+// newest thing dispatched. An older read that lands late is dropped, and the
+// newer badges it knows nothing about survive.
+//
+// A module `let`, not store state — so `resetStores()` cannot reach it, exactly
+// as the four above. That is safe here rather than merely tolerated: every
+// refresh takes a NEW, higher ticket, so a refresh left in flight by one test is
+// discarded the moment the next one starts.
+let taskNumbersEpoch = 0;
+
 export const useSessions = create<SessionsState>((set, get) => ({
   sessions: [],
   historySessions: [],
@@ -1324,6 +1379,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
   closeReasons: {},
   sessionRecency: {},
   sessionOrder: {},
+  taskNumbers: {},
   messages: {},
   history: {},
   configOptions: {},
@@ -1888,6 +1944,38 @@ export const useSessions = create<SessionsState>((set, get) => ({
     );
     committedReorder.sessions = sessionOrder;
     set({ sessionRecency, sessionOrder });
+  },
+
+  setTaskNumbers: (rows) => {
+    // WHOLESALE replace, the same shape as `setSessionRecency` (see the field
+    // doc): the read is a snapshot of every Session that has a live link NOW, so
+    // a badge must not outlive the link that produced it. The row's TWO fields
+    // are paired into one `TaskBadge` here — the only place the wire shape and the
+    // view shape meet — so no call site can hold a number without its lane.
+    const taskNumbers = Object.fromEntries(
+      rows.map((r) => [r.sessionId, { number: r.taskNumber, stageSlug: r.stageSlug }]),
+    );
+    set({ taskNumbers });
+  },
+
+  refreshTaskNumbers: async () => {
+    // The ticket is taken BEFORE the await: it records dispatch order, and
+    // dispatch order is the only order that means anything here (see
+    // `taskNumbersEpoch`).
+    taskNumbersEpoch += 1;
+    const ticket = taskNumbersEpoch;
+    try {
+      const rows = await taskNumbersCommand();
+      // A newer refresh has been dispatched since: its snapshot describes a world
+      // at least as new as this one, so THIS reply is the stale half and it is
+      // dropped rather than allowed to replace the map.
+      if (ticket !== taskNumbersEpoch) return;
+      get().setTaskNumbers(rows);
+    } catch (err) {
+      // Logged, never rethrown — the caller's own work (boot, or a launch that has
+      // genuinely succeeded) must not fail because a cosmetic map would not refresh.
+      console.error("the task badge map did not refresh", err);
+    }
   },
 
   archiveSession: async (sessionId) => {
@@ -2470,7 +2558,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
     // the one identity of the request that a release cannot reset, because the
     // released window's cursor is gone with it — a fresh tail window points at a
     // different oldest row, so the reply is refused on the DATA rather than on a
-    // counter that has to outlive the window (adding a 12th session-keyed map for
+    // counter that has to outlive the window (adding a 13th session-keyed map for
     // that is forbidden by the `SESSION_KEYED_FIELDS` pin).
     const beforeId = sessionHistory.oldestRowId;
     set((state) => ({

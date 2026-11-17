@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
 import { cn } from "./lib/utils";
 import { RowButton } from "./RowButton";
+import { TaskNumberBadge } from "./TaskNumberBadge";
 import type { DragReorderHandlers, DropEdge } from "../hooks/useDragReorder";
+import type { TaskBadge } from "../lib/tauri";
 
 /**
  * One **Session** row of the sidebar, ONCE (finding 3, Task C4).
@@ -31,14 +33,30 @@ import type { DragReorderHandlers, DropEdge } from "../hooks/useDragReorder";
  * THREE CONSTRAINTS THIS FILE EXISTS TO RESPECT
  * ---------------------------------------------------------------------------
  *
- * **`textContent` must be the TITLE ALONE** when there is no time.
- * `SpacesList.test.tsx`'s "renders an empty time slot (no time text) for a
- * session with no loaded messages" asserts `row!.textContent === "alpha"` — exact
- * equality, the tightest pin on this surface. Nothing here may add a node or a
- * character of text: no wrapper label, no `· {spaceName}` suffix (the Archived
- * section is Space-scoped, so that suffix was deleted deliberately), no text
- * inside the action buttons (they carry `aria-label`s and an icon, and jsdom
- * keeps them in the DOM even though CSS hides them until hover).
+ * **`textContent` must be the TITLE ALONE** when there is no time — and when
+ * there is no **Task badge**. That second half is new with `badge` below, and it
+ * is conditional rather than absolute: `badge` renders a `TaskNumberBadge` as an
+ * ELEMENT CHILD of the masked title span (D7), so a badged row's `textContent`
+ * carries the badge's `T{n}` ahead of the title (`"T12alpha1h"`). What is
+ * unchanged is what the queries actually read. `getByText` matches an element's
+ * OWN text — `getNodeText` concatenates only its DIRECT text nodes and ignores
+ * element children — so the title span still resolves for `getByText("alpha")`
+ * with a badge inside it, and every `closest('[role="button"]')` / `rowOf()`
+ * route still lands on the row through it.
+ *
+ * The consequence, stated plainly: the existing exact-`textContent` pins —
+ * `SpacesList.test.tsx`'s `row!.textContent === "alpha"`, this file's
+ * `toBe("alpha")` / `toBe("alpha1h")` sites — hold **for fixtures with no
+ * badge**, which is every fixture that predates this prop and every row the
+ * Archived section draws. A fixture that DOES pass a badge must expect the `T{n}`
+ * prefix; `SessionListRow.test.tsx`'s badge describe is where that shape is
+ * pinned, on its own fixture, so it cannot disturb the badge-less pins.
+ *
+ * Nothing else here may add a node or a character of text: no wrapper label, no
+ * `· {spaceName}` suffix (the Archived section is Space-scoped, so that suffix
+ * was deleted deliberately), no text inside the action buttons (they carry
+ * `aria-label`s and an icon, and jsdom keeps them in the DOM even though CSS
+ * hides them until hover).
  *
  * **NO DOM LEVEL.** Every child is a DIRECT child of the `role="button"`
  * element. `SpacesList.test.tsx`'s drag block compares row positions with
@@ -46,7 +64,9 @@ import type { DragReorderHandlers, DropEdge } from "../hooks/useDragReorder";
  * ancestry. Same lesson C6 recorded for the picker shell: a React boundary is
  * free, an element is not. THIS is the rule the drop indicator obeys: it is a
  * CLASS on the row (`dropEdge` below), never a placeholder node — the same
- * contract `useDragReorder`'s header records for the same reason.
+ * contract `useDragReorder`'s header records for the same reason. The Task badge
+ * is NOT an exception to it and NOT a fifth child: it nests INSIDE the title
+ * span, so the row's own child count and order are exactly what they were.
  *
  * **ONE `role="button"`.** The row is the affordance (`RowButton`); its hover
  * actions are plain `<button>` elements with no `role`. `RowButton` is
@@ -100,6 +120,13 @@ export interface SessionListRowProps {
   leading?: ReactNode;
   /** Hover-revealed action buttons, in the order the site wants them. */
   actions?: ReactNode;
+  /** The **Task badge** for this Session — the per-Space `tasks.number` of the
+   *  most recently LINKED Task, with the **Stage** it was linked from in the
+   *  tooltip (spec D5/D6/D7/D12). `null` or absent renders NOTHING: no node, no
+   *  gap, so a badge-less row serialises exactly as it did before this prop
+   *  existed. Rendered as the first child INSIDE the masked title span (D7), not
+   *  as a child of the row — see the header's NO DOM LEVEL note. */
+  badge?: TaskBadge | null;
   /** Open the Session (click, or Enter). */
   onOpen: () => void;
   /** The `useDragReorder` spread for THIS row (`dragProps(id)`), or nothing for
@@ -116,6 +143,7 @@ export function SessionListRow({
   time = null,
   leading,
   actions,
+  badge,
   onOpen,
   drag,
   dropEdge = null,
@@ -162,6 +190,14 @@ export function SessionListRow({
             "linear-gradient(to right, black calc(100% - 1.5rem), transparent)",
         }}
       >
+        {/* THE TASK BADGE (D7): the FIRST child inside the masked title span,
+            immediately before the title's text — NOT a child of `RowButton`. A
+            fifth row child would redden the `toHaveLength(4)` sites, the
+            `children[2]` time-slot read and the `lastElementChild` action read
+            on EVERY row; nested, none of them move. `badge ?? null` keeps the
+            component's `TaskBadge | null` prop the single place absence is
+            decided, so `undefined` and `null` answer identically. */}
+        <TaskNumberBadge badge={badge ?? null} />
         {title}
       </span>
       {/* Every row — live, stored or archived — swaps the time for its actions at

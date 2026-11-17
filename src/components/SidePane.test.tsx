@@ -75,6 +75,12 @@ beforeEach(() => {
     configOptions: {},
     contextUsage: {},
     compacting: {},
+    // The **Task badge** map (boot-fetched, wholesale-replaced). Reset here for
+    // the same reason the keys above are: this is a partial `setState`, so a
+    // badge seeded by one case would otherwise paint in the NEXT case's header —
+    // and the "no active Session renders nothing" pin below reads `container`'s
+    // whole text, so a leaked row would have to be a badge on `null` to bite.
+    taskNumbers: {},
   });
   // The block now derives the Model picker's rows from the CATALOG store (issue
   // #154). This file's `beforeEach` did not reset it — the catalog store is NOT
@@ -1364,5 +1370,112 @@ describe("SidePane (the status panel)", () => {
     // an empty child that still eats a `gap-4` slot.
     const column = container.querySelector(".overflow-y-auto > div") as HTMLElement;
     expect(column.children).toHaveLength(2);
+  });
+});
+
+describe("SidePane — the Task badge in the title (D5/D6/D7)", () => {
+  // The Side pane's header IS a title element of its own (`SessionListRow` is not
+  // involved), so this surface takes `TaskNumberBadge` directly. Two things are
+  // pinned here that the component test of the badge itself cannot pin: WHERE it
+  // sits (first child inside the masked title div, before the title's text node)
+  // and what it costs (NOTHING — the scroll column stays at two children and the
+  // cost line stays the child immediately after the title's).
+  //
+  // The nesting proof is `getByText` and not `textContent`: `textContent` IS
+  // recursive, so a badged title reads `"T7the prompt"`, while testing-library's
+  // `getNodeText` — what `getByText` matches on — concatenates only an element's
+  // DIRECT text nodes, so the title div still resolves for its own title.
+
+  it("shows T{n} before the title for a linked Session, nested inside the masked title div", () => {
+    useInteractive.setState({ cost: {} });
+    useSessions.setState({
+      activeSessionId: "main1",
+      messages: { main1: [{ kind: "user", text: "the prompt", at: 1 }] },
+      taskNumbers: { main1: { number: 7, stageSlug: "research" } },
+    });
+    const { container } = render(<SidePane />);
+
+    // THE NESTING PROOF: the title still resolves by its own text even though
+    // the badge is inside it. If the badge ever becomes a SIBLING of this div the
+    // assertion below still holds but the child-count one does not — both are
+    // here on purpose.
+    const title = screen.getByText("the prompt");
+    // `textContent` IS recursive, so a badged title carries the badge's `T7`
+    // first — the reading order the user gets (D7).
+    expect(title.textContent).toBe("T7the prompt");
+    // And the badge is the div's FIRST child, with the title's text node after
+    // it — not appended, not wrapped.
+    expect(title.firstChild).toBe(title.firstElementChild);
+    expect(title.firstElementChild!.textContent).toBe("T7");
+    expect(title.lastChild!.nodeType).toBe(Node.TEXT_NODE);
+    // The tooltip is the FROZEN lane (D12): the Stage the link was made in, not
+    // where the card sits now.
+    expect(title.firstElementChild!.getAttribute("title")).toBe(
+      "Task T7 — started in research",
+    );
+    // Nested, not a sibling: the column's FIRST child is still the title div
+    // itself, so the badge is inside it and not a new column child.
+    const column = container.querySelector(
+      ".overflow-y-auto > div",
+    ) as HTMLElement;
+    expect(column.children[0]).toBe(title);
+  });
+
+  it("costs NO scroll-column child: the badge leaves the column at two and the cost line right after the title", () => {
+    // The reason the badge is nested and not a sibling. The column's child count
+    // is pinned at 2 and the cost line is pinned to be the child immediately
+    // after the title's; a third child (or a badge pushed in between) reddens a
+    // #86-class gap pin on EVERY badged pane.
+    useInteractive.setState({ cost: {} });
+    useSessions.setState({
+      activeSessionId: "main1",
+      messages: { main1: [{ kind: "user", text: "the prompt", at: 1 }] },
+      taskNumbers: { main1: { number: 7, stageSlug: "research" } },
+    });
+    useInteractive.getState().applyCost("main1", { costUsd: 0.15 });
+    const { container } = render(<SidePane />);
+
+    const cost = container.querySelector(
+      '[data-testid="session-cost"]',
+    ) as HTMLElement;
+    expect(cost.textContent).toBe("$0.15");
+    const column = cost.parentElement as HTMLElement;
+    expect(column.children).toHaveLength(2);
+    expect(column.children[0]).toBe(screen.getByText("the prompt"));
+    // The cost line is still the column child immediately after the title's —
+    // the badge slipped in BETWEEN those two and this pin is what catches it.
+    expect(column.children[1]).toBe(cost);
+  });
+
+  it("renders no badge for a Session the map has no row for (absent, not T-undefined)", () => {
+    // The map's missing key is the whole negative answer (the Rust read INNER
+    // JOINs `tasks`, so an unlinked Session sends no row at all). A `T` with no
+    // number behind it is the failure mode this pins.
+    useInteractive.setState({ cost: {} });
+    useSessions.setState({
+      activeSessionId: "main1",
+      messages: { main1: [{ kind: "user", text: "the prompt", at: 1 }] },
+      taskNumbers: { other_session: { number: 9, stageSlug: null } },
+    });
+    render(<SidePane />);
+    const title = screen.getByText("the prompt");
+    // Unchanged from a badge-less pane: no `T` text, and no element inside the
+    // title div at all (`TaskNumberBadge` returns `null`, so it eats no `gap`).
+    expect(title.textContent).toBe("the prompt");
+    expect(title.firstElementChild).toBeNull();
+    expect(screen.queryByText(/^T\d+$/)).toBeNull();
+  });
+
+  it("renders no badge with NO active Session (the map holds rows, `taskBadgeOf` has no id to read)", () => {
+    // `taskBadgeOf` takes `string | null` precisely so this case needs no local
+    // guard in the pane — and the pane's whole-frame text is the proof: the
+    // config block's ONE stub label, exactly as it was before the badge existed.
+    useInteractive.setState({ cost: {} });
+    useSessions.setState({
+      activeSessionId: null,
+      taskNumbers: { main1: { number: 7, stageSlug: "research" } },
+    });
+    const { container } = render(<SidePane />);
+    expect(container.textContent).toBe("Model");
   });
 });

@@ -475,6 +475,40 @@ describe("the board pills' fill, per palette (the default-dark collision)", () =
     });
   }
 
+  it("src/components/TaskNumberBadge.tsx: the badge pill wears the overlay, never the page step", () => {
+    // THE CENSUS EXCEPTION, and it is deliberate: this file's `PILLS` array above
+    // exists to force the BOARD's pills ONTO `bg-background`, because a board
+    // pill's job is to differ from the CARD it sits on and the page step is the
+    // only thing that does. The Task badge answers a DIFFERENT question — its job
+    // is to differ from the CHROME — and the page step IS the chrome. Measured,
+    // `bg-background` against `--color-frame` is EXACTLY **1.00** in
+    // `.theme-default-dark` (the boot default), `.theme-everforest-dark` and
+    // `.theme-rose-pine-dark`: byte-identical to the sidebar the badge would sit
+    // on, i.e. an invisible badge. `bg-surface` is an alpha OVERLAY
+    // (`rgba(255,255,255,.05)` / `rgba(13,13,13,.03)`), a delta from whatever it
+    // lands on, so it cannot collapse on any of the badge's five host surfaces
+    // (`bg-frame`, `bg-inspector`, `bg-chat`, `bg-card`, plus the row's own
+    // `bg-selected` / `bg-surface-hover` states); worst measured case across all
+    // 14 palette readings is 1.058. DO NOT "unify" this fill with `TaskCard.tsx`'S
+    // pill for consistency — that is the change this gate exists to refuse.
+    const cls = code("src/components/TaskNumberBadge.tsx");
+    // The SAME regex the PILLS loop uses, so the two gates cannot drift apart in
+    // what they consider a pill class literal.
+    const literals = [...cls.matchAll(/"([^"]*rounded-full[^"]*)"/g)].map((m) => m[1]!);
+    // The anti-dodge the census uses: a badge that lost `rounded-full` would
+    // otherwise slip out of this gate by ceasing to look like a pill.
+    expect(literals.length, "TaskNumberBadge has no rounded-full class literal left").toBeGreaterThanOrEqual(1);
+    for (const literal of literals) {
+      expect(literal, "the Task badge lost its overlay fill (bg-surface)").toMatch(
+        /(^|\s)bg-surface(\s|$)/,
+      );
+      expect(
+        literal,
+        "the Task badge was moved onto bg-background, which measures 1.00 against --color-frame in default-dark, everforest-dark and rose-pine-dark — invisible on the Session list",
+      ).not.toMatch(/(^|\s)bg-background(\s|$)/);
+    }
+  });
+
   it("keeps the board island itself on the chat plane — the pill fix is not a ban", () => {
     // The board root is the ADR 0097 island (`m-1 rounded-xl bg-chat`, pinned by
     // `TasksBoard.test.tsx`). The defect was a PILL wearing the island plane, not

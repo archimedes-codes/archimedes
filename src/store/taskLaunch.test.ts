@@ -16,9 +16,11 @@ import {
   moveTask,
   sendPrompt,
   startTaskSession,
+  taskNumbers,
   type SessionInfo,
   type SkillInfo,
   type StageWithTasks,
+  type TaskNumberRow,
   type TaskRow,
 } from "../lib/tauri";
 
@@ -66,6 +68,13 @@ vi.mock("../lib/tauri", async () => {
     getTask: vi.fn(),
     editTask: vi.fn(),
     loadHistory: vi.fn(),
+    // The **Task badge** map's boot fetch, which `startAndSendLinked` re-calls after
+    // a launch (D10). It MUST be mocked here for the reason this file's header
+    // records and AGENTS.md records for `App.test.tsx`: the factory spreads
+    // `importActual`, so an un-mocked `taskNumbers` resolves to the REAL wrapper,
+    // which calls `invoke` and rejects outside a webview — every launch case in this
+    // file would then be pinning a rejection it cannot see.
+    taskNumbers: vi.fn().mockResolvedValue([]),
   };
 });
 
@@ -194,6 +203,10 @@ beforeEach(() => {
   vi.mocked(sendPrompt).mockResolvedValue("end_turn");
   vi.mocked(moveTask).mockResolvedValue({ onEnter: "none", boostNote: null });
   vi.mocked(createTask).mockResolvedValue(taskRow());
+  // Restated after `clearAllMocks` for the same reason `deleteSession`'s default is
+  // restated in `SessionsSection.test.tsx`: a case that installed a one-shot
+  // rejection below must not be able to decide what THIS case's refetch answers.
+  vi.mocked(taskNumbers).mockResolvedValue([]);
 });
 
 describe("taskLaunch — the discuss launch", () => {
@@ -777,5 +790,142 @@ describe("taskLaunch — re-entrancy", () => {
     ).rejects.toThrow("transient");
     await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
     expect(startTaskSession).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("taskLaunch — the Task badge map refetch after a launch (D10)", () => {
+  // The badge map is BOOT-fetched, so the link `startTaskSession` has just written
+  // is not in it — the new Session's row would sit badge-less until a reload. The
+  // fix is REFETCHED rather than patched here, because "which of a Session's links
+  // is newest" is `MAX(rowid)`'s answer in Rust and an optimistic write would give
+  // that rule a second owner in the renderer (the same reason `store/tasks.ts`
+  // refuses to invent a link on `linkSession`).
+  //
+  // Both launch paths are pinned because the refetch sits in `startAndSendLinked`,
+  // the helper the two share — a case for one path alone would survive the helper
+  // call being replaced by two call-site copies that drifted apart.
+
+  const rows = (): TaskNumberRow[] => [
+    { sessionId: "sess_new", taskNumber: 7, stageSlug: "research" },
+  ];
+
+  it("refetches the map and fills the store after a launch from a column", async () => {
+    seedBoard(
+      column("backlog", [taskRow()]),
+      column("discuss", [], { label: "Discuss", skill: "discuss" }),
+    );
+    vi.mocked(taskNumbers).mockResolvedValue(rows());
+
+    await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
+
+    // The fetch happened, and it took NO argument — the read is app-wide (D3), not
+    // per-Space, so a launch cannot scope it to the Space it came from.
+    expect(taskNumbers).toHaveBeenCalledTimes(1);
+    // The store holds the ROWS PAIRED into badges — `setTaskNumbers`'s job, and the
+    // reason the launch path hands over rows instead of a map.
+    expect(useSessions.getState().taskNumbers).toEqual({
+      sess_new: { number: 7, stageSlug: "research" },
+    });
+    // The launch still did its own job: the Session is listed and the prompt is out.
+    expect(useSessions.getState().sessions.map((s) => s.sessionId)).toEqual([
+      "sess_new",
+    ]);
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("refetches the map after a DRAFT create-and-launch too (the shared helper)", async () => {
+    seedBoard(
+      column("backlog", [], { label: "Backlog" }),
+      column("discuss", [], { label: "Discuss", skill: "discuss" }),
+    );
+    vi.mocked(taskNumbers).mockResolvedValue(rows());
+
+    await createTaskFromDraft(
+      SPACE,
+      "Wire the board",
+      null,
+      destination(),
+      CATALOGS(),
+    );
+
+    expect(taskNumbers).toHaveBeenCalledTimes(1);
+    expect(useSessions.getState().taskNumbers).toEqual({
+      sess_new: { number: 7, stageSlug: "research" },
+    });
+  });
+
+  it("starts NOTHING and fetches no map for a save-only create (no link, so nothing to refresh)", async () => {
+    // The negative: the refetch rides the launch, not the click. A card that was
+    // only filed has no link, so a fetch here would be a round trip for a fact that
+    // cannot have changed.
+    seedBoard(
+      column("backlog", [], { label: "Backlog" }),
+      column("discuss", [], { label: "Discuss", skill: "discuss" }),
+    );
+    await createTaskFromDraft(SPACE, "Wire the board", null, SAVE_ONLY, CATALOGS());
+    expect(startTaskSession).not.toHaveBeenCalled();
+    expect(taskNumbers).not.toHaveBeenCalled();
+  });
+
+  it("a slow refetch does not hold up the prompt dispatch (the dispatch stays ahead of the await)", async () => {
+    // `sendLaunchMessage` is deliberately NOT awaited, and an awaited `await
+    // taskNumbers()` placed BEFORE it would quietly undo that: measured with the
+    // refetch held open, `sendPrompt` had not been called while it was pending, so a
+    // slow cosmetic fetch would sit between a click and the wire. This pins the
+    // ordering that makes the comment true.
+    seedBoard(
+      column("backlog", [taskRow()]),
+      column("discuss", [], { label: "Discuss", skill: "discuss" }),
+    );
+    const slots: { release?: (v: TaskNumberRow[]) => void } = {};
+    vi.mocked(taskNumbers).mockReturnValue(
+      new Promise<TaskNumberRow[]>((resolve) => {
+        slots.release = resolve;
+      }),
+    );
+
+    const launched = launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
+    // Let the awaits up to the refetch settle, then look at what has already gone out.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The prompt is already on the wire while the badge fetch is still in flight.
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(taskNumbers)).toHaveBeenCalledTimes(1);
+
+    slots.release?.([]);
+    expect((await launched).sessionId).toBe("sess_new");
+  });
+
+  it("a REFUSED badge refetch does not fail the launch (the badge is cosmetic)", async () => {
+    // The failure-proofing is the whole point of the `try`/`catch`: the Session has
+    // genuinely started, so a map that will not refresh must not turn a successful
+    // launch into a rejected promise the modal renders as an error line.
+    seedBoard(
+      column("backlog", [taskRow()]),
+      column("discuss", [], { label: "Discuss", skill: "discuss" }),
+    );
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    try {
+      vi.mocked(taskNumbers).mockRejectedValue(new Error("ipc down"));
+      const launched = await launchTaskSession(
+        SPACE,
+        taskRow(),
+        "discuss",
+        CATALOGS(),
+      );
+      expect(launched.sessionId).toBe("sess_new");
+      expect(startTaskSession).toHaveBeenCalledTimes(1);
+      expect(sendPrompt).toHaveBeenCalledTimes(1);
+      // The map keeps whatever it had — the failed fetch writes nothing.
+      expect(useSessions.getState().taskNumbers).toEqual({});
+      // And the failure is LOGGED, not swallowed whole.
+      expect(consoleError).toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

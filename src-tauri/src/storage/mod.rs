@@ -8,6 +8,6 @@ pub use batching::{BatchingPersistence, DEFAULT_FLUSH_INTERVAL};
 
 pub use db::{
     Artifact, ArtifactMeta, BoardError, Db, DbError, FieldPatch, MessageRow, MoveOutcome,
-    SessionRecency, SessionRow, SpaceRow, StageRow, StageWithTasks, TaskCardView, TaskRow,
-    TaskSessionRow,
+    SessionRecency, SessionRow, SpaceRow, StageRow, StageWithTasks, TaskCardView, TaskNumberRow,
+    TaskRow, TaskSessionRow,
 };

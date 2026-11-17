@@ -779,3 +779,78 @@ fn the_storage_title_refusal_keeps_the_command_envelope_exactly() {
         "five refused creates wrote NOTHING — the only row is the one this test made"
     );
 }
+
+/// (the badge's wire shape) The WIRE KEYS of `TaskNumberRow` are pinned as
+/// literals: `serde_json::to_value` on a row yields exactly `sessionId`,
+/// `stageSlug` and `taskNumber` — the three the frontend's mirror declares.
+///
+/// The KEYS are the load-bearing half, for the reason `history.rs`'s
+/// `session_recency_rows_serializes_to_the_pinned_camel_case_keys` (this test's
+/// model) gives: a dropped `#[serde(rename_all = "camelCase")]` changes no field
+/// VALUE, so every value assertion on both sides of the wire stays green and the
+/// breakage is invisible to the hand-written TypeScript mirror. Only a key
+/// literal sees it.
+///
+/// The list is ALPHABETICAL, and that is the precedent's own discovery rather
+/// than a choice: `serde_json::to_value` builds a `BTreeMap`-ordered object (the
+/// `preserve_order` feature is off in this crate — `cargo tree -e features` shows
+/// no `indexmap`), so the emitted order is sorted and the pin asserts THAT order,
+/// exactly as the model does with
+/// `["lastActiveAt", "sessionId", "sortOrder"]`. Order is asserted, not a sorted
+/// set, because a key that disappears must redden this and not merely reorder.
+///
+/// The `null` half is the `TaskCardView` pin's rule for `costUsd`, applied to
+/// `stageSlug`: a `None` row must serialise the key PRESENT and JSON `null`, so
+/// the TS mirror's `stageSlug: string | null` stays true. An `Option` field
+/// without a `null` would be absent from the object, and the frontend could not
+/// tell "the link carried no stage" from "this Rust build does not send the
+/// field at all" — the exact ambiguity ADR 0082's two-meanings rule exists to kill.
+#[test]
+fn task_number_rows_serializes_to_the_pinned_camel_case_keys() {
+    let row = crate::storage::TaskNumberRow {
+        session_id: "sess-pin".to_string(),
+        task_number: 7,
+        stage_slug: Some("research".to_string()),
+    };
+    let value = serde_json::to_value(&row).expect("TaskNumberRow serializes");
+    let keys: Vec<&str> = value
+        .as_object()
+        .expect("a serialized TaskNumberRow is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["sessionId", "stageSlug", "taskNumber"],
+        "the wire keys are exactly the pinned camelCase triple, in the order \
+         `serde_json` emits them (a dropped `rename_all` changes no value — only \
+         this literal sees it)"
+    );
+    // The VALUE half, so a mapper wired to the wrong column cannot hide behind
+    // three correct key names.
+    assert_eq!(value["sessionId"], serde_json::json!("sess-pin"));
+    assert_eq!(value["taskNumber"], serde_json::json!(7_i64));
+    assert_eq!(value["stageSlug"], serde_json::json!("research"));
+
+    // The `null` half: PRESENT and `null`, never absent.
+    let unlinked = crate::storage::TaskNumberRow {
+        session_id: "sess-null".to_string(),
+        task_number: 1,
+        stage_slug: None,
+    };
+    let value = serde_json::to_value(&unlinked).expect("a stage-less row serializes");
+    let object = value
+        .as_object()
+        .expect("a serialized TaskNumberRow is an object");
+    assert!(
+        object.contains_key("stageSlug"),
+        "`stageSlug` must be PRESENT on a `None` row — an absent key makes the TS \
+         mirror's `stageSlug: string | null` a lie the frontend cannot tell apart \
+         from a Rust build that never sends the field"
+    );
+    assert_eq!(
+        object["stageSlug"],
+        serde_json::Value::Null,
+        "and its value is JSON `null`, the one spelling that reaches TS as `null`"
+    );
+}

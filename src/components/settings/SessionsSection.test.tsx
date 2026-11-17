@@ -70,6 +70,11 @@ function seed(
     activeSessionId: null,
     activeSpacePath: "/tmp/alpha",
     messages: {},
+    // The **Task badge** map. `seed` is a partial `setState` (see the
+    // `resetStores()` note in the recency case), so without this a badge seeded
+    // by one case would still be on the map in the NEXT case's rows — and the
+    // "no link renders nothing" half of the badge pins reads exactly that.
+    taskNumbers: {},
     addSpace: vi.fn(),
     openSession: vi.fn(),
     ...overrides,
@@ -352,5 +357,108 @@ describe("SessionsSection (Settings → Detached sessions)", () => {
     // `a-gamma` (/tmp/gamma) has NO loaded transcript — `messages` is empty — so
     // the map stamp is its only evidence, and it buckets to exactly `5m`.
     expect(within(rowRootFor("/tmp/gamma")).getByText("5m")).toBeTruthy();
+  });
+});
+
+describe("SessionsSection — the Task badge on a Detached row (D3/D5/D7)", () => {
+  // Why THIS surface is the one that needed the app-wide read. What the design
+  // doc calls "Settings → Sessions" is, in the component, the **Detached
+  // sessions** list — `DetachedSessionRow`, the Sessions whose **Space** has no
+  // tab. A per-Space fetch could never serve it: by definition these rows belong
+  // to folders with no open tab, so there is no Space whose board read could have
+  // produced their badge. Hence D3's app-wide `task_numbers` read.
+  //
+  // `DetachedSessionRow` renders its own title element rather than
+  // `SessionListRow`, so this surface takes `TaskNumberBadge` directly. Same
+  // nesting rule as every other surface: FIRST child inside the existing title
+  // div, so the row gains no level and no `getByText` match.
+
+  it("a Detached row whose Session has a Task link shows T7 in the same row root", () => {
+    // `h-beta` is the stored row of the closed `/tmp/beta` Space — the exact
+    // shape no per-Space read could serve.
+    seed({ taskNumbers: { "h-beta": { number: 7, stageSlug: "research" } } });
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
+
+    const root = rowRootFor("/tmp/beta");
+    // The badge is INSIDE this row's root, not floating in the group card.
+    expect(within(root).getByText("T7")).toBeTruthy();
+    // THE NESTING PROOF: the title still resolves by its own text. `textContent`
+    // IS recursive (so the div reads `"T7beta"`), but `getNodeText` — what
+    // `getByText` matches on — reads only DIRECT text nodes, which is why every
+    // title assertion in this file keeps resolving on a badged row.
+    const title = within(root).getByText("beta");
+    expect(title.textContent).toBe("T7beta");
+    expect(title.firstElementChild!.textContent).toBe("T7");
+    expect(title.firstChild).toBe(title.firstElementChild);
+    expect(title.lastChild!.nodeType).toBe(Node.TEXT_NODE);
+    // The tooltip carries the FROZEN lane (D12): the Stage the link was made in.
+    expect(title.firstElementChild!.getAttribute("title")).toBe(
+      "Task T7 — started in research",
+    );
+    // The row whose Session has no link renders NOTHING — the map's missing key
+    // is the whole negative answer (the Rust read INNER JOINs `tasks`).
+    expect(within(rowRootFor("/tmp/gamma")).queryByText(/^T\d+$/)).toBeNull();
+    // And `archived` — the OTHER badge on this surface, a different recipe —
+    // still resolves on the row that carries the flag.
+    expect(within(rowRootFor("/tmp/gamma")).getByText("archived")).toBeTruthy();
+  });
+
+  it("costs the row no extra level: the badge sits inside the title div, which stays the flex row's first child", () => {
+    // `primitives.test.tsx` pins that `SettingsDataRow` adds no level of its own;
+    // this is the same rule one level down, at the row that consumes it. A badge
+    // wrapped in its own div, or inserted between the text column and the
+    // `archived` chip, would move the flex row's children.
+    seed({
+      taskNumbers: {
+        "h-beta": { number: 7, stageSlug: null },
+        "a-gamma": { number: 9, stageSlug: "finish" },
+      },
+    });
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
+
+    for (const path of ["/tmp/beta", "/tmp/gamma"]) {
+      const root = rowRootFor(path);
+      // The row root still holds exactly ONE child: the flex row. The badge did
+      // not become a second one.
+      expect(root.children).toHaveLength(1);
+      const flex = root.children[0]!;
+      const title = within(root).getByText(
+        path === "/tmp/beta" ? "beta" : "gamma",
+      );
+      // The chain is badge → title div → text column → flex row → row root, with
+      // NO wrapper of the badge's own anywhere in it.
+      expect(title.firstElementChild!.parentElement).toBe(title);
+      const textColumn = title.parentElement!;
+      expect(textColumn).not.toBe(flex);
+      expect(textColumn.parentElement).toBe(flex);
+      // And the text column is still the flex row's FIRST child, so the badge
+      // slipped in nowhere but inside it.
+      expect(flex.children[0]).toBe(textColumn);
+    }
+    // The archived row's badge is the OTHER recipe and it still renders: a badged
+    // title has not displaced the `archived` chip.
+    expect(within(rowRootFor("/tmp/gamma")).getByText("archived")).toBeTruthy();
+  });
+
+  it("the badge is never a SECOND getByText match for a row's title or path", () => {
+    // Every query in this file that names a row by text goes through `getByText`,
+    // which THROWS on multiple matches. A badge whose text collided with a title
+    // or a path would break the file's own pins (and the real section's row
+    // lookups) rather than merely looking wrong.
+    seed({
+      taskNumbers: {
+        "h-beta": { number: 7, stageSlug: "research" },
+        "a-gamma": { number: 9, stageSlug: null },
+      },
+    });
+    render(<SessionsSection onReturnToWorkspace={vi.fn()} />);
+    for (const text of ["beta", "gamma", "/tmp/beta", "/tmp/gamma", "archived"]) {
+      expect(
+        screen.getAllByText(text),
+        `${text} must resolve to exactly one node with badges present`,
+      ).toHaveLength(1);
+    }
+    // And the badge itself is one node per badged row — two rows, two badges.
+    expect(screen.getAllByText(/^T\d+$/)).toHaveLength(2);
   });
 });

@@ -34,10 +34,11 @@ import type { StoreApi } from "zustand";
  *     A caller adding a partial reset in a test file re-introduces the hazard.
  *
  *  2. It does not touch MODULE-SCOPE state, because it cannot: a module `let`
- *     is not store state. `src/store/sessions.ts` holds four of them —
- *     `inFlightToggles` (`:598`), `committedTrusted` (`:606`),
- *     `newSessionInFlight` (`:612`) and `clientMessageSeq` (`:620`) — and none
- *     is exported, so nothing outside that file can reach them. The name is
+ *     is not store state. `src/store/sessions.ts` holds five of them —
+ *     `inFlightToggles`, `committedTrusted`, `newSessionInFlight`,
+ *     `clientMessageSeq` and `taskNumbersEpoch` (the Task badge map's publish
+ *     epoch) — and none is exported, so nothing outside that file can reach
+ *     them. The name is
  *     therefore deliberately `resetStores`, not `resetGlobalState`: a test that
  *     needs one of those cleared needs a named reset exported from
  *     `sessions.ts`, which is a change to the store, not to this file.

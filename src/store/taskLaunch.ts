@@ -3,7 +3,11 @@ import {
   buildLaunchMessage,
   type TaskLaunchDestination,
 } from "../lib/taskPrompt";
-import { sendPrompt, startTaskSession, type SessionInfo } from "../lib/tauri";
+import {
+  sendPrompt,
+  startTaskSession,
+  type SessionInfo,
+} from "../lib/tauri";
 import { describeIpcError } from "../lib/ipcError";
 import type { AgentDefinitionDto, SkillInfo, TaskRow } from "../lib/tauri";
 import { useSessions } from "./sessions";
@@ -393,6 +397,24 @@ async function startAndSendLinked(
   // deadlocks. The Session exists and the prompt is committed, so this half's job is
   // done; the turn's outcome belongs to the transcript, not to the click.
   void sendLaunchMessage(info, task, destination, catalogs, artifactKeysFor(spacePath, task.id));
+  // The **Task badge** map is boot-fetched, so the link `startTaskSession` just wrote is
+  // not in it yet (spec D10). REFETCHED, not patched from here: which of a Session's
+  // links is newest is `MAX(rowid)`'s answer in Rust, and an optimistic write would give
+  // that rule a second owner in the renderer — the same reason `store/tasks.ts` refuses
+  // to invent a link on `linkSession`. Awaited but failure-proofed: the badge is cosmetic
+  // next to a Session that has genuinely started, so a failed refetch must not turn a
+  // successful launch into a rejected promise. That failure-proofing lives INSIDE
+  // `refreshTaskNumbers` now (it logs and resolves, never rejects), which is why there is
+  // no `try` here — and it is the same action boot calls, so the two reads share one
+  // staleness rule rather than racing to own the map.
+  //
+  // AFTER the dispatch above, not before it. `await`ing here first would make the
+  // prompt's own dispatch wait on a cosmetic fetch: measured with a refetch held open,
+  // `sendPrompt` had NOT been called while it was pending, i.e. the "not awaited"
+  // above buys nothing when a slow `taskNumbers()` sits in front of it. Awaited still
+  // holds (the caller's promise resolves with the badge map refreshed or explicitly
+  // not), it just no longer gates the wire.
+  await useSessions.getState().refreshTaskNumbers();
   return { sessionId: info.sessionId, note: null };
 }
 
