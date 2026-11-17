@@ -502,3 +502,131 @@ describe("SessionListRow — the drag spread (T06, ADR 0075)", () => {
   });
 });
 
+describe("SessionListRow — the Task badge slot (D5/D6/D7)", () => {
+  // THE NESTING PROOF. The badge is an ELEMENT CHILD of the masked title span,
+  // not a fifth child of the row (D7). Measured, a badge as a sibling of the
+  // title reddens every positional pin in this file on a badged row — the
+  // `toHaveLength(4)` sites above, the `row.children[2]` time-slot read, the
+  // `row.lastElementChild` action read — and it would do so for every row in
+  // the list, badged or not, the moment a call site passed one. Nested, the
+  // child count and order are untouched, and `getByText("alpha")` keeps
+  // resolving because testing-library's `getNodeText` reads only the DIRECT
+  // text nodes of an element: the span's own text node is still exactly
+  // `"alpha"`, the badge is an element beside it.
+  //
+  // A FRESH FIXTURE, spelled out in full, and deliberately NOT the shared
+  // `"alpha"`-only shape the describes above use — those pins assert
+  // `textContent` for EXACT equality and depend on a badge-less fixture, which
+  // is every fixture that predates this prop.
+
+  it("a badged row's textContent is the badge, the title and the time, in DOM order", () => {
+    render(
+      <SessionListRow
+        title="alpha"
+        time="1h"
+        badge={{ number: 12, stageSlug: "research" }}
+        onOpen={noop()}
+      />,
+    );
+    const row = screen.getByText("alpha").closest('[role="button"]')!;
+    // `"T12"` FIRST because the badge is the title span's FIRST child, before
+    // `{title}` — the reading order the user gets. TWO COMPETING ANSWERS this
+    // pins: badge-before-title (what D7 asks for) vs badge-after-title, and
+    // both beat the third, a badge in its own slot after the title span, which
+    // this assertion cannot distinguish from a fifth row child on text alone —
+    // which is why the child-count assertion below is not optional.
+    expect(row.textContent).toBe("T12alpha1h");
+  });
+
+  it("costs NO row child: still four, still the same order, still the same action", () => {
+    render(
+      <SessionListRow
+        title="alpha"
+        time="1h"
+        badge={{ number: 12, stageSlug: "research" }}
+        onOpen={noop()}
+        actions={<Action label="Archive alpha" />}
+      />,
+    );
+    const row = screen.getByText("alpha").closest('[role="button"]')!;
+    // leading, title, time, action — the SAME four the untouched row has.
+    expect(row.children).toHaveLength(4);
+    // The time slot is still the THIRD child (`SessionListRow.test.tsx`'s own
+    // positional pin, and the shape `SpacesList.test.tsx` reads through).
+    expect(row.children[2].className).toBe("group-hover:hidden");
+    expect(row.children[2].textContent).toBe("1h");
+    // And the action is still LAST — the badge did not push anything right.
+    expect(row.lastElementChild).toBe(
+      screen.getByRole("button", { name: "Archive alpha" }),
+    );
+    // The badge lives INSIDE the title span, so the title span is its parent and
+    // the title span is still a direct child of the row.
+    const badge = row.querySelector("span[title]")!;
+    expect(badge.parentElement).toBe(row.children[1]);
+    expect(row.children[1].parentElement).toBe(row);
+  });
+
+  it("getByText still finds the title span with a badge inside it (the D7 proof)", () => {
+    // If this assertion ever fails, the nesting became a sibling: `getNodeText`
+    // reads only direct text nodes, so a badge that is a SIBLING of the title
+    // span leaves `getByText("alpha")` green while a badge that is a sibling of
+    // the SPAN — i.e. a fifth row child — does not change it either. What this
+    // does prove is the load-bearing half for every existing query in
+    // `SpacesList.test.tsx`: a badge INSIDE the span does not stop the span from
+    // resolving as the title, so `rowOf("alpha")` and the row's click/Enter
+    // affordance keep working on a badged row.
+    render(
+      <SessionListRow
+        title="alpha"
+        time="1h"
+        badge={{ number: 12, stageSlug: "research" }}
+        onOpen={noop()}
+      />,
+    );
+    const title = screen.getByText("alpha");
+    expect(title.getAttribute("role")).toBeNull();
+    expect(title.parentElement!.getAttribute("role")).toBe("button");
+    // `getByText` matched on the span's DIRECT text node alone — that is the
+    // `getNodeText` rule D7 relies on. `textContent` by contrast IS recursive,
+    // so the span's own `textContent` now carries the badge: `"T12alpha"`. This
+    // is exactly why the file's exact-`textContent` pins hold only for fixtures
+    // with no badge, and why the row-level assertion above spells `"T12alpha1h"`.
+    expect(title.textContent).toBe("T12alpha");
+    // And the badge is the span's FIRST child, immediately before the text node
+    // — so the first node of ANY kind in the span is the badge element, and the
+    // title's text node is what comes after it.
+    expect(title.firstElementChild!.textContent).toBe("T12");
+    expect(title.firstChild).toBe(title.firstElementChild);
+    expect(title.lastChild!.nodeType).toBe(Node.TEXT_NODE);
+    expect(title.lastChild!.textContent).toBe("alpha");
+  });
+
+  it("no badge (undefined or null) serialises EXACTLY the untouched row", () => {
+    // The negative half, and the reason two Wave-4 call sites may pass nothing:
+    // `badge` is OPTIONAL and `null` renders nothing at all, so a badge-less row
+    // is byte-identical to the row this file pinned before the prop existed —
+    // same four children, same `textContent`, same title span with no element
+    // child.
+    for (const badge of [undefined, null] as const) {
+      const { unmount } = render(
+        <SessionListRow
+          title="alpha"
+          time="1h"
+          badge={badge}
+          onOpen={noop()}
+          actions={<Action label="Archive alpha" />}
+        />,
+      );
+      const row = screen.getByText("alpha").closest('[role="button"]')!;
+      expect(row.children).toHaveLength(4);
+      expect(row.textContent).toBe("alpha1h");
+      expect(row.children[1].firstElementChild).toBeNull();
+      expect(row.children[1].textContent).toBe("alpha");
+      expect(row.lastElementChild).toBe(
+        screen.getByRole("button", { name: "Archive alpha" }),
+      );
+      unmount();
+    }
+  });
+});
+
