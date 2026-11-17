@@ -3,6 +3,7 @@ pub mod attention;
 pub mod clipboard;
 pub mod files;
 pub mod history;
+pub mod key_focus;
 pub mod mcp;
 pub mod open;
 pub mod sessions;
