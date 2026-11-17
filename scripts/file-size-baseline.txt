@@ -4,11 +4,11 @@
 # scripts/check-file-size.sh) are deliberately absent: an exemption means "not
 # ratcheted", and the hard 1000-line gate still applies to them. Inline Rust
 # `#[cfg(test)] mod tests` ARE counted — that is what makes this ratchet undodgeable.
-2259	src-tauri/src/agent/session/naming.rs
 2154	src-tauri/src/storage/db.rs
+2002	src-tauri/src/agent/session/naming.rs
 1563	src-tauri/src/agent/session/mod.rs
-1388	src-tauri/src/agent/session/router.rs
 1370	src/store/sessions.ts
+1343	src-tauri/src/agent/session/router.rs
 1289	src-tauri/src/config.rs
 1135	src-tauri/src/agent/errors.rs
 1070	src-tauri/src/commands/settings.rs
