@@ -12,6 +12,7 @@ import {
   setSessionArchived as setSessionArchivedCommand,
   setSpaceTrusted as setSpaceTrustedCommand,
   startSession as startSessionCommand,
+  taskNumbers as taskNumbersCommand,
   type AcpSessionUpdate,
   type CloseReasonStr,
   type CompactionReason,
@@ -782,6 +783,18 @@ export interface SessionsState {
   taskNumbers: Record<string, TaskBadge>;
   /** Replace the whole badge map from `taskNumbers()`'s rows (boot, its OWN fetch — spec D9, not a `Promise.all` arm). */
   setTaskNumbers: (rows: TaskNumberRow[]) => void;
+  /**
+   * Read the badge map and publish it — the ONE owner of that fetch, so both call
+   * sites (boot's own read, and a Task launch's refetch) share one staleness rule
+   * instead of each inventing one.
+   *
+   * A reply is applied only if no LATER refresh has been dispatched since it
+   * started (`taskNumbersEpoch`), which is what stops an older snapshot from
+   * erasing badges a newer one already published. Never rejects: the badge is
+   * cosmetic next to a Session that has genuinely started, so a failed read logs
+   * and resolves.
+   */
+  refreshTaskNumbers: () => Promise<void>;
   /** Replace BOTH maps from `sessionRecency()`'s rows (boot, alongside `setHistorySessions`). ONE call, ONE IPC round-trip's payload: the two maps must never be observable out of step. */
   setSessionRecency: (rows: SessionRecency[]) => void;
   /**
@@ -1339,6 +1352,22 @@ let clientMessageSeq = 0;
 function clientSystemMessageId(): string {
   return `client:${++clientMessageSeq}`;
 }
+
+// The **Task badge** map's publish epoch — the same shape `store/tasks.ts`'s
+// `loadEpoch` uses, for the same reason. `taskNumbers()` is a SNAPSHOT read and
+// `setTaskNumbers` replaces the WHOLE map, so with two reads in flight (boot's,
+// and a Task launch's refetch — two independent call sites that never see each
+// other) whichever reply arrives LAST would own the map. Arrival order is
+// precisely what the bug is made of, so it cannot also be the tie-breaker: the
+// ticket is taken at DISPATCH, and a reply is applied only while it is still the
+// newest thing dispatched. An older read that lands late is dropped, and the
+// newer badges it knows nothing about survive.
+//
+// A module `let`, not store state — so `resetStores()` cannot reach it, exactly
+// as the four above. That is safe here rather than merely tolerated: every
+// refresh takes a NEW, higher ticket, so a refresh left in flight by one test is
+// discarded the moment the next one starts.
+let taskNumbersEpoch = 0;
 
 export const useSessions = create<SessionsState>((set, get) => ({
   sessions: [],
@@ -1927,6 +1956,26 @@ export const useSessions = create<SessionsState>((set, get) => ({
       rows.map((r) => [r.sessionId, { number: r.taskNumber, stageSlug: r.stageSlug }]),
     );
     set({ taskNumbers });
+  },
+
+  refreshTaskNumbers: async () => {
+    // The ticket is taken BEFORE the await: it records dispatch order, and
+    // dispatch order is the only order that means anything here (see
+    // `taskNumbersEpoch`).
+    taskNumbersEpoch += 1;
+    const ticket = taskNumbersEpoch;
+    try {
+      const rows = await taskNumbersCommand();
+      // A newer refresh has been dispatched since: its snapshot describes a world
+      // at least as new as this one, so THIS reply is the stale half and it is
+      // dropped rather than allowed to replace the map.
+      if (ticket !== taskNumbersEpoch) return;
+      get().setTaskNumbers(rows);
+    } catch (err) {
+      // Logged, never rethrown — the caller's own work (boot, or a launch that has
+      // genuinely succeeded) must not fail because a cosmetic map would not refresh.
+      console.error("the task badge map did not refresh", err);
+    }
   },
 
   archiveSession: async (sessionId) => {

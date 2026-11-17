@@ -13,7 +13,6 @@ import {
   listSessions,
   listSpaces,
   sessionRecency,
-  taskNumbers,
 } from "./lib/tauri";
 import { createBatchedSessionUpdate } from "./lib/batchSessionUpdates";
 import { INTERACTIVE_EVENTS } from "./lib/ipc/events";
@@ -403,9 +402,14 @@ function App() {
     // model catalog below it — its own fetch, its own `.catch`, no shared fate.
     // No ordering constraint either: a late arrival paints a badge a tick later and
     // the Landing Session decision never reads it.
-    void taskNumbers()
-      .then((rows) => useSessions.getState().setTaskNumbers(rows))
-      .catch((err) => console.error("failed to load the task badge map", err));
+    //
+    // The fetch lives in the store now (`refreshTaskNumbers`), because the launch
+    // path reads the SAME map and the two must not each carry their own staleness
+    // rule: a whole-map replace whose replies can land in either order needs one
+    // owner for "which reply is still current". `refreshTaskNumbers` never rejects,
+    // so the no-shared-fate property holds by construction, not by this call site
+    // remembering to attach a `.catch`.
+    void useSessions.getState().refreshTaskNumbers();
   }, []);
 
   // The active **Session**'s `cwd` (= its **Space**'s folder), read through the

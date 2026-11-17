@@ -40,6 +40,7 @@ import {
   cancelSession,
   resumeSession,
   startSession,
+  taskNumbers,
   reorderSessions as reorderSessionsCommand,
   reorderSpaces as reorderSpacesCommand,
 } from "../lib/tauri";
@@ -52,6 +53,7 @@ import type {
   MessageRow,
   SessionInfo,
   SpaceRow,
+  TaskNumberRow,
 } from "../lib/tauri";
 import type { RecencyEvidence } from "../lib/sessionRecency";
 import { recencyOf } from "../lib/sessionRecency";
@@ -96,8 +98,38 @@ vi.mock("../lib/tauri", async () => {
     // exists — so an un-mocked reorder failure would look nothing like its cause.
     reorderSessions: vi.fn().mockResolvedValue(undefined),
     reorderSpaces: vi.fn().mockResolvedValue(undefined),
+    // The **Task badge** map read, now called by the store's own
+    // `refreshTaskNumbers`. It MUST be mocked here for the reason every mock in
+    // this factory exists: the factory spreads `importActual`, so an un-mocked
+    // `taskNumbers` resolves to the REAL wrapper, which calls `invoke` and rejects
+    // outside a webview — AGENTS.md's boot-mock trap in its exact shape.
+    taskNumbers: vi.fn().mockResolvedValue([]),
   };
 });
+
+/**
+ * A promise that has NOT settled yet, plus its resolvers — the shape an in-flight
+ * IPC has. The badge-refresh race tests need TWO reads both in flight at once, so
+ * neither can be a `mockResolvedValue` (those settle in call order, which is the
+ * very ordering the test is trying to control).
+ *
+ * Deliberately local rather than imported from `test/chatStreamFixtures`: that
+ * module pulls in `@testing-library/react`, and a store test has no component to
+ * render.
+ */
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (v: T) => void;
+  reject: (e: unknown) => void;
+} {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 /**
  * Fixtures use EXACTLY the five `SessionInfo` wire fields — `SessionInfo`
@@ -5363,8 +5395,9 @@ describe("transcript eviction on navigation (ADR 0073 amendment, issue #155)", (
   // eviction missed one" or, worse, fill the very key this block asserts gone.
   // `resetStores()` installs zustand's captured initial state wholesale (it does
   // NOT merge), so neither direction can leak. Its documented blind spot — the
-  // four module-`let`s of `sessions.ts` (`inFlightToggles`, `committedTrusted`,
-  // `newSessionInFlight`, `clientMessageSeq`) — is not read by eviction.
+  // five module-`let`s of `sessions.ts` (`inFlightToggles`, `committedTrusted`,
+  // `newSessionInFlight`, `clientMessageSeq`, `taskNumbersEpoch`) — is not read
+  // by eviction.
   beforeEach(() => {
     resetStores();
     // Re-arm the DEFAULT page rather than only clearing calls: an unconsumed
@@ -6201,6 +6234,91 @@ describe("taskNumbers (the Task badge map, spec D3/D9/D12)", () => {
     expect(
       useSessions.getState().taskNumbers,
     ).not.toHaveProperty("s1");
+  });
+
+  it("refreshTaskNumbers fetches and fills the map (the ONE fetch owner, both call sites)", async () => {
+    vi.mocked(taskNumbers).mockResolvedValueOnce([
+      { sessionId: "s1", taskNumber: 7, stageSlug: "implement" },
+    ]);
+    await useSessions.getState().refreshTaskNumbers();
+    expect(taskNumbers).toHaveBeenCalledTimes(1);
+    expect(useSessions.getState().taskNumbers).toEqual({
+      s1: { number: 7, stageSlug: "implement" },
+    });
+  });
+
+  it("refreshTaskNumbers SWALLOWS a rejection (the badge is cosmetic, never a thrown launch)", async () => {
+    // Both call sites used to carry their own `try`/`catch` — boot's `.catch` and
+    // the launch path's failure-proofing. Those live HERE now, so the rule has one
+    // owner: a badge map that will not refresh must not reject the caller.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      vi.mocked(taskNumbers).mockRejectedValueOnce(new Error("ipc down"));
+      await expect(
+        useSessions.getState().refreshTaskNumbers(),
+      ).resolves.toBeUndefined();
+      // The map keeps whatever it had — a failed read writes nothing.
+      expect(useSessions.getState().taskNumbers).toEqual({});
+      // And the failure is LOGGED, not swallowed whole.
+      expect(consoleError).toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("an OLDER badge read that lands last does not erase a NEWER one (the race Greptile found)", async () => {
+    // THE BUG. Two reads run concurrently — boot's, and a Task launch's refetch —
+    // and `setTaskNumbers` replaces the WHOLE map, so whichever reply arrives LAST
+    // wins. If the older read arrives last, it answers about a world in which the
+    // Session launched between the two reads does not exist, and the new badge
+    // disappears until the next launch or a reload.
+    const older = deferred<TaskNumberRow[]>();
+    const newer = deferred<TaskNumberRow[]>();
+    vi.mocked(taskNumbers)
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise);
+
+    const first = useSessions.getState().refreshTaskNumbers();
+    const second = useSessions.getState().refreshTaskNumbers();
+
+    // The NEWER read answers first.
+    newer.resolve([{ sessionId: "new", taskNumber: 12, stageSlug: "spec" }]);
+    await second;
+    expect(useSessions.getState().taskNumbers).toEqual({
+      new: { number: 12, stageSlug: "spec" },
+    });
+
+    // ...and the OLDER read answers afterwards. It must NOT be allowed to write:
+    // its snapshot is from before the launch, so applying it would drop `new`.
+    older.resolve([{ sessionId: "old", taskNumber: 1, stageSlug: "backlog" }]);
+    await first;
+    expect(useSessions.getState().taskNumbers).toEqual({
+      new: { number: 12, stageSlug: "spec" },
+    });
+  });
+
+  it("a refresh that STARTED later still wins when it lands first (the guard is start order)", async () => {
+    // The mirror of the case above, and the reason the rule is "started later
+    // wins" rather than "arrived later wins": arrival order is exactly what the
+    // bug is made of, so it cannot also be the tie-breaker.
+    const firstRead = deferred<TaskNumberRow[]>();
+    const secondRead = deferred<TaskNumberRow[]>();
+    vi.mocked(taskNumbers)
+      .mockImplementationOnce(() => firstRead.promise)
+      .mockImplementationOnce(() => secondRead.promise);
+
+    const first = useSessions.getState().refreshTaskNumbers();
+    const second = useSessions.getState().refreshTaskNumbers();
+
+    // The LATER refresh lands FIRST — it wins, and the older one is discarded.
+    secondRead.resolve([{ sessionId: "newer", taskNumber: 5, stageSlug: null }]);
+    await second;
+    firstRead.resolve([{ sessionId: "older", taskNumber: 6, stageSlug: null }]);
+    await first;
+
+    expect(useSessions.getState().taskNumbers).toEqual({
+      newer: { number: 5, stageSlug: null },
+    });
   });
 });
 

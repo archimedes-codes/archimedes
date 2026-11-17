@@ -6,7 +6,6 @@ import {
 import {
   sendPrompt,
   startTaskSession,
-  taskNumbers,
   type SessionInfo,
 } from "../lib/tauri";
 import { describeIpcError } from "../lib/ipcError";
@@ -404,7 +403,10 @@ async function startAndSendLinked(
   // that rule a second owner in the renderer — the same reason `store/tasks.ts` refuses
   // to invent a link on `linkSession`. Awaited but failure-proofed: the badge is cosmetic
   // next to a Session that has genuinely started, so a failed refetch must not turn a
-  // successful launch into a rejected promise.
+  // successful launch into a rejected promise. That failure-proofing lives INSIDE
+  // `refreshTaskNumbers` now (it logs and resolves, never rejects), which is why there is
+  // no `try` here — and it is the same action boot calls, so the two reads share one
+  // staleness rule rather than racing to own the map.
   //
   // AFTER the dispatch above, not before it. `await`ing here first would make the
   // prompt's own dispatch wait on a cosmetic fetch: measured with a refetch held open,
@@ -412,11 +414,7 @@ async function startAndSendLinked(
   // above buys nothing when a slow `taskNumbers()` sits in front of it. Awaited still
   // holds (the caller's promise resolves with the badge map refreshed or explicitly
   // not), it just no longer gates the wire.
-  try {
-    useSessions.getState().setTaskNumbers(await taskNumbers());
-  } catch (err) {
-    console.error("the task badge map did not refresh after a Task launch", err);
-  }
+  await useSessions.getState().refreshTaskNumbers();
   return { sessionId: info.sessionId, note: null };
 }
 
