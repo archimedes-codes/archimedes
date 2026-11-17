@@ -63,9 +63,9 @@ USAGE
 # value-less flag at the END of the line (a bash shift fault, so no message at
 # all), and an `--out` path the OS refuses. None of those reports a refusal, and
 # none of them touches the manifest, so the promise above is exactly as wide as
-# this function is. (AGENTS.md step 4 and ADR 0052's amendment state this RULE by
-# name — "everything that reports no refusal" — rather than by counting paths, so
-# the set here can grow without the prose going stale.)
+# this function is. (docs/agents/releasing.md step 4 and ADR 0052's amendment
+# state this RULE by name — "everything that reports no refusal" — rather than by
+# counting paths, so the set here can grow without the prose going stale.)
 #
 # THE TARGET IS THE INVOCATION'S `--out`, NOT THE `$out_file` VARIABLE. The parse
 # loop fills `$out_file` only when it REACHES `--out`, and a refusal can fire before
@@ -117,8 +117,9 @@ fail() {
 
 # The invocation as typed, captured before the loop below shifts it away, for the
 # argv scan in `fail()`. `${invocation_args[@]+…}` guards the empty case for the
-# same reason AGENTS.md step 4 guards `require_args`: a bare `"${arr[@]}"` on an
-# EMPTY array is an unbound-variable fault under `set -u` on bash 3.2 (macOS).
+# same reason docs/agents/releasing.md step 4 guards `require_args`: a bare
+# `"${arr[@]}"` on an EMPTY array is an unbound-variable fault under `set -u` on
+# bash 3.2 (macOS).
 invocation_args=("$@")
 
 sigs_dir=""
@@ -249,13 +250,13 @@ fi
 # handed, so an installer whose signature was never uploaded is simply absent from
 # the output — and the composition exits 0. Every completeness question put to the
 # RESULT of that derivation is therefore answered by a projection of the result
-# itself, which is why AGENTS.md's old "count the distinct manifest URL basenames
+# itself, which is why releasing.md's old "count the distinct manifest URL basenames
 # and require a `.sig` for each" could never fail. The primary gate is
 # `scripts/check-release-signatures.sh`, which asks the RELEASE (per asset: `X`
 # present ⇒ `X.sig` present). This flag is the secondary one, and it exists for the
 # path that never runs that script: a human re-composing `latest.json` by hand
-# after rewriting the notes (AGENTS.md step 4), who downloads whatever `.sig`s come
-# back and hands them over with no expectation list at all.
+# after rewriting the notes (docs/agents/releasing.md step 4), who downloads
+# whatever `.sig`s come back and hands them over with no expectation list at all.
 #
 # It runs HERE — after the empty-directory refusal and before any pattern matching
 # or key derivation — so an expected-but-absent signature fails before a single key
@@ -266,10 +267,10 @@ fi
 # the OLD correct manifest, so leave it") is attractive and wrong.
 #
 # WHY THIS REFUSAL DELETES A PRE-EXISTING `--out`. The documented manual flow
-# (AGENTS.md step 4) is download-then-compose: `gh release download -p latest.json`
-# and then re-compose over the downloaded file, so when this refusal fires there IS
-# a real manifest sitting at `--out`, and leaving it untouched looks like the safe
-# answer. Three reasons it is not:
+# (docs/agents/releasing.md step 4) is download-then-compose:
+# `gh release download -p latest.json` and then re-compose over the downloaded
+# file, so when this refusal fires there IS a real manifest sitting at `--out`,
+# and leaving it untouched looks like the safe answer. Three reasons it is not:
 #
 #   1. The file's own contract. `fail()` exists so that "a rejected manifest can
 #      never be left on disk for the next step to `gh release upload`". That is a

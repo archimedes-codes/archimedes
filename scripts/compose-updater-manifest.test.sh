@@ -167,13 +167,13 @@ path_exists() { [[ -e "$1" ]] && printf 'yes\n' || printf 'no\n'; }
 # deleting `fail()`'s `rm -f` left all of them green, which is the difference
 # between pinning a policy and describing an empty room.
 #
-# It also models the flow the operator is actually in. AGENTS.md step 4 is
-# download-then-compose: `gh release download -p latest.json` and then re-compose
-# over the downloaded file, so a real invocation of this script very often has a
-# real previous manifest sitting at `--out`. What that file must do when the run
-# refuses — be REMOVED, so the next `gh release upload --clobber` cannot publish the
-# old manifest in place of the one that was refused — is the behaviour pinned below,
-# and it is a claim about a file that exists.
+# It also models the flow the operator is actually in. docs/agents/releasing.md
+# step 4 is download-then-compose: `gh release download -p latest.json` and then
+# re-compose over the downloaded file, so a real invocation of this script very
+# often has a real previous manifest sitting at `--out`. What that file must do
+# when the run refuses — be REMOVED, so the next `gh release upload --clobber`
+# cannot publish the old manifest in place of the one that was refused — is the
+# behaviour pinned below, and it is a claim about a file that exists.
 seed_previous_manifest() {
   local path="$1"
   mkdir -p -- "${path%/*}"
@@ -766,12 +766,13 @@ assert_eq "no manifest survives the orphaned rpm signature" "no" "$(path_exists 
 #
 # The PRIMARY gate is `scripts/check-release-signatures.sh`, which asks the
 # RELEASE whether every installer has its `.sig`. This flag is the SECONDARY one,
-# defence-in-depth for the path that never runs the release check: AGENTS.md step
-# 4, a human re-composing `latest.json` by hand after rewriting the notes. That
-# path downloads `*.sig` into a directory and hands the composer whatever came
-# back, so without an expectation list the composer shrinks the manifest and
-# **exits 0** — the silent omission this task exists to end (reproduced below, in
-# sub-case (c), on the exact input the pre-change composer accepted).
+# defence-in-depth for the path that never runs the release check:
+# docs/agents/releasing.md step 4, a human re-composing `latest.json` by hand
+# after rewriting the notes. That path downloads `*.sig` into a directory and
+# hands the composer whatever came back, so without an expectation list the
+# composer shrinks the manifest and **exits 0** — the silent omission this task
+# exists to end (reproduced below, in sub-case (c), on the exact input the
+# pre-change composer accepted).
 #
 # SEMANTICS: a claim about a NAME, not about bytes. `--require-payload NAME`
 # asserts that `$sigs_dir/NAME.sig` exists. It does NOT require `NAME` itself to
@@ -818,10 +819,11 @@ assert_eq "no manifest survives an expected-but-unsigned target" "no" "$(path_ex
 # manifest before this run (run_compose does it for every case), so the line above
 # says a file that WAS there was REMOVED, and this one says the removal took the
 # previous document with it rather than leaving it half-written. This is the
-# download-then-compose shape of AGENTS.md step 4, where the file at `--out` is the
-# manifest an operator downloaded moments ago — and the refusal used to leave it
-# there with a bare `exit 1`, so `gh release upload --clobber` would have published
-# the OLD manifest in place of the one this run refused to write, exit code ignored.
+# download-then-compose shape of docs/agents/releasing.md step 4, where the file
+# at `--out` is the manifest an operator downloaded moments ago — and the refusal
+# used to leave it there with a bare `exit 1`, so `gh release upload --clobber`
+# would have published the OLD manifest in place of the one this run refused to
+# write, exit code ignored.
 # Deleting `fail()`'s `rm -f` reddens both lines; it reddened neither before the
 # seeding existed.
 assert_eq "the downloaded previous manifest is GONE, not left in place to be re-uploaded" \
