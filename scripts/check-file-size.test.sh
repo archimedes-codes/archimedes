@@ -57,6 +57,13 @@ failures=0
 tmp_root="$(mktemp -d)"
 trap 'rm -rf "$tmp_root"' EXIT
 
+# The tracked ledger's content hash, taken BEFORE any case runs, so the mutation
+# guard at the end of this file can prove the whole suite left the ledger as it
+# found it. `cksum` and not a git comparison: a ledger that arrived dirty from
+# outside this suite must not be able to hide a write this suite made, nor fake a
+# red this suite did not earn.
+baseline_pre_hash="$(cksum "$repo_root/scripts/file-size-baseline.txt" 2>/dev/null || true)"
+
 # Runs the script under test, capturing exit status and merged output. The
 # `|| status=$?` is what keeps `set -e` from aborting the driver on the exits
 # this test is asserting.
@@ -754,15 +761,184 @@ assert_eq "the baseline's three largest, in order, are naming.rs, db.rs, session
 run_check "$repo_root"
 assert_contains "the success line names the largest file, and it is naming.rs" "largest src-tauri/src/agent/session/naming.rs" "$output"
 
-# 18e. The committed baseline is what the instrument GENERATES. The plan's rule is
-#      that the baseline and the instrument cannot disagree, so the only admissible
-#      generation route is `--update`. Asserted by running `--update` over the real
-#      tree and requiring it to report the baseline UNCHANGED — which is also why
-#      `--update` writes nothing when nothing moved: a test that regenerates a
-#      tracked file would be a test that dirties the tree it is testing.
-run_check "$repo_root" --update
-assert_eq "--update over the real tree exits 0" "0" "$status"
-assert_contains "and reports the committed baseline unchanged (so it is exactly what --update generates)" "unchanged" "$output"
+# --- helpers for case 18e -------------------------------------------------
+# The instrument's own walk, mirrored: same pathspecs, same extensions, same two
+# exclusions. Duplicated deliberately rather than shelling out to the guard, so
+# the ledger predicates below can ask the walk a question the guard never asks.
+# The real-tree case below asserts this mirror's COUNT against the guard's own
+# positive line, which is what turns a drift between the two into a red instead
+# of a silently un-pinned pin.
+ledger_walk_paths() {
+  local r="$1" rel
+  git -C "$r" ls-files -z -- src-tauri/src src-tauri/tests src |
+    while IFS= read -r -d '' rel; do
+      case "$rel" in *.rs) ;; *.ts | *.tsx) ;; *) continue ;; esac
+      case "$rel" in *.test.ts | *.test.tsx) continue ;; esac
+      case "/$rel" in */tests/*) continue ;; esac
+      printf '%s\n' "$rel"
+    done
+}
+
+# The exemption table, read out of the instrument itself and never re-listed
+# here: an exemption someone added there and this file did not know about would
+# otherwise redden a pin for an absence everyone had already agreed to.
+ledger_is_exempt() {
+  sed -n '/^exemption_table()/,/^TABLE/p' "$check_script" |
+    awk -F'\t' -v q="$1" '$1 == q { found = 1 } END { exit !found }'
+}
+
+# Ledger entries naming a path this walk does not visit. Empty output = none.
+ledger_dead_entries() {
+  local r="$1" paths="$2" p bad=""
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    grep -qxF -- "$p" <<<"$paths" || bad="$bad$p"$'\n'
+  done < <(awk -F'\t' '!/^#/ && NF == 2 { print $2 }' "$r/scripts/file-size-baseline.txt")
+  printf '%s' "$bad"
+}
+
+# Production files over the seed threshold with NO ledger entry, exemptions
+# excepted. The threshold is spelled here as the number the ledger's own header
+# publishes; the two exempt files sit ABOVE it (scene.ts 729, everforest.ts 707)
+# and are absent from the ledger by agreement, which is why the exemption check
+# is not optional — without it this pin reddes on a green tree.
+ledger_missing_entries() {
+  local r="$1" paths="$2" p n bad=""
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    ledger_is_exempt "$p" && continue
+    n="$(grep -vcE '^[[:space:]]*(//|\*|/\*|$)' -- "$r/$p" || true)"
+    n="${n:-0}"
+    ((n > 700)) || continue
+    awk -F'\t' -v q="$p" '$2 == q { found = 1 } END { exit !found }' "$r/scripts/file-size-baseline.txt" ||
+      bad="$bad$p($n)"$'\n'
+  done <<<"$paths"
+  printf '%s' "$bad"
+}
+
+# 18e. THE BASELINE IS MACHINE-GENERATED, NOT HAND-AUTHORED.
+#
+# WHY THE FORM THIS CASE HAD WAS WRONG TWICE OVER. It ran `--update` against the
+# real checkout and required the committed ledger to come back UNCHANGED.
+#
+#   (1) `--update` WRITES `scripts/file-size-baseline.txt`. Measured: one run of
+#       this file left `git status --porcelain` reporting ` M` on that tracked
+#       file — every CI run of this suite dirtied the very tree it was testing,
+#       which is the thing case 18c's own comment forbids ("a test must not
+#       rewrite a tracked file in the tree it is testing"). Guarded at the end of
+#       this file, so it cannot come back quietly.
+#   (2) EXACT EQUALITY IS THE WRONG PROXY, and it is red by design in the normal
+#       state of the plan this case belongs to. The ratchet refuses GROWTH only,
+#       so a ledger figure left ABOVE a shrunk file is the intended state for the
+#       whole middle of a decomposition: the committed ledger holds `router.rs` at
+#       1388 while Task 1 of this plan cut it to 1343, and Tasks 2, 3, 4, 6 and 7
+#       each shrink another baselined file. An equality assertion therefore reddens
+#       after every remaining wave, and silencing it by regenerating the ledger
+#       would be the test editing the ledger it exists to police — that
+#       regeneration is the orchestrator's scheduled act, not a test's.
+#
+# WHAT IT PINS NOW — the two hand-authoring moves that make a ledger decorative,
+# each by PREDICATE rather than by `--update`'s diff, so neither touches the tree:
+#
+#   - AN ENTRY FOR A PATH THE WALK DOES NOT VISIT: a rename nobody followed, or a
+#     fabricated path. A dead entry guards nothing, and no later reader can tell it
+#     apart from a file that simply moved.
+#   - A FILE OVER THE 700-LINE SEED THRESHOLD WITH NO ENTRY: deleting one line is
+#     otherwise all it takes to dodge the ratchet on a 2,000-line file. The guard
+#     does NOT refuse this itself — it refuses an un-ledged file only above the
+#     1,000 HARD_GATE, so a 700-to-1,000 file can be dropped from the ledger and
+#     then grow freely. Measured against the guard as it stands: an 800-code-line
+#     file with its ledger entry deleted exits 0, and exits 0 again after growing
+#     to 999 lines. Same for a dead entry — a ledger naming a file that no longer
+#     exists exits 0.
+#
+# Both predicates are LAG-TOLERANT by construction: neither compares a ledger
+# NUMBER against today's measurement, so a mid-plan shrink stays green. The one
+# number-comparison made below is the one direction a lag cannot imitate — an
+# entry may sit ABOVE its file's current figure (a shrink not yet re-seeded) and
+# never BELOW it, because below is a growth the ratchet must already refuse.
+#
+# TEETH, PROVEN AND NOT ASSUMED (AGENTS.md: a pin that passes on the broken thing
+# is worse than no pin). Each predicate runs against an honest ledger first, so a
+# pin that fires on nothing cannot hide, and then against its own plant, where it
+# must name the planted path.
+fixture ledger_dead_entry
+emit_code 800 'const p' >"$root/src-tauri/src/alive.rs" # 800 code lines: seeded
+git -C "$root" add -A
+run_check "$root" --update
+assert_eq "the dead-entry fixture seeds (--update exits 0)" "0" "$status"
+dead_walk="$(ledger_walk_paths "$root")"
+assert_eq "an honest ledger draws no complaint from the dead-entry pin" \
+  "" "$(ledger_dead_entries "$root" "$dead_walk")"
+printf '999\tsrc-tauri/src/RETIRED_NEVER_EXISTED.rs\n' >>"$root/scripts/file-size-baseline.txt"
+assert_eq "TEETH: a ledger entry naming a path the walk never visits is refused" \
+  "src-tauri/src/RETIRED_NEVER_EXISTED.rs" "$(ledger_dead_entries "$root" "$dead_walk")"
+
+fixture ledger_dropped_entry
+emit_code 800 'const p' >"$root/src-tauri/src/alive.rs" # 800 code lines: seeded
+git -C "$root" add -A
+run_check "$root" --update
+assert_eq "the dropped-entry fixture seeds (--update exits 0)" "0" "$status"
+dropped_walk="$(ledger_walk_paths "$root")"
+assert_eq "an honest ledger draws no complaint from the missing-entry pin" \
+  "" "$(ledger_missing_entries "$root" "$dropped_walk")"
+# THE DODGE ITSELF: one deleted line, and an 800-code-line file is off the ratchet.
+grep -v 'src-tauri/src/alive.rs' "$root/scripts/file-size-baseline.txt" >"$root/ledger.tmp"
+mv "$root/ledger.tmp" "$root/scripts/file-size-baseline.txt"
+assert_eq "TEETH: a file over 700 code lines with its ledger entry deleted is refused" \
+  "src-tauri/src/alive.rs(800)" "$(ledger_missing_entries "$root" "$dropped_walk")"
+
+# ... and the same two predicates over the COMMITTED ledger of the real checkout,
+# mutation-free: the file is read, never regenerated.
+real_walk="$(ledger_walk_paths "$repo_root")"
+assert_eq "the committed ledger names no path this walk does not visit" \
+  "" "$(ledger_dead_entries "$repo_root" "$real_walk")"
+assert_eq "the committed ledger holds an entry for every production file over 700 code lines (exemptions excepted)" \
+  "" "$(ledger_missing_entries "$repo_root" "$real_walk")"
+
+# THE ONE DIRECTIONAL NUMBER CHECK, the only one safe to make while a plan is
+# shrinking files: above today's figure is a lag, below it is a growth.
+understated=""
+while IFS=$'\t' read -r rec u_path; do
+  [[ -f "$repo_root/$u_path" ]] || continue
+  act="$(grep -vcE '^[[:space:]]*(//|\*|/\*|$)' -- "$repo_root/$u_path" || true)"
+  act="${act:-0}"
+  ((rec < act)) && understated="$understated$u_path($rec<$act)"$'\n'
+done < <(awk -F'\t' '!/^#/ && NF == 2 { print $1 "\t" $2 }' "$real_baseline")
+assert_eq "and no entry UNDERSTATES its file (above is a shrink not yet re-seeded, below is a growth)" \
+  "" "$understated"
+
+# The mirrored walk is only trustworthy while it agrees with the instrument, and
+# the guard's own positive line is the cheapest witness: a pathspec or exclusion
+# drifting apart would otherwise un-pin both real-tree assertions in silence.
+run_check "$repo_root"
+n_mirrored="$(printf '%s\n' "$real_walk" | grep -c . || true)"
+assert_contains "the mirrored walk agrees with the guard's own count" \
+  "$n_mirrored production file(s) walked" "$output"
+
+# THE MUTATION GUARD, in two independent witnesses. The direct proof that this
+# file no longer rewrites the tree it tests — asserted HERE rather than watched by
+# hand, because a case that silently dirties the tree under test reports its own
+# green and leaves the next run red.
+#
+#   (a) the ledger's content hash is the one captured at the top of this file, so
+#       a `--update` over the real tree reintroduced ANYWHERE in this file reddes
+#       here — including in a case added after this one, which is why the guard
+#       sits LAST, after every case, and not inside 18e where it could only see
+#       what ran before it;
+#   (b) `git status` reports the tracked path clean, the shape the plan asked for.
+#       It is also the stricter of the two: a ledger that arrived dirty from
+#       OUTSIDE this suite reddes (b) while (a) stays green, and that split is the
+#       diagnosis — (a) red means this suite rewrote its own test input, (b) alone
+#       red means the tree was already dirty before the suite ran. A tracked
+#       ledger dirty during a CI run is worth seeing either way, so the stricter
+#       reading is kept.
+baseline_post_hash="$(cksum "$repo_root/scripts/file-size-baseline.txt" 2>/dev/null || true)"
+assert_eq "this run leaves the tracked baseline byte-for-byte as it found it (no case may rewrite the ledger it tests)" \
+  "$baseline_pre_hash" "$baseline_post_hash"
+assert_eq "and git status reports the tracked baseline clean after the whole suite" \
+  "" "$(git -C "$repo_root" status --porcelain -- scripts/file-size-baseline.txt)"
+
 
 if ((failures > 0)); then
   echo
