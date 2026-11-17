@@ -50,7 +50,8 @@ pub fn should_emit(last: Option<WindowFrameState>, new_state: WindowFrameState) 
 ///
 /// PURE — no window, no `AppHandle` — so the ORDER of the steps and the wording
 /// of every refusal are testable with no window and no desktop, in the same
-/// shape [`crate::focus_probe_trace`] and [`crate::webview_focus_trace`] use for
+/// shape [`crate::commands::key_focus::focus_probe_trace`] and
+/// [`crate::commands::key_focus::webview_focus_trace`] use for
 /// the focus probe. The argument order IS the call order: `unminimize` → `show`
 /// → `set_focus`.
 ///
@@ -101,8 +102,8 @@ pub fn should_emit(last: Option<WindowFrameState>, new_state: WindowFrameState) 
 /// `lib.exe`) and there is no macOS host here, so whether the raise actually
 /// surfaces a window under Windows or Wayland is UNVERIFIED.
 ///
-/// [`crate::focus_probe_trace`]: crate::focus_probe_trace
-/// [`crate::webview_focus_trace`]: crate::webview_focus_trace
+/// [`crate::commands::key_focus::focus_probe_trace`]: crate::commands::key_focus::focus_probe_trace
+/// [`crate::commands::key_focus::webview_focus_trace`]: crate::commands::key_focus::webview_focus_trace
 pub fn raise_trace(
     unminimize: Option<Result<(), String>>,
     show: Option<Result<(), String>>,

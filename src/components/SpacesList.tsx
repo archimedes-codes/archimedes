@@ -1,36 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ArchiveIcon,
-  ArchiveXIcon,
   BotIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
   ListTodoIcon,
   PlusIcon,
   SettingsIcon,
   SparklesIcon,
-  SquareIcon,
-  Trash2Icon,
 } from "lucide-react";
 import {
   type ModelDto,
   type SessionInfo,
-  type TaskBadge,
   listModels,
   listTools,
 } from "../lib/tauri";
-import { basenameOfPath } from "../lib/paths";
 import { sessionFieldOf } from "../lib/sessionLookup";
 import { titleFor } from "../lib/sessionTitle";
-import { relativeTimeFor } from "../lib/sessionTime";
-import { taskBadgeOf } from "../lib/taskNumber";
-import { archivedInSpace, useSessions, spaceViewFor } from "../store/sessions";
-import {
-  useDragReorder,
-  type DragReorderHandlers,
-  type DropEdge,
-} from "../hooks/useDragReorder";
-import { useSessionStatus } from "../hooks/useSessionStatus";
+import { useSessions, spaceViewFor } from "../store/sessions";
+import { useDragReorder } from "../hooks/useDragReorder";
 import { useSkillCatalog } from "../hooks/useSkillCatalog";
 import { useAgentCatalog } from "../hooks/useAgentCatalog";
 // The Agents modal's write chain (D2): the optimistic publish, the serialized
@@ -40,12 +25,16 @@ import { useAgentOverridesWrites } from "../hooks/useAgentOverridesWrites";
 import SkillsDialog from "./SkillsDialog";
 import AgentsDialog from "./AgentsDialog";
 import DeleteSessionDialog from "./DeleteSessionDialog";
-import { SessionStatusMark } from "./SessionStatusMark";
-import { SessionListRow } from "./SessionListRow";
-import { RowButton } from "./RowButton";
 import { EmptyListLine } from "./EmptyListLine";
 import { cn } from "./lib/utils";
 import { Button } from "./ui/button";
+// The two row components and the **Archived** section are their own files now.
+// The class consts and `spaceNameFor` they share with THIS pane live in
+// `sessionRowStyles` — see the note there on why those three values have more
+// than one owner and therefore need one.
+import { SessionRow } from "./spaces/SessionRow";
+import { ArchivedSection } from "./spaces/ArchivedSection";
+import { spaceNameFor } from "./spaces/sessionRowStyles";
 
 /**
  * THE SIDEBAR'S WIDTH — the pane owns it, because the pane is what wears it.
@@ -61,11 +50,6 @@ import { Button } from "./ui/button";
  * the tabs' offset.)
  */
 export const LEFT_PANE_WIDTH = 260;
-
-function spaceNameFor(cwd: string, spaces: { path: string }[]): string {
-  const match = spaces.find((s) => s.path === cwd);
-  return match ? basenameOfPath(match.path) : basenameOfPath(cwd);
-}
 
 /**
  * THE SIDEBAR'S FOUR LABELLED COMMAND BUTTONS (Tasks, Skills, Agents, Settings) — one ghost
@@ -169,80 +153,6 @@ const SIDEBAR_COMMAND_BUTTON =
 const PANE_COMMAND_ROW =
   "flex h-8 w-full items-center gap-2 rounded-lg px-2 text-ui-base hover:bg-surface-hover";
 
-/**
- * THE HOVER-REVEALED SESSION-ROW ACTIONS — Stop / Archive on a live or stored
- * row, Unarchive / Delete on an archived one. Four affordances, one box, drawn
- * by three different components (`SessionRow` and `ArchivedRow`), so the recipe
- * lives here once.
- *
- * `ROW_HOVER_ACTION` is the negation wall (groups the row does NOT spell, and
- * which `Button`'s base or the `icon-sm` size would otherwise change);
- * `SESSION_ROW_ACTION_ROW` is the row's own class list VERBATIM and comes LAST,
- * so it wins every group it spells. Both go to `cn()` at all four sites.
- *
- * What the wall undoes:
- *  - `border-0` — the base's `border` is a 1px ring; on a `size-6` box that is
- *    a 26px hit target where 24px was measured and pinned by the row's
- *    alignment, and it shifts the glyph 1px.
- *  - `transition-none` — the base fades hover colour over 150 ms. These appear
- *    on row hover ALREADY (`group-hover:flex`); layering a second fade on the
- *    fill would change what a hovering pointer sees.
- *  - `shrink` — the base's `shrink-0` is `flex-shrink: 0`. These four are flex
- *    ITEMS of the row (`RowButton` is a `flex` box), so the base would stop a
- *    long title from squeezing them the way it always could. `shrink` is
- *    `flex-shrink: 1` — the value they had.
- *
- * What the row itself wins by being LAST, and why that matters here:
- *  - `hover:bg-surface-hover` over the ghost arm's `hover:bg-hover` (different
- *    colours in default-dark and Dracula — 5% vs 10%);
- *  - `hidden` + `group-hover:flex` over the base's `inline-flex` — the
- *    hover-reveal mechanism is the whole design of this affordance and it has
- *    to survive;
- *  - `items-center`, `justify-center`, `rounded-md`, `size-6`.
- *
- * Inert additions, with the reason:
- *  - `text-foreground` and `hover:text-foreground` (the ghost arm) — the row
- *    spells NO colour and inherits one anyway: `App.tsx:360`'s root is
- *    `bg-frame text-foreground`, and nothing between it and this button sets a
- *    colour, so the arm's ink IS the inherited ink. Same computed colour;
- *  - `bg-clip-padding` — `padding-box` is CSS's initial `background-clip`, so
- *    declaring it changes nothing;
- *  - `outline-none` — `base.css:53-57` forces `outline: none !important` on
- *    every `:focus`/`:focus-visible` anyway, in every browser and again under
- *    `forced-colors`;
- *  - `disabled:*` / `aria-invalid:*` / `aria-expanded:*` — none of the four is
- *    ever disabled, and nothing sets `aria-invalid` or `aria-expanded` on it
- *    (the two view doors in this pane's command surfaces do — Settings and Tasks;
- *     these do not);
- *  - `text-ui-base/relaxed` — 14px/1.625 declared where the button previously
- *    inherited the UA's 16px (this app never sets a root `font-size`; it sizes
- *    text only through `--ui-font-size` and the `text-ui-*` utilities, and
- *    neither this button nor the `RowButton` it sits in spells one). Inert
- *    because there is no text: the only child is an `<svg class="size-4">`, and
- *    `size-4` is `calc(var(--spacing) * 4)` — rem, not em — inside a fixed
- *    `size-6` box. `whitespace-nowrap` and `select-none` have no text to act
- *    on either;
- *  - `[&_svg]:pointer-events-none` — the click handler is on the button, so the
- *    event is handled whether it lands on the button or is retargeted to it;
- *  - `[&_svg]:shrink-0` — the glyph is a fixed `size-4`;
- *  - `[&_svg:not([class*='size-'])]:size-3` — every icon here is created with
- *    an explicit `size-4` (`SquareIcon`, `ArchiveIcon`, `ArchiveXIcon`,
- *    `Trash2Icon`), so the `:not([class*=size-])` guard excludes all of them.
- *    This is the C2 chrome-bar trap, and it does not bite here;
- *  - `has-data-[icon=inline-*]:pr/pl` — no child carries `data-icon`
- *    (lucide-react v1.47's `createLucideIcon` sets no such attribute);
- *  - `group/button` — nothing in the tree reads that group.
- *
- * NOT `RowButton`, and this is the C4 rule, not an oversight: these are real
- * `<button>`s. A second `role="button"` inside the row would resolve every
- * `.closest('[role="button"]')` read in `SpacesList.test.tsx` to the action
- * instead of the row, and `ToolCallCard.test.tsx`'s nesting pin keeps the
- * `button`-in-`button` count at zero — `Button` renders a `<button>`, which is
- * what the row's `div[role=button]` already expects as a child.
- */
-const ROW_HOVER_ACTION = "border-0 transition-none shrink";
-const SESSION_ROW_ACTION_ROW =
-  "hidden size-6 items-center justify-center rounded-md group-hover:flex hover:bg-surface-hover";
 
 /** The row ids while NO **Space** is selected. A module-level constant rather
  *  than an inline `?? []`, so the array's IDENTITY is stable across renders in
@@ -809,426 +719,5 @@ export default function SpacesList({
         />
       )}
     </aside>
-  );
-}
-
-/**
- * One session row: the leading `SessionStatusMark` (spinner = in a turn,
- * `?` = a pending permission / `ask` / sudo password or a child holding one,
- * filled ring = live and idle, dim ring = stored — the SAME glyph set the
- * tab draw), the title with a gradient-fade mask
- * (applied to the text ITSELF — background-agnostic, so it works over
- * `bg-frame` / `bg-selected` / `bg-surface-hover` alike; the text is NOT
- * `truncate`-ellipsized, it overflows under the fade), and the right slot: the
- * relative time of last activity — ALWAYS the time. Hover swaps it for the
- * row's actions: EVERY row swaps, live or stored. A live row offers Stop then
- * Archive (`inTurn` → cancel the turn, else close the Session), a stored row
- * offers Archive alone (reversible — no confirm). The live row used to have no
- * hover action at all: the Pause button was deleted and nothing replaced it, so
- * a running Session could not be stopped or put away without opening it first.
- *
- * THE TRAILING "Waiting" PILL IS GONE, and the `?` in the leading slot is why.
- * The pill and the leading mark were the same fact drawn twice in two shapes,
- * and the pill's price was the time: while a session waited you could not see
- * how long ago it had been active. One attention glyph in the slot the spinner
- * already occupies (where the eye already looks for "what is this session
- * doing") says it and leaves the time alone.
- */
-function SessionRow({
-  sessionId,
-  spaceName,
-  active,
-  onOpen,
-  drag,
-  dropEdge,
-  recencyMap,
-  badgeMap,
-}: {
-  sessionId: string;
-  spaceName: string;
-  active: boolean;
-  onOpen: (sessionId: string) => void;
-  /** This row's `useDragReorder` spread, from the pane's one hook instance. */
-  drag?: DragReorderHandlers;
-  /** Which edge of this row to mark, or `null` when it is not the target. */
-  dropEdge?: DropEdge | null;
-  /** The boot recency map, passed DOWN from the pane (which already selects it
-   *  for `spaceViewFor`) so this row adds NO subscription of its own. Required:
-   *  `relativeTimeFor` reads it through `recencyOf`, and a row with no loaded
-   *  transcript has nothing else to print. */
-  recencyMap: Record<string, number>;
-  /** The **Task badge** map, passed DOWN from the pane for the SAME reason as
-   *  `recencyMap`: the pane holds the ONE subscription and this row adds none of its
-   *  own. Required, so a row cannot be rendered without having been asked "does this
-   *  Session wear a badge?" — `taskBadgeOf` answers `null` when the map has no entry,
-   *  and `null` renders nothing. */
-  badgeMap: Record<string, TaskBadge>;
-}) {
-  const messages = useSessions((s) => s.messages[sessionId]);
-  const isLive = useSessions((s) => s.sessions.some((x) => x.sessionId === sessionId));
-  const archiveSession = useSessions((s) => s.archiveSession);
-  // The row's generated title, read by id: `SessionRow` is given an id (by
-  // design — its parent holds `sessionIds`, the id sequence, never the
-  // rows), so no `SessionInfo` is threaded through `SpaceView` for it. The
-  // selector returns a PRIMITIVE via the ONE three-list walk
-  // (`lib/sessionLookup.ts` — live / history / archived, live first): zustand
-  // v5 re-runs a selector that yields a fresh OBJECT on every snapshot read, so
-  // `{ … }` here would re-render the row forever.
-  const storedTitle = useSessions(
-    (s) => sessionFieldOf(s, sessionId, "title") ?? null,
-  );
-  // The row's mark (spinner / `?` / ring) comes from the SAME rule the
-  // tab uses — see `useSessionStatus`.
-  const status = useSessionStatus(sessionId);
-  // The SAME field `stopSession` reads at click time — so tooltip and action can
-  // never disagree about WHICH field they mean. A flip between the last render
-  // and the click is the render/click gap `stopSession` accepts on purpose
-  // ("paint and click are not the same tick"), not drift this row could hide.
-  const inTurn = useSessions((s) => !!s.inTurn[sessionId]);
-  const stopSession = useSessions((s) => s.stopSession);
-  // The triple `recencyOf` takes: this row's own transcript (the FRESHER
-  // evidence, already subscribed) plus the boot map the pane handed down, so the
-  // no-transcript arm prints the same stamp the list was ordered by.
-  const time = relativeTimeFor(sessionId, messages, recencyMap);
-  const title = titleFor(messages, spaceName, storedTitle);
-  // The **Task badge** for this Session, or `null` — read through the ONE rule
-  // (`taskBadgeOf`) rather than indexed here, so `absent means no badge` keeps a
-  // single owner. A row with no entry renders exactly what it rendered before the
-  // badge existed: no node, no character, no `gap`.
-  const badge = taskBadgeOf(badgeMap, sessionId);
-
-  // Stop first: it is the action that pertains to a session that is RUNNING, so the
-  // row reads left-to-right as "stop what's running, then put it away". The Archived
-  // row keeps its destructive control OUTERMOST (Unarchive then Delete); this row
-  // deliberately does not copy that — Archive is not destructive (ADR 0016:
-  // reversible, and it never destroys a transcript).
-  //
-  // The actions are plain `<button>`s, NOT `RowButton`: a `role="button"` inside
-  // the row would resolve every `.closest('[role="button"]')` read in
-  // `SpacesList.test.tsx` to the button instead of the row, and would turn each
-  // `rowOf(…).getByRole("button", …)` into a multiple-match throw.
-  //
-  // EACH CARRIES `draggable={false}` (spec §Handle). The row itself is
-  // `draggable`, and these buttons are its CHILDREN, so a press that begins on
-  // Stop or Archive would otherwise start a drag of the row instead of acting —
-  // the worst possible failure on the two controls that end a turn and put a
-  // Session away. It is spelled on every one rather than inherited: an absent
-  // attribute is not the same answer as an explicit opt-out.
-  const actions = (
-    <>
-      {isLive && (
-        <Button
-          type="button"
-          draggable={false}
-          variant="ghost"
-          size="icon-sm"
-          title={inTurn ? "Stop this turn" : "Stop this session"}
-          aria-label={`Stop ${title}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            void stopSession(sessionId).catch((err) => {
-              console.error("Failed to stop session:", err);
-            });
-          }}
-          className={cn(ROW_HOVER_ACTION, SESSION_ROW_ACTION_ROW)}
-        >
-          <SquareIcon className="size-4" />
-        </Button>
-      )}
-      <Button
-        type="button"
-        draggable={false}
-        variant="ghost"
-        size="icon-sm"
-        title="Archive"
-        aria-label={`Archive ${title}`}
-        onClick={(e) => {
-          e.stopPropagation();
-          void archiveSession(sessionId).catch((err) => {
-            console.error("Failed to archive session:", err);
-          });
-        }}
-        className={cn(ROW_HOVER_ACTION, SESSION_ROW_ACTION_ROW)}
-      >
-        <ArchiveIcon className="size-4" />
-      </Button>
-    </>
-  );
-
-  // The state glyph, in the slot the spinner already owned: a session that
-  // is idle now wears a RING rather than nothing — the cue this list used
-  // to omit, which left the idle state drawn as an absence.
-  // `dotSize={8}` halves the RING alone: the three states are three different
-  // amounts of ink, and the ring is the only one that reads as a solid chunk of
-  // paint, so at a shared 16px the idle state outshouted the working state
-  // above it — inverting their importance. The spinner and the `?` are outlines
-  // whose weight is what makes them readable, and they keep the full slot. No
-  // `testId`: the tests reach the mark through the STATE it paints
-  // (`[data-dot="…"]`) — the hook that asserts what the user sees rather than
-  // which node carried it. The mark owns its own ink (`text-foreground` on the
-  // active row, `text-foreground-subtlest` otherwise) — see
-  // `SessionListRow`'s note on why the row must not pass one.
-  return (
-    <SessionListRow
-      title={title}
-      active={active}
-      time={time}
-      onOpen={() => onOpen(sessionId)}
-      drag={drag}
-      dropEdge={dropEdge}
-      leading={
-        <SessionStatusMark status={status} active={active} size={16} dotSize={8} />
-      }
-      badge={badge}
-      actions={actions}
-    />
-  );
-}
-
-/**
- * The **active Space's** Archived section: the archived rows whose `cwd` is the
- * selected Space, rendered AFTER that Space's groups and scrolling with the
- * list. COLLAPSED by default — EXCEPT when it holds the active Session, in which
- * case it is open (see the derived `open` below); the header (icon + "Archived" +
- * count + chevron) toggles it either way. The count is the SAME array the rows
- * render, so it is the Space's count and never the app-wide total.
- *
- * The ORDER is explicit recency, and the two filters below are `archivedInSpace`'s
- * rather than this component's — one call, so the badge, the rows and the sort
- * cannot disagree. This section is the list ADR 0075 calls the trap: it used to
- * inherit its order from the query's input order and get recency for free, and
- * once that query returned the Manual order it presented a manual arrangement
- * under a heading that means recency while passing every test that did not assert
- * the order.
- *
- * Two filters, both load-bearing (applied by the store function, whose own doc
- * says why):
- * - the sticky live ids are view-filtered out — a resumed archived session
- *   renders in its Space group (live), not here (CONTEXT.md "Archived session");
- * - rows of another Space are excluded — the section is the SELECTED Space's, so
- *   a sibling tab's archived rows appear when that tab is selected, never while
- *   this one is. A row whose Space has no open tab at all is **Detached** and is
- *   listed in Settings → Detached sessions; there is no fallback listing here.
- *
- * With no Space selected (`activeSpacePath === null`) `cwd === null` matches
- * nothing, so the "No archived sessions." empty state renders while archived rows
- * exist. That is honest: none of them belong to a Space the sidebar is showing.
- */
-function ArchivedSection({
-  activeSessionId,
-  onOpen,
-  onDelete,
-  badgeMap,
-}: {
-  activeSessionId: string | null;
-  onOpen: (sessionId: string) => void;
-  onDelete: (session: SessionInfo) => void;
-  /** The **Task badge** map, threaded from the pane (which holds the ONE
-   *  `taskNumbers` subscription) rather than selected here. The section does select
-   *  `sessionRecency` for ITSELF — `archivedInSpace` sorts by it — but a badge sorts
-   *  nothing, so this section needs the map only to hand it on. */
-  badgeMap: Record<string, TaskBadge>;
-}) {
-  const archived = useSessions((s) => s.archivedSessions);
-  const sessions = useSessions((s) => s.sessions);
-  const activeSpacePath = useSessions((s) => s.activeSpacePath);
-  // The recency the section sorts by (ADR 0075). `{ recency }` only, never
-  // `{ recency, messages }`: subscribing this section to the transcripts would
-  // re-render it on every streamed token, and the boot map is the same SQL
-  // expression the row's label reads (T03's D3, inherited here).
-  const sessionRecency = useSessions((s) => s.sessionRecency);
-  // ONE call, so the badge and the rows cannot disagree, and so the sort is the
-  // STORE's — said out loud — rather than an order inherited from a query that
-  // since ADR 0075 returns the Manual order. The defect this line closes: the
-  // section used to `archived.filter(…)` in input order and inherit recency for
-  // free, and after T01's ORDER BY swap that input order became the Manual
-  // order — a manual arrangement under a heading that means recency, passing
-  // every test that did not assert the order (this is the one that does).
-  const visible = archivedInSpace(activeSpacePath, archived, sessions, {
-    recency: sessionRecency,
-  });
-  // Collapsed by default, because the section is secondary — with ONE exception
-  // that decides the whole shape: the Landing Session can now be an ARCHIVED one
-  // (ADR 0075's amendment), and `activeView.sessionIds` is `mergeSessionOrder`'s
-  // output, which by construction never contains an archived id — so the Space
-  // group can never carry the highlight and THIS section is the only place that
-  // row lives. Left collapsed, the app would boot with a transcript on screen and
-  // nothing in the sidebar pointing at it. Opening the section does not select
-  // anything: it reveals the row that is already selected.
-  //
-  // DERIVED, not seeded at mount. The rule is the controlled/uncontrolled split:
-  // the user's own click, once made, is final for this mount; until then the
-  // section is open exactly when it holds the row that is actually on screen.
-  //
-  // Why the initialiser-only form (this file's previous shape) was inert in the
-  // shipped app — THE BOOT ORDER, which is the finding: `src/main.tsx` renders
-  // `<App />` with no boot gate, so `SpacesList` — and this section — mounts on
-  // the FIRST frame, while boot's
-  // `Promise.all([listSessions(true), listSpaces(), sessionRecency()]).then(… setSpaces …)`
-  // is what runs `autoSelectActive` and lands `activeSessionId` on the archived
-  // row strictly LATER. This component is mounted unconditionally and UNKEYED in
-  // the permanent sidebar (ADR 0094/0095), so a lazy initialiser ran exactly once
-  // against `activeSessionId === null`, computed `false`, and never recomputed —
-  // collapsed on boot in precisely the state the rule exists to serve. The tab-
-  // click route failed the same way: the section is mounted long before
-  // `selectSpace` sets the id. A test that seeded the active row BEFORE `render`
-  // could not see this, which is exactly why the pin now renders first and lands
-  // the Session after.
-  //
-  // No effect is needed and none is wanted: `holdsActiveRow` is a boolean
-  // PRIMITIVE, so this compares a value, not an identity. Do NOT put `visible` in
-  // a dependency list — `archivedInSpace` returns a fresh array every render, so
-  // an effect keyed on it churns (and an effect that sets state is the shape that
-  // risks a render loop).
-  //
-  // `userChoice === null` means "untouched": open iff this section holds the
-  // active row. A hand-collapsed section therefore STAYS collapsed even if the
-  // active row later leaves it, and a hand-opened one stays open — the user's
-  // click outranks the derivation for the rest of this mount.
-  const [userChoice, setUserChoice] = useState<boolean | null>(null);
-  const holdsActiveRow = visible.some((s) => s.sessionId === activeSessionId);
-  const open = userChoice ?? holdsActiveRow;
-  return (
-    <div className="px-2.5 py-1">
-      <RowButton
-        onClick={() => setUserChoice(!open)}
-        className="group flex cursor-pointer items-center gap-1 rounded-lg px-1 hover:bg-surface-hover"
-      >
-        <ArchiveIcon className="size-4 shrink-0 text-foreground-subtlest" />
-        <span className="flex-1 truncate text-ui-base text-foreground-subtlest group-hover:text-foreground-subtle">
-          Archived
-        </span>
-        <span className="text-ui-sm text-foreground-subtlest">
-          {visible.length}
-        </span>
-        {open ? (
-          <ChevronDownIcon className="size-4 shrink-0 text-foreground-subtlest" />
-        ) : (
-          <ChevronRightIcon className="size-4 shrink-0 text-foreground-subtlest" />
-        )}
-      </RowButton>
-      {open && (
-        <div className="mt-1 flex flex-col gap-0.5">
-          {visible.length === 0 ? (
-            <p className="px-1 py-1 text-ui-sm text-foreground-subtlest">
-              No archived sessions.
-            </p>
-          ) : (
-            visible.map((session) => (
-              <ArchivedSessionRow
-                key={session.sessionId}
-                session={session}
-                active={activeSessionId === session.sessionId}
-                onOpen={onOpen}
-                onDelete={onDelete}
-                recencyMap={sessionRecency}
-                badgeMap={badgeMap}
-              />
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * One archived-session row (the `SessionRow` visual pattern): 16px
- * leading slot (empty — archived sessions are NEVER live, so no
- * spinner), the title, and the relative time (empty slot only when
- * NEITHER the transcript nor the boot recency map proves recency — the
- * Archived list is sorted by that map, so a row it stamped now prints
- * the stamp it was sorted by). NO `· {spaceName}` suffix: the
- * section is scoped to the active Space, so a row here can never belong to
- * another Space and the cue would only repeat what the header already says.
- * (`spaceName` still feeds `titleFor` as the last-resort label when the
- * session has neither a generated title nor a loaded transcript.)
- * Hover: Unarchive (`ArchiveX`, reversible — no confirm) + Delete (`Trash2`,
- * the only destructive action — confirm dialog). Click opens the transcript
- * (identical to a stored row — the first send resumes it).
- */
-function ArchivedSessionRow({
-  session,
-  active,
-  onOpen,
-  onDelete,
-  recencyMap,
-  badgeMap,
-}: {
-  session: SessionInfo;
-  active: boolean;
-  onOpen: (sessionId: string) => void;
-  onDelete: (session: SessionInfo) => void;
-  /** The boot recency map the SECTION already selects (it is the very value
-   *  `archivedInSpace` sorted these rows by). Passed down, never indexed here:
-   *  `recencyOf` does the reading, so the label a row prints is the number that
-   *  ordered it. */
-  recencyMap: Record<string, number>;
-  /** The **Task badge** map, from the pane through `ArchivedSection`. Same rule as
-   *  the live/stored row: the badge nests in the SAME title-span slot, which is what
-   *  keeps the two sections title-aligned. */
-  badgeMap: Record<string, TaskBadge>;
-}) {
-  const messages = useSessions((s) => s.messages[session.sessionId]);
-  const spaces = useSessions((s) => s.spaces);
-  const unarchiveSession = useSessions((s) => s.unarchiveSession);
-  const spaceName = spaceNameFor(session.cwd, spaces);
-  const title = titleFor(messages, spaceName, session.title);
-  const time = relativeTimeFor(session.sessionId, messages, recencyMap);
-  // The **Task badge** — the same rule the live/stored row reads, so the two
-  // sections answer the question identically and their titles stay aligned.
-  const badge = taskBadgeOf(badgeMap, session.sessionId);
-  // Unarchive first, Delete OUTERMOST: Delete is the only destructive action on
-  // this row (confirm dialog), so it sits furthest from the content. The live
-  // row deliberately does NOT copy this rule — Archive there is reversible and
-  // never destroys a transcript (ADR 0016), so it can sit outside Stop.
-  //
-  // NO `leading` prop: an archived Session is NEVER live, so the leading slot is
-  // `SessionListRow`'s empty 16px spacer — the same width the status mark
-  // occupies, which is what keeps these rows aligned with the ones above.
-  return (
-    <SessionListRow
-      title={title}
-      active={active}
-      time={time}
-      onOpen={() => onOpen(session.sessionId)}
-      badge={badge}
-      actions={
-        <>
-          <Button
-            type="button"
-            draggable={false}
-            variant="ghost"
-            size="icon-sm"
-            title="Unarchive"
-            aria-label={`Unarchive ${title}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              void unarchiveSession(session.sessionId).catch((err) => {
-                console.error("Failed to unarchive session:", err);
-              });
-            }}
-            className={cn(ROW_HOVER_ACTION, SESSION_ROW_ACTION_ROW)}
-          >
-            <ArchiveXIcon className="size-4" />
-          </Button>
-          <Button
-            type="button"
-            draggable={false}
-            variant="ghost"
-            size="icon-sm"
-            title="Delete"
-            aria-label={`Delete ${title}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(session);
-            }}
-            className={cn(ROW_HOVER_ACTION, SESSION_ROW_ACTION_ROW)}
-          >
-            <Trash2Icon className="size-4" />
-          </Button>
-        </>
-      }
-    />
   );
 }

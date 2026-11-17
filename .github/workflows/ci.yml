@@ -391,6 +391,19 @@ jobs:
       - name: Test the version check
         run: bash scripts/check-versions.test.sh
 
+      # The size ratchet's own fixture harness, HERE for the same reason the census
+      # and crash-log harnesses are: the guard is a shell script, and the cases that
+      # decide whether it means anything are fixture shapes no matrix step can build
+      # — a Rust file whose lines are all `///`, a TSX file whose lines are all
+      # block comments, and above all a file of N production code lines PLUS an
+      # inline `#[cfg(test)] mod tests` of M more. That last fixture is the only
+      # thing in the repo that tells this instrument apart from the census's: a
+      # ratchet that cut at `#[cfg(test)]` passes every other case and can be
+      # satisfied by MOVING code into the test module, which shrinks the number and
+      # changes nothing real. Without this step, that regression is invisible.
+      - name: Test the file-size ratchet check
+        run: bash scripts/check-file-size.test.sh
+
       # The crash-log leak guard's own harness. It lives HERE rather than only in
       # the `lint-test-build` matrix because the guard is a shell script: its
       # fixtures (`supervisor.log` in the same dir, the nested macOS `archimedes/`
@@ -447,6 +460,35 @@ jobs:
       # test script above is what changed.
       - name: Check the three version fields agree
         run: bash scripts/check-versions.sh
+
+      # The size ratchet on the real checkout: a production file crossing 1,000
+      # CODE lines is refused unless it is in `scripts/file-size-baseline.txt`, and
+      # any baselined file that grew by even one code line is refused. The silent
+      # failure it exists to catch is the one this plan's census actually hit — a
+      # size claim argued from `wc -l` (117 files over 200) against a code-line
+      # instrument (75), settled by hand because nothing could be re-run. It is a
+      # LOOK-AT tripwire and NOT a defect threshold: subject count is still what
+      # decides whether a split is DONE, and size is not a defect predictor here
+      # (fix density by band is non-monotonic — 600-1000 worst at 2.61/kLOC, 1000+
+      # at 1.79). That is why the mechanism is a ratchet over a committed baseline
+      # rather than a threshold in a config: an intentional rise has to be a diff a
+      # reviewer sees, not a number someone edits at 2am to make CI green.
+      #
+      # Placed BEFORE the toolchain step below, which is the only step in this job
+      # that needs a compiler: a guard that reads text files must not be queued
+      # behind a rustup download it does not depend on.
+      - name: Check production file sizes against the baseline
+        run: bash scripts/check-file-size.sh
+
+      # Its premise proof, same as the census and command guards: a green run here
+      # cannot demonstrate that the guard can fail, because nothing in the tree is
+      # over its bar today. The case that matters most is the vacuity floor — a walk
+      # that finds fewer than 250 production files, or finds ZERO files over 500 code
+      # lines, is REFUSED. A pathspec typo (git's `**` silently misses every depth-1
+      # file, measured on this repo) reads as an empty walk, and an empty walk reads
+      # as green forever. This step is what makes that a red instead.
+      - name: Prove the file-size guard can fail
+        run: bash scripts/check-file-size.sh --self-test
 
       # The rquickjs allocator guard, and the ONLY step in this job that needs a
       # compiler. Same toolchain rule as the matrix job: no version named here,

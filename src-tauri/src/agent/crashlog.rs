@@ -9,12 +9,11 @@
 //! otherwise collide on one filename, and a name with no owner is why the
 //! Stalled banner's crash attribution could only guess by recency. A
 //! pre-amendment **pid-less** `crash-<ts>-<tag>.log` is still matched by
-//! the attribution matcher (`router.rs`'s `is_worker_crash_log_name`),
-//! because logs already on disk keep their names. Attribution reads the
-//! pid back out of the name: the **Stalled** banner picks the log named for
-//! the child the Supervisor just reaped (`router.rs`'s
-//! `find_crash_log_for_pid`), and falls back to the pid-less shape only when
-//! no pid was captured.
+//! the attribution matcher (`is_worker_crash_log_name`), because logs
+//! already on disk keep their names. Attribution reads the pid back out of
+//! the name: the **Stalled** banner picks the log named for the child the
+//! Supervisor just reaped (`find_crash_log_for_pid`), and falls back to the
+//! pid-less shape only when no pid was captured.
 //!
 //! The `dir` comes from the CALLER — never from this module. That is
 //! load-bearing, not convenience: a hook that resolves its own
@@ -36,13 +35,15 @@
 //! `Start`; the file name carries the timestamp and the pid — the
 //! Supervisor's crash attribution reads the pid back out of it: the
 //! **Stalled** banner selects the log named for the child it just reaped,
-//! see `session::router`'s `find_crash_log_for_pid`); the Supervisor's:
+//! see `find_crash_log_for_pid`); the Supervisor's:
 //! `"supervisor"`.
 //!
 //! NOTE (toolchain): the panic info is only reachable from INSIDE a
 //! panic hook (this std has no `unwrap_panic_hook_info`), so the writer
 //! takes the live `PanicHookInfo` (`write_crash_log_from_info`) and the
 //! hook closure is the production entry.
+
+use std::path::PathBuf;
 
 /// How long a crash log is kept (30 days), and how many are kept (50).
 ///
@@ -144,8 +145,9 @@ fn write_crash(
 ///
 /// The name pattern is deliberately WIDER than attribution's matcher: the
 /// real names are `crash-<ts>-<tag>-<pid>.log` and the attribution matcher
-/// (`router.rs`) has to recognise the older `crash-<ts>-<tag>.log` too, so
-/// a prune matching the narrow shape would spare exactly the files worth
+/// (`is_worker_crash_log_name`) has to recognise the older
+/// `crash-<ts>-<tag>.log` too, so a prune matching the narrow shape would
+/// spare exactly the files worth
 /// deleting. It must still NOT match `debuglog`'s `supervisor.log` /
 /// `supervisor.log.old`, which live in the same directory.
 ///
@@ -313,6 +315,122 @@ pub fn install_panic_hook(tag: &str, dir: std::path::PathBuf) {
             previous(info);
         }));
     });
+}
+
+/// Is `name` (a bare file name) a **Worker** crash log — in either of the
+/// two shapes that exist on disk?
+///
+/// - `crash-<ts>-worker.log` — the pre-amendment shape, still sitting in
+///   users' data dirs from before the writer stamped its pid in.
+/// - `crash-<ts>-worker-<pid>.log` — the current shape (`crashlog.rs`'s
+///   `write_crash`).
+///
+/// Both are accepted on purpose: the rename and this matcher landed in ONE
+/// commit, so there was never an interval where the **Stalled** banner's
+/// crash-log link matches nothing — and no integration test would notice
+/// (`tests/ipc.rs`'s crash case asserts only `at`, never `crashLog`).
+///
+/// The pid arm is a pure SUFFIX check and that is safe: `worker-` pins
+/// where the digit run starts and the `.` ends it, so no name can end in
+/// `-worker-<digits>.log` while meaning something else (brute-forced over
+/// every pid/other pair in `1..3000`: zero false positives). Do NOT
+/// "harden" this into a split-on-`-` parser — that only adds a way to
+/// drift from the writer's format.
+///
+/// [`find_crash_log_for_pid`] is the only reader of this rule: it gates
+/// BOTH of its arms (the crashed Worker's own pid-stamped log, and the
+/// pid-less pre-amendment fallback when no pid was captured).
+pub(crate) fn is_worker_crash_log_name(name: &str) -> bool {
+    if !name.starts_with("crash-") {
+        return false;
+    }
+    if name.ends_with("-worker.log") {
+        return true;
+    }
+    // `-worker-<digits>.log`: peel the two fixed ends and require that
+    // what is left is a NON-EMPTY run of ASCII digits — the pid.
+    let Some(stem) = name.strip_suffix(".log") else {
+        return false;
+    };
+    let Some((head, pid_part)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    head.ends_with("-worker")
+        && !pid_part.is_empty()
+        && pid_part.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Does `name` carry a `-<digits>.log` pid suffix (i.e. is it a
+/// pid-STAMPED crash log, `crash-<ts>-<tag>-<pid>.log`)?
+///
+/// The SAME suffix peel [`is_worker_crash_log_name`] uses — peel `.log`,
+/// then the last `-`, then require a non-empty ASCII-digit run. No field
+/// splitting: only the end of the name is ever inspected.
+pub(crate) fn has_pid_suffix(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".log") else {
+        return false;
+    };
+    let Some((_, tail)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The crash log belonging to `pid` — the `StalledInfo`'s `crash_log`,
+/// globbed ONCE and then FROZEN (crash logs are diagnostic, not load-bearing).
+///
+/// Attribution is by IDENTITY, not by recency. With N concurrent **Subagent**
+/// Workers, the newest log on disk routinely belongs to a *different* Worker,
+/// and the recency rule this replaced sent the **Stalled** banner to the wrong
+/// post-mortem. The Supervisor knows which child it just reaped — the handle's
+/// pid, captured at spawn because `Child::id()` is `None` after the reap — and
+/// the writer stamps that pid into the name (`crashlog`'s `write_crash`).
+///
+/// - `Some(pid)` → the entry named `crash-<…>-worker-<pid>.log`. No match is
+///   `None`, deliberately: the old rule returned *some* log whenever the dir
+///   held one, so a crash whose own log had been pruned linked the user at an
+///   unrelated Worker's crash. A banner with NO link beats a WRONG one, and
+///   `StalledInfo.crash_log` is an `Option` the banner already renders.
+/// - `None` (the pid was never captured) → the newest PRE-amendment log, i.e.
+///   [`is_worker_crash_log_name`] minus anything carrying a pid suffix. Those
+///   pid-less names are what sits in users' data dirs from before the writer
+///   stamped its pid, and a query that does not know the pid must not blame a
+///   log that names a specific process.
+///
+/// The directory comes from the CALLER (the `SessionManager`'s `crash_log_dir`
+/// late-wire), never from a resolver here: a router that resolved the
+/// platform data dir itself could not be tested over a temp dir — and a
+/// crash-log dir resolved deep in a call chain is the exact shape the
+/// [`crate::agent::crashlog`] census forbids in the panic path.
+pub(crate) fn find_crash_log_for_pid(dir: &std::path::Path, pid: Option<u32>) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    // The pid-stamped tail this Worker owns, e.g. `worker-4242.log`. Built
+    // once, outside the loop.
+    let owned = pid.map(|p| format!("worker-{p}.log"));
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_mine = match &owned {
+            // The crashed Worker's own log: the shared `crash-`-anchored
+            // predicate PLUS the exact pid tail. Both halves carry weight —
+            // the tail alone would accept any file that merely ENDS
+            // `worker-<pid>.log` (a `notes-worker-1.log` answers a query for
+            // pid 1), and the predicate alone is the recency rule this fn
+            // replaced. Keeping the predicate shared with the fallback arm
+            // also stops the two name readers drifting apart.
+            Some(tail) => is_worker_crash_log_name(&name) && name.ends_with(tail.as_str()),
+            // No pid: only the pid-less pre-amendment shape is attributable.
+            None => is_worker_crash_log_name(&name) && !has_pid_suffix(&name),
+        };
+        if is_mine {
+            if let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) {
+                if newest.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+                    newest = Some((mtime, entry.path()));
+                }
+            }
+        }
+    }
+    newest.map(|(_, p)| p)
 }
 
 #[cfg(test)]
