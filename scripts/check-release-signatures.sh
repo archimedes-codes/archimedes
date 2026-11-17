@@ -4,7 +4,8 @@
 # installer payload list it accepted. This is the release's signature-completeness
 # gate (issue #41(d)).
 #
-# WHY THE CHECK HAD TO RUN IN THE OTHER DIRECTION. What `docs/agents/releasing.md` told the
+# WHY THE CHECK HAD TO RUN IN THE OTHER DIRECTION. What
+# `docs/agents/releasing.md` told the
 # releaser to do was "count distinct `.platforms[].url` basenames in the shipped
 # manifest and require a `.sig` for each". That check CANNOT fail:
 # `compose-updater-manifest.sh` derives its platform keys FROM the `.sig` files it
@@ -315,9 +316,9 @@ fi
 # payload. So a signature whose payload is absent is not a healthy release with an
 # extra file on it — it is an installer that was deleted, or a re-tag where the
 # asset list moved under a signature that outlived it. The reachable flow is
-# documented in docs/agents/releasing.md step 4: `latest.json` is cacheable, so a re-tag that
-# re-composes with `--clobber` over a DOWNLOADED manifest can keep a `.sig` from a
-# release that no longer carries the installer.
+# documented in docs/agents/releasing.md step 4: `latest.json` is cacheable, so
+# a re-tag that re-composes with `--clobber` over a DOWNLOADED manifest can keep
+# a `.sig` from a release that no longer carries the installer.
 #
 # What the hole costs is not a shrunk manifest — it is a 404. Measured on this
 # tree, assets `A.AppImage`, `A.AppImage.sig`, `B_x64-setup.exe.sig` (no `.exe`)
