@@ -141,6 +141,30 @@ builds, and the Linux DMABUF variables — is `README.md`'s `## Releasing`.
   carry a one-line rationale for why its resource is single and shared** —
   `record_messages_batch` is the in-repo example. The census, the per-file
   split, and the way each grep disagrees are in `docs/agents/census.md`.
+- **File size is a LOOK-AT tripwire; subject count is the SPLIT trigger.** Those
+  are two different instruments and neither replaces the other. **Subject count
+  decides whether a split is DONE** — unchanged, and still the only rule of that
+  kind: no `describe` / `#[cfg(test)]` block may hold more than ~25 unrelated
+  tests, a 40-test block over one subject is fine and a 20-test block spanning two
+  subjects is already wrong (`docs/agents/test-counts-and-splits.md`). **Raw code
+  line size is a look-at signal at 1,000 production code lines**, enforced as a
+  *ratchet* by `scripts/check-file-size.sh`: a file crossing 1,000 needs an entry
+  in `scripts/file-size-baseline.txt`, and a baselined file may not grow by even
+  one code line — a rise is a `--update` diff a reviewer sees, never a threshold
+  someone edits. The instrument is **code lines** (comments and blanks stripped,
+  an inline `#[cfg(test)] mod tests` **counted**, because a ratchet that cut at
+  `#[cfg(test)]` could be satisfied by moving code into the test module), and the
+  command to re-measure any file is `bash scripts/check-file-size.sh`. **Size is
+  NOT a defect predictor here, and this bullet must not be read as "big files are
+  buggy".** Measured in this repo: fix density by size band is **non-monotonic**
+  (600–1000 is the worst band at 2.61 fixes/kLOC, 1000+ is *better* at 1.79), the
+  correlation between size and relative churn is **r = 0.057**, and **0** defects
+  in the `docs/features/*-known-gaps.md` set and **0** audit findings attribute a
+  defect to file length. So a large file is a reason to go LOOK for a subject
+  boundary before adding to it, and never on its own a reason to split: splitting
+  `errors.rs` (1,135 code lines whole-file, of which 497 are production and the
+  rest its inline test module) because it is long would cost a coordinated move
+  and buy nothing measurable.
 - **Docs**: durable design decisions live in `docs/decisions/NNNN-slug.md`
   (ADR format); in-flight plans live in `docs/roadmap/<feature>.md` and are
   deleted on ship. Anything a roadmap records that must survive that deletion
