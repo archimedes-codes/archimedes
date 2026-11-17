@@ -711,18 +711,112 @@ run_check "$repo_root"
 assert_eq "the real tree is green against its committed baseline" "0" "$status"
 assert_contains "and it walked the production tree" "production file(s) walked" "$output"
 
-# 18b. THE INSTRUMENT PIN ON THE REAL TREE. The committed baseline must record
-#      `src-tauri/src/agent/session/naming.rs` ABOVE what a `#[cfg(test)]`-cut
-#      instrument would give it. naming.rs is where the two instruments disagree
-#      by ~1,670 lines, so this asks the census-vs-ratchet question of the real
-#      checkout — and it survives any later shrink, because it compares the two
-#      instruments rather than a frozen number.
+# --- helpers for the real-tree cases 18b-18e ------------------------------
+# The instrument's own walk, mirrored: same pathspecs, same extensions, same two
+# exclusions. Duplicated deliberately rather than shelling out to the guard, so
+# the predicates below can ask the walk a question the guard never asks. Case 18e
+# asserts this mirror's COUNT against the guard's own positive line, which is what
+# turns a drift between the two into a red instead of a silently un-pinned pin.
+ledger_walk_paths() {
+  local r="$1" rel
+  git -C "$r" ls-files -z -- src-tauri/src src-tauri/tests src |
+    while IFS= read -r -d '' rel; do
+      case "$rel" in *.rs) ;; *.ts | *.tsx) ;; *) continue ;; esac
+      case "$rel" in *.test.ts | *.test.tsx) continue ;; esac
+      case "/$rel" in */tests/*) continue ;; esac
+      printf '%s\n' "$rel"
+    done
+}
+
+# The guard's own field separator, spelled the way the guard spells it, so the
+# `sort` invocations below are the SAME sort and break a tie the same way.
+TABS="$(printf '\t')"
+
+# THE OTHER INSTRUMENT: the census variant, which stops at the first
+# `#[cfg(test)]` line. This is what the plan's census measured, and what a ratchet
+# built on it would have recorded. It lives here so the pins below can ask "could
+# a cutting instrument have written this ledger?" of the real checkout, which is
+# the only question that tells the two instruments apart at all.
+instrument_cut_lines() {
+  local file="$1" n
+  n="$(awk '/#\[cfg\(test)\]/{exit} {print}' "$file" |
+    grep -vcE '^[[:space:]]*(//|\*|/\*|$)' || true)"
+  printf '%s\n' "${n:-0}"
+}
+
+# The whole-file instrument, mirrored: `code_lines`' classifier verbatim, applied
+# to every path `ledger_walk_paths` visits, as `<count><TAB><path>`.
+instrument_measured() {
+  local r="$1" p n
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    n="$(grep -vcE '^[[:space:]]*(//|\*|/\*|$)' -- "$r/$p" || true)"
+    printf '%s\t%s\n' "${n:-0}" "$p"
+  done <<<"$(ledger_walk_paths "$r")"
+}
+
+# The guard's own ranking of a `<count><TAB><path>` list — the identical
+# invocation, so a tie for largest resolves the same way on both sides of every
+# comparison below.
+instrument_rank() {
+  LC_ALL=C sort -t"$TABS" -k1,1rn -k2,2 <<<"$1"
+}
+
+# Ledger entries only a CUTTING instrument could have written: a file whose inline
+# `#[cfg(test)]` module contributes counted lines today (so the two instruments
+# genuinely DISAGREE about it) whose recorded figure does not sit ABOVE the cut
+# figure. Files with no inline test module are skipped — there the two instruments
+# agree by construction and there is nothing to pin. Lag in the other direction is
+# fine and expected: a recorded figure may sit far above a shrunk file, this asks
+# only that it not sit AT OR BELOW the cut figure.
+ledger_entries_cut_short() {
+  local r="$1" p rec whole cut bad=""
+  while IFS=$'\t' read -r rec p; do
+    [[ -z "$p" ]] && continue
+    [[ -f "$r/$p" ]] || continue
+    whole="$(grep -vcE '^[[:space:]]*(//|\*|/\*|$)' -- "$r/$p" || true)"
+    whole="${whole:-0}"
+    cut="$(instrument_cut_lines "$r/$p")"
+    ((whole > cut)) || continue
+    ((rec > cut)) || bad="$bad$p(rec=$rec<=cut=$cut)"$'\n'
+  done < <(awk -F'\t' '!/^#/ && NF == 2 { print $1 "\t" $2 }' "$r/scripts/file-size-baseline.txt")
+  printf '%s' "$bad"
+}
+
+# The real checkout's walk and ledger, read ONCE so every case below ranks the
+# same snapshot instead of a possibly-different one per case.
+real_walk="$(ledger_walk_paths "$repo_root")"
 real_baseline="$repo_root/scripts/file-size-baseline.txt"
+
+# The tree as the whole-file instrument ranks it, computed ONCE and shared by 18c
+# (which asks which three files are largest) and 18d (which asks which one is).
+# Recomputed on every run: nothing below recites a file name or a figure.
+tree_ranked="$(instrument_rank "$(instrument_measured "$repo_root")")"
+
+# 18b. THE INSTRUMENT PIN ON THE REAL TREE, in comparative form and with no
+#      leaderboard in it. Two claims, both of the shape `recorded > cut`:
+#
+#   (1) THE NAMED SAMPLE. The committed baseline records
+#       `src-tauri/src/agent/session/naming.rs` ABOVE what a `#[cfg(test)]`-cut
+#       instrument gives that same file. naming.rs is where the two instruments
+#       disagree most — its inline `mod tests` is ~1,675 lines — so it is the
+#       cheapest place to ask the census-vs-ratchet question of the real checkout.
+#       naming.rs appears here as a SAMPLE of the tree and not as its largest
+#       file: the assertion holds whatever it measures and whatever else is bigger.
+#   (2) THE SWEEP, which is claim (1) applied to every ledger entry the two
+#       instruments disagree about. One file can be pinned by accident; ten
+#       cannot, and the sweep is what catches a ledger that was cut in only some
+#       of its rows.
+#
+# WHY COMPARATIVE AND NOT A NUMBER. A frozen figure reddens the moment anyone
+# shrinks the file, which is the entire point of the plan this guard belongs to.
+# `recorded > cut` survives any later shrink, because a shrink moves BOTH sides of
+# the comparison together.
 if [[ -f "$real_baseline" ]]; then
   recorded="$(baseline_count "$real_baseline" 'src-tauri/src/agent/session/naming.rs')"
-  cut_figure="$(awk '/#\[cfg\(test\)\]/{exit} {print}' "$repo_root/src-tauri/src/agent/session/naming.rs" | grep -vcE '^[[:space:]]*(//|\*|/\*|$)' || true)"
+  cut_figure="$(instrument_cut_lines "$repo_root/src-tauri/src/agent/session/naming.rs")"
   if [[ -z "$recorded" ]]; then
-    echo "FAIL the committed baseline has no entry for src-tauri/src/agent/session/naming.rs (the largest file in the tree)"
+    echo "FAIL the committed baseline has no entry for src-tauri/src/agent/session/naming.rs"
     failures=$((failures + 1))
   elif ((recorded > cut_figure)); then
     echo "ok   the baseline counts naming.rs whole: $recorded > the cfg(test)-cut figure $cut_figure"
@@ -735,50 +829,116 @@ else
   failures=$((failures + 1))
 fi
 
-# 18c. THE THREE LARGEST, in order, read out of the committed baseline: naming.rs,
-#      db.rs, session/mod.rs. `db.rs` is the largest under EVERY instrument tried,
-#      so "db.rs first means your instrument is wrong" proves nothing — whereas
-#      naming.rs beating db.rs happens ONLY when an inline `mod tests` is counted,
-#      which is exactly the choice this task made. Read from the file rather than
-#      by running `--update` against the real checkout: a test must not rewrite a
-#      tracked file in the tree it is testing.
-#
-#      `awk 'NR <= 3'` and NOT `head -n3`: this pipeline runs under this file's own
-#      `set -euo pipefail` (line 37), and `head -n3` is the same short read that
-#      made check-file-size.sh's own success line die of SIGPIPE — `head` exits at
-#      3 lines, `sort` dies writing the rest, `pipefail` propagates 141 and `set -e`
-#      aborts the whole test file before the summary. Here the input is 11 lines so
-#      the race is unlikely, but "unlikely" is what case 16b is about, and a test
-#      file that can abort silently reports nothing at all. `awk 'NR <= 3'` prints
-#      the same three lines and reads to EOF, so nothing downstream of `sort` stops
-#      early.
-top3="$(awk -F'\t' '!/^#/ && NF == 2 { print }' "$real_baseline" | sort -rn | awk 'NR <= 3 { print }' | cut -f2)"
-expected_top3="$(printf '%s\n' 'src-tauri/src/agent/session/naming.rs' 'src-tauri/src/storage/db.rs' 'src-tauri/src/agent/session/mod.rs')"
-assert_eq "the baseline's three largest, in order, are naming.rs, db.rs, session/mod.rs" "$expected_top3" "$top3"
+assert_eq "and every ledger entry the two instruments disagree about is recorded ABOVE its cfg(test)-cut figure" \
+  "" "$(ledger_entries_cut_short "$repo_root")"
 
-# 18d. The positive line names the largest file, and it is naming.rs — the same
-#      claim as 18c, taken from the run's own output rather than the file.
+# 18c. THE LEDGER'S HEAD IS A RANKING OF THE TREE THE INSTRUMENT SEES — recomputed,
+#      not recited. This case used to assert that the three largest were naming.rs,
+#      db.rs and session/mod.rs IN THAT ORDER, which was a snapshot of the tree
+#      wearing the clothes of a test: Task 2 legitimately cut naming.rs from 2,259
+#      to 2,002 and the case went red on a green tree. Three claims replace it,
+#      none of which names a winner:
+#
+#   (1) SORTEDNESS, the one ordering claim that IS invariant: the ledger's own
+#       figures run largest-first, because that is the order `--update` writes
+#       them in. A hand-edited or re-spliced ledger breaks this and nothing else.
+#   (2) REALNESS: each of the ledger's three largest is a tracked production file
+#       this walk actually visits, so the head of the ledger is the head of a real
+#       list and not of an invented one.
+#   (3) MEMBERSHIP, order-free: the three files the WHOLE-FILE instrument measures
+#       as largest on this tree are exactly the three files heading the ledger.
+#       ORDER IS DELIBERATELY NOT COMPARED between the two sides: the ledger is a
+#       RATCHET and its figures legitimately LAG (it holds naming.rs at 2,259 while
+#       the file measures 2,002), and a lagging figure can reorder the two lists
+#       without either side being wrong. MEMBERSHIP is what survives that lag, and
+#       membership is what a cutting instrument breaks — under the census
+#       instrument naming.rs reads 327 and leaves the top three altogether.
+#
+# Read from the file rather than by running `--update` against the real checkout: a
+# test must not rewrite a tracked file in the tree it is testing (case 18e).
+#
+# `awk 'NR <= 3'` and NOT `head -n3`: this pipeline runs under this file's own
+# `set -euo pipefail` (line 37), and `head -n3` is the same short read that made
+# check-file-size.sh's own success line die of SIGPIPE — `head` exits at 3 lines,
+# `sort` dies writing the rest, `pipefail` propagates 141 and `set -e` aborts the
+# whole test file before the summary. `awk 'NR <= 3'` prints the same three lines
+# and reads to EOF, so nothing downstream of `sort` stops early.
+ledger_ranked="$(instrument_rank "$(awk -F'\t' '!/^#/ && NF == 2 { print $1 "\t" $2 }' "$real_baseline")")"
+ledger_top3="$(printf '%s\n' "$ledger_ranked" | awk 'NR <= 3 { print $2 }')"
+tree_top3="$(printf '%s\n' "$tree_ranked" | awk 'NR <= 3 { print $2 }')"
+
+assert_eq "the ledger holds a top three at all" "3" \
+  "$(printf '%s\n' "$ledger_top3" | grep -c . || true)"
+assert_eq "the ledger's recorded figures run largest-first" "" \
+  "$(awk -F'\t' '!/^#/ && NF == 2 { seen++; if (seen > 1 && $1 > prev) print "entry " seen ": " $1 " > " prev; prev = $1 }' "$real_baseline")"
+
+top3_unwalked=""
+while IFS= read -r top_path; do
+  [[ -z "$top_path" ]] && continue
+  grep -qxF -- "$top_path" <<<"$real_walk" || top3_unwalked="$top3_unwalked$top_path"$'\n'
+done <<<"$ledger_top3"
+assert_eq "and each of the ledger's three largest is a tracked production file this walk visits" \
+  "" "$top3_unwalked"
+
+assert_eq "the ledger's top three are the three files the whole-file instrument measures as largest (recomputed, order-free)" \
+  "$(printf '%s\n' "$tree_top3" | LC_ALL=C sort)" "$(printf '%s\n' "$ledger_top3" | LC_ALL=C sort)"
+
+# 18d. THE POSITIVE LINE NAMES THE BIGGEST FILE THE INSTRUMENT SAW — the largest
+#      file RECOMPUTED from the tree, path AND figure, so this case tracks the tree
+#      instead of freezing it. Same claim as 18c(3), taken from the guard's own
+#      output rather than from the ledger. The FIGURE is part of the needle on
+#      purpose: a guard cutting at `#[cfg(test)]` still names the right FILE here
+#      (db.rs) and the wrong NUMBER (2,152, not 2,154), so pinning the pair keeps
+#      18d carrying teeth of its own instead of merely restating 18c.
 run_check "$repo_root"
-assert_contains "the success line names the largest file, and it is naming.rs" "largest src-tauri/src/agent/session/naming.rs" "$output"
+# `-F'\t'` and not whitespace splitting: the guard reads its own `<count><TAB><path>`
+# lines by cutting at the FIRST tab precisely so a path containing a space stays one
+# path, and a whitespace-splitting mirror would truncate such a path here.
+expected_largest="$(printf '%s\n' "$tree_ranked" | awk -F'\t' 'NR == 1 { print "largest " $2 " " $1 }')"
+# `assert_contains` with an EMPTY needle passes, so a recomputation that produced
+# nothing would turn this case into a green that checked nothing — the same
+# "confident green built on a measurement that read nothing" the guard itself
+# refuses. Pinned well-formed first, so the needle is known to carry BOTH a path
+# and a figure and not merely the word `largest`.
+assert_eq "and the recomputed largest-file expectation has the shape \`largest <path> <figure>\`" \
+  "ok" "$(case "$expected_largest" in
+            'largest '*[![:space:]]' '[0-9]*) echo ok ;;
+            *) echo "malformed: [$expected_largest]" ;;
+          esac)"
+assert_contains "the success line names the file the instrument measures as largest, with its figure" \
+  "$expected_largest" "$output"
+
+# 18b-TEETH. THE CUT INSTRUMENT, SIMULATED, so the pin in 18b is PROVEN to catch it
+# rather than merely asserted to (AGENTS.md: a pin that passes on the broken thing
+# is worse than no pin). The fixture is case 13c's shape — 700 production code lines
+# plus a 13-line inline `mod tests` — which the whole-file instrument reads at 713
+# and a census instrument reads at 700. Its ledger entry is then REWRITTEN to the
+# figure the census instrument would have recorded, which IS the broken state, and
+# the sweep predicate must name it. The honest ledger is asserted clean first, so a
+# predicate that fires on nothing cannot hide behind its own plant.
+fixture cut_instrument_ledger
+{
+  emit_code 700 'const p'
+  printf '#[cfg(test)]\n'
+  printf 'mod tests {\n'
+  emit_code 10 '    const t'
+  printf '}\n'
+} >"$root/src-tauri/src/cutledger.rs"   # 700 + 13 = 713 whole-file; 700 under a cut
+git -C "$root" add -A
+run_check "$root" --update
+assert_eq "the cut-instrument fixture seeds at the whole-file figure" "713" \
+  "$(baseline_count "$root/scripts/file-size-baseline.txt" 'src-tauri/src/cutledger.rs')"
+assert_eq "an honest ledger draws no complaint from the cfg(test)-cut sweep" \
+  "" "$(ledger_entries_cut_short "$root")"
+# THE BROKEN INSTRUMENT, spelled as a number: the row a census ratchet writes.
+awk -F'\t' 'BEGIN { OFS = "\t" } $2 == "src-tauri/src/cutledger.rs" { $1 = 700 } { print }' \
+  "$root/scripts/file-size-baseline.txt" >"$root/ledger.tmp"
+mv "$root/ledger.tmp" "$root/scripts/file-size-baseline.txt"
+assert_eq "TEETH: a ledger seeded by a cfg(test)-cutting instrument is refused" \
+  "src-tauri/src/cutledger.rs(rec=700<=cut=700)" \
+  "$(ledger_entries_cut_short "$root")"
 
 # --- helpers for case 18e -------------------------------------------------
-# The instrument's own walk, mirrored: same pathspecs, same extensions, same two
-# exclusions. Duplicated deliberately rather than shelling out to the guard, so
-# the ledger predicates below can ask the walk a question the guard never asks.
-# The real-tree case below asserts this mirror's COUNT against the guard's own
-# positive line, which is what turns a drift between the two into a red instead
-# of a silently un-pinned pin.
-ledger_walk_paths() {
-  local r="$1" rel
-  git -C "$r" ls-files -z -- src-tauri/src src-tauri/tests src |
-    while IFS= read -r -d '' rel; do
-      case "$rel" in *.rs) ;; *.ts | *.tsx) ;; *) continue ;; esac
-      case "$rel" in *.test.ts | *.test.tsx) continue ;; esac
-      case "/$rel" in */tests/*) continue ;; esac
-      printf '%s\n' "$rel"
-    done
-}
-
 # The exemption table, read out of the instrument itself and never re-listed
 # here: an exemption someone added there and this file did not know about would
 # otherwise redden a pin for an absence everyone had already agreed to.
