@@ -15,6 +15,7 @@ import {
 import {
   type ModelDto,
   type SessionInfo,
+  type TaskBadge,
   listModels,
   listTools,
 } from "../lib/tauri";
@@ -22,6 +23,7 @@ import { basenameOfPath } from "../lib/paths";
 import { sessionFieldOf } from "../lib/sessionLookup";
 import { titleFor } from "../lib/sessionTitle";
 import { relativeTimeFor } from "../lib/sessionTime";
+import { taskBadgeOf } from "../lib/taskNumber";
 import { archivedInSpace, useSessions, spaceViewFor } from "../store/sessions";
 import {
   useDragReorder,
@@ -71,6 +73,12 @@ function spaceNameFor(cwd: string, spaces: { path: string }[]): string {
  * that used to ride this recipe — `Open Space` and `New Session` — are gone: the
  * first left the sidebar for the chrome bar, the second is now the `+` in the
  * `Sessions` header, which is an icon button and does NOT use this recipe.)
+ *
+ * The four now live in TWO boxes, not one strip: **Tasks** above the list (D2) and
+ * **Skills / Agents / Settings** in the band below it (D1). That is a POSITION change
+ * only — every one of them still takes this recipe verbatim, which is exactly the
+ * point of spelling it once: a move like that touches two `className` call sites and
+ * no button's own shape.
  *
  * The FIRST argument is what `Button`'s base and the `default` size would add
  * that these two never had, and each entry only names a group the row below
@@ -204,7 +212,7 @@ const PANE_COMMAND_ROW =
  *    `forced-colors`;
  *  - `disabled:*` / `aria-invalid:*` / `aria-expanded:*` — none of the four is
  *    ever disabled, and nothing sets `aria-invalid` or `aria-expanded` on it
- *    (the two view doors in this pane's command strip do — Settings and Tasks;
+ *    (the two view doors in this pane's command surfaces do — Settings and Tasks;
  *     these do not);
  *  - `text-ui-base/relaxed` — 14px/1.625 declared where the button previously
  *    inherited the UA's 16px (this app never sets a root `font-size`; it sizes
@@ -259,11 +267,11 @@ export default function SpacesList({
    *  The `= {}` default is what keeps those bare call sites legal.
    *
    *  THE THREE PROPS BELOW SHARE THAT RULE, for the same reason: this pane's command
-   *  strip is the app's view switcher now, and only `App` knows which view is up. */
+   *  surfaces are the app's view switcher now, and only `App` knows which view is up. */
   onOpenBoard?: () => void;
   /** Open the **Settings** view. The door that used to sit in the chrome bar's
-   *  `ChromeControls` (deleted) — the strip is its only home, so this pane holds the
-   *  app's ONE route to the settings page. */
+   *  `ChromeControls` (deleted) — this pane's command band is its only home, so the
+   *  pane holds the app's ONE route to the settings page. */
   onOpenSettings?: () => void;
   /** Leave the current view for the workspace. THE TOGGLE-OFF HALF of both view
    *  doors: clicking the door that is already pressed is how you exit Settings or
@@ -278,17 +286,23 @@ export default function SpacesList({
    *  **Space**'s folder view (see below), which feeds `rowIds`. */
   currentView?: "workspace" | "settings" | "board";
 } = {}) {
-  // THE STRIP IS THE VIEW SWITCHER. The Settings door moved here from the chrome
-  // bar's control cluster (`ChromeControls`, deleted): the pane is permanent across
-  // all three views since ADR 0094, so the door that opens a view can also be the
-  // door that closes it, and the top-right of the window is left to the window
-  // controls alone.
+  // THE COMMAND SURFACES ARE THE VIEW SWITCHER. The Settings door moved here from
+  // the chrome bar's control cluster (`ChromeControls`, deleted): the pane is
+  // permanent across all three views since ADR 0094, so the door that opens a view
+  // can also be the door that closes it, and the top-right of the window is left to
+  // the window controls alone.
   const spaces = useSessions((s) => s.spaces);
   const sessions = useSessions((s) => s.sessions);
   const historySessions = useSessions((s) => s.historySessions);
   const archivedSessions = useSessions((s) => s.archivedSessions);
   const closeReasons = useSessions((s) => s.closeReasons);
   const sessionRecency = useSessions((s) => s.sessionRecency);
+  // THE Task BADGE map (spec D3/D12): boot-fetched wholesale and replaced wholesale,
+  // so the pane reads it ONCE and hands it DOWN to both row kinds — exactly the way
+  // `sessionRecency` above is read once and handed down as `recencyMap`. A per-row
+  // `useSessions((s) => s.taskNumbers[sessionId])` would be a SECOND way to reach a
+  // pane-level map from a row, and the row's existing shape says which one stays.
+  const taskNumbers = useSessions((s) => s.taskNumbers);
   // The boot order map (ADR 0075): the ONLY thing that lets a LIVE row keep its
   // slot. Read here because `spaceViewFor` needs it as an argument — the pane
   // does not otherwise care about position, and T04 renders `sessionIds`
@@ -470,10 +484,10 @@ export default function SpacesList({
   //
   // This is the second exit every view has (N1) and it REVERSES ADR 0094's D8,
   // which kept Settings open across a row click. That was coherent while the pane
-  // merely COEXISTED with Settings; once the strip IS the view switcher, "show me
-  // this Session" necessarily includes leaving the page that is covering the
-  // transcript — a row that opened a Session you could not see was the bug D8
-  // traded away.
+  // merely COEXISTED with Settings; once these command surfaces ARE the view
+  // switcher, "show me this Session" necessarily includes leaving the page that is
+  // covering the transcript — a row that opened a Session you could not see was the
+  // bug D8 traded away.
   //
   // The order mirrors the recipe `SessionsSection`'s Reopen already documents
   // (`addSpace → openSession → onReturnToWorkspace()`): open, then leave. Both
@@ -509,28 +523,35 @@ export default function SpacesList({
     // is only what keeps a long label from pushing the center column. The pane's
     // collapse toggle is NOT here — there is no such control anywhere any more —
     // which is also why the footer row this pane used to end with is gone. The
-    // app's ONE control (the Settings door) IS in here, as the second of the four
-    // commands in the strip at the top.
+    // app's ONE control (the Settings door) IS in here, but NOT at the top any
+    // more: the commands are split across TWO surfaces inside the content region,
+    // **Tasks** alone above the list (D2) and the **Skills / Agents / Settings**
+    // band pinned below it (D1). The sentence this replaces said the door was "the
+    // second of the four commands in the strip at the top", which stopped being
+    // true the moment the band moved — read the band's own comment for why.
     <aside
       style={{ width: LEFT_PANE_WIDTH }}
       className="relative flex shrink-0 flex-col overflow-hidden bg-frame"
     >
-      {/* THE CONTENT REGION — the action buttons, the `Sessions` header and the
-          list. It used to carry an `invisible` class while the pane was collapsed,
-          and that class was load-bearing THEN: clipping alone let the content paint
-          INTO the 40px sliver (the buttons wrapped to one word per line, the
-          `Sessions` header became "Sess", and the scroller grew a SCROLLBAR in a
-          40px column). Nothing clips now, so nothing hides — the wrapper stays a
-          plain flex column, and it survives as an element because the layout below
-          (a `flex-1` scroller inside a `flex-1` column) needs the nesting. */}
+      {/* THE CONTENT REGION — the Tasks command, the `Sessions` header, the list
+          and the command band below it. It used to carry an `invisible` class while
+          the pane was collapsed, and that class was load-bearing THEN: clipping alone
+          let the content paint INTO the 40px sliver (the buttons wrapped to one word
+          per line, the `Sessions` header became "Sess", and the scroller grew a
+          SCROLLBAR in a 40px column). Nothing clips now, so nothing hides — the
+          wrapper stays a plain flex column, and it survives as an element because the
+          layout below (a `flex-1` scroller inside a `flex-1` column, with a
+          `shrink-0` band after it) needs the nesting. */}
       <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-col gap-2 p-3">
-        {/* The Task board's door, and it LEADS the strip. It joined the labelled
-            commands after **Agents** (spec §3) and was later moved to the front: the
-            board is where work starts, and a door below three others is a door nobody
-            finds. Leading costs the adjacency the order used to defend — Settings, the
-            other VIEW door, is now LAST with the two modal commands between them. See
-            **Settings**' note for what that split was for and what it no longer buys.
+        {/* The Task board's door, and it is now the ONLY command ABOVE the list (D2):
+            the pane reads tasks, then sessions. It joined the labelled commands after
+            **Agents** (spec §3) and was later moved to the front — the board is where
+            work starts, and a door below three others is a door nobody finds. It now
+            sits alone in this box: the other three moved BELOW the scroller (D1), so
+            the adjacency the original order defended (Settings next to Tasks, the two
+            modal commands together) is gone entirely. Nothing reads neighbours — see
+            the band's comment for what the KIND split still carries.
             It is a COMMAND button and NOT a section header like
             `Sessions`, because a board is one surface rather than a list of rows —
             so it takes the shared recipe verbatim and owns no chevron, no count and
@@ -557,78 +578,6 @@ export default function SpacesList({
         >
           <ListTodoIcon className="size-4" />
           <span className="flex-1 text-left">Tasks</span>
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="default"
-          onClick={() => setSkillsOpen(true)}
-          className={cn(SIDEBAR_COMMAND_BUTTON, PANE_COMMAND_ROW)}
-        >
-          <SparklesIcon className="size-4" />
-          <span className="flex-1 text-left">Skills</span>
-        </Button>
-        {/* The Agents modal (the ONE Agent surface — Settings has no Agents
-            section). No `Kbd`, matching `Skills`: neither is a chord. `BotIcon`
-            moved here from the deleted Settings nav entry. */}
-        <Button
-          type="button"
-          variant="ghost"
-          size="default"
-          onClick={() => setAgentsOpen(true)}
-          className={cn(SIDEBAR_COMMAND_BUTTON, PANE_COMMAND_ROW)}
-        >
-          <BotIcon className="size-4" />
-          <span className="flex-1 text-left">Agents</span>
-        </Button>
-        {/* The Settings door — the app's ONLY app control, and the reason this strip
-            is the view switcher rather than a row of commands. It used to be a gear
-            at the far RIGHT of the chrome bar (`ChromeControls`, deleted): the pane
-            is permanent across all three views (ADR 0094), so the door lives with
-            the other doors, and the bar's top-right belongs to the window manager
-            alone.
-
-            LAST in the strip, which is a position chosen for it rather than a leftover:
-            the order used to be Skills / Agents / Settings / Tasks precisely so the two
-            VIEW doors stayed adjacent and the two MODAL commands stayed adjacent, and
-            **Tasks** moving to the front broke that. The adjacency was only ever a
-            tiebreaker for where **Settings** should sit — nothing reads its neighbours,
-            and the `aria-pressed` behaviour is per-button and order-independent. What
-            the split genuinely still carries is the KIND difference: a modal is not a
-            location, so Skills and Agents raise a dialog and carry NO `aria-pressed`;
-            Settings and Tasks name a view, so they say which one is showing and toggle
-            off when clicked again. That distinction is now invisible in the layout and
-            lives only in the behaviour — the accepted cost of putting Tasks first. Two exits per view (N1) — its
-            own door, or any **Session** row — so no view is a dead end. That is what
-            makes the Settings page's own `Back` redundant (it is retired);
-            this pane owns no exit control of its own.
-
-            NOT `CHROME_BUTTON`, and that is a gate, not a preference:
-            `chromeButton.test.ts`'s source gate requires `chromeButton.ts` to be the
-            ONLY production file under `src/components/` carrying the chrome-bar
-            geometry. `PANE_COMMAND_ROW` is `h-8 w-full` — the sidebar's box. */}
-        <Button
-          type="button"
-          variant="ghost"
-          size="default"
-          aria-pressed={currentView === "settings"}
-          onClick={() =>
-            currentView === "settings"
-              ? onReturnToWorkspace?.()
-              : onOpenSettings?.()
-          }
-          className={cn(
-            SIDEBAR_COMMAND_BUTTON,
-            PANE_COMMAND_ROW,
-            // "Pressed" is ONE idiom in the pane: the same fill the active Session
-            // row wears. The row's `hover:bg-surface-hover` rides along (a different
-            // tailwind-merge group, so `cn()` keeps both) — a pressed door still
-            // answers the pointer.
-            currentView === "settings" && "bg-selected",
-          )}
-        >
-          <SettingsIcon className="size-4" />
-          <span className="flex-1 text-left">Settings</span>
         </Button>
       </div>
       {/* The Sessions header: the label + the `New Session` `+` (right-aligned,
@@ -696,6 +645,7 @@ export default function SpacesList({
                 drag={drag.dragProps(id)}
                 dropEdge={drag.overId === id ? drag.overEdge : null}
                 recencyMap={sessionRecency}
+                badgeMap={taskNumbers}
               />
             ))}
           </div>
@@ -711,7 +661,93 @@ export default function SpacesList({
           activeSessionId={currentView === "workspace" ? activeSessionId : null}
           onOpen={openSessionAndReturn}
           onDelete={setDeleteTarget}
+          badgeMap={taskNumbers}
         />
+      </div>
+      {/* THE COMMAND BAND — Skills / Agents / Settings, pinned BELOW the scroller and
+          deliberately NOT inside it (spec D1). A door that scrolls off the bottom of a
+          long Session list is a door that is not there: this is the failure ADR 0095
+          exists to end, which was the Settings gear sitting in the chrome bar's
+          `view === "settings"` ELSE-arm and so absent on the very view it opened.
+          Also NOT a sibling of the content region — that would make it the `<aside>`'s
+          `lastElementChild` and redden the pin that says the pane ends with the content
+          region. Tasks stays ABOVE the list (D2): the pane reads tasks, then sessions.
+
+          The three `<Button>s below are the strip's old second, third and fourth
+          commands MOVED VERBATIM — same `variant`, `size`, `aria-pressed` (Settings
+          only), `onClick` guards, class lists, icons and labels. Only their position
+          changed, so every behaviour pin in `SpacesList.test.tsx` and `App.test.tsx`
+          (which reaches the doors by NAME, and is position-independent) still reads.
+
+          **Skills** — the left pane has NO skill list (ZCode parity: a searchable
+          modal, and the catalog fetch lives in `useSkillCatalog` above so the composer
+          and this modal share ONE fetch). No `Kbd`: it is not a chord, and neither is
+          Agents.
+
+          **Agents** — the ONE Agent surface (Settings has no Agents section).
+          `BotIcon` moved here from the deleted Settings nav entry.
+
+          **Settings** — the app's ONLY app control, and the reason this band is a view
+          switcher rather than a row of commands. It used to be a gear at the far RIGHT
+          of the chrome bar (`ChromeControls`, deleted): the pane is permanent across all
+          three views (ADR 0094), so the door lives with the other doors, and the bar's
+          top-right belongs to the window manager alone. It is LAST in the band, a
+          position chosen rather than a leftover, and the KIND difference is what the
+          order carries: a modal is not a location, so Skills and Agents raise a dialog
+          and carry NO `aria-pressed`; Settings and Tasks name a view, so they say which
+          one is showing and toggle off when clicked again. Two exits per view (N1) —
+          its own door, or any **Session** row — so no view is a dead end. That is what
+          makes the Settings page's own `Back` redundant (it is retired); this pane owns
+          no exit control of its own.
+
+          NOT `CHROME_BUTTON`, and that is a gate, not a preference:
+          `chromeButton.test.ts`'s source gate requires `chromeButton.ts` to be the ONLY
+          production file under `src/components/` carrying the chrome-bar geometry.
+          `PANE_COMMAND_ROW` is `h-8 w-full` — the sidebar's box. */}
+      <div className="flex shrink-0 flex-col gap-1 border-t border-border p-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="default"
+          onClick={() => setSkillsOpen(true)}
+          className={cn(SIDEBAR_COMMAND_BUTTON, PANE_COMMAND_ROW)}
+        >
+          <SparklesIcon className="size-4" />
+          <span className="flex-1 text-left">Skills</span>
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="default"
+          onClick={() => setAgentsOpen(true)}
+          className={cn(SIDEBAR_COMMAND_BUTTON, PANE_COMMAND_ROW)}
+        >
+          <BotIcon className="size-4" />
+          <span className="flex-1 text-left">Agents</span>
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="default"
+          aria-pressed={currentView === "settings"}
+          onClick={() =>
+            currentView === "settings"
+              ? onReturnToWorkspace?.()
+              : onOpenSettings?.()
+          }
+          className={cn(
+            SIDEBAR_COMMAND_BUTTON,
+            PANE_COMMAND_ROW,
+            // "Pressed" is ONE idiom in the pane: the same fill the active Session
+            // row wears. The row's `hover:bg-surface-hover` rides along (a different
+            // tailwind-merge group, so `cn()` keeps both) — a pressed door still
+            // answers the pointer.
+            currentView === "settings" && "bg-selected",
+          )}
+        >
+          <SettingsIcon className="size-4" />
+          <span className="flex-1 text-left">Settings</span>
+        </Button>
       </div>
       {/* CLOSES the content region here, and that boundary is still structural:
           the dialogs below sit OUTSIDE it. They used to have to, because this
@@ -806,6 +842,7 @@ function SessionRow({
   drag,
   dropEdge,
   recencyMap,
+  badgeMap,
 }: {
   sessionId: string;
   spaceName: string;
@@ -820,6 +857,12 @@ function SessionRow({
    *  `relativeTimeFor` reads it through `recencyOf`, and a row with no loaded
    *  transcript has nothing else to print. */
   recencyMap: Record<string, number>;
+  /** The **Task badge** map, passed DOWN from the pane for the SAME reason as
+   *  `recencyMap`: the pane holds the ONE subscription and this row adds none of its
+   *  own. Required, so a row cannot be rendered without having been asked "does this
+   *  Session wear a badge?" — `taskBadgeOf` answers `null` when the map has no entry,
+   *  and `null` renders nothing. */
+  badgeMap: Record<string, TaskBadge>;
 }) {
   const messages = useSessions((s) => s.messages[sessionId]);
   const isLive = useSessions((s) => s.sessions.some((x) => x.sessionId === sessionId));
@@ -848,6 +891,11 @@ function SessionRow({
   // no-transcript arm prints the same stamp the list was ordered by.
   const time = relativeTimeFor(sessionId, messages, recencyMap);
   const title = titleFor(messages, spaceName, storedTitle);
+  // The **Task badge** for this Session, or `null` — read through the ONE rule
+  // (`taskBadgeOf`) rather than indexed here, so `absent means no badge` keeps a
+  // single owner. A row with no entry renders exactly what it rendered before the
+  // badge existed: no node, no character, no `gap`.
+  const badge = taskBadgeOf(badgeMap, sessionId);
 
   // Stop first: it is the action that pertains to a session that is RUNNING, so the
   // row reads left-to-right as "stop what's running, then put it away". The Archived
@@ -931,6 +979,7 @@ function SessionRow({
       leading={
         <SessionStatusMark status={status} active={active} size={16} dotSize={8} />
       }
+      badge={badge}
       actions={actions}
     />
   );
@@ -969,10 +1018,16 @@ function ArchivedSection({
   activeSessionId,
   onOpen,
   onDelete,
+  badgeMap,
 }: {
   activeSessionId: string | null;
   onOpen: (sessionId: string) => void;
   onDelete: (session: SessionInfo) => void;
+  /** The **Task badge** map, threaded from the pane (which holds the ONE
+   *  `taskNumbers` subscription) rather than selected here. The section does select
+   *  `sessionRecency` for ITSELF — `archivedInSpace` sorts by it — but a badge sorts
+   *  nothing, so this section needs the map only to hand it on. */
+  badgeMap: Record<string, TaskBadge>;
 }) {
   const archived = useSessions((s) => s.archivedSessions);
   const sessions = useSessions((s) => s.sessions);
@@ -1067,6 +1122,7 @@ function ArchivedSection({
                 onOpen={onOpen}
                 onDelete={onDelete}
                 recencyMap={sessionRecency}
+                badgeMap={badgeMap}
               />
             ))
           )}
@@ -1097,6 +1153,7 @@ function ArchivedSessionRow({
   onOpen,
   onDelete,
   recencyMap,
+  badgeMap,
 }: {
   session: SessionInfo;
   active: boolean;
@@ -1107,6 +1164,10 @@ function ArchivedSessionRow({
    *  `recencyOf` does the reading, so the label a row prints is the number that
    *  ordered it. */
   recencyMap: Record<string, number>;
+  /** The **Task badge** map, from the pane through `ArchivedSection`. Same rule as
+   *  the live/stored row: the badge nests in the SAME title-span slot, which is what
+   *  keeps the two sections title-aligned. */
+  badgeMap: Record<string, TaskBadge>;
 }) {
   const messages = useSessions((s) => s.messages[session.sessionId]);
   const spaces = useSessions((s) => s.spaces);
@@ -1114,6 +1175,9 @@ function ArchivedSessionRow({
   const spaceName = spaceNameFor(session.cwd, spaces);
   const title = titleFor(messages, spaceName, session.title);
   const time = relativeTimeFor(session.sessionId, messages, recencyMap);
+  // The **Task badge** — the same rule the live/stored row reads, so the two
+  // sections answer the question identically and their titles stay aligned.
+  const badge = taskBadgeOf(badgeMap, session.sessionId);
   // Unarchive first, Delete OUTERMOST: Delete is the only destructive action on
   // this row (confirm dialog), so it sits furthest from the content. The live
   // row deliberately does NOT copy this rule — Archive there is reversible and
@@ -1128,6 +1192,7 @@ function ArchivedSessionRow({
       active={active}
       time={time}
       onOpen={() => onOpen(session.sessionId)}
+      badge={badge}
       actions={
         <>
           <Button
