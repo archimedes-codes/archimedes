@@ -73,7 +73,11 @@
 # A VACUITY FLOOR closes the loop (check-commands.sh calls it a blind-walk
 # tripwire): a walk that finds fewer than 250 production files, or finds ZERO files
 # over 500 code lines, is REFUSED. A metric that read no file must not read as
-# green. That is this guard's most important line.
+# green. That is this guard's most important line. It has a THIRD arm, below in
+# THE INSTRUMENT: a file the walk named but could not OPEN is refused too, because
+# such a file measures 0 and 0 satisfies the gate, the ratchet and both floors at
+# once — the floors ask about the walk and about the other files, never about one
+# file's unreadability.
 #
 # Usage: check-file-size.sh [repo-root] [--self-test] [--update]   (root default: .)
 #   repo-root    the checkout to read (its `src-tauri/src`, `src`, and this file's
@@ -160,14 +164,39 @@ TABLE
 # ---------------------------------------------------------------------------
 # THE INSTRUMENT. One file in, one integer out.
 #
-# `grep -c` prints `0` AND EXITS 1 when nothing matches, so the status is absorbed
-# (`|| true`) and the VALUE is what is read — a file of nothing but comments
-# legitimately measures 0 and must not look like a failed measurement. The verdict
-# is never taken from grep's exit status (the trap check-temp-dir-census.sh
-# documents for `grep -Fxv -f`, arriving here from the opposite direction).
+# `grep -c` prints `0` AND EXITS 1 when nothing matches, so THAT status is absorbed
+# and the VALUE is what is read — a file of nothing but comments legitimately
+# measures 0 and must not look like a failed measurement. But exit 1 and exit 2 are
+# DIFFERENT FACTS and only one of them is a measurement:
+#
+#   exit 0  at least one line matched — a measurement
+#   exit 1  the file was READ and nothing matched — a measurement of ZERO
+#   exit 2+ the file was NOT READ at all — not a measurement, and never a number
+#
+# Absorbing all three with a bare `|| true` (which is what this function used to do)
+# makes an unopenable file read as 0 code lines, and 0 is the one figure that
+# satisfies every check downstream: it clears the hard gate, it clears the ratchet
+# (`0 > baseline` is false), and it clears both vacuity floors, because those ask
+# about the WALK and about the OTHER files. The guard then prints a confident green
+# for a file it never measured, and `--update` seeds it at 0 — under the 700 seed
+# threshold, so its ledger entry is dropped and the file leaves the ratchet with
+# nobody having decided that. Pinned by `check-file-size.test.sh` cases 8e (the
+# refusal, and the entry surviving `--update`) and 8f (the no-match zero that must
+# STAY green, so this fix cannot become a guard that reddes on a comment-only file).
+#
+# The verdict is still never taken from grep's exit status as a COUNT — the trap
+# check-temp-dir-census.sh documents for `grep -Fxv -f`, arriving here from the
+# opposite direction. A non-zero status is only ever read as "did this file get read
+# at all", and a read failure is REFUSED rather than routed around, because a failed
+# search is not an empty one (check-test-data-dir.sh's rule, inherited).
 code_lines() {
-  local file="$1" n
-  n="$(grep -vcE '^[[:space:]]*(//|\*|/\*|$)' -- "$file" || true)"
+  local file="$1" n status=0
+  n="$(grep -vcE '^[[:space:]]*(//|\*|/\*|$)' -- "$file")" || status=$?
+  if ((status > 1)); then
+    # Print no number: a caller that gets a non-zero status back must not be able to
+    # read a half-truth out of stdout, and grep itself prints the OS error.
+    return "$status"
+  fi
   printf '%s\n' "${n:-0}"
 }
 
@@ -277,14 +306,45 @@ run_guard() {
   fi
 
   # Measure every walked file: `<count><TAB><path>`.
+  #
+  # A file that cannot be OPENED is a refusal, not a row. It cannot be recorded as
+  # 0 (see `code_lines`: 0 passes the gate, the ratchet and both floors), and it
+  # cannot be skipped either — a skipped file is unguarded and the positive line
+  # would still report the full walked count, so the green would be a lie of
+  # omission instead of a lie of commission. Collected rather than failed-on-first,
+  # because a walk with three unreadable files has to tell you about all three.
+  # Refused in BOTH modes and BEFORE the baseline is written, so `--update` cannot
+  # regenerate a ledger from a tree it could not read.
   local measured_file="$tmp_dir/measured"
   : >"$measured_file"
+  local unreadable="$tmp_dir/unreadable"
+  : >"$unreadable"
   local n
   while IFS= read -r rel; do
     [[ -z "$rel" ]] && continue
-    n="$(code_lines "$root/$rel")"
+    if ! n="$(code_lines "$root/$rel")"; then
+      printf '%s\n' "$rel" >>"$unreadable"
+      continue
+    fi
     printf '%s\t%s\n' "$n" "$rel" >>"$measured_file"
   done <"$walked_file"
+
+  if [[ -s "$unreadable" ]]; then
+    local n_unreadable
+    n_unreadable="$(wc -l <"$unreadable" | tr -d ' ')"
+    {
+      printf 'error: %s tracked production file(s) could not be read, so this run is UNCHECKED\n' "$n_unreadable"
+      while IFS= read -r rel; do
+        printf '  %s\n' "$rel"
+      done <"$unreadable"
+      printf '       a file that cannot be opened is not a file with 0 code lines: 0 clears the gate, the ratchet and both vacuity floors, so the guard would print a green it never measured\n'
+      if ((update == 1)); then
+        printf '       the baseline was NOT rewritten (regenerating it from a tree this walk could not read would drop these files from the ratchet)\n'
+      fi
+      printf '       a tracked path with no worktree file is a half-finished \`git rm\` or an interrupted checkout: \`git status\` says which\n'
+    } >&2
+    exit 1
+  fi
 
   local n_over_big
   n_over_big="$(awk -F'\t' -v bar="$OVER_500_BAR" '$1 > bar { c++ } END { print c + 0 }' "$measured_file")"
@@ -674,6 +734,58 @@ run_self_test() {
     self_ok "a walk that finds no file over $OVER_500_BAR code lines is REFUSED as blind"
   else
     self_fail "a walk that finds no file over $OVER_500_BAR code lines is REFUSED as blind" "expected exit 1 with BLIND, got exit $self_status: $self_output"
+  fi
+
+  # Case 2c: A TRACKED FILE THAT CANNOT BE READ is refused, not measured as 0. The
+  # third arm of the same rule the two floors above enforce, and the one neither
+  # floor can see: an unreadable file reads 0, and 0 clears the gate, the ratchet
+  # AND both floors, because those ask about the walk and about the other files.
+  # The state is a MISSING WORKTREE FILE whose index entry survives (the walk is
+  # `git ls-files`, which reads the index) rather than `chmod 000`, so this case
+  # tests something on the Windows runners too — Git for Windows does not enforce
+  # POSIX mode bits, and a chmod fixture would be green there and prove nothing.
+  local unread="$root/src-tauri/src/unreadable.rs"
+  self_mkfile "$unread"
+  self_emit_code 704 'const p' >"$unread"
+  git -C "$root" add -A
+  self_run "$script" "$root" --update
+  if [[ "$self_status" != "0" ]]; then
+    self_fail "the unreadable fixture seeds (--update exits 0)" "got exit $self_status: $self_output"
+  else
+    rm "$unread"
+    self_run "$script" "$root"
+    if [[ "$self_status" == "1" && "$self_output" == *"src-tauri/src/unreadable.rs"* && "$self_output" != *"file sizes within baseline"* ]]; then
+      self_ok "a tracked file the instrument cannot read is REFUSED as UNCHECKED (exit 1, named, never green)"
+    else
+      self_fail "a tracked file the instrument cannot read is REFUSED as UNCHECKED" "expected exit 1 naming unreadable.rs and no positive line, got exit $self_status: $self_output"
+    fi
+    # THE DURABLE HALF: the ledger must survive an attempted `--update`, because a
+    # regenerated ledger would seed the unreadable file at 0 — under the seed
+    # threshold — and silently take it off the ratchet.
+    self_run "$script" "$root" --update
+    if [[ "$self_status" == "1" ]] && grep -qF -- 'src-tauri/src/unreadable.rs' "$root/$BASELINE_REL"; then
+      self_ok "--update refuses to regenerate from an unreadable tree and leaves the ledger entry in place"
+    else
+      self_fail "--update refuses to regenerate from an unreadable tree" "expected exit 1 with the ledger entry intact, got exit $self_status: $self_output"
+    fi
+  fi
+
+  # Case 2d: THE REFUSAL IS NOT THE NO-MATCH STATUS. `grep -c` exits 1 when nothing
+  # matches, and that is a legitimate measurement of ZERO. Without this case, the
+  # fix for 2c could be "absorb nothing" and every comment-only file in the repo
+  # would redden CI — cases 4 and 5 cover the all-comment half, this covers empty.
+  local zero="$root/src/zero.ts"
+  self_mkfile "$zero"
+  : >"$zero"
+  git -C "$root" add -A
+  # The unreadable file must be back in the worktree for this to be a clean run.
+  self_emit_code 704 'const p' >"$unread"
+  git -C "$root" add -A
+  self_run "$script" "$root"
+  if [[ "$self_status" == "0" && "$self_output" == *"file sizes within baseline"* ]]; then
+    self_ok "a tracked EMPTY file measures 0 and stays green (grep's no-match exit is a measurement)"
+  else
+    self_fail "a tracked EMPTY file measures 0 and stays green" "expected exit 0 with the positive line, got exit $self_status: $self_output"
   fi
 
   # Case 3: THE RATCHET, both directions of the same file. One CODE line over the

@@ -391,6 +391,74 @@ assert_contains "and it names the file it wanted" "file-size-baseline.txt" "$out
 assert_contains "and it says how to make one" "--update" "$output"
 assert_not_contains "and it is never reported as green" "file sizes within baseline" "$output"
 
+# 8e. AN UNREADABLE TRACKED FILE IS REFUSED, NOT MEASURED AS ZERO — the third arm
+#     of "a metric that read no file must not read as green", and the one the two
+#     floors above cannot catch. A file the instrument cannot open reads 0, and 0
+#     passes BOTH floors (the walk still named 255 files, `big.ts` is still over
+#     500) and passes the ratchet, so the guard prints its confident green without
+#     ever having measured that file. `--update` then seeds it at 0, which is under
+#     the 700 seed threshold, so its ledger ENTRY VANISHES and the file leaves the
+#     ratchet with nobody having decided that.
+#
+# THE UNREADABLE STATE IS A MISSING WORKTREE FILE, not `chmod 000`, for two reasons.
+# (1) PORTABILITY: this suite runs on ubuntu, windows and macOS runners and Git for
+#     Windows does not enforce POSIX mode bits — a `chmod 000` fixture would be
+#     green there and this case would silently stop testing anything on the platform
+#     whose build the project ships. (2) IT IS THE REAL SHAPE: the walk is
+#     `git ls-files`, which reads the INDEX, so a file removed from the worktree and
+#     not yet staged — a half-finished `git rm`, a partial sparse checkout, a
+#     worktree whose checkout was interrupted — stays in the walk and cannot be
+#     opened. Both halves are asserted: the red, and the entry surviving `--update`.
+fixture unreadable_tracked_file
+emit_code 800 'const p' >"$root/src-tauri/src/victim.rs" # 800 code lines: seeded
+git -C "$root" add -A
+run_check "$root" --update
+assert_eq "the unreadable-file fixture seeds (--update exits 0)" "0" "$status"
+assert_eq "and the victim is recorded at its real figure" "800" \
+  "$(baseline_count "$root/scripts/file-size-baseline.txt" 'src-tauri/src/victim.rs')"
+
+# THE PREMISE, so the red below is provably the unreadability and not something
+# else about the fixture: while the file CAN be read, growing it past its entry is
+# a red that names it.
+emit_code 850 'const p' >"$root/src-tauri/src/victim.rs" # 800 -> 850 code lines
+git -C "$root" add -A
+run_check "$root"
+assert_eq "a readable file that grows past its entry is red (the premise)" "1" "$status"
+assert_contains "and the readable red names the file" "src-tauri/src/victim.rs" "$output"
+
+# THE BROKEN STATE: still tracked (the index is what the walk reads), no longer
+# openable. Deliberately NOT staged — staging the removal would take it out of the
+# walk and out of the guard's scope, which is a different situation entirely.
+rm "$root/src-tauri/src/victim.rs"
+run_check "$root"
+assert_eq "a tracked file the instrument cannot read exits 1" "1" "$status"
+assert_contains "and the refusal names the file it could not read" "src-tauri/src/victim.rs" "$output"
+assert_not_contains "and an unreadable file is never reported as green" "file sizes within baseline" "$output"
+
+# THE DURABLE HALF: `--update` must not rewrite the ledger from a non-measurement.
+run_check "$root" --update
+assert_eq "and --update refuses rather than regenerating from a file it could not read" "1" "$status"
+assert_eq "and the ledger entry survives, at its recorded figure" "800" \
+  "$(baseline_count "$root/scripts/file-size-baseline.txt" 'src-tauri/src/victim.rs')"
+
+# 8f. THE REFUSAL IS NOT THE NO-MATCH STATUS. `grep -c` exits 1 when NOTHING
+#     MATCHES, and that is a legitimate measurement of ZERO, not a failure: an
+#     empty file and a file of nothing but comments both read 0 and must stay
+#     green. Cases 10–11 already cover the all-comment half; this covers the empty
+#     half, so a fix for 8e that absorbed every non-zero status cannot quietly
+#     become a guard that reddes on a comment-only file.
+fixture unreadable_vs_empty
+emit_code 704 'const p' >"$root/src-tauri/src/mid.rs" # 704 code lines: seeded
+git -C "$root" add -A
+run_check "$root" --update
+assert_eq "the empty-file fixture seeds (--update exits 0)" "0" "$status"
+: >"$root/src/zero.ts" # 0 code lines, and grep exits 1 on it
+printf '// just a comment\n' >"$root/src/onlycomment.ts" # 0 code lines, grep exits 1
+git -C "$root" add -A
+run_check "$root"
+assert_eq "a tracked EMPTY file measures 0 and stays green (exit 1 from grep is a measurement)" "0" "$status"
+assert_contains "and the run still prints the positive line" "file sizes within baseline" "$output"
+
 # 9. A MALFORMED BASELINE LINE is refused. A parser that skips what it cannot
 #    read silently un-ratchets every file after it.
 fixture malformed_baseline
@@ -836,8 +904,8 @@ assert_eq "and every ledger entry the two instruments disagree about is recorded
 #      not recited. This case used to assert that the three largest were naming.rs,
 #      db.rs and session/mod.rs IN THAT ORDER, which was a snapshot of the tree
 #      wearing the clothes of a test: Task 2 legitimately cut naming.rs from 2,259
-#      to 2,002 and the case went red on a green tree. Three claims replace it,
-#      none of which names a winner:
+#      to 2,002 and the case went red on a green tree. Two claims survive that
+#      history, neither of which names a winner:
 #
 #   (1) SORTEDNESS, the one ordering claim that IS invariant: the ledger's own
 #       figures run largest-first, because that is the order `--update` writes
@@ -845,15 +913,35 @@ assert_eq "and every ledger entry the two instruments disagree about is recorded
 #   (2) REALNESS: each of the ledger's three largest is a tracked production file
 #       this walk actually visits, so the head of the ledger is the head of a real
 #       list and not of an invented one.
-#   (3) MEMBERSHIP, order-free: the three files the WHOLE-FILE instrument measures
-#       as largest on this tree are exactly the three files heading the ledger.
-#       ORDER IS DELIBERATELY NOT COMPARED between the two sides: the ledger is a
-#       RATCHET and its figures legitimately LAG (it holds naming.rs at 2,259 while
-#       the file measures 2,002), and a lagging figure can reorder the two lists
-#       without either side being wrong. MEMBERSHIP is what survives that lag, and
-#       membership is what a cutting instrument breaks — under the census
-#       instrument naming.rs reads 327 and leaves the top three altogether.
 #
+# WHAT WAS REMOVED, AND WHY IT HAD TO GO. A THIRD claim here used to compare
+# MEMBERSHIP of the two top threes — the three files heading the ledger against the
+# three the whole-file instrument measures as largest today, order-free. It was
+# wrong for the same reason the recited leaderboard it replaced was wrong, and the
+# failure is arithmetically unavoidable rather than contingent: a RATCHET's figures
+# LEGITIMATELY LAG, and a lag is exactly a recorded figure sitting above a shrunk
+# file. Cut naming.rs from 2,002 to 1,300 — a shrink the guard itself is green about
+# — and naming.rs leaves the measured top three while `sessions.ts` enters it, while
+# the ledger still heads naming.rs at 2,002. The two memberships differ, both sides
+# are correct, and the case reddens on a green tree. That is the same defect 18e's
+# header argues against ("exact equality is the wrong proxy... red by design in the
+# normal state of the plan"), reached through a door nobody had looked at: the lag
+# was accounted for in the ORDER and not in the MEMBERSHIP.
+#
+# Its two jobs are already done, elsewhere, better:
+#   - Catching a `#[cfg(test)]`-CUTTING instrument is 18b's job, and 18b does it
+#     directly (`recorded > cut`, for every entry the two instruments disagree
+#     about) with its own planted-broken-ledger TEETH. Membership of a top three is
+#     only an INDIRECT symptom of that defect, so losing it costs no coverage.
+#   - Catching a DROPPED or DEAD ledger entry is 18e's job, by predicate and with
+#     teeth.
+# The claim itself is not thrown away — it is a real property of the GENERATOR, that
+# a freshly written ledger heads the files the instrument measures as largest. It
+# moves to case 19, a fixture seeded by `--update` in the same breath, where lag is
+# STRUCTURALLY IMPOSSIBLE because every recorded figure equals its measurement. That
+# is where the claim has teeth and cannot false-redden; the real checkout is where
+# neither is true.
+
 # Read from the file rather than by running `--update` against the real checkout: a
 # test must not rewrite a tracked file in the tree it is testing (case 18e).
 #
@@ -865,7 +953,6 @@ assert_eq "and every ledger entry the two instruments disagree about is recorded
 # and reads to EOF, so nothing downstream of `sort` stops early.
 ledger_ranked="$(instrument_rank "$(awk -F'\t' '!/^#/ && NF == 2 { print $1 "\t" $2 }' "$real_baseline")")"
 ledger_top3="$(printf '%s\n' "$ledger_ranked" | awk 'NR <= 3 { print $2 }')"
-tree_top3="$(printf '%s\n' "$tree_ranked" | awk 'NR <= 3 { print $2 }')"
 
 assert_eq "the ledger holds a top three at all" "3" \
   "$(printf '%s\n' "$ledger_top3" | grep -c . || true)"
@@ -879,9 +966,6 @@ while IFS= read -r top_path; do
 done <<<"$ledger_top3"
 assert_eq "and each of the ledger's three largest is a tracked production file this walk visits" \
   "" "$top3_unwalked"
-
-assert_eq "the ledger's top three are the three files the whole-file instrument measures as largest (recomputed, order-free)" \
-  "$(printf '%s\n' "$tree_top3" | LC_ALL=C sort)" "$(printf '%s\n' "$ledger_top3" | LC_ALL=C sort)"
 
 # 18d. THE POSITIVE LINE NAMES THE BIGGEST FILE THE INSTRUMENT SAW — the largest
 #      file RECOMPUTED from the tree, path AND figure, so this case tracks the tree
@@ -1075,6 +1159,70 @@ run_check "$repo_root"
 n_mirrored="$(printf '%s\n' "$real_walk" | grep -c . || true)"
 assert_contains "the mirrored walk agrees with the guard's own count" \
   "$n_mirrored production file(s) walked" "$output"
+
+# ---------------------------------------------------------------------------
+# 19. THE TOP-THREE MEMBERSHIP CLAIM, ON A FIXTURE WHERE LAG IS IMPOSSIBLE.
+#
+# This is 18c's third claim, moved rather than deleted — the reviewer's option A,
+# and the reason it is the right one is that the claim is TRUE of something. It is
+# true of the GENERATOR: a ledger `--update` has just written records today's
+# figures, so its head IS the tree's head, ordering and all. It is not true of a
+# committed ledger in a repo mid-decomposition, where every recorded figure is
+# permitted to sit above a shrunk file and the two heads legitimately part company
+# (see 18c's header for the arithmetic). Running the claim where it is true is the
+# only version of it that has teeth without a false red, so the fixture seeds the
+# ledger with `--update` IN THE SAME BREATH and never lets a lag exist.
+#
+# Here the claim is asserted in its STRONGER form — exact ranking, order included,
+# not order-free membership — because order-free was only ever a concession to lag,
+# and lag is structurally impossible in this fixture.
+ledger_tree_top3_diff() {
+  local r="$1" ledger_top3 tree_top3
+  ledger_top3="$(instrument_rank "$(awk -F'\t' '!/^#/ && NF == 2 { print $1 "\t" $2 }' "$r/scripts/file-size-baseline.txt")" |
+    awk 'NR <= 3 { print $2 }' | LC_ALL=C sort)"
+  tree_top3="$(instrument_rank "$(instrument_measured "$r")" |
+    awk 'NR <= 3 { print $2 }' | LC_ALL=C sort)"
+  # `comm -3` prints the lines unique to each side; a tab prefix means the tree side.
+  comm -3 <(printf '%s\n' "$ledger_top3") <(printf '%s\n' "$tree_top3") |
+    awk 'NF { if ($0 ~ /^\t/) { sub(/^\t/, "", $0); print "tree:" $0 } else print "ledger:" $0 }'
+}
+
+fixture top3_membership
+emit_code 900 'const p' >"$root/src-tauri/src/head_a.rs" # 900 code lines
+emit_code 880 'const q' >"$root/src-tauri/src/head_b.rs" # 880 code lines
+emit_code 860 'const r' >"$root/src-tauri/src/head_c.rs" # 860 code lines
+emit_code 840 'const s' >"$root/src-tauri/src/head_d.rs" # 840 code lines
+git -C "$root" add -A
+run_check "$root" --update
+assert_eq "the top-three fixture seeds (--update exits 0)" "0" "$status"
+# Four entries, so "top three" is a RANKING and not the whole list: with three
+# entries a predicate comparing membership passes on any permutation of everything.
+assert_eq "and the fresh ledger holds four entries, so a top three is a real ranking" "4" \
+  "$(awk -F'\t' '!/^#/ && NF == 2' "$root/scripts/file-size-baseline.txt" | grep -c . || true)"
+assert_eq "an honest fresh ledger draws no complaint from the top-three membership predicate" \
+  "" "$(ledger_tree_top3_diff "$root")"
+assert_eq "and a freshly generated ledger heads the tree's three largest, IN ORDER" \
+  "src-tauri/src/head_a.rs src-tauri/src/head_b.rs src-tauri/src/head_c.rs" \
+  "$(instrument_rank "$(awk -F'\t' '!/^#/ && NF == 2 { print $1 "\t" $2 }' "$root/scripts/file-size-baseline.txt")" |
+    awk 'NR <= 3 { print $2 }' | paste -sd' ' -)"
+
+# TEETH, PROVEN AND NOT ASSUMED (AGENTS.md: a pin that passes on the broken thing is
+# worse than no pin). The plant is the hand-authoring move this predicate exists for:
+# `head_d.rs` is recorded at 950 when it measures 840, so it climbs into the ledger's
+# top three and pushes the genuine third out. Both figures are LEGAL as far as the
+# guard is concerned — above today's measurement is a lag, and a lag is what a ratchet
+# is allowed to carry — so the next assertion records that the GUARD itself is green
+# on this ledger. The information lives in this suite, not in the guard's exit code,
+# which is exactly why the predicate belongs here and not in the guard.
+awk -F'\t' 'BEGIN { OFS = "\t" } $2 == "src-tauri/src/head_d.rs" { $1 = 950 } { print }' \
+  "$root/scripts/file-size-baseline.txt" >"$root/ledger.tmp"
+mv "$root/ledger.tmp" "$root/scripts/file-size-baseline.txt"
+assert_eq "TEETH: a hand-edited ledger head is named by the top-three predicate" \
+  "tree:src-tauri/src/head_c.rs
+ledger:src-tauri/src/head_d.rs" "$(ledger_tree_top3_diff "$root")"
+run_check "$root"
+assert_eq "and the guard's own run stays green on that ledger (an over-recorded figure is a legal lag, so only this predicate sees the hand-edit)" \
+  "0" "$status"
 
 # THE MUTATION GUARD, in two independent witnesses. The direct proof that this
 # file no longer rewrites the tree it tests — asserted HERE rather than watched by
