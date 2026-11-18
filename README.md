@@ -330,7 +330,9 @@ Verify from a fresh terminal that a launcher-started app would actually see
 it, rather than assuming:
 
 ```sh
-systemctl --user show-environment | grep WEBKIT
+# Both names, because this file is where the desktop-environment variables that
+# matter to Archimedes are set — the debug switch (see Diagnostics) lives here too.
+systemctl --user show-environment | grep -E 'WEBKIT|ARCHIMEDES_DEBUG'
 ```
 
 If that prints nothing after a re-login, the variable is only in your
@@ -390,8 +392,9 @@ the data dir there; on Linux settings are separate (`~/.config/archimedes`).
 What is in there:
 
 - **`supervisor.log`** (+ **`supervisor.log.old`**) — the protocol log: Worker
-  lifecycle (spawn / ready / exit / crash), the raw Worker IPC lines, and every
-  rejected session command as `ipc <name> FAILED: <sentence>`. It rotates by
+  lifecycle (spawn / ready / exit / crash), the raw Worker IPC lines, every
+  rejected session command as `ipc <name> FAILED: <sentence>`, and the Worker's
+  own stderr diagnostics, each line prefixed `worker-stderr:`. It rotates by
   size: past **5 MB** the current file is renamed to `.old` (overwriting the old
   one) and a fresh file starts. **This file only exists if you asked for it** —
   see the switch below. (The `ipc … FAILED:` lines exist only from the build that
@@ -435,9 +438,52 @@ shell may not inherit a variable you exported in a terminal, so if the log stays
 missing, run the installed binary directly from a terminal where you have set it
 — that form always works.
 
+On Linux the variable can go where the desktop reads it instead of a shell: the
+same `~/.config/environment.d/archimedes.conf` that *Setting it for the desktop,
+not just a shell* describes above carries this one just as well — add
+`ARCHIMEDES_DEBUG=1` to that file and **re-login**, because `environment.d`
+applies on the next login and a window that is already open keeps whatever
+environment it started with. (That section's verify command greps for both names
+now, so it answers "will a launcher-started window see the debug switch?" too.)
+
+**On macOS this is documentation of intent, not a shipped path** — see Building
+installers: the `.app` is gated on the `APPLE_*` signing secrets and no Mac build
+has been distributed, so nothing in this paragraph has been run on a Mac by the
+box that wrote it. A double-clicked `.app` inherits the *launchd* session
+environment, not your shell's, so an `export` in `.zshrc` reaches nothing — the
+same fact the Linux section above states for a desktop entry. The route that
+always works is the terminal one: launch the executable itself from a shell that
+has the variable set (the bundle path below is the shape a Tauri `.app` has, not
+a path anyone has run on a Mac).
+
+```sh
+# macOS — the executable inside the bundle, not the bundle
+ARCHIMEDES_DEBUG=1 /Applications/Archimedes.app/Contents/MacOS/Archimedes
+```
+
+The durable routes are `launchctl setenv ARCHIMEDES_DEBUG 1` (this login session
+only) and an `LSEnvironment` key in the bundle's `Info.plist` (baked in, so a
+double-click inherits it). **Neither is verified on real macOS from the box that
+wrote this**, and the second does not exist today: `tauri.conf.json` has no
+`bundle.macOS` section and the repo carries no `Info.plist`, so `LSEnvironment`
+is a build-time option nobody has wired. Treat both as things to try and then
+confirm against `supervisor.log` itself, not as instructions.
+
 Then reproduce the problem and read (or attach) `supervisor.log`. If you are
 reporting a failure you saw on screen, the log contains that same sentence,
 character for character — the app logs exactly what it prints.
+
+This is also the only way to see the harness's own failure lines coming from a
+Worker — the ones that begin `harness:`, such as
+`harness: malformed tool-call arguments — using {}` or
+`harness: turn truncated by the provider's output cap`. A session's Worker prints
+those to **its own stderr** and the Supervisor's drain task copies each one into
+this file behind the `worker-stderr:` prefix; with the variable unset nothing
+reads the Worker's stderr, so **a tool call dropped or a turn that settles
+without an answer leaves no trace in a default run**. (`diagnostics.log`, beside
+this file, is the separate always-on channel — no env var, a curated handful of
+lines, and deliberately not a transcript; ADR 0110 records why the two are kept
+apart, and why some lines appear only there and never here.)
 
 > **Read it before you send it — it holds your conversation.** The log records
 > the raw Worker frames, and they are written verbatim: an outbound (`→`) frame
