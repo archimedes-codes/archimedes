@@ -205,9 +205,18 @@ describe("attentionCandidates", () => {
 
   it("arms for an end_turn stopReason (the whitelist still lets a real finish through)", () => {
     // The whitelist's other half: narrowing to `=== "end_turn"` must not retire
-    // the alert for a turn that genuinely finished. `fallen("A")` seeds exactly
-    // that, and the pin above the pair makes the direction unambiguous.
-    expect(attentionCandidates(running("A"), fallen("A"))).toEqual([settled("A")]);
+    // the alert for a turn that genuinely finished.
+    //
+    // The assertion below is deliberately NOT the one at "names a settled session
+    // when its turn fell with nothing waiting" — that one inherits `end_turn`
+    // from the `fallen()` fixture and so says nothing about the whitelist. This
+    // one seeds the value EXPLICITLY, so it still pins the positive case if
+    // `fallen()` is ever re-pointed at another reason, and it is the counterpart
+    // the two `never arms for …` pins either side of it need: without it, a
+    // whitelist narrowed to something nothing ever sets would pass this file.
+    expect(
+      attentionCandidates(running("A"), snap({ ...fallen("A"), stopReasons: { A: "end_turn" } })),
+    ).toEqual([settled("A")]);
   });
 
   it("carries the SUBAGENT's own id when a subagent holds the gate", () => {

@@ -497,16 +497,23 @@ describe("src/lib/transcript", () => {
       expect(dispositionFromRows([truncateRow()])).toBe("max_tokens");
     });
 
-    // (issue #193) The engine's OWN turn bound persists its notice the same way
-    // #190's does — an `agent-text` row on `{stamp}:truncate:N` whose payload
-    // carries `disposition` — and the footer needs it back after a restart. The
-    // value is an IDENTITY mapping (the engine adopted the client's spelling
-    // because the client invented the word), not the translation `"length"`
-    // gets; see `dispositionFromRows`'s docblock for why the two lines differ.
+    // (issue #193) The engine's OWN turn bound persists its notice the same WAY
+    // #190's does — an `agent-text` row whose payload carries `disposition`, and
+    // the footer needs it back after a restart — but on its OWN key: the cap
+    // notice rides `{stamp}:cap:N` (engine `normalize.rs`'s `cap_id()`), not
+    // `{stamp}:truncate:N`. The key differs because the shared `{stamp}:system`
+    // key APPENDS, so each notice mints a unique id; `dispositionFromRows` reads
+    // neither key (it reads `kind` + `payloadJson` only), so the fixture passes
+    // either way — which is exactly why the key is spelled correctly here rather
+    // than copied from the truncation helper above. The value is an IDENTITY
+    // mapping (the engine adopted the client's spelling because the client
+    // invented the word), not the translation `"length"` gets; see
+    // `dispositionFromRows`'s docblock for why the two lines differ.
     it("reads a capped turn's disposition (identity mapping, no translation)", () => {
       expect(
         dispositionFromRows([
           truncateRow({
+            messageKey: "a3f9c1:cap:0",
             payloadJson: JSON.stringify({
               text: "Turn stopped by the agent's own turn limit",
               disposition: "max_turn_requests",

@@ -7288,11 +7288,16 @@ describe("the truncated-turn disposition survives a restart (ADR 0108)", () => {
   // for a turn the engine stopped — the exact regression class ADR 0108's
   // amendment exists to prevent, arriving for the second disposition. Both doors
   // are pinned because both seed independently.
+  //
+  // The fixture rides its OWN message key (`{stamp}:cap:N`, engine `normalize.rs`'s
+  // `cap_id()`), NOT #190's `{stamp}:truncate:N`. Hydration reads only `kind` +
+  // `payloadJson` and would pass either way, so the key is spelled correctly only
+  // to keep this a faithful recipe for what the engine actually writes.
   const cappedRow = (id: number): MessageRow =>
     msgRow({
       id,
       kind: "agent-text",
-      messageKey: "a3f9c1:truncate:0",
+      messageKey: "a3f9c1:cap:0",
       payloadJson: JSON.stringify({
         text: "Turn stopped by the agent's own turn limit",
         disposition: "max_turn_requests",

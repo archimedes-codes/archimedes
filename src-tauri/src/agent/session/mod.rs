@@ -284,11 +284,24 @@ pub struct StalledInfo {
 ///
 /// The shape is what makes `resolve_turn` an exhaustive `match`. The chain it
 /// replaced (`if cancelled / else if was_truncated / else`) is not a bug today,
-/// but it is the ONE site in the path where a fifth disposition is silently
-/// dropped and resolves as `end_turn` with no compiler error — the exact
-/// silent-success failure that both #190 and #193 shipped. Under a `match` on
-/// `Option<TurnDisposition>`, adding a variant is an `E0004` at every consumer,
-/// which is the whole reason this refactor rides in the pin-bump commit.
+/// but it was the one site that maps a disposition to a `StopReason`, and under a
+/// chain a fifth disposition resolved as `end_turn` with no compiler error — the
+/// exact silent-success failure that both #190 and #193 shipped. Under a `match`
+/// on `Option<TurnDisposition>`, adding a variant is an `E0004` at every
+/// consumer, which is the whole reason this refactor rides in the pin-bump commit.
+///
+/// ⚠ **THE NET CATCHES THE ENUM, NOT THE WIRE — and the order matters.** This is
+/// the second of two sites, not the only one. A fifth disposition has to ARRIVE,
+/// and arrival is `route_event`'s stash arm, which ends in `_ => None`
+/// (`router.rs`, beside the two named frames). Add a fifth `RpcEvent` and forget
+/// that arm and nothing is ever stashed, so `resolve_turn` sees `None`, resolves
+/// `end_turn`, and the `E0004` this docblock promises never fires — the compiler
+/// is downstream of the omission. ADR 0108 records the general form ("a new
+/// `RpcEvent` variant does not redden the desktop by itself — only *naming* it
+/// does"), and the pin-bump-plus-arm rule in its Consequences is what closes it
+/// in practice. So: a new `TurnDisposition` variant is a compile error here, and a
+/// new incoming frame is a human convention there. Do not read the `match` as
+/// making the wire change safe on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TurnDisposition {
     /// (issue #190) The provider cut the reply off at its output cap
