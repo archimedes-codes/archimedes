@@ -169,6 +169,56 @@ describe("attentionCandidates", () => {
     ).toEqual([]);
   });
 
+  // (issue #193) A capped turn raises NO OS alert, and an `end_turn` turn still
+  // does. These two pins are the reason the whitelist flip is testable AT ALL.
+  //
+  // THE HAZARD, written down because it is invisible: `attention.test.ts` seeds
+  // `stopReasons` in 17 places and every settled-candidate expectation routes
+  // through the `fallen(id)` fixture, which already seeds `"end_turn"` — so
+  // flipping the guard from the blacklist `!== "cancelled"` to the whitelist
+  // `=== "end_turn"` reddens NOTHING. A guard change with no red witness is a
+  // guard change a future edit can silently widen back, so the pins come FIRST
+  // and are confirmed RED under the blacklist before it is flipped. (Proof the
+  // guard is live rather than decorative: flip it to `=== "nonsense_xyz"` and at
+  // least six settled tests go red — `fallen()` is what makes the REAL flip
+  // invisible, not a dead condition.)
+  it("never arms for a max_turn_requests stopReason (the engine's bound is not a finish)", () => {
+    // The engine stopped the turn; the user did not ask for anything and nothing
+    // finished. Announcing "finished — waiting for you" here is the dishonest
+    // alert ADR 0108's amendment exists to stop, for its second case.
+    expect(
+      attentionCandidates(
+        running("A"),
+        snap({ ...fallen("A"), stopReasons: { A: "max_turn_requests" } }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("never arms for a max_tokens stopReason (a provider cut-off is not a finish)", () => {
+    // The sibling: the same dishonest alert already fired for `max_tokens`
+    // under the blacklist, which is why the fix is a WHITELIST and not a
+    // two-entry blacklist.
+    expect(
+      attentionCandidates(running("A"), snap({ ...fallen("A"), stopReasons: { A: "max_tokens" } })),
+    ).toEqual([]);
+  });
+
+  it("arms for an end_turn stopReason (the whitelist still lets a real finish through)", () => {
+    // The whitelist's other half: narrowing to `=== "end_turn"` must not retire
+    // the alert for a turn that genuinely finished.
+    //
+    // The assertion below is deliberately NOT the one at "names a settled session
+    // when its turn fell with nothing waiting" — that one inherits `end_turn`
+    // from the `fallen()` fixture and so says nothing about the whitelist. This
+    // one seeds the value EXPLICITLY, so it still pins the positive case if
+    // `fallen()` is ever re-pointed at another reason, and it is the counterpart
+    // the two `never arms for …` pins either side of it need: without it, a
+    // whitelist narrowed to something nothing ever sets would pass this file.
+    expect(
+      attentionCandidates(running("A"), snap({ ...fallen("A"), stopReasons: { A: "end_turn" } })),
+    ).toEqual([settled("A")]);
+  });
+
   it("carries the SUBAGENT's own id when a subagent holds the gate", () => {
     // The subagent id is what the evidence rule later looks for: the alert is
     // disarmed when THAT gate closes, not when the parent's turn does.

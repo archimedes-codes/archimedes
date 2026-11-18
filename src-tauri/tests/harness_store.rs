@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use archimedes_lib::agent::harness::{
-    ChatMessage, ChatRole, MessageContent, SessionStore, ToolCall,
+    ArgumentDefect, ChatMessage, ChatRole, MessageContent, SessionStore, ToolCall,
 };
 use archimedes_lib::agent::SessionInfo;
 use archimedes_lib::storage::Db;
@@ -169,6 +169,7 @@ fn tool_transcript_round_trip_preserves_tool_calls_and_ids() {
             id: "call_1".to_string(),
             name: "bash".to_string(),
             arguments: json!({ "command": "ls -la", "timeout_ms": 5000 }),
+            defect: None,
         }]),
     };
     let tool_result = ChatMessage {
@@ -202,6 +203,7 @@ fn tool_transcript_round_trip_preserves_tool_calls_and_ids() {
             id: "call_1".to_string(),
             name: "bash".to_string(),
             arguments: json!({ "command": "ls -la", "timeout_ms": 5000 }),
+            defect: None,
         }]),
         "the tool-call arguments round-trip"
     );
@@ -211,6 +213,65 @@ fn tool_transcript_round_trip_preserves_tool_calls_and_ids() {
         "the tool result's tool_call_id round-trips"
     );
     assert_eq!(msgs[1], tool_result);
+
+    // (issue #193) The `defect` half. `ToolCall::defect` carries the parse error
+    // and the raw argument text for a call whose arguments arrived but did not
+    // parse, and the engine writes it into `content_json` when it persists a
+    // transcript message. A `None`-only round trip proves nothing about it: the
+    // field serializes through `skip_serializing_if`, so the ONE shape this test
+    // could be silently losing is the `Some` one — a defect dropped on write is
+    // a defect no resume can rebuild, and the desktop's own `load_messages` is
+    // what a resume reads. This asserts the DESKTOP's read side survives its own
+    // storage, which is the consumer half the engine's test cannot cover.
+    let defective = ChatMessage {
+        role: ChatRole::Assistant,
+        content: MessageContent::Text(String::new()),
+        tool_call_id: None,
+        tool_calls: Some(vec![ToolCall {
+            id: "call_2".to_string(),
+            name: "write".to_string(),
+            // The engine leaves a failed parse as an empty object; the raw text
+            // lives ONLY in `defect`. Both halves must come back.
+            arguments: json!({}),
+            defect: Some(ArgumentDefect {
+                error: "EOF while parsing an object at line 1 column 6".to_string(),
+                raw: "{\"path\": \"/tmp/x\"".to_string(),
+            }),
+        }]),
+    };
+    store
+        .insert_message(
+            "s1",
+            2,
+            "assistant",
+            &serde_json::to_string(&defective).unwrap(),
+        )
+        .unwrap();
+
+    let msgs = store.load_messages("s1").unwrap();
+    assert_eq!(msgs.len(), 3);
+    assert_eq!(
+        msgs[2], defective,
+        "a tool call's ARGUMENT DEFECT survives the desktop's own \
+         insert_message → load_messages round trip — a defect lost to \
+         `content_json` cannot be rebuilt on a resume"
+    );
+    // Spelled out separately so a failure names the field rather than the whole
+    // message (the equality above would pass a lost defect off as a diff bug).
+    let rebuilt = msgs[2]
+        .tool_calls
+        .as_ref()
+        .and_then(|calls| calls.first())
+        .and_then(|call| call.defect.as_ref())
+        .expect("the defect is still there after the round trip");
+    assert_eq!(
+        rebuilt.raw, "{\"path\": \"/tmp/x\"",
+        "the raw text is verbatim"
+    );
+    assert_eq!(
+        rebuilt.error, "EOF while parsing an object at line 1 column 6",
+        "the parse error survives"
+    );
 }
 
 #[test]

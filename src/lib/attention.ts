@@ -74,7 +74,13 @@ export interface AttentionSnapshot {
    * a PAUSED session leaves this list, and its "finished" alert goes with it. */
   settledWatch: string[];
   inTurn: Record<string, boolean>;
-  /** From `useSessions.stopReasons` — a `cancelled` turn never "finished". */
+  /** From `useSessions.stopReasons` — the reason the turn ENDED, and the guard
+   * the settled rule matches on. The rule is a WHITELIST (`=== "end_turn"`), not
+   * a "not cancelled" blacklist, so a turn that ended for ANY other reason is
+   * not a finish: not a user `cancelled`, not a provider `max_tokens` cut-off,
+   * and not `max_turn_requests`, the engine's own turn bound. A statement that
+   * only a `cancelled` turn "never finished" is FALSE AS STATED — every
+   * non-`end_turn` reason is in the same class (issue #193). */
   stopReasons: Record<string, StopReason | undefined>;
   /** id → EVERY pending gate id for that session (`InteractiveRequestData.requestId`
    * for `ask`/`confirm`/`password`, then `PermissionPromptData.requestId`; under a
@@ -184,8 +190,23 @@ export function attentionCandidates(
       // catches a crash: `handle_crash` resolves the turn with `Cancelled`
       // BEFORE the `session-stalled` flag arrives, so on the pulse snapshot the
       // stall flag has often not landed yet.
+      //
+      // A WHITELIST, not the blacklist this was. The guard used to read
+      // `!== "cancelled"`, which announced EVERY other end-of-turn reason as
+      // "finished — waiting for you" — including `max_tokens` (the provider cut
+      // the reply off) and `max_turn_requests` (issue #193: the engine's own turn
+      // bound stopped it). Neither is a finish, and neither is a pause the user
+      // owes; a blacklist also has to be widened by hand for every reason the
+      // engine learns to report, and nothing fails when someone forgets.
+      // Matching `=== "end_turn"` makes the safe direction the default: a reason
+      // nobody has considered is a reason that does not alert.
+      //
+      // The read is safe on timing because `turnCompleted` writes `inTurn` and
+      // `stopReasons` in ONE `set()`, so the snapshot where the turn has fallen
+      // already carries the reason that ended it — a whitelist could otherwise
+      // have missed an `end_turn` and silently retired the alert.
       next.stalled[id] !== true &&
-      next.stopReasons[id] !== "cancelled"
+      next.stopReasons[id] === "end_turn"
     ) {
       candidates.push({ kind: "settled", sessionId: id });
     }

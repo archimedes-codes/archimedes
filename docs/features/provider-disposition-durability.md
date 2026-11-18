@@ -1,9 +1,20 @@
 ---
 status: live
-last-verified: 2026-11-15
+last-verified: 2026-11-18
 verified-by: >-
-  Every claim below re-measured against this tree at the head of `feature/provider-disposition-durability`
-  (desktop `3a6ff501`, engine `8741b09` / tag `v0.3.1`) rather than copied from the plan that produced it.
+  §1-§2 re-measured at the pin bump to engine `v0.4.1` (desktop `feat-consume-turn-disposition`,
+  `fulcrum-harness = "0.4.1"`, `Cargo.lock` checksum
+  `ba8eb8788f2ef0362006f9c4203bd5ea1d1b908e19a880bad554dd13797e3103`): the cap arm of `normalize.rs` and
+  `cap_id()` were read in the engine tree, not quoted from the plan, and the `"cancelled"`-refusal rationale
+  was measured by widening `dispositionFromRows` to accept it — exactly one pin reddened and
+  `attention.test.ts` / `sessions.test.ts` stayed green, which is what forced that paragraph's rewrite.
+  Gate at that bump: `cargo test` **1042 passed / 0 failed / 3 ignored**, `cargo clippy --all-targets`
+  0 warnings, `cargo fmt --all -- --check` clean, `pnpm test` **189 files / 4603 passed / 1 skipped**,
+  `pnpm build` clean. No test was lost: the diff adds 4 Rust test fns and removes 0, and adds 6 `it()`
+  blocks with 1 rename.
+  Earlier verification, still the basis for §3-§5: every claim re-measured at the head of
+  `feature/provider-disposition-durability` (desktop `3a6ff501`, engine `8741b09` / tag `v0.3.1`)
+  rather than copied from the plan that produced it.
   Instruments: `grep -n 'stopReasons:' src/store/sessions.ts` → **three** writers now (`openSession`,
   `resumeSession`, `turnCompleted`) where the research report measured exactly one;
   `grep -n 'export function dispositionFromRows' src/lib/transcript/reducer.ts` → present;
@@ -41,6 +52,22 @@ message_key = '{stamp}:truncate:N'
 payload_json = {"text":"Response was truncated before completion","disposition":"length"}
 ```
 
+A **Capped** turn (issue #193 — the engine's own `MAX_MODEL_ROUNDS_PER_PROMPT` or
+`MAX_IDENTICAL_REFUSAL_RUNS` bound, not a provider fact) rides the **same** `agent-text` row kind with a
+different value and its **own** unique key, because the shared `{stamp}:system` key APPENDS and a second
+notice would weld into the first:
+
+```
+kind        = 'agent-text'
+message_key = '{stamp}:cap:N'
+payload_json = {"text":"The turn was stopped by the agent's own turn limit before it finished.","disposition":"max_turn_requests"}
+```
+
+There is deliberately no third row `kind` for it. Both arms are built by hand in the engine's `normalize.rs`,
+and both are the easy way to ship this wrong: that `match` ends in `_ => Vec::new()`, so **omitting** an arm
+compiles clean, emits nothing, and the disposition never reaches a row while every other test stays green.
+`a_capped_turn_emits_one_line_on_its_own_message_id` is the pin that reddens on the cap arm.
+
 Read it with `json_extract(payload_json, '$.disposition')`. The write is conditional **by requirement**: an
 unconditional one would add the key to every `agent_message_chunk`, and three existing tests pin exact
 payloads (including the byte string `{"text":"Hello"}`).
@@ -55,18 +82,38 @@ in-memory rows.
 | | Spelling | Who owns it |
 |---|---|---|
 | **Provider disposition** (persisted) | `"length"` — OpenTelemetry `gen_ai.response.finish_reasons` | one **model call** |
-| **`StopReason`** (client wire) | `"max_tokens"` | the **turn**, reported to the Client |
+| **Turn bound** (persisted) | `"max_turn_requests"` — the client's own word, adopted by the engine | the **turn**, as a durable fact |
+| **`StopReason`** (client wire) | `"max_tokens"`, `"max_turn_requests"` | the **turn**, reported to the Client |
 
-`dispositionFromRows` (`src/lib/transcript/reducer.ts`) maps `"length"` → `"max_tokens"` and **refuses**
-everything else, including `"max_tokens"` itself (the row carries the provider spelling only) and
-`"cancelled"` — accepting that would suppress a settled OS alert, because `attention.ts` gates on
-`stopReasons[id] !== "cancelled"`. See the `provider disposition` entry in `CONTEXT.md`. **Do not write
-`"max_tokens"` into the row**, and do not "unify" the two vocabularies.
+`dispositionFromRows` (`src/lib/transcript/reducer.ts`) maps **two** values and refuses everything else:
+`"length"` → `"max_tokens"` (a **translation** — the row carries the provider spelling, the client vocabulary
+is `StopReason`, and the two layers coined different words for one fact), and `"max_turn_requests"` →
+`"max_turn_requests"` (an **identity** mapping — the client invented that word for a limit it owns, so the
+engine adopted the client's spelling and there is nothing to translate). That asymmetry is why the two lines
+read differently, and why a future reader must not "harmonise" them into one table.
 
-The engine value is a **named constant**, not a serialisation of `FinishReason`: that enum is
-`#[serde(rename_all = "snake_case")]`, so `to_value(FinishReason::ToolCalls)` yields `tool_calls` — **not**
-OpenTelemetry's `tool_call`. It is honest today because `turn.rs`' `Length` path is the frame's **only**
-emitter; a second emitter must introduce its own value rather than reuse it.
+What it still **refuses** is everything else, including `"max_tokens"` itself (the row carries the provider
+spelling only) and `"cancelled"` — neither ever appears in a row, so accepting either would mean the reducer
+minting a client value the engine never promised. See the `provider disposition` entry in `CONTEXT.md`.
+**Do not write `"max_tokens"` into the row**, and do not "unify" the two vocabularies.
+
+⚠ **The refusal is no longer the OS-alert suppressor it was called.** Until issue #193 `attention.ts` gated on
+`stopReasons[id] !== "cancelled"`, so a `"cancelled"` that survived `dispositionFromRows` really did silence a
+settled alert, and that was the reason on record. The gate is now the whitelist `=== "end_turn"`, under which
+**both** paths stay silent — refuse, so the slot is never written, or accept, so it reads `"cancelled"`, which
+is still not `"end_turn"`. Measured: widening the reducer to accept `"cancelled"` reddens only its own refusal
+pin and leaves `attention.test.ts` and `sessions.test.ts` green. What the refusal buys now is the narrower,
+still-real thing — an unrecognized payload value leaves `stopReasons` untouched instead of writing a vocabulary
+entry nothing emitted, the same discipline `sessions.ts` applies when it declines to write `undefined` for "no
+row found" (§3). The whitelist is also what makes a capped turn raise no alert at all, which is why it shipped
+in the same commit as the pin bump rather than as a follow-up.
+
+Each accepted value is a **named constant**, not a serialisation of an enum: the engine mints `"length"` from
+`TRUNCATION_DISPOSITION` and `"max_turn_requests"` from `TURN_CAPPED_DISPOSITION` in its `normalize.rs`, so a
+rename in Rust cannot silently change the bytes on disk. Neither is derived from `FinishReason` — that enum is
+`#[serde(rename_all = "snake_case")]`, so `to_value(FinishReason::ToolCalls)` yields `tool_calls`, **not**
+OpenTelemetry's `tool_call`. `TRUNCATION_DISPOSITION`'s emitter is still `turn.rs`' `Length` path alone; a
+second emitter must introduce its own value rather than reuse it.
 
 ## 3. Hydration: read the page's LAST row, and why
 

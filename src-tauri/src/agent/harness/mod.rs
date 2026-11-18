@@ -57,11 +57,17 @@ pub use fulcrum_harness::harness::{model_key, wire};
 
 pub use fulcrum_harness::harness::{
     build_child_system_message, build_main_prompt, build_provider, discover_models, merge_catalog,
-    AgentLoop, CompactionConfig, InProcessDispatcher, Model, ModelCatalog, ModelKey, ModelOptions,
-    ModelRequest, OpenAiCompatibleProvider, Prompt, PromptContext, PromptTurn, Provider,
-    ProviderDiscovery, ProviderError, ProviderEvent, RetryPolicy, SubagentDispatcher, SudoDeps,
-    ToolCall, ToolCallDelta, ToolSpec, Usage, DEFAULT_CONTEXT_WINDOW,
+    AgentLoop, ArgumentDefect, CompactionConfig, InProcessDispatcher, Model, ModelCatalog,
+    ModelKey, ModelOptions, ModelRequest, OpenAiCompatibleProvider, Prompt, PromptContext,
+    PromptTurn, Provider, ProviderDiscovery, ProviderError, ProviderEvent, RetryPolicy,
+    SubagentDispatcher, SudoDeps, ToolCall, ToolCallDelta, ToolSpec, Usage, DEFAULT_CONTEXT_WINDOW,
 };
+// `ArgumentDefect` (issue #193) joins this block because `ToolCall::defect` is
+// typed by it: a consumer that reads that field cannot name its type without
+// reaching one level deeper than the type it is a field OF. The engine mirrors
+// the list (`fulcrum_harness::harness::ArgumentDefect`) and its own
+// `harness/mod.rs` test says so by name — "the desktop mirrors this list … and
+// needs the same name added there. That repo is not edited from here."
 // `tool_specs` is NOT named in this block on purpose: the MODULE alias above already
 // brings BOTH namespaces (the module `harness::tool_specs` and the function
 // `tool_specs()` the crate's own block re-exports), and naming it a second time

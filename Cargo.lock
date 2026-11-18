@@ -1663,9 +1663,9 @@ dependencies = [
 
 [[package]]
 name = "fulcrum-harness"
-version = "0.3.3"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e346ab41cb74583a7eb6f073a8865da8befbec9634bc6908e3905257502826ab"
+checksum = "ba8eb8788f2ef0362006f9c4203bd5ea1d1b908e19a880bad554dd13797e3103"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

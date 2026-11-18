@@ -7282,6 +7282,68 @@ describe("the truncated-turn disposition survives a restart (ADR 0108)", () => {
     expect(useSessions.getState().stopReasons["s1"]).toBe("max_tokens");
   });
 
+  // (issue #193) The capped notice is the SAME row shape with a different
+  // `disposition` value, and it needs the SAME hydration. Without the
+  // `dispositionFromRows` mapping the footer silently disappears after a restart
+  // for a turn the engine stopped — the exact regression class ADR 0108's
+  // amendment exists to prevent, arriving for the second disposition. Both doors
+  // are pinned because both seed independently.
+  //
+  // The fixture rides its OWN message key (`{stamp}:cap:N`, engine `normalize.rs`'s
+  // `cap_id()`), NOT #190's `{stamp}:truncate:N`. Hydration reads only `kind` +
+  // `payloadJson` and would pass either way, so the key is spelled correctly only
+  // to keep this a faithful recipe for what the engine actually writes.
+  const cappedRow = (id: number): MessageRow =>
+    msgRow({
+      id,
+      kind: "agent-text",
+      messageKey: "a3f9c1:cap:0",
+      payloadJson: JSON.stringify({
+        text: "Turn stopped by the agent's own turn limit",
+        disposition: "max_turn_requests",
+      }),
+      createdAt: 2000,
+    });
+
+  it("openSession seeds stopReasons from a CAPPED notice on the last row", async () => {
+    useSessions.setState({
+      activeSessionId: null,
+      historySessions: [info("s1", "/x")],
+      stopReasons: {},
+    });
+    vi.mocked(loadHistory).mockResolvedValueOnce({
+      rows: [
+        msgRow({ id: 7, kind: "user", payloadJson: JSON.stringify({ text: "go" }) }),
+        cappedRow(8),
+      ],
+      hasMore: false,
+      todos: null,
+    });
+
+    useSessions.getState().openSession("s1");
+    await tick();
+
+    expect(useSessions.getState().stopReasons["s1"]).toBe("max_turn_requests");
+  });
+
+  it("resumeSession seeds stopReasons from a CAPPED notice on the last row", async () => {
+    useSessions.setState({
+      activeSessionId: "s1",
+      historySessions: [info("s1", "/x")],
+      stopReasons: {},
+    });
+    vi.mocked(loadHistory).mockResolvedValueOnce({
+      rows: [cappedRow(9)],
+      hasMore: false,
+      todos: null,
+    });
+
+    await useSessions.getState().resumeSession("s1");
+    await tick();
+
+    expect(useSessions.getState().stopReasons["s1"]).toBe("max_turn_requests");
+  });
+
   it("openSession writes NOTHING when the last row carries no disposition", async () => {
     // Two failure modes this pins at once. Writing `undefined` for "no row"
     // would CLOBBER the value the pin `a Flush whose attachment READ fails
