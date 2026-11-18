@@ -129,11 +129,40 @@ export function extractDiffs(content: ToolCallContent[] | undefined): DiffRef[] 
  * id`, which feeds a tail `messages_page` cannot produce today — making a switch
  * to id-max a deliberate decision rather than a silent one.
  *
- * The vocabulary mapping is deliberate: the row carries the PROVIDER spelling
- * (`"length"`) and the client vocabulary is `StopReason`, so `"length"` maps to
- * `"max_tokens"`. Anything else is `undefined`, INCLUDING `"cancelled"` — which
- * would suppress a settled OS alert in `attention.ts` — and INCLUDING the client
- * spelling `"max_tokens"`, which never appears in a row.
+ * The vocabulary mapping is deliberate, and the two entries in it are NOT the
+ * same kind of mapping. `"length"` is a TRANSLATION: the row carries the
+ * PROVIDER spelling and the client vocabulary is `StopReason`, so the engine's
+ * `"length"` becomes the client's `"max_tokens"` — two different words for one
+ * fact, coined by two different layers. `"max_turn_requests"` (issue #193) is an
+ * IDENTITY mapping: the client already had that word in its union (it names a
+ * limit the client invented, not a provider finish reason), so the engine
+ * adopted the client's spelling and there is nothing to translate. That
+ * asymmetry is why the two lines read differently and why a future reader should
+ * not "harmonise" them into one table.
+ *
+ * Neither value is ever produced by serializing an enum. The engine mints each
+ * from a named constant — `TRUNCATION_DISPOSITION` (`"length"`) and
+ * `TURN_CAPPED_DISPOSITION` (`"max_turn_requests"`) in its `normalize.rs` — so a
+ * rename in the engine's Rust cannot silently change the bytes on disk, and the
+ * constants' own docblocks carry the vocabulary contract in both directions.
+ *
+ * Anything else is `undefined`, INCLUDING `"cancelled"` and INCLUDING the client
+ * spelling `"max_tokens"` — neither ever appears in a row, so accepting either
+ * would mean the reducer minting a client value the engine never promised.
+ *
+ * ⚠ WHY THIS REFUSAL IS NOT THE ALERT SUPPRESSOR IT USED TO BE. Until issue #193
+ * `attention.ts` gated on `stopReasons[id] !== "cancelled"`, so a `"cancelled"`
+ * that survived this function really did silence a settled OS alert, and that was
+ * the reason on record for refusing it. The gate is now the whitelist
+ * `=== "end_turn"`, under which BOTH paths stay silent — refuse (the slot is
+ * never written) or accept (the slot reads `"cancelled"`, still not `"end_turn"`).
+ * Measured: widening this function to accept `"cancelled"` reddens exactly the one
+ * refusal pin below and leaves `attention.test.ts` and `sessions.test.ts` green,
+ * so the alert behaviour is no longer what the refusal buys. What it buys is the
+ * narrower, still-real thing: an unrecognized payload value leaves the slot
+ * untouched rather than writing a vocabulary entry nothing emitted, which is the
+ * same discipline `sessions.ts` applies when it declines to write `undefined` for
+ * "no row found".
  *
  * Never throws: `payloadJson` is disk bytes, parsed defensively exactly as
  * `rowToMessages` parses it.
@@ -155,8 +184,13 @@ export function dispositionFromRows(
     return undefined;
   }
   if (typeof payload?.disposition !== "string") return undefined;
-  // Provider spelling → client vocabulary. Every other value is refused.
-  return payload.disposition === "length" ? "max_tokens" : undefined;
+  // The two known dispositions → client vocabulary. Every other value is
+  // refused. The first line translates, the second is an identity (see the doc
+  // comment); the refusal is deliberate, but since issue #193 it is NOT the OS
+  // alert suppressor its own comment used to claim.
+  if (payload.disposition === "length") return "max_tokens";
+  if (payload.disposition === "max_turn_requests") return "max_turn_requests";
+  return undefined;
 }
 
 /**

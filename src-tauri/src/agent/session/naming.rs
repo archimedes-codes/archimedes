@@ -754,6 +754,7 @@ mod tests {
             id: "call_1".into(),
             name: "bash".into(),
             arguments: json!({ "command": "ls" }),
+            defect: None,
         }]);
         assert_eq!(
             first_exchange_text(&[user("list the files"), calls]),
@@ -2329,7 +2330,7 @@ mod tests {
                 close_kind: Arc::new(StdMutex::new(None)),
                 pending_turn: Arc::new(StdMutex::new(None)),
                 cancel_requested: Arc::new(StdMutex::new(false)),
-                truncated: Arc::new(StdMutex::new(false)),
+                disposition: Arc::new(StdMutex::new(None)),
                 pending_modal_ids: StdMutex::new(HashSet::new()),
             });
             row.naming = Some(NamingState {
@@ -2469,6 +2470,7 @@ mod tests {
                     id: "ask_call_1".into(),
                     name: "ask".into(),
                     arguments: json!({}),
+                    defect: None,
                 }]),
             },
             ChatMessage {
@@ -2521,11 +2523,13 @@ mod tests {
                         id: "bash_1".into(),
                         name: "bash".into(),
                         arguments: json!({ "command": "ls" }),
+                        defect: None,
                     },
                     ToolCall {
                         id: "ask_cancel".into(),
                         name: "ask".into(),
                         arguments: json!({}),
+                        defect: None,
                     },
                 ]),
             },
@@ -2568,6 +2572,7 @@ mod tests {
                     id: "ask_1".into(),
                     name: "ask".into(),
                     arguments: json!({}),
+                    defect: None,
                 }]),
             },
             ChatMessage {

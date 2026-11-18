@@ -15,7 +15,7 @@ use crate::agent::worker::Inbound;
 use crate::storage::Db;
 use fulcrum_harness::seams::{TaskCall, TaskStore, TaskStoreError};
 
-use super::{CloseKind, ClosedReason, SessionManager, StalledInfo, StopReason};
+use super::{CloseKind, ClosedReason, SessionManager, StalledInfo, StopReason, TurnDisposition};
 
 impl SessionManager {
     // ── The Worker event router (ADR 0025 Task 4) ──────────────────────────
@@ -126,52 +126,75 @@ impl SessionManager {
                 }
             }
             WorkerInboundEvent::Event(e) => {
-                // (issue #190) STASH THE TRUNCATION before anything can settle.
-                // The engine emits `turn_truncated` BEFORE `turn_end` /
-                // `agent_settled` on the SAME pipe (`RpcEvent::turn_truncated`'s
-                // contract), so this arm always runs before the `resolve_turn`
-                // below reads the flag. MAIN sessions only, for exactly the
-                // reason the `agent_settled` arm documents: a child's frames
-                // arrive under the PARENT's delivery id, and a child's cut-off
-                // reply must not mark the parent's turn truncated. A truncated
-                // turn is not a success — `resolve_turn` maps the flag to
-                // `StopReason::MaxTokens` (ADR 0108).
-                if !is_subagent && matches!(e, RpcEvent::turn_truncated) {
-                    // UNSEQUENCED against the forced clear (issue #190, round-2
-                    // finding): this SET and `resolve_turn_forced`'s clear run
-                    // on DIFFERENT tasks (this pump vs the crash-watch) with no
-                    // ordering between them, so a dying Worker's posthumous
-                    // `turn_truncated` can arrive AFTER the crash cleared the
-                    // flag — the flag goes back to `true`, the row stays live,
-                    // and the NEXT turn's claim→clear window inherits a stale
-                    // `MaxTokens`. Before the forced clear existed this
-                    // direction of the race could not happen. The consequence
-                    // is BOUNDED and wrong-direction only — one dead Worker,
-                    // one turn, an over-reported `MaxTokens` — and it cannot
-                    // chain, because every turn-start clears the flag. The real
-                    // fix sequences this stash and that clear through ONE lock;
-                    // that is a separate change, not this one. A reviewer's
-                    // suggested `!stalled` gate was REJECTED on evidence:
-                    // `stalled` is written only by `handle_crash` and NEVER
-                    // removed (ADR 0025; pinned by
-                    // `a_stalled_row_is_frozen_until_the_next_crash`), while a
-                    // resumed session re-uses the SAME id with a fresh live
-                    // Worker — gating here would silently drop a legitimate
-                    // truncation on a session that has every right to hit the
-                    // output cap again, reintroducing the silent `EndTurn` this
-                    // flag exists to eliminate.
-                    //
-                    // Clone the `Arc` OUT under the `sessions` lock and lock it
-                    // AFTER the lock is released — the `cancel_requested`
-                    // discipline, and a poisoned lock is RECOVERED (the registry
-                    // guards independent per-key rows).
-                    let truncated = self
-                        .with_session(session_id, |s| {
-                            s.live.as_ref().map(|live| live.truncated.clone())
-                        })
-                        .flatten();
-                    if let Some(truncated) = truncated {
-                        *truncated.lock().unwrap_or_else(|p| p.into_inner()) = true;
+                // (issues #190 + #193) STASH THE DISPOSITION before anything can
+                // settle. The engine emits `turn_truncated` / `turn_capped`
+                // BEFORE `turn_end` / `agent_settled` on the SAME pipe (both
+                // frames' contract), so this arm always runs before the
+                // `resolve_turn` below reads the slot. MAIN sessions only, for
+                // exactly the reason the `agent_settled` arm documents: a child's
+                // frames arrive under the PARENT's delivery id, and a child's
+                // cut-off reply must not mark the parent's turn truncated.
+                // Neither turn is a success — `resolve_turn` maps `Truncated` to
+                // `StopReason::MaxTokens` and `Capped` to
+                // `StopReason::MaxTurnRequests` (ADR 0108).
+                //
+                // A `turn_capped` on the SAME turn as a `turn_truncated` is
+                // IMPOSSIBLE by construction, so the last-writer-wins below is
+                // not a real hazard: the cap fires at the TOP of a loop iteration
+                // — before any provider stream is opened — while the truncation
+                // is a fact ABOUT a stream that ran and hit the output cap. A
+                // turn that never opened a stream cannot have been cut off in
+                // one, and a turn whose stream ended `length` settles on that
+                // stream and never reaches the next iteration's bound check. If
+                // that ever changed, `Truncated` would WIN: it is the more
+                // specific provider fact (it names what the provider did), and
+                // the round bound firing afterwards would be describing a turn
+                // we already know the reason for. Implementing that preference
+                // needs a compare, not an assign — so it stays a documented
+                // impossibility rather than a branch no event sequence can reach.
+                if !is_subagent {
+                    let stashed = match e {
+                        RpcEvent::turn_truncated => Some(TurnDisposition::Truncated),
+                        RpcEvent::turn_capped => Some(TurnDisposition::Capped),
+                        _ => None,
+                    };
+                    if let Some(disposition) = stashed {
+                        // UNSEQUENCED against the forced clear (issue #190, round-2
+                        // finding): this SET and `resolve_turn_forced`'s clear run
+                        // on DIFFERENT tasks (this pump vs the crash-watch) with no
+                        // ordering between them, so a dying Worker's posthumous
+                        // disposition frame can arrive AFTER the crash cleared the
+                        // slot — the slot goes back to `Some(_)`, the row stays live,
+                        // and the NEXT turn's claim→clear window inherits a stale
+                        // `MaxTokens` / `MaxTurnRequests`. Before the forced clear
+                        // existed this direction of the race could not happen. The
+                        // consequence is BOUNDED and wrong-direction only — one dead
+                        // Worker, one turn, an over-reported disposition — and it
+                        // cannot chain, because every turn-start clears the slot. The
+                        // real fix sequences this stash and that clear through ONE
+                        // lock; that is a separate change, not this one. A reviewer's
+                        // suggested `!stalled` gate was REJECTED on evidence:
+                        // `stalled` is written only by `handle_crash` and NEVER
+                        // removed (ADR 0025; pinned by
+                        // `a_stalled_row_is_frozen_until_the_next_crash`), while a
+                        // resumed session re-uses the SAME id with a fresh live
+                        // Worker — gating here would silently drop a legitimate
+                        // truncation on a session that has every right to hit the
+                        // output cap again, reintroducing the silent `EndTurn` this
+                        // slot exists to eliminate.
+                        //
+                        // Clone the `Arc` OUT under the `sessions` lock and lock it
+                        // AFTER the lock is released — the `cancel_requested`
+                        // discipline, and a poisoned lock is RECOVERED (the registry
+                        // guards independent per-key rows).
+                        let slot = self
+                            .with_session(session_id, |s| {
+                                s.live.as_ref().map(|live| live.disposition.clone())
+                            })
+                            .flatten();
+                        if let Some(slot) = slot {
+                            *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(disposition);
+                        }
                     }
                 }
                 // Internal bookkeeping ONLY (NOT the `TauriSink` — forwarding would
@@ -465,9 +488,18 @@ impl SessionManager {
 
     /// Resolve the session's in-flight turn (the `pending_turn` oneshot) on an
     /// `agent_settled` (the `cancel_requested` flag maps the settle to `Cancelled`,
-    /// the `truncated` flag to `MaxTokens`, else `EndTurn` — the existing settle
-    /// semantics plus issue #190's truncation disposition). A no-op when no turn is
-    /// in flight (the slot is empty) or the session is gone.
+    /// the `disposition` slot to `MaxTokens` / `MaxTurnRequests`, else `EndTurn` —
+    /// the existing settle semantics plus the issue #190 / #193 dispositions). A
+    /// no-op when no turn is in flight (the slot is empty) or the session is gone.
+    ///
+    /// This is an exhaustive `match` and that is the point. It used to be
+    /// `if cancelled / else if was_truncated / else`, which is a chain that
+    /// silently drops a disposition it has no arm for: a fifth one would resolve
+    /// as `EndTurn` — the composer unlocks, no footer line appears, and
+    /// `attention.ts` announces a turn that never finished as "finished — waiting
+    /// for you". That is precisely the silent-success bug #190 and #193 each
+    /// shipped, and a chain cannot be warned about. Matching on
+    /// `Option<TurnDisposition>` turns the next one into an `E0004` here.
     fn resolve_turn(&self, session_id: &str) {
         // Copy out the three SHARED `Arc` slots (the `Arc`s are cloned, not the
         // slot contents — resolving through the clone resolves the session's
@@ -478,32 +510,33 @@ impl SessionManager {
                 s.live.as_ref().map(|live| {
                     (
                         live.cancel_requested.clone(),
-                        live.truncated.clone(),
+                        live.disposition.clone(),
                         live.pending_turn.clone(),
                     )
                 })
             })
             .flatten();
-        let Some((cancel_requested, truncated, pending_turn)) = slots else {
+        let Some((cancel_requested, disposition, pending_turn)) = slots else {
             return;
         };
         let cancelled_guard = cancel_requested.lock().unwrap_or_else(|p| p.into_inner());
         let cancelled = *cancelled_guard;
         drop(cancelled_guard);
-        // (issue #190) `Cancelled` > `MaxTokens` > `EndTurn`. A user who pressed
-        // Stop on a turn whose reply was ALSO cut off cancelled it — the more
-        // specific fact about what happened (ADR 0108's amendment). Both guards are dropped
+        // (issues #190 + #193) `Cancelled` > the engine's disposition > `EndTurn`.
+        // A user who pressed Stop on a turn whose reply was ALSO cut off (or
+        // stopped by the bound) cancelled it — the more specific fact about what
+        // happened (ADR 0108's amendment), which is why `(true, _)` is the FIRST
+        // arm and not a check after the disposition. Both guards are dropped
         // BEFORE the `pending_turn` lock, as the `cancel_requested` guard always
         // was: never hold two of these at once.
-        let truncated_guard = truncated.lock().unwrap_or_else(|p| p.into_inner());
-        let was_truncated = *truncated_guard;
-        drop(truncated_guard);
-        let reason = if cancelled {
-            StopReason::Cancelled
-        } else if was_truncated {
-            StopReason::MaxTokens
-        } else {
-            StopReason::EndTurn
+        let disposition_guard = disposition.lock().unwrap_or_else(|p| p.into_inner());
+        let stashed = *disposition_guard;
+        drop(disposition_guard);
+        let reason = match (cancelled, stashed) {
+            (true, _) => StopReason::Cancelled,
+            (false, Some(TurnDisposition::Truncated)) => StopReason::MaxTokens,
+            (false, Some(TurnDisposition::Capped)) => StopReason::MaxTurnRequests,
+            (false, None) => StopReason::EndTurn,
         };
         let mut pending_guard = pending_turn.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(tx) = pending_guard.take() {
@@ -519,30 +552,38 @@ impl SessionManager {
             .with_session(session_id, |s| {
                 s.live
                     .as_ref()
-                    .map(|live| (live.pending_turn.clone(), live.truncated.clone()))
+                    .map(|live| (live.pending_turn.clone(), live.disposition.clone()))
             })
             .flatten();
-        if let Some((pending_turn, truncated)) = slots {
+        if let Some((pending_turn, disposition)) = slots {
             let mut pending_guard = pending_turn.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(tx) = pending_guard.take() {
                 let _ = tx.send(reason);
             }
             drop(pending_guard);
-            // (issue #190) Retire the truncation with the turn it describes.
-            // `resolve_turn` is the flag's only consumer and `send_prompt` its
-            // only clearer, so a turn that ends WITHOUT a settle strands it —
-            // and a settle really can go missing: the per-Worker transport is a
-            // 256-slot `tokio::sync::broadcast` whose `Lagged` arm logs and
-            // `continue`s (`worker/client.rs`), silently dropping frames. This
-            // path already ends the turn regardless of `cancel_requested`, so
-            // the flag must not outlive it either: the next `send_prompt` clears
-            // it only AFTER claiming `pending_turn`, so a late settle arriving in
-            // that window would resolve the NEW turn with THIS turn's
-            // `MaxTokens`. Clearing it here closes that window on the shapes
-            // this helper actually runs on — the crash and the close. The third
-            // no-settle shape (a settle dropped off a LIVING Worker's broadcast)
-            // never reaches this path, so it stays open; see the note in
-            // `send_prompt_with_images`.
+            // (issues #190 + #193) Retire the disposition with the turn it
+            // describes. `resolve_turn` is the slot's only consumer and
+            // `send_prompt` its only clearer, so a turn that ends WITHOUT a
+            // settle strands it — and a settle really can go missing: the
+            // per-Worker transport is a 256-slot `tokio::sync::broadcast` whose
+            // `Lagged` arm logs and `continue`s (`worker/client.rs`), silently
+            // dropping frames. This path already ends the turn regardless of
+            // `cancel_requested`, so the disposition must not outlive it either:
+            // the next `send_prompt` clears it only AFTER claiming
+            // `pending_turn`, so a late settle arriving in that window would
+            // resolve the NEW turn with THIS turn's `MaxTokens` /
+            // `MaxTurnRequests`. Clearing it here closes that window on the
+            // shapes this helper actually runs on — the crash and the close. The
+            // third no-settle shape (a settle dropped off a LIVING Worker's
+            // broadcast) never reaches this path, so it stays open; see the note
+            // in `send_prompt_with_images`.
+            //
+            // The WHOLE slot goes to `None`, not one variant: this clear is
+            // about the turn ending, not about which disposition was stashed, so
+            // it must not grow a match that has to be revisited for every new
+            // variant (the same exhaustiveness reasoning that made `resolve_turn`
+            // a `match` — but inverted: here a missed arm would be a silent
+            // strand, and an unconditional clear cannot have one).
             //
             // `cancel_requested` is deliberately LEFT ALONE: `close_session`
             // sets it BEFORE forcing `Cancelled` and its docblock documents that
@@ -550,9 +591,9 @@ impl SessionManager {
             // harmless for THIS call (the forced reason ignores the flag, and the
             // next `send_prompt` resets it), but the flag's contract belongs to
             // `close_session`, not to every caller of this helper — this clear is
-            // about removing a stranded flag, not auditing a different flag's
-            // contract.
-            *truncated.lock().unwrap_or_else(|p| p.into_inner()) = false;
+            // about removing a stranded disposition, not auditing a different
+            // flag's contract.
+            *disposition.lock().unwrap_or_else(|p| p.into_inner()) = None;
         }
     }
 
@@ -959,7 +1000,7 @@ mod tests {
                 close_kind: Arc::new(StdMutex::new(None)),
                 pending_turn: Arc::new(StdMutex::new(Some(tx))),
                 cancel_requested: Arc::new(StdMutex::new(false)),
-                truncated: Arc::new(StdMutex::new(false)),
+                disposition: Arc::new(StdMutex::new(None)),
                 pending_modal_ids: StdMutex::new(HashSet::new()),
             });
         });
@@ -1005,7 +1046,7 @@ mod tests {
                 close_kind: Arc::new(StdMutex::new(None)),
                 pending_turn: Arc::new(StdMutex::new(Some(tx))),
                 cancel_requested: Arc::new(StdMutex::new(false)),
-                truncated: Arc::new(StdMutex::new(false)),
+                disposition: Arc::new(StdMutex::new(None)),
                 pending_modal_ids: StdMutex::new(HashSet::new()),
             });
         });
@@ -1029,6 +1070,49 @@ mod tests {
         );
     }
 
+    /// (issue #193) A turn the ENGINE stopped (its own bound) settles as
+    /// `MaxTurnRequests`, not `EndTurn`.
+    ///
+    /// The desktop half of the fix, and the first construction site
+    /// `StopReason::MaxTurnRequests` has ever had. The engine emits
+    /// `turn_capped` BEFORE `turn_end` / `agent_settled` on the same pipe (the
+    /// round ceiling `MAX_MODEL_ROUNDS_PER_PROMPT`, or a run of identical refused
+    /// tool batches), `route_event` stashes it, `resolve_turn` maps it. The bug
+    /// this pins is the SAME silent one #190 fixed for `length`: with no arm
+    /// naming the frame, a capped turn resolved as `end_turn` — the composer
+    /// unlocked, no footer line, and `attention.ts` announced it as "finished —
+    /// waiting for you".
+    #[test]
+    fn main_session_turn_capped_resolves_the_turn_as_max_turn_requests() {
+        let manager = SessionManager::new(PathBuf::from("/tmp"));
+        let (tx, mut rx) = oneshot::channel();
+        let sid = "main-session";
+        manager.with_session_entry(sid, |row| {
+            row.live = Some(LiveWorkerSession {
+                cwd: PathBuf::from("/tmp"),
+                close_kind: Arc::new(StdMutex::new(None)),
+                pending_turn: Arc::new(StdMutex::new(Some(tx))),
+                cancel_requested: Arc::new(StdMutex::new(false)),
+                disposition: Arc::new(StdMutex::new(None)),
+                pending_modal_ids: StdMutex::new(HashSet::new()),
+            });
+        });
+
+        // The engine's order on the pipe: the disposition FIRST, then the settle.
+        manager.route_event(sid, false, WorkerInboundEvent::Event(RpcEvent::turn_capped));
+        manager.route_event(
+            sid,
+            false,
+            WorkerInboundEvent::Event(RpcEvent::agent_settled),
+        );
+
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            StopReason::MaxTurnRequests,
+            "a capped turn must settle as max_turn_requests, not the silent end_turn"
+        );
+    }
+
     /// (issue #190) A CHILD's truncation must not mark its PARENT's turn — the
     /// same reason `subagent_agent_settled_does_not_resolve_parent_turn`
     /// documents for the settle: a subagent's frames arrive under the parent's
@@ -1044,7 +1128,7 @@ mod tests {
                 close_kind: Arc::new(StdMutex::new(None)),
                 pending_turn: Arc::new(StdMutex::new(Some(tx))),
                 cancel_requested: Arc::new(StdMutex::new(false)),
-                truncated: Arc::new(StdMutex::new(false)),
+                disposition: Arc::new(StdMutex::new(None)),
                 pending_modal_ids: StdMutex::new(HashSet::new()),
             });
         });
@@ -1081,7 +1165,7 @@ mod tests {
                 close_kind: Arc::new(StdMutex::new(None)),
                 pending_turn: Arc::new(StdMutex::new(Some(tx))),
                 cancel_requested: Arc::new(StdMutex::new(true)),
-                truncated: Arc::new(StdMutex::new(true)),
+                disposition: Arc::new(StdMutex::new(Some(TurnDisposition::Truncated))),
                 pending_modal_ids: StdMutex::new(HashSet::new()),
             });
         });
@@ -1122,7 +1206,7 @@ mod tests {
                 close_kind: Arc::new(StdMutex::new(None)),
                 pending_turn: Arc::new(StdMutex::new(Some(tx))),
                 cancel_requested: Arc::new(StdMutex::new(false)),
-                truncated: Arc::new(StdMutex::new(true)),
+                disposition: Arc::new(StdMutex::new(Some(TurnDisposition::Truncated))),
                 pending_modal_ids: StdMutex::new(HashSet::new()),
             });
         });
@@ -1137,18 +1221,146 @@ mod tests {
             StopReason::Cancelled,
             "the crash forces the turn to Cancelled"
         );
-        let truncated = manager
+        let stranded = manager
             .with_session(sid, |s| {
                 s.live
                     .as_ref()
-                    .map(|live| *live.truncated.lock().unwrap_or_else(|p| p.into_inner()))
+                    .map(|live| *live.disposition.lock().unwrap_or_else(|p| p.into_inner()))
             })
             .flatten();
         assert_eq!(
-            truncated,
-            Some(false),
+            stranded,
+            Some(None),
             "a forced resolve ends the turn the truncation describes — the flag \
              must not outlive it and strand a stale MaxTokens for the next turn"
+        );
+    }
+
+    /// (issue #193, ADR 0108's amendment) `Cancelled` BEATS a cap: a user who
+    /// pressed Stop on a turn the engine also stopped cancelled it — the more
+    /// specific fact about what happened. Same precedence as
+    /// `cancel_requested_wins_over_truncated`, and the reason the exhaustive
+    /// match puts `(true, _)` FIRST.
+    ///
+    /// The cap is stashed through the REAL event path rather than hand-seeded, so
+    /// the first assertion proves the test is not vacuous — under a `resolve_turn`
+    /// with no arm naming `turn_capped` the slot is empty and "Stop wins" is
+    /// trivially true of nothing.
+    #[test]
+    fn cancel_requested_wins_over_a_cap() {
+        let manager = SessionManager::new(PathBuf::from("/tmp"));
+        let (tx, mut rx) = oneshot::channel();
+        let sid = "main-session";
+        manager.with_session_entry(sid, |row| {
+            row.live = Some(LiveWorkerSession {
+                cwd: PathBuf::from("/tmp"),
+                close_kind: Arc::new(StdMutex::new(None)),
+                pending_turn: Arc::new(StdMutex::new(Some(tx))),
+                cancel_requested: Arc::new(StdMutex::new(false)),
+                disposition: Arc::new(StdMutex::new(None)),
+                pending_modal_ids: StdMutex::new(HashSet::new()),
+            });
+        });
+
+        // Precondition: the cap is stashed (so the precedence below is real).
+        manager.route_event(sid, false, WorkerInboundEvent::Event(RpcEvent::turn_capped));
+        let stashed = manager
+            .with_session(sid, |s| {
+                s.live
+                    .as_ref()
+                    .map(|live| *live.disposition.lock().unwrap_or_else(|p| p.into_inner()))
+            })
+            .flatten();
+        assert_eq!(
+            stashed,
+            Some(Some(TurnDisposition::Capped)),
+            "precondition: the router stashed the cap as a disposition"
+        );
+
+        // The Stop lands after the cap (the user pressed Stop on a capped turn).
+        *manager
+            .with_session(sid, |s| {
+                s.live.as_ref().map(|live| live.cancel_requested.clone())
+            })
+            .flatten()
+            .expect("the live row is still there")
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = true;
+
+        manager.route_event(
+            sid,
+            false,
+            WorkerInboundEvent::Event(RpcEvent::agent_settled),
+        );
+
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            StopReason::Cancelled,
+            "Stop beats the engine's own bound (ADR 0108 amendment)"
+        );
+    }
+
+    /// (issue #193) A FORCED resolve retires the CAP it ends — the same stranded-
+    /// disposition bug `a_forced_resolve_retires_a_stranded_truncation` exists to
+    /// prevent, for the new variant. A cap that outlives its turn resolves the
+    /// NEXT turn as `max_turn_requests` (see that test for the full mechanism:
+    /// `resolve_turn` is the only consumer, `send_prompt` clears only AFTER
+    /// claiming the slot, and the Worker's broadcast can drop an
+    /// `agent_settled` off a LIVING Worker).
+    #[test]
+    fn a_forced_resolve_retires_a_stranded_cap() {
+        let manager = SessionManager::new(PathBuf::from("/tmp"));
+        let (tx, mut rx) = oneshot::channel();
+        let sid = "main-session";
+        manager.with_session_entry(sid, |row| {
+            row.live = Some(LiveWorkerSession {
+                cwd: PathBuf::from("/tmp"),
+                close_kind: Arc::new(StdMutex::new(None)),
+                pending_turn: Arc::new(StdMutex::new(Some(tx))),
+                cancel_requested: Arc::new(StdMutex::new(false)),
+                disposition: Arc::new(StdMutex::new(None)),
+                pending_modal_ids: StdMutex::new(HashSet::new()),
+            });
+        });
+
+        // Stash the cap through the real event path (no arm → nothing is stashed,
+        // which is what makes the clear un-testable until the stash exists).
+        manager.route_event(sid, false, WorkerInboundEvent::Event(RpcEvent::turn_capped));
+        let stashed = manager
+            .with_session(sid, |s| {
+                s.live
+                    .as_ref()
+                    .map(|live| *live.disposition.lock().unwrap_or_else(|p| p.into_inner()))
+            })
+            .flatten();
+        assert_eq!(
+            stashed,
+            Some(Some(TurnDisposition::Capped)),
+            "precondition: the router stashed the cap"
+        );
+
+        // The crash: the forced resolve ends the turn and the row stays LIVE —
+        // exactly the shape that strands the disposition.
+        manager.handle_crash(sid, Some(1), None);
+
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            StopReason::Cancelled,
+            "the crash forces the turn to Cancelled"
+        );
+        let stranded = manager
+            .with_session(sid, |s| {
+                s.live
+                    .as_ref()
+                    .map(|live| *live.disposition.lock().unwrap_or_else(|p| p.into_inner()))
+            })
+            .flatten();
+        assert_eq!(
+            stranded,
+            Some(None),
+            "a forced resolve ends the turn the cap describes — the disposition \
+             must not outlive it and strand a stale max_turn_requests for the \
+             next turn"
         );
     }
 
@@ -1163,7 +1375,7 @@ mod tests {
                 close_kind: Arc::new(StdMutex::new(None)),
                 pending_turn: Arc::new(StdMutex::new(Some(tx))),
                 cancel_requested: Arc::new(StdMutex::new(false)),
-                truncated: Arc::new(StdMutex::new(false)),
+                disposition: Arc::new(StdMutex::new(None)),
                 pending_modal_ids: StdMutex::new(HashSet::new()),
             });
         });
@@ -1190,7 +1402,7 @@ mod tests {
                 close_kind: Arc::new(StdMutex::new(None)),
                 pending_turn: Arc::new(StdMutex::new(None)),
                 cancel_requested: Arc::new(StdMutex::new(false)),
-                truncated: Arc::new(StdMutex::new(false)),
+                disposition: Arc::new(StdMutex::new(None)),
                 pending_modal_ids: StdMutex::new(HashSet::new()),
             });
         });

@@ -411,7 +411,7 @@ async fn save_settings_pushes_config_update_to_a_live_worker() {
             close_kind: Arc::new(StdMutex::new(None)),
             pending_turn: Arc::new(StdMutex::new(None)),
             cancel_requested: Arc::new(StdMutex::new(false)),
-            truncated: Arc::new(StdMutex::new(false)),
+            disposition: Arc::new(StdMutex::new(None)),
             pending_modal_ids: StdMutex::new(HashSet::new()),
         });
     });
@@ -914,7 +914,7 @@ async fn a_stalled_row_is_frozen_until_the_next_crash() {
             close_kind: Arc::new(StdMutex::new(None)),
             pending_turn: Arc::new(StdMutex::new(None)),
             cancel_requested: Arc::new(StdMutex::new(false)),
-            truncated: Arc::new(StdMutex::new(false)),
+            disposition: Arc::new(StdMutex::new(None)),
             pending_modal_ids: StdMutex::new(HashSet::new()),
         });
     });
@@ -3245,9 +3245,9 @@ async fn compact_session_sends_the_frame_and_never_marks_a_cancel() {
     );
 }
 
-/// (issue #190) `/compact` on a LIVE session must not set `truncated` either —
-/// the same invariant as `cancel_requested`, for the same reason: the router
-/// reads the flag only while a turn slot is occupied, so an idle compaction
+/// (issue #190) `/compact` on a LIVE session must not set the `disposition` slot
+/// either — the same invariant as `cancel_requested`, for the same reason: the
+/// router reads it only while a turn slot is occupied, so an idle compaction
 /// that set it would map the NEXT settle to `MaxTokens` and tell the user a
 /// clean turn was cut off.
 #[tokio::test]
@@ -3267,16 +3267,16 @@ async fn compact_session_never_marks_a_truncation() {
             .expect("the live send succeeds"),
         "the frame was sent to the live session"
     );
-    let truncated = manager
+    let disposition = manager
         .with_session(&info.session_id, |s| {
             s.live
                 .as_ref()
-                .map(|live| *live.truncated.lock().unwrap_or_else(|p| p.into_inner()))
+                .map(|live| *live.disposition.lock().unwrap_or_else(|p| p.into_inner()))
         })
         .flatten();
     assert_eq!(
-        truncated,
-        Some(false),
+        disposition,
+        Some(None),
         "an idle compaction does not touch the session's truncation flag"
     );
 }
@@ -3309,12 +3309,12 @@ async fn a_fresh_send_prompt_clears_a_stale_truncation() {
         .with_session(&info.session_id, |s| {
             s.live
                 .as_ref()
-                .map(|live| *live.truncated.lock().unwrap_or_else(|p| p.into_inner()))
+                .map(|live| *live.disposition.lock().unwrap_or_else(|p| p.into_inner()))
         })
         .flatten();
     assert_eq!(
         stashed,
-        Some(true),
+        Some(Some(TurnDisposition::Truncated)),
         "precondition: the router stashed the truncation"
     );
 
@@ -3328,6 +3328,59 @@ async fn a_fresh_send_prompt_clears_a_stale_truncation() {
         reason,
         StopReason::EndTurn,
         "a fresh turn is not the PREVIOUS turn's truncation"
+    );
+}
+
+/// (issue #193) A fresh `send_prompt` CLEARS a stranded CAP, so the new turn
+/// settles on its own facts — the second of the TWO clears (the other is
+/// `resolve_turn_forced`'s retire). Same shape and same reason as
+/// `a_fresh_send_prompt_clears_a_stale_truncation`: asserted through the
+/// observable return value rather than a read-back of the slot, because a
+/// `turn_capped` that landed while no turn was in flight (the disposition set, the
+/// slot empty) must NOT make the NEXT turn's settle answer
+/// `MaxTurnRequests` — the fixture's canned turn ends normally, so a stranded
+/// cap shows up as the wrong `StopReason` here.
+#[tokio::test]
+async fn a_fresh_send_prompt_clears_a_stale_cap() {
+    let dir = temp_config_dir();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+    let (manager, _wm, _db) = build_worker_manager(&dir, native_test_catalog(), &sink);
+    let info = manager
+        .start_session(dir.to_path_buf(), &sink)
+        .await
+        .expect("the native session started");
+
+    // Stash a cap with NO turn in flight (the disposition is set, the slot is
+    // empty — nothing can resolve, so it just sits there).
+    manager.route_event(
+        &info.session_id,
+        false,
+        WorkerInboundEvent::Event(RpcEvent::turn_capped),
+    );
+    let stashed = manager
+        .with_session(&info.session_id, |s| {
+            s.live
+                .as_ref()
+                .map(|live| *live.disposition.lock().unwrap_or_else(|p| p.into_inner()))
+        })
+        .flatten();
+    assert_eq!(
+        stashed,
+        Some(Some(TurnDisposition::Capped)),
+        "precondition: the router stashed the cap"
+    );
+
+    // The next turn: the reset runs BEFORE the dispatch, so the settle that
+    // follows reads a CLEAN slot and the canned turn reports what it was.
+    let reason = manager
+        .send_prompt(&info.session_id, "hi".to_string())
+        .await
+        .expect("the turn resolves");
+    assert_eq!(
+        reason,
+        StopReason::EndTurn,
+        "a fresh turn is not the PREVIOUS turn's cap"
     );
 }
 

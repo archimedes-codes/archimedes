@@ -497,6 +497,25 @@ describe("src/lib/transcript", () => {
       expect(dispositionFromRows([truncateRow()])).toBe("max_tokens");
     });
 
+    // (issue #193) The engine's OWN turn bound persists its notice the same way
+    // #190's does — an `agent-text` row on `{stamp}:truncate:N` whose payload
+    // carries `disposition` — and the footer needs it back after a restart. The
+    // value is an IDENTITY mapping (the engine adopted the client's spelling
+    // because the client invented the word), not the translation `"length"`
+    // gets; see `dispositionFromRows`'s docblock for why the two lines differ.
+    it("reads a capped turn's disposition (identity mapping, no translation)", () => {
+      expect(
+        dispositionFromRows([
+          truncateRow({
+            payloadJson: JSON.stringify({
+              text: "Turn stopped by the agent's own turn limit",
+              disposition: "max_turn_requests",
+            }),
+          }),
+        ]),
+      ).toBe("max_turn_requests");
+    });
+
     it("ignores an agent-text row that carries no disposition key", () => {
       const plain = msgRowBase({
         kind: "agent-text",
@@ -514,7 +533,12 @@ describe("src/lib/transcript", () => {
       ).toBeUndefined();
     });
 
-    it("refuses \"cancelled\" — it would suppress a settled OS alert", () => {
+    it("refuses \"cancelled\" — the engine never mints it, and the row carries provider spellings only", () => {
+      // NOT the OS-alert suppressor this used to be called. `attention.ts` now
+      // gates on `stopReasons[id] === "end_turn"`, so a hydrated `"cancelled"`
+      // would stay silent either way; what this pins is that the reducer never
+      // mints a client vocabulary entry the engine did not promise. See the
+      // docblock on `dispositionFromRows` for the measurement.
       expect(
         dispositionFromRows([
           truncateRow({

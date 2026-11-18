@@ -417,6 +417,7 @@ async fn tool_call_gates_executes_loops_and_settles() {
                     id: "call_1".to_string(),
                     name: "bash".to_string(),
                     arguments: json!({ "command": "echo hi" }),
+                    defect: None,
                 }),
                 ProviderEvent::Done(FinishReason::ToolCalls),
             ]),
