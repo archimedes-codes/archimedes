@@ -479,11 +479,16 @@ Worker — the ones that begin `harness:`, such as
 `harness: turn truncated by the provider's output cap`. A session's Worker prints
 those to **its own stderr** and the Supervisor's drain task copies each one into
 this file behind the `worker-stderr:` prefix; with the variable unset nothing
-reads the Worker's stderr, so **a tool call dropped or a turn that settles
-without an answer leaves no trace in a default run**. (`diagnostics.log`, beside
-this file, is the separate always-on channel — no env var, a curated handful of
-lines, and deliberately not a transcript; ADR 0110 records why the two are kept
-apart, and why some lines appear only there and never here.)
+reads the Worker's stderr, so a line that is written ONLY there still reaches
+nothing in a default run — both examples above are of that kind, and so is one
+per-item drop line in the `responses` parser, held off the always-on channel on a
+deliberate volume decision. **The lines that explain a silence are not: a tool
+call a parser discarded, or a turn that settled with a streamed call never
+dispatched, is written to both sinks, so a default run does leave a trace of
+those — in `diagnostics.log`, not here.** (`diagnostics.log`, beside this file,
+is the separate always-on channel — no env var, a curated handful of lines, and
+deliberately not a transcript; ADR 0110 records why the two are kept apart, and
+why some lines appear only there and never here.)
 
 > **Read it before you send it — it holds your conversation.** The log records
 > the raw Worker frames, and they are written verbatim: an outbound (`→`) frame

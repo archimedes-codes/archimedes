@@ -707,6 +707,31 @@ pub struct SessionManager {
     /// census forbids in the panic path. Production wires the value `setup()`
     /// already computes, so the lookup's effect is unchanged.
     crash_log_dir: Arc<OnceLock<PathBuf>>,
+    /// The directory the Worker's always-on `diagnostics.log` channel is armed
+    /// with — injected onto the `start` envelope as
+    /// [`StartEnv::with_diagnostics_dir`] (fulcrum-harness 0.4.2). Late-wired
+    /// (`set_diagnostics_dir`), for the same two reasons `crash_log_dir` is: a
+    /// router that resolved `dirs::data_dir()` itself could neither be tested
+    /// over a temp dir nor be kept out of the data-dir-resolving business the
+    /// `crashlog` census forbids — and the crate states the sharper half, namely
+    /// that the Worker MAY NOT resolve one either (its own unisolated real-Worker
+    /// tests, and `childproc`'s one-resolver invariant), so the value MUST travel
+    /// on the envelope from a host that already resolved it.
+    ///
+    /// **DELIBERATELY THE SAME DIRECTORY THE SUPERVISOR ARMS**: `lib.rs`'s
+    /// `diagnostics::init(Some(base.join("archimedes")))` and this field both come
+    /// from the ONE `app_data_dir` `setup()` resolves, because the design's point
+    /// is that a supporter is handed ONE file — the Supervisor's refusal lines and
+    /// its Workers' dropped-tool-call lines in the same `diagnostics.log`. Two
+    /// directories would make each of the two files incomplete, which is the
+    /// failure the feature exists to remove.
+    /// `lib_rs_arms_the_supervisor_and_the_workers_on_the_same_directory` pins
+    /// that equality, and it is the only guard for it.
+    ///
+    /// `None` (never set — every test's shape) leaves the channel UNARMED, which
+    /// is the pre-0.4.2 behaviour and what keeps the suite from writing into the
+    /// real data dir. Do not arm the fixtures to make a test pass.
+    diagnostics_dir: Arc<OnceLock<PathBuf>>,
     /// Every per-session registry the Supervisor keeps, merged into ONE map
     /// behind ONE `StdMutex` (finding 13). One map holder, one lock
     /// discipline, one removal path:
@@ -813,6 +838,7 @@ impl SessionManager {
             persister: Arc::new(OnceLock::new()),
             batched: Arc::new(OnceLock::new()),
             crash_log_dir: Arc::new(OnceLock::new()),
+            diagnostics_dir: Arc::new(OnceLock::new()),
             sessions: Arc::new(StdMutex::new(HashMap::new())),
             app_handle: Arc::new(OnceLock::new()),
         }
@@ -920,6 +946,18 @@ impl SessionManager {
     /// is `None`), never a guessed path.
     pub fn set_crash_log_dir(&self, dir: PathBuf) {
         let _ = self.crash_log_dir.set(dir);
+    }
+
+    /// Inject the Worker's diagnostics directory (the app data dir —
+    /// `…/archimedes`; the same late-wire `setup_dirs` wiring as
+    /// `set_crash_log_dir`, and the SAME directory — see the field's doc).
+    /// `&self` (the `OnceLock` `set` needs no exclusive access) so it stays
+    /// callable on an `Arc<SessionManager>` — the shape of
+    /// `attach_app_handle` / `set_crash_log_dir`, not of `set_sink`.
+    /// Unset = the envelope carries `None` = the Worker's channel stays UNARMED,
+    /// never a guessed path and never a `dirs::data_dir()` resolved here.
+    pub fn set_diagnostics_dir(&self, dir: PathBuf) {
+        let _ = self.diagnostics_dir.set(dir);
     }
 
     /// Inject the `WorkerManager` (the late-wire — the `setup_dirs` wiring
@@ -1249,6 +1287,11 @@ pub struct SessionManagerBuilder {
     catalog: ModelCatalog,
     sink: Arc<dyn EventSink>,
     crash_log_dir: Option<PathBuf>,
+    /// The Worker's diagnostics directory (the app data dir — the SAME value
+    /// `crash_log_dir` gets in production, for the reason the manager's field
+    /// documents). Mirror of `crash_log_dir`'s shape, deliberately a SEPARATE
+    /// field: two owners, two reasons, one directory.
+    diagnostics_dir: Option<PathBuf>,
     subagent_manager: Option<Arc<crate::agent::subagent::SubagentSessionManager>>,
     app_handle: Option<tauri::AppHandle>,
     worker_factory: Option<Arc<dyn WorkerFactory>>,
@@ -1274,6 +1317,7 @@ impl SessionManagerBuilder {
             catalog: ModelCatalog::default(),
             sink,
             crash_log_dir: None,
+            diagnostics_dir: None,
             subagent_manager: None,
             app_handle: None,
             worker_factory: None,
@@ -1299,6 +1343,14 @@ impl SessionManagerBuilder {
 
     pub fn with_crash_log_dir(mut self, dir: PathBuf) -> Self {
         self.crash_log_dir = Some(dir);
+        self
+    }
+
+    /// The Worker's diagnostics directory (see the field). `lib.rs` passes the
+    /// SAME `app_data_dir` it passes to `with_crash_log_dir`, and that
+    /// sameness is what the tests pin.
+    pub fn with_diagnostics_dir(mut self, dir: PathBuf) -> Self {
+        self.diagnostics_dir = Some(dir);
         self
     }
 
@@ -1363,6 +1415,9 @@ impl SessionManagerBuilder {
             }
             if let Some(dir) = self.crash_log_dir {
                 sm.set_crash_log_dir(dir);
+            }
+            if let Some(dir) = self.diagnostics_dir {
+                sm.set_diagnostics_dir(dir);
             }
 
             let _ = sm.worker_manager.set(wm.clone());
@@ -1651,7 +1706,28 @@ impl SessionManager {
             // not a dropped carry (the status file's finding: no main-session
             // path passes a definition). The per-agent layer governs CHILDREN.
             None,
-        );
+        )
+        // (fulcrum-harness 0.4.2) ARM the Worker's always-on `diagnostics.log`
+        // channel. THE reason this hop exists: the engine's 0.4.2 lines — the
+        // dropped tool-call lines, the settle-without-an-answer line — are
+        // `diagnostics::record`ed as well as printed, and `record` goes nowhere
+        // until a host injects a directory. `None` (the field's default, and what
+        // every test's `StartEnv` keeps) is the OLD SILENCE, so bumping the pin
+        // without this line changes nothing a user can read.
+        //
+        // The value is the app data dir the Supervisor itself armed `diagnostics`
+        // with (`lib.rs`'s `diagnostics::init(Some(base.join("archimedes")))`) —
+        // ONE `app_data_dir`, two hosts, one file, which is the whole point of the
+        // design (a supporter asks for one log, not two half-logs). The Worker may
+        // not resolve a directory itself, so it has to ride the envelope;
+        // `subagent_flow` inherits the parent's value, so CHILD Workers get armed
+        // by this one line.
+        //
+        // `get().cloned()` — an unset manager yields `None` = unarmed, which is
+        // the deliberate shape of every test fixture here
+        // (`scripts/check-test-data-dir.sh` now fails the run if a
+        // `diagnostics.log` appears in the redirected data dir).
+        .with_diagnostics_dir(self.diagnostics_dir.get().cloned());
         // (Fulcrum T3) THE packaging hop for the FIVE desktop-config fields.
         // `settings` above is `load_settings(&self.config_dir)`'s output, so
         // this is the Supervisor reading its own config — the ONE reader left,

@@ -121,7 +121,7 @@ tauri-build = { version = "2", features = [] }
 # there redirects the CRATES.IO source to a sibling checkout and is gitignored, so
 # it can never leak into a commit. `.cargo/config.toml.example` is inert (cargo
 # reads only `config.toml`), which is what makes it safe to ship.
-fulcrum-harness = "0.4.1"
+fulcrum-harness = "0.4.2"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

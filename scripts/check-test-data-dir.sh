@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Fail if a test run left a crash log in the data directory.
+# Fail if a test run left a crash log or a diagnostics log in the data directory.
 #
 # This is the runtime half of the crash-log-hardening guard. The other half is a
 # SOURCE-level census invariant (`agent/childproc.rs`, Task 2): it forbids
@@ -35,10 +35,22 @@
 # `archimedes` three levels under the redirected root. A non-recursive check
 # there scans an empty level and passes having looked at nothing.
 #
-# Only `crash-*.log` is matched. `supervisor.log` / `supervisor.log.old`
-# (`debuglog.rs`) and the database are written into the SAME directory on
-# purpose — matching them would make this guard permanently red, and a
-# permanently red guard is a guard nobody reads.
+# Only `crash-*.log`, `diagnostics.log` and `diagnostics.log.old` are matched.
+# `supervisor.log` / `supervisor.log.old` (`debuglog.rs`) and the database are
+# written into the SAME directory on purpose — matching them would make this
+# guard permanently red, and a permanently red guard is a guard nobody reads.
+#
+# The `diagnostics.log` half is the WIDENING that fulcrum-harness 0.4.2 made
+# necessary, and it is not the same kind of file as the two above. `debuglog` is
+# env-gated, so a suite that never sets `ARCHIMEDES_DEBUG` never writes
+# `supervisor.log`; `diagnostics` is ALWAYS ON once armed, and from 0.4.2 the
+# desktop arms the Worker's channel from the `start` envelope
+# (`StartEnv::diagnostics_dir`, wired in `agent/session/mod.rs` from the app data
+# dir). So a test that starts a real session over production wiring writes
+# `diagnostics.log` into whatever `dirs::data_dir()` resolves to — the user's
+# real `~/.local/share/archimedes/` on a plain `cargo test`, and the CI throwaway
+# dir on a runner. Before the widening this guard reported "no crash logs" over
+# exactly that leak.
 #
 # Usage: check-test-data-dir.sh <dir>
 
@@ -67,7 +79,7 @@ dir="$1"
 
 # A directory that does not exist means nothing ran there — not a leak.
 if [[ ! -e "$dir" ]]; then
-  echo "no crash logs: the directory does not exist, so nothing ran there ($dir)"
+  echo "no crash or diagnostics logs: the directory does not exist, so nothing ran there ($dir)"
   exit 0
 fi
 
@@ -88,9 +100,14 @@ fi
 listing="$(mktemp)"
 trap 'rm -f "$listing"' EXIT
 find_status=0
-find "$dir" -type f -name 'crash-*.log' -print0 >"$listing" || find_status=$?
+# Both patterns, in ONE `find`: `-o` inside `-name` would need parens to bind
+# correctly against `-type f`, and a second `find` would report a partial result
+# if the first one died. `diagnostics.log` + its `.old` rotation are the second
+# pattern's two names — the rotation is the same file one write later, so
+# matching only the live name would let a rotated leak through.
+find "$dir" -type f \( -name 'crash-*.log' -o -name 'diagnostics.log' -o -name 'diagnostics.log.old' \) -print0 >"$listing" || find_status=$?
 if [[ "$find_status" -ne 0 ]]; then
-  echo "error: could not search $dir for crash logs (find exited $find_status) — a failed search is not an empty one" >&2
+  echo "error: could not search $dir for crash and diagnostics logs (find exited $find_status) — a failed search is not an empty one" >&2
   exit 1
 fi
 
@@ -102,10 +119,11 @@ done <"$listing"
 
 
 if [[ "$found" -ne 0 ]]; then
-  echo "error: the test suite wrote crash logs into the data directory it was given" >&2
-  echo "  a test panic reached a live crash-log hook — the hook must be handed a directory the tests own (crash-log-hardening Task 1), and \`dirs::data_dir()\` must stay out of \`crashlog.rs\`'s production region (Task 2's census)" >&2
+  echo "error: the test suite wrote crash or diagnostics logs into the data directory it was given" >&2
+  echo "  a crash log means a test panic reached a live crash-log hook — the hook must be handed a directory the tests own (crash-log-hardening Task 1), and \`dirs::data_dir()\` must stay out of \`crashlog.rs\`'s production region (Task 2's census)" >&2
+  echo "  a diagnostics.log means something ARMED the always-on channel in a test — the Worker's channel is armed only by the \`start\` envelope's \`StartEnv::diagnostics_dir\` (fulcrum-harness 0.4.2+), so a test that arms it writes the user's real data dir on a plain \`cargo test\`. Test \`StartEnv\`s leave the field \`None\` = unarmed = nothing written; keep it that way." >&2
   exit 1
 fi
 
-echo "no crash logs under $dir"
+echo "no crash or diagnostics logs under $dir"
 exit 0
