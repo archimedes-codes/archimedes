@@ -168,7 +168,15 @@ The cap notice persists as an `agent-text` row on its **own** key `{stamp}:cap:N
    matches `harness::provider::transport::tests::a_slow_stream_completes_but_a_silent_stream_errors`, which
    this repo's own flake registry already documents (50 ms dribble against a 200 ms `read_timeout`, a 150 ms
    margin, "needs an owner — not a drive-by fix"). **Re-run before investigating.** The instrument that
-   works is a loop that deletes the log of every green run so a failure's log survives.
+   works is a loop that deletes the log of every green run so a failure's log survives to be read:
+
+   ```bash
+   BIN=$(ls -t target/debug/deps/fulcrum_harness-* | grep -v '\.d$' | head -1)
+   for i in $(seq 1 200); do
+     $BIN --test-threads=4 > /tmp/flk/run-$i.log 2>&1 || { echo $i >> /tmp/flk/failures.txt; break; }
+     rm -f /tmp/flk/run-$i.log
+   done
+   ```
 2. **`docs/features/abandoned-tool-rows.md` citation rot.** Five passes each re-derived its line numbers
    and each left their successors stale; the fifth deleted 72 of them in favour of `fn`/arm names. **§5 and
    §9 remain not re-read** (the doc says so and names two already-false cites); **§6's numbers are correct
