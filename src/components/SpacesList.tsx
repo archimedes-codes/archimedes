@@ -614,7 +614,20 @@ export default function SpacesList({
           `chromeButton.test.ts`'s source gate requires `chromeButton.ts` to be the ONLY
           production file under `src/components/` carrying the chrome-bar geometry.
           `PANE_COMMAND_ROW` is `h-8 w-full` — the sidebar's box. */}
-      <div className="flex shrink-0 flex-col gap-1 p-2">
+      {/* Two geometry facts about this band, both pinned in `SpacesList.test.tsx`.
+          (1) It keeps a 1px top border for its LAYOUT value only: the slot is still
+          there so the band's height and the doors' position are exactly what they
+          were, but the colour is `border-transparent` so nothing draws — removing
+          the border outright would have moved the band up 1px, a change nobody asked
+          for. The class string is static (no `cn()`) on purpose.
+          (2) The horizontal inset is `px-3` to match the Tasks row's `p-3`, NOT the
+          `p-2` this band was built with: all four doors share `PANE_COMMAND_ROW`'s
+          `px-2`, so the wrapper alone decides where their icons land, and 8px
+          against Tasks' 12px put these three 4px LEFT of Tasks. The axis split is
+          deliberate — `py-2` keeps the vertical inset this band has always had, so
+          aligning the icons does not also grow the pane's bottom edge. The pin
+          resolves BOTH boxes to pixels, so drift on either side reddens it. */}
+      <div className="flex shrink-0 flex-col gap-1 border-t border-transparent px-3 py-2">
         <Button
           type="button"
           variant="ghost"

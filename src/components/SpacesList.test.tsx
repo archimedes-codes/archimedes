@@ -1629,10 +1629,42 @@ describe("SpacesList (archive, ADR 0016)", () => {
     expect(contentRegion.contains(screen.getByRole("button", { name: "Skills" }))).toBe(
       true,
     );
-    // The band carries NO separator: the hairline above it was removed on purpose,
-    // so a future `border-t` re-addition reddens this.
-    expect(band.className).not.toContain("border-t");
-    expect(band.className).not.toContain("border-border");
+    // The band keeps a 1px top border for its LAYOUT and paints it transparent, so
+    // the separator is invisible without moving the band 1px up. Asserted with
+    // `classList.contains`, which matches whole tokens: `className.includes("border-t")`
+    // is blind here, because `"border-transparent"` contains the substring `border-t`
+    // and would satisfy it even with no border width at all.
+    expect(band.classList.contains("border-t")).toBe(true);
+    expect(band.classList.contains("border-transparent")).toBe(true);
+    // The hairline's colour must not come back on its own.
+    expect(band.classList.contains("border-border")).toBe(false);
+    // The band's doors and the Tasks door must start at the SAME x. All four share
+    // `PANE_COMMAND_ROW` (`px-2`), so the only variable is the wrapper's horizontal
+    // padding — and it drifted: the band was built with `p-2` (8px) while the Tasks
+    // row is `p-3` (12px), putting the three doors 4px LEFT of Tasks.
+    //
+    // Resolve each box's inset to a NUMBER and compare numbers, not class tokens:
+    // the two boxes may legally spell the same inset differently (`p-3` and
+    // `px-3 py-2` are both 12px), so a token comparison would redden a correct fix.
+    // `px-*` overrides `p-*` because tailwind emits the more specific axis rule.
+    // Tailwind's numeric scale is 0.25rem per step = 4px at the default root size.
+    const insetPx = (el: HTMLElement, label: string) => {
+      const tokens = [...el.classList];
+      const axis = tokens.find((t) => /^px-\d+(\.\d+)?$/.test(t));
+      const all = tokens.find((t) => /^p-\d+(\.\d+)?$/.test(t));
+      const token = axis ?? all;
+      expect(token, `${label} carries no numeric padding token`).toBeTruthy();
+      return Number(token!.slice(token!.lastIndexOf("-") + 1)) * 4;
+    };
+    const tasksRow = screen
+      .getByRole("button", { name: "Tasks" })
+      .parentElement!;
+    expect(insetPx(band, "the command band")).toBe(
+      insetPx(tasksRow, "the Tasks row"),
+    );
+    // Horizontal only: the band's vertical inset is what it was before this fix, so
+    // the pane's bottom edge does not change height.
+    expect(band.classList.contains("py-2")).toBe(true);
   });
 
   it("a pressed view door wears the active row's bg-selected, and neither modal button ever does", () => {
