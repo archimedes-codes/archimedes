@@ -496,7 +496,7 @@ export default function SpacesList({
           so the affordance was a two-step gesture to reach one command. It is the
           same store action through the same closure the root ⌘N chord calls, so the
           no-Space dialog fallback comes from the store and is not re-decided here. */}
-      <div className="flex items-center justify-between px-2.5 py-2">
+      <div className="flex items-center justify-between px-3 py-2">
         <span className="text-ui-base text-foreground-subtlest">Sessions</span>
         <Button
           type="button"
@@ -511,9 +511,23 @@ export default function SpacesList({
       </div>
       {/* The list scroller (inside the content region above — the region is the
           flex column, this is the part that scrolls). */}
-      <div className="flex-1 overflow-y-auto">
+      {/* THE RAIL. `px-3` matches the Tasks row's `p-3` and the command band's
+          `px-3`, and it is what gives a row's `bg-selected` pill a symmetric inset:
+          this box used to carry NO horizontal padding, so an active row's pill ran
+          edge-to-edge across the full 260px while every other row in the pane sat
+          12px in. The rows' own `pl-2` is measured from HERE, so this value and that
+          one are one decision — see the pin that resolves both to pixels. */}
+      <div className="flex-1 overflow-y-auto px-3">
         {views.length === 0 && (
-          <EmptyListLine>No spaces yet. Open a folder to get started.</EmptyListLine>
+          // `px-0` because the scroller now owns the pane's 12px rail: the base's
+          // `p-3` would otherwise sum to 24px and hang the sentence twice as deep
+          // as the rows it replaces. `px-0` BEATS `p-3` — `.px-0` ships after
+          // `.p-3` in `dist/assets/*.css`, and `cn()` keeps both rather than
+          // merging them away (measured through the real `cn()`). `py-3` survives,
+          // so the vertical inset is unchanged.
+          <EmptyListLine className="px-0">
+            No spaces yet. Open a folder to get started.
+          </EmptyListLine>
         )}
         {/* The ACTIVE space's sessions (the Spaces are the top TABS —
             the sidebar is sessions-only: no group headers, no folder

@@ -113,10 +113,14 @@ export function ArchivedSection({
   const holdsActiveRow = visible.some((s) => s.sessionId === activeSessionId);
   const open = userChoice ?? holdsActiveRow;
   return (
-    <div className="px-2.5 py-1">
+    // NO horizontal padding: the list scroller owns the pane's 12px rail, and this
+    // section sits INSIDE it, so a `px-*` here would double the inset for every
+    // archived row and push its glyph past the live rows above. The toggle's own
+    // `px-2` below is then the only inner inset, matching `PANE_COMMAND_ROW`'s.
+    <div className="py-1">
       <RowButton
         onClick={() => setUserChoice(!open)}
-        className="group flex cursor-pointer items-center gap-1 rounded-lg px-1 hover:bg-surface-hover"
+        className="group flex cursor-pointer items-center gap-1 rounded-lg px-2 hover:bg-surface-hover"
       >
         <ArchiveIcon className="size-4 shrink-0 text-foreground-subtlest" />
         <span className="flex-1 truncate text-ui-base text-foreground-subtlest group-hover:text-foreground-subtle">

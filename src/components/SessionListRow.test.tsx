@@ -67,7 +67,7 @@ describe("SessionListRow — the shell", () => {
     // The class string, verbatim and complete — `SpacesList.test.tsx:635` reads
     // `row.className` and the sidebar's whole layout depends on the rest.
     expect(row.className.split(/\s+/)).toEqual(
-      "group flex cursor-pointer items-center gap-2 rounded-lg pl-2.5 pr-1 py-1 hover:bg-surface-hover".split(
+      "group flex cursor-pointer items-center gap-2 rounded-lg pl-2 pr-1 py-1 hover:bg-surface-hover".split(
         " ",
       ),
     );
@@ -364,7 +364,7 @@ describe("SessionListRow — the drop edge (T06, ADR 0075)", () => {
     // no edge — and with the explicit `null` the sidebar passes to every
     // non-target row — the serialisation must be IDENTICAL.
     const before =
-      "group flex cursor-pointer items-center gap-2 rounded-lg pl-2.5 pr-1 py-1 hover:bg-surface-hover";
+      "group flex cursor-pointer items-center gap-2 rounded-lg pl-2 pr-1 py-1 hover:bg-surface-hover";
     for (const edge of [undefined, null] as const) {
       const { unmount } = render(
         <SessionListRow title="alpha" onOpen={noop()} dropEdge={edge} />,

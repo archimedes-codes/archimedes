@@ -56,6 +56,40 @@ const SETTINGS_FIXTURE: AppSettings = makeSettings({
 });
 
 /** One `list_agent_definition_reports` row (the Agents modal's data). */
+/**
+ * THE SIDEBAR'S INSET INSTRUMENT, shared by the alignment pins.
+ *
+ * Resolves a box's Tailwind padding token to PIXELS rather than comparing class
+ * strings, because two boxes may legally spell the same inset differently
+ * (`p-3` and `px-3 py-2` are both 12px) — a token comparison would redden a
+ * correct fix. Tailwind's numeric scale is 0.25rem per step = 4px at the default
+ * root size. Specificity `pl-*` > `px-*` > `p-*`, measured in `dist/assets/*.css`
+ * where the more specific axis rule ships later.
+ */
+const padStepPx = (t: string) => Number(t.slice(t.lastIndexOf("-") + 1)) * 4;
+
+/** The first token in `el`'s class list matching one of `res`, in order. */
+function firstPadToken(el: HTMLElement, res: RegExp[]): string | undefined {
+  const tokens = [...el.classList];
+  for (const re of res) {
+    const hit = tokens.find((t) => re.test(t));
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/** A box's horizontal rail: its own + every ancestor's horizontal padding, up to
+ *  the `<aside>`. "Same inset" is a SUM, not a per-box fact — a row nested inside
+ *  a padded section inherits that section's inset. */
+function railUpTo(el: HTMLElement | null): number {
+  let sum = 0;
+  for (let n = el; n && n.tagName !== "ASIDE"; n = n.parentElement) {
+    const token = firstPadToken(n, [/^px-\d+(\.\d+)?$/, /^p-\d+(\.\d+)?$/]);
+    if (token) sum += padStepPx(token);
+  }
+  return sum;
+}
+
 function agentRow(overrides: Partial<AgentDefinitionReportDto> = {}): AgentDefinitionReportDto {
   return {
     name: "scout",
@@ -1665,6 +1699,99 @@ describe("SpacesList (archive, ADR 0016)", () => {
     // Horizontal only: the band's vertical inset is what it was before this fix, so
     // the pane's bottom edge does not change height.
     expect(band.classList.contains("py-2")).toBe(true);
+  });
+
+  it("every pane row shares ONE left rail and ONE glyph inset (the whole sidebar aligns)", () => {
+    // THE SIDEBAR'S COLUMN, in two numbers.
+    //  (a) THE RAIL — 12px. The `Sessions` header, the list scroller and the
+    //      command band all inset 12px, so a row's `bg-selected` pill starts and
+    //      ends 12px from the pane edge on BOTH sides. Before this the scroller
+    //      carried no horizontal padding at all, so the active row's pill ran
+    //      edge-to-edge across the full 260px while Tasks and the band doors sat
+    //      12px in — the boxy look this fix exists for.
+    //  (b) THE GLYPH — 20px. 12px rail + 8px inner inset, for Tasks, the three
+    //      band doors, a live Session row and an archived Session row alike.
+    //
+    // Both numbers are RESOLVED FROM THE DOM and compared as numbers, never as
+    // class tokens: the boxes may legally spell the same inset differently
+    // (`p-3` and `px-3 py-2` are both 12px), and a token comparison would redden
+    // a correct fix. Tailwind's numeric scale is 0.25rem per step = 4px at the
+    // default root size. Specificity `pl-*` > `px-*` > `p-*` — measured in
+    // `dist/assets/*.css`, where the more specific axis rule ships later.
+    const leftPx = (el: HTMLElement, label: string) => {
+      const token = firstPadToken(el, [
+        /^pl-\d+(\.\d+)?$/,
+        /^px-\d+(\.\d+)?$/,
+        /^p-\d+(\.\d+)?$/,
+      ]);
+      expect(token, `${label} carries no numeric padding token`).toBeTruthy();
+      return padStepPx(token!);
+    };
+    // Where a box's leading GLYPH sits: what its ANCESTORS inset it by, plus the
+    // box's own leading inset. Excluding the box from the rail half is the point —
+    // including it counts a box's own `px-2` twice and reported 28 for a row that
+    // is genuinely 20.
+    const glyphPx = (el: HTMLElement, label: string) =>
+      railUpTo(el.parentElement) + leftPx(el, label);
+    const rowEl = (text: string) =>
+      screen.getByText(text).closest('[role="button"]') as HTMLElement;
+    const { rerender } = render(<SpacesList />);
+
+    // (a) THE RAIL = 12px on every box that draws a row or a pill.
+    const tasksBox = screen.getByRole("button", { name: "Tasks" }).parentElement!;
+    expect(railUpTo(tasksBox), "the Tasks row's rail").toBe(12);
+    expect(
+      railUpTo(screen.getByText("Sessions").parentElement!),
+      "the Sessions header's rail",
+    ).toBe(12);
+    // The scroller IS the rail for the rows inside it — this is the box that had
+    // none, and it is what makes a row's pill symmetric.
+    const scroller = document.querySelector(".overflow-y-auto") as HTMLElement;
+    expect(railUpTo(scroller), "the list scroller's rail").toBe(12);
+
+    // (b) THE GLYPH = 20px, across all four row kinds.
+    expect(glyphPx(tasksBox.firstElementChild as HTMLElement, "Tasks")).toBe(20);
+    for (const door of ["Skills", "Agents", "Settings"]) {
+      expect(glyphPx(screen.getByRole("button", { name: door }), door)).toBe(20);
+    }
+    expect(glyphPx(rowEl("Refactor the parser"), "a live Session row")).toBe(20);
+
+    // (c) THE ARCHIVED CHAIN — the one subject a scroller rail can silently break.
+    // `ArchivedSection` used to carry its OWN `px-2.5`; inside a rail'd scroller
+    // that would have summed to 10 + 12 = 22 and pushed every archived row's title
+    // 2px RIGHT of the live rows above it. The toggle is the section's own row, so
+    // its glyph is the cheapest proof the double-inset is gone.
+    const archivedToggle = screen.getByRole("button", { name: /Archived/ });
+    expect(glyphPx(archivedToggle, "the Archived toggle")).toBe(20);
+    // And with the section OPEN, the nested rows must match too — they are the
+    // case the accumulation actually bites.
+    // `seedArchived` replaces `sessions` wholesale, so the live rows above are
+    // seeded in the FIRST render and the archived row is added in the second.
+    // `active: true` is what opens the section (no click needed).
+    act(() => seedArchived("a-rail", {
+      active: true,
+      messages: { text: "Rail the archive", at: Date.now() - 3_600_000 },
+    }));
+    rerender(<SpacesList />);
+    expect(
+      glyphPx(rowEl("Rail the archive"), "an archived Session row"),
+      "an archived Session row's glyph",
+    ).toBe(20);
+  });
+
+  it("the empty-state sentence sits on the SAME rail, not double-inset by it", () => {
+    // The other half of giving the scroller a rail. `EmptyListLine` owns `p-3`, and
+    // it renders INSIDE the railed scroller, so its sentence would otherwise start
+    // 12 (rail) + 12 (p-3) = 24px in — twice as deep as the rows it replaces. The
+    // call site passes `px-0`; `cn()` keeps both tokens and CSS order decides, so
+    // this asserts the RESULT rather than the mechanism.
+    useSessions.setState({ spaces: [] });
+    render(<SpacesList />);
+    // Measured ON THE `<p>` itself: `EmptyListLine` renders a bare `<p>`, so the
+    // `px-0` under test lives on THIS element. Reading the parent instead would
+    // return the scroller's rail and pass whether or not the override exists.
+    const line = screen.getByText(/No spaces yet/) as HTMLElement;
+    expect(railUpTo(line), "the sentence's left inset").toBe(12);
   });
 
   it("a pressed view door wears the active row's bg-selected, and neither modal button ever does", () => {
