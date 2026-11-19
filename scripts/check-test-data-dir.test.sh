@@ -155,6 +155,62 @@ run_check ""
 assert_nonzero "an empty dir argument is a usage error, not 'nothing ran'" "$status"
 assert_contains "the empty-argument error says what it needs" "usage" "$output"
 
+# 9. THE DIAGNOSTICS LEAK — the reason this guard was widened. `diagnostics.log`
+#    sits in the SAME directory as `supervisor.log` and `archimedes.db`, but it
+#    is NOT a legitimate neighbour of a test run the way case 2's files are:
+#    `debuglog` is env-gated, so a suite that never sets `ARCHIMEDES_DEBUG` never
+#    writes `supervisor.log`, while `diagnostics` is ALWAYS ON once armed. Since
+#    fulcrum-harness 0.4.2 the desktop arms the Worker's channel from the `start`
+#    envelope (`StartEnv::diagnostics_dir`), so a test that starts a real session
+#    over the production wiring writes `diagnostics.log` into whatever
+#    `dirs::data_dir()` resolves to — the user's real `~/.local/share/archimedes/`
+#    on a plain `cargo test`. The `.old` is the rotation of the same file, so it
+#    is the same leak one write later. Neither was matched before this widening,
+#    which is exactly how a leak walks past a guard that reports "no crash logs".
+root="$tmp_root/diagnostics-leaked"
+mkdir -p "$root"
+: >"$root/diagnostics.log"
+run_check "$root"
+assert_nonzero "a diagnostics.log in the dir is a failure" "$status"
+assert_contains "the failure names the diagnostics log" "diagnostics.log" "$output"
+
+root="$tmp_root/diagnostics-rotation-leaked"
+mkdir -p "$root"
+: >"$root/diagnostics.log.old"
+run_check "$root"
+assert_nonzero "the .old rotation of the diagnostics log is the same leak" "$status"
+
+# 10. The macOS shape for the SAME file — the recursion has to reach it too, or
+#     the widened guard is green on macOS and red on Linux for one leak.
+root="$tmp_root/macos-nested-diagnostics"
+mkdir -p "$root/Library/Application Support/archimedes"
+: >"$root/Library/Application Support/archimedes/diagnostics.log"
+run_check "$root"
+assert_nonzero "a diagnostics.log nested under archimedes/ is found (the macOS shape)" "$status"
+assert_contains "the nested diagnostics finding prints its full path" \
+  "archimedes/diagnostics.log" "$output"
+
+# 11. A name that only LOOKS like the diagnostics log. The guard matches the
+#     writer's exact file names (`FILE_NAME` and its `.old`), not a `*diagnostic*`
+#     glob — the same discipline that keeps `crash-notes.txt` green in case 5.
+root="$tmp_root/diagnostics-lookalike-name"
+mkdir -p "$root"
+: >"$root/diagnostics-notes.txt"
+: >"$root/diagnostics.log.txt"
+run_check "$root"
+assert_eq "a non-.log diagnostics-named file is not the diagnostics log" "0" "$status"
+
+# 12. If both leak, both are named — a report that stopped at the crash log would
+#     tell the operator about half of what a run wrote.
+root="$tmp_root/both-leaked"
+mkdir -p "$root"
+: >"$root/crash-1-worker-2.log"
+: >"$root/diagnostics.log"
+run_check "$root"
+assert_nonzero "a run leaking both is a failure" "$status"
+assert_contains "the report names the crash log" "crash-1-worker-2.log" "$output"
+assert_contains "and the diagnostics log" "diagnostics.log" "$output"
+
 if ((failures > 0)); then
   echo
   echo "$failures check(s) failed" >&2

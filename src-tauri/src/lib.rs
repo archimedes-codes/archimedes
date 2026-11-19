@@ -149,6 +149,13 @@ fn init_dir_deps<R: tauri::Runtime>(
             // The decorator the router's flush points and `RunEvent::Exit` drain.
             .with_batched(batched)
             .with_crash_log_dir(app_data_dir.clone())
+            // The Worker's `diagnostics.log` directory — THE SAME `app_data_dir`
+            // the line above takes, and the same one `diagnostics::init` arms the
+            // Supervisor with, so the Supervisor and its Workers write ONE file
+            // (the point of the channel: a supporter is handed one log, not two
+            // half-logs). A separate field from `crash_log_dir` on purpose — the
+            // two share a VALUE, not a MEANING.
+            .with_diagnostics_dir(app_data_dir.clone())
             .with_subagent_manager(Arc::new(SubagentSessionManager::new()))
             .with_dead_bound_secs(
                 crate::config::load_settings(&config_dir).subagent_dead_bound_secs,

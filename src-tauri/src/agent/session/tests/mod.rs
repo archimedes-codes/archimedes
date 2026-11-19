@@ -874,6 +874,174 @@ async fn the_stalled_registry_and_the_stalled_event_agree_on_the_pid_named_log()
     );
 }
 
+// ── The Worker's diagnostics channel (fulcrum-harness 0.4.2) ──────────────
+//
+// `StartEnv::diagnostics_dir` is the field that ARMS the always-on
+// `diagnostics.log` channel INSIDE the Worker, and it defaults to `None` =
+// unarmed = the old silence. So the pin bump alone ships nothing the user can
+// read: the arming value has to travel on the `start` envelope. These two tests
+// are that hop, in both directions — and the `None` half is what keeps the suite
+// from writing into the user's real data dir (every other test's `StartEnv` is
+// built by `from_parts`, which leaves it `None`; that is deliberate, see
+// `scripts/check-test-data-dir.sh`).
+
+/// THE arming hop: a session started over the wired manager carries the data dir
+/// on its `start` envelope, so the Worker it spawns arms `diagnostics.log`.
+///
+/// The assertion reads the env back out of the `WorkerManager` registry
+/// (`test_env_for` — the same copy `subagent_flow` builds a child's env from, so
+/// this is also the value CHILDREN inherit), not out of a local variable the test
+/// built itself. That is the difference between pinning "the session manager
+/// supplies the directory" and pinning "this test can set a field".
+#[tokio::test]
+async fn a_started_session_carries_the_diagnostics_dir_on_its_start_envelope() {
+    let dir = temp_config_dir();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+    let (manager, wm, _db) = build_worker_manager(&dir, native_test_catalog(), &sink);
+
+    // The app data dir — the late-wire seam, exactly as `set_crash_log_dir` is
+    // exercised above: production hands it the `app_data_dir` `setup()` already
+    // resolved, which is the SAME directory `lib.rs`'s `diagnostics::init` arms
+    // for the Supervisor (pinned by
+    // `lib_rs_arms_the_supervisor_and_the_workers_on_the_same_directory`).
+    let data_dir = temp_config_dir();
+    manager.set_diagnostics_dir(data_dir.to_path_buf());
+
+    let info = manager
+        .start_session(dir.to_path_buf(), &sink)
+        .await
+        .expect("the native session started");
+    let env = wm
+        .test_env_for(&info.session_id)
+        .expect("the started session is attached");
+
+    assert_eq!(
+        env.diagnostics_dir.as_deref(),
+        Some(data_dir.path()),
+        "the Worker's `start` envelope carries the data dir — with `None` here the \
+         engine's 0.4.2 diagnostics ship nothing at all, because an unarmed channel \
+         writes nothing"
+    );
+
+    let _ = manager.close_session(&info.session_id).await;
+}
+
+/// The other half, and the one that protects the USER: an env that never got the
+/// setter stays UNARMED, so a test's `StartEnv` writes nothing into whatever
+/// `dirs::data_dir()` resolves to — on a plain `cargo test` that is the real
+/// `~/.local/share/archimedes/`. Every fixture in this suite takes this arm; do
+/// not "helpfully" arm them.
+#[tokio::test]
+async fn a_session_started_without_a_diagnostics_dir_leaves_the_channel_unarmed() {
+    let dir = temp_config_dir();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+    let (manager, wm, _db) = build_worker_manager(&dir, native_test_catalog(), &sink);
+
+    // NO `set_diagnostics_dir` — the shape every other test in this module has.
+    let info = manager
+        .start_session(dir.to_path_buf(), &sink)
+        .await
+        .expect("the native session started");
+    let env = wm
+        .test_env_for(&info.session_id)
+        .expect("the started session is attached");
+
+    assert_eq!(
+        env.diagnostics_dir, None,
+        "unset means UNARMED — the default must never resolve a directory itself \
+         (the Worker may not call `dirs::data_dir()`, and neither may the envelope \
+         builder on its behalf)"
+    );
+
+    let _ = manager.close_session(&info.session_id).await;
+}
+
+/// Read `agent/session/mod.rs` for the source-text pins below. A helper because
+/// two of them need it, and because the `concat!` spelling `rustfmt` prefers
+/// otherwise mangles the readability of each call site.
+fn session_mod_source() -> String {
+    std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/agent/session/mod.rs"
+    ))
+    .expect("src/agent/session/mod.rs reads")
+}
+
+/// The two directories must be ONE directory, and this is the only place that
+/// can say so. The design's whole point is that a supporter asks for ONE file:
+/// the Supervisor's `diagnostics::init` and the Workers' envelope have to name
+/// the same path, or the refusal lines and the dropped-call lines land in two
+/// files and neither is complete.
+///
+/// A source-text pin, because the equality is a fact about `lib.rs`'s wiring and
+/// nothing in this module can observe it — the crate's `diagnostics` channel is
+/// PROCESS-global and already armed by the time a test could compare, and the
+/// Worker is a separate process. `lib.rs` is `lib.rs`: a `#[cfg(test)]`-free
+/// claim about it is what this repo does elsewhere
+/// (`commands/tasks/tests/seed.rs::start_task_session_is_registered_in_the_invoke_handler`,
+/// `open.rs::the_production_loop_caller_passes_the_desktop_opener`).
+#[test]
+fn lib_rs_arms_the_supervisor_and_the_workers_on_the_same_directory() {
+    let lib = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("src/lib.rs reads");
+
+    // 1. The Supervisor's own channel: `base.join("archimedes")`, `base` being
+    //    `dirs::data_dir()`. The pattern the Workers must match.
+    assert!(
+        lib.contains(r#"diagnostics::init(Some(base.join("archimedes")))"#),
+        "the Supervisor's diagnostics init moved or changed shape — the pattern the \
+         Worker's envelope must match is no longer the one this test pins"
+    );
+
+    // 2. The Workers' channel: the builder chain receives the SAME `app_data_dir`
+    //    binding that `crash_log_dir` already gets (the one resolved at
+    //    `setup()`), NOT a second `dirs::data_dir().join(…)` — a second
+    //    resolution is a second place to drift.
+    assert!(
+        lib.contains(".with_diagnostics_dir(app_data_dir.clone())"),
+        "`lib.rs` must hand the session manager the already-resolved `app_data_dir` \
+         via `.with_diagnostics_dir(app_data_dir.clone())` — the same binding \
+         `.with_crash_log_dir` takes, so the Supervisor and its Workers cannot point \
+         at two different directories"
+    );
+
+    // 3. The builder forwards it to the manager (the late-wire hop). Without
+    //    this the builder would swallow the value and the pin above would be a
+    //    sentence about a call whose result goes nowhere.
+    let session_mod = session_mod_source();
+    assert!(
+        session_mod.contains("sm.set_diagnostics_dir(dir)"),
+        "`SessionManagerBuilder::build` must forward the directory to the manager \
+         (mirroring `sm.set_crash_log_dir(dir)`) — a builder field nobody reads is \
+         the silent no-op this pin exists to refuse"
+    );
+}
+
+/// The field is a SEPARATE one. `crash_log_dir` and `diagnostics_dir` happen to
+/// hold the same path today, and a reader who finds that out by grepping for a
+/// use of `crash_log_dir` in a diagnostics context is being set a trap: the two
+/// have different owners, different writers and different reasons, and the day
+/// one of them moves the other must move independently. Pinned so the
+/// "just reuse the field you already have" simplification is a visible decision
+/// rather than a quiet one.
+#[test]
+fn the_diagnostics_directory_is_not_read_through_the_crash_log_field() {
+    let source = session_mod_source();
+    let uses: Vec<&str> = source
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .filter(|l| l.contains("crash_log_dir"))
+        .filter(|l| l.contains("diagnostic"))
+        .collect();
+    assert!(
+        uses.is_empty(),
+        "`crash_log_dir` is read on a diagnostics path — the two fields share a \
+         value today and must not share a name: {uses:?}"
+    );
+}
+
 /// The **teardown prohibition** (ADR 0025, finding 13): the EXPECTED-exit
 /// teardown must NEVER remove the `stalled` row.
 ///
