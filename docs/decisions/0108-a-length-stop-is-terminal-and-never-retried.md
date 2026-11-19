@@ -27,11 +27,13 @@ with a higher `max_tokens` value to get the full tool use"* — and it is the ob
 was cut off, ask again with more room, get the whole call. **Rejected.** Re-issuing the assistant
 turn re-runs a turn that may already have announced a tool call, and above all it can **duplicate a
 non-idempotent side effect**: the first attempt's `git push`, `write`, or `bash` may have landed
-before the cap bit, and the retry does not know that. The maintainer who faced the same question in
-openai/codex (#38831) put the reason plainly: *"Automatic continuation is a separate policy question
-because blindly replaying a partially completed response can duplicate tool side effects."* That
-project chose terminal-and-non-retryable for the same reason (`ResponseIncomplete` is
-`RetryPolicy::Never`).
+before the cap bit, and the retry does not know that. The sentence most often quoted for this position
+— *"Automatic continuation is a separate policy question because blindly replaying a partially completed
+response can duplicate tool side effects"* — comes from openai/codex issue #38831, and that project did
+choose terminal-and-non-retryable for a related reason (`ResponseIncomplete` is `RetryPolicy::Never`).
+**Two corrections to how this paragraph originally cited that evidence are recorded in the 2026-11-15
+amendment below, and they do not change this decision** — read them before quoting the sentence anywhere
+else, because it is not a maintainer's words and the harness it describes is not ours.
 
 The counter-argument deserves its honest statement, because it is not weak. The double-fire worry
 assumes the first attempt's call executed; on our route it does not (see the next section), so a
@@ -199,3 +201,76 @@ protocol-version pin `the_task_frames_are_additive_so_the_protocol_version_stays
 across additive frames, and the crate has already shipped new variants without bumping
 (`task-request` / `task-response`) — so a run that adds a variant and finds that test green has found the
 expected state, not a test that failed to notice its new frame.
+
+## Amendment (2026-11-15) — the codex evidence does not support this decision's stated reason, and the Falsifier is live
+
+Folded out of `docs/research/max-tokens-is-never-sized-and-the-live-cut-is-reasoning-not-the-tool-call.md`
+(task `tsk_206ed63f-04d5-47ff-8bb4-c9b9363d8899`). **This amendment corrects the evidence, not the
+decision.** Terminal-and-never-retry still stands, and the reasons it stands are now the cost argument and
+the doom-loop argument rather than the duplicate-side-effect argument. Three facts, each re-runnable.
+
+**1. The quoted sentence is not a maintainer's, and it is not codex's policy reasoning.** openai/codex
+#38831 is authored by `starriet9` with `author_association: NONE` — a reporter, not the project. The
+sentence is a line in that reporter's issue body. It appears **nowhere in codex's source**: a `git grep
+"blindly replaying"` over a full clone at `b1573f1` returns nothing, and the only `blindly` in any `.rs`
+file is in a different sentence in a different crate. (That grep is the research angle's, at that SHA, and
+the clone is gone — re-run it against a fresh clone, not against this machine. `gh` code search needs
+authentication and was unavailable here, so this half is single-source. The **authorship** half is
+independently re-runnable unauthenticated:
+`gh api repos/openai/codex/issues/38831 --jq '{author:.user.login,assoc:.author_association}'` →
+`starriet9` / `NONE`.) The
+*classification* is real and shipped — `ResponseIncomplete` is in the `RetryPolicy::Never` arm of codex's
+error enum — so the decision's external corroboration survives; only its most-quoted sentence was
+misattributed. An earlier draft of this ADR credited *"the maintainer who faced the same question"*.
+
+**2. Codex's reason is valid for codex and void on our route, because the two harnesses are opposite
+shapes.** Codex **stream-and-executes**: each `output_item.done` yields a tool future that is
+`tokio::spawn`ed immediately unless `defer_tool_dispatch` is set, and that flag is set only for a
+synchronous post-hook mode. So in codex's default path a call that completed mid-stream has already run by
+the time `response.incomplete` arrives, and replaying the response really can fire twice.
+
+**Ours is collect-then-execute**, and this is now verified rather than asserted: `run_tool_batch` has
+exactly one call site in the loop, it sits **below** the `Length` gate, and `consume_stream`'s `ToolCall`
+arm does three things only — push to `acc.tool_calls`, emit a display `toolcall_end`, emit
+`tool_execution_start`. No executor, permission gate, subagent spawn or MCP call is reachable from it, and
+there is no eager/deferred mode. The `finish_reason` is always the last event on all three wires, after the
+tool-call flush. **So on our route a `Length` turn cannot have executed anything, and the
+duplicate-non-idempotent-side-effect argument in the section above does not apply to it.**
+
+Anthropic's SDK Tool Runner does not close the gap either: its `max_tokens → "stop"` docstring (*"its
+tool_use blocks must not be executed"*) constrains **execution** in a runner that is itself
+collect-then-execute by default, and Anthropic's documented remedy for `max_tokens` is to re-issue with a
+higher cap — an action outside the runner.
+
+**Why the decision still stands.** The mechanical argument for retrying is now stronger than this ADR
+admitted, and the mechanics exist: `retry_abandoned_attempt` already serves both the mid-stream-error route
+and the issue #64 empty-turn route as *"a `Retryable` condition detected AFTER the stream"*, bounded by the
+shared per-turn `RetryPolicy`, with `message_retracted` + `turn_abandoned` + `Continue` all reachable
+in-loop — ADR 0045's overflow recovery is the same reduction. The only missing piece is a transcript undo,
+and the need for one is created solely by `handle_truncated_turn`'s own `messages.push`, which sits *after*
+the point a retry decision would be taken; **placement, not capability**. What keeps the decision is
+economics and the tail, both of which the amendment leaves intact: a retry is a second provider charge on
+exactly the most expensive turns (at `xhigh` the re-paid tokens are almost entirely thinking the user never
+sees, and the Anthropic wire cache-marks only system and tool blocks, so the conversation prefix re-bills
+at full rate), and a length-keyed retry fires **only on the honest subset** — vLLM #53269 and llama.cpp
+#30773 both report a truncated call as a success value, and an unrecognised string falls to
+`map_finish_reason`'s catch-all, a silent clean stop. **Reopen the retry question here only if the
+Falsifier below comes back against terminality — not because the codex argument fell away.**
+
+**3. The Falsifier is runnable today, and the research report's first draft said it was not.** The strand
+half of the measurement needs `{stamp}:truncate:N` rows to be persisted, and they are: `turn_truncated`
+goes through `EmitPipeline::run`, which sends **every** `RpcEvent` through `normalize` →
+`compute_display_rows` → `Store::persist_display`; the notice is an ordinary `agent_message_chunk`, so it
+becomes `DisplayRow { kind: "agent-text", message_key: "{stamp}:truncate:N" }` and lands via the desktop's
+`INSERT … ON CONFLICT(session_id, kind, message_key)`. Count it with
+`SELECT … FROM messages WHERE kind = 'agent-text' AND message_key LIKE '%:truncate:%'`.
+What is **not** persisted is the `StopReason::MaxTokens` disposition (an in-memory
+`Arc<StdMutex<bool>>` on `LiveWorkerSession`) and the provider's finish reason and token counts — so the
+strand side is countable and the *cost* side is not.
+
+**The consequence to carry forward:** the notice only exists for the honest-`length` subset. A turn whose
+reasoning saturates the budget and whose wire then reports an honest **`stop`** with zero visible text
+mints **no notice at all** — verified live against this deployment's own gateway at `xhigh` (`reasoning_tokens`
+equal to `completion_tokens`, no visible characters, `finish_reason: "stop"`). That shape is invisible to
+this decision's gate, invisible to the Falsifier's query, and unaffected by any cap sizing. It is not a
+counter-example to terminality; it is a different defect, and it is where the remaining user pain is.
