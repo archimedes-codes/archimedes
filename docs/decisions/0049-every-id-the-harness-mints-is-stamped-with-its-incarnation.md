@@ -38,3 +38,65 @@ rule is what makes this a one-token change: it still accepts the bare shape (a t
 that matters is the one this ADR already established: without the word in the set, the **Subagent
 capture** hands a parent model its child's harness-written sentence as if the child had said it.
 Re-run: `grep -n 'field == "truncate"' <fulcrum-harness>/src/normalize.rs`.
+
+## Amendment (2026-11-19) — `cap` and `notice` join the word-set; `system` is kept although nothing writes it (fulcrum PR #33)
+
+The word-set this ADR's `is_bookkeeping_message_id` consequence describes has moved twice since the
+2026-11-15 amendment above, and that amendment's own text — `system` / `retract` / `truncate` — is
+therefore **stale**. It is now five words:
+
+```
+system / retract / truncate / cap / notice
+```
+
+Engine-side, that is `id.split(':').any(|f| f == "system" || f == "retract" || f == "truncate" ||
+f == "cap" || f == "notice")`. Two words arrived, and only one of them was recorded here:
+
+- **`cap`** — `{stamp}:cap:N`, the notice an **agent's own turn limit** writes (`normalize.rs`'s
+  `cap_id()`, issue #193). It landed **without an amendment to this file**. That is the point worth
+  keeping rather than tidying away: the discipline this section is written in — *the word list lives
+  in the engine and is hand-mirrored here* — **has already drifted once**. A reader of the
+  2026-11-15 amendment would have concluded a three-word set and been wrong. So do not trust what
+  this ADR says the set is; run the recipe below and read what the engine actually does.
+- **`notice`** — `{stamp}:notice:N`, the id family every **harness one-liner** now mints (fulcrum
+  PR #33, released as `fulcrum-harness` 0.5.0). `auto_retry_start`, both arms of `auto_retry_end`
+  and `extension_error` went off the shared `{stamp}:system` key onto one shared counter
+  (`TurnState::notice_seq` + `TurnState::notice_id`), because a same-`messageId`
+  `agent_message_chunk` is APPENDED by this repo's reducer with no separator: measured on a real
+  database, 103 of 104 `:system` rows carried welded text —
+  `Retrying (attempt 2/5…)Retry succeededRetrying (attempt 3/5…)…Retry failed` — as one bubble.
+  `system_chunk` was deleted, so **no writer of `{stamp}:system` remains anywhere**.
+
+`system` is nonetheless **deliberately retained** in the set, and the engine's own docblock says so:
+rows older Workers wrote are **on disk** carrying that key, and a peer on an older crate can still
+send it. Dropping the word as dead would start accumulating historical one-liners into a **Subagent**'s
+parent-facing answer as if the child had written them — the same failure the 2026-11-15 amendment
+describes for a missing `truncate`, arriving by the opposite route (a word that is no longer written
+but is still read). `default` stays outside the set for the reason already recorded above: it is the
+no-`messageId` fallback over REAL model text.
+
+The hex-alphabet argument still holds across all five words — a stamp is six lowercase hex chars and
+`notice`, at six chars, is the only one whose *length* matches a stamp, which is why it is the word the
+rule must actually be checked against; `o`/`t`/`i` are outside the hex alphabet, so a stamp still can
+never equal it.
+
+**This list is hand-mirrored from the engine, and that is the weakness.** It is not generated, not
+imported, and not checked by any CI job in either repo. The re-check recipe, run in the **fulcrum**
+repo:
+
+```
+grep -n 'field == "notice"' src/normalize.rs
+```
+
+— read the whole `||` chain around that line, and if it names a word this section does not, this
+section is stale again and the amendment is yours to write.
+
+What the desktop side of PR #33 is, for the record: this repo pins `fulcrum-harness = "0.5.0"` (a
+`0.4.x` caret would not have admitted it, deliberately — the engine added a `pub` field to a
+non-`#[non_exhaustive]` `pub struct`, which `fd4dd9c`'s precedent treats as breaking),
+`normalize_display_db.rs` asserts the retry line lands on `aaaaaa:notice:0` with the unstamped-key
+guard moved from the now-dead `system` to the live `notice`, and `dispositionFromRows`'s positional
+last-row rule keeps working for a **different reason than it did**: the retry line is an INSERT on a
+newer `id` now, so the rule holds because the engine emits `turn_truncated` *after* the retired-report
+`auto_retry_end` — pinned from this side by `pins the new emission order — a retry one-liner INSERTed
+before the notice does not suppress it` in `reducer.test.ts`.

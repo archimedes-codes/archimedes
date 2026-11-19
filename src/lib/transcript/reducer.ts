@@ -112,14 +112,31 @@ export function extractDiffs(content: ToolCallContent[] | undefined): DiffRef[] 
  * `ORDER BY id DESC LIMIT n+1` → truncate → `rows.reverse()`; the unlimited arm
  * is plain `ORDER BY id`), so the last element IS the id-max element. Position
  * and id keep agreeing when a frame re-writes an older row: the notice is an
- * INSERT on a key that never existed before, while every row its own turn can
- * write AFTER it is an UPSERT onto a key that already exists — a
+ * INSERT on a key that never existed before, while the only frame its own turn
+ * can still deliver AFTER it is an UPSERT onto a key that already exists — a
  * `tool_execution_end` close updates the pre-existing `tool-call` row in place,
- * an `auto_retry_end` one-liner upserts onto `{stamp}:system` — and that
- * `ON CONFLICT … DO UPDATE` sets `payload_json`/`created_at`, never `id`, so
- * neither gains a newer `id`. Hence when the NEWEST turn was truncated, the
+ * and that `ON CONFLICT … DO UPDATE` sets `payload_json`/`created_at`, never
+ * `id`, so it gains no newer `id`. Hence when the NEWEST turn was truncated, the
  * notice is still the page's last element even though a later frame re-wrote an
  * older row.
+ *
+ * THE RETRY ONE-LINER IS NO LONGER PART OF THAT ARGUMENT, and the reason the
+ * positional read survives is different now. Until fulcrum PR #33 an
+ * `auto_retry_end` one-liner UPSERTed onto the shared `{stamp}:system` key, and
+ * that upsert — no new `id`, ever — was what kept it from outranking the notice.
+ * All four harness one-liners now mint a fresh `{stamp}:notice:N` key off one
+ * shared counter (engine `TurnState::notice_id`; ADR 0108's amendment), because a
+ * same-`messageId` `agent_message_chunk` APPENDS with no separator and had welded
+ * 103 of 104 real `:system` rows into one sentence — so a retry line is an INSERT
+ * on a newer `id` and the upsert argument no longer covers it. What covers it is
+ * the engine's EMISSION ORDER instead: a truncated turn emits the retired-report
+ * `auto_retry_end` FIRST and `turn_truncated` after it, immediately before the
+ * settle, precisely so the notice is the NEWEST display row of its own turn. So
+ * the invariant moved from a persistence accident in this repo's store to a
+ * guarantee the engine makes, and it is pinned from this side by
+ * `pins the new emission order — a retry one-liner INSERTed before the notice
+ * does not suppress it`, which feeds the rows in that order and reddens if they
+ * are ever swapped there.
  *
  * So "find the newest truncate row and compare ids" is NOT the hazard, and it is
  * NOT dead on arrival: under the ascending-id invariant above it agrees with
