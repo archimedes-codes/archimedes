@@ -153,7 +153,14 @@ export function SessionListRow({
       onClick={onOpen}
       {...drag}
       className={cn(
-        "group flex cursor-pointer items-center gap-2 rounded-lg pl-2.5 pr-1 py-1",
+        // `pl-2` = 8px, and it is measured from the list scroller's `px-3` rail, so
+        // the row's leading glyph lands 20px from the pane edge — the same x as the
+        // Tasks door, the three band doors, and this section's Archived toggle.
+        // It was `pl-2.5` when the scroller carried NO rail of its own; the rail
+        // moved the row 12px in, so the inner inset gave 4px back to keep the
+        // glyph where it was. `pr-1` stays: the time/actions column is deliberately
+        // close to the pill's right edge, and the rail now supplies that side too.
+        "group flex cursor-pointer items-center gap-2 rounded-lg pl-2 pr-1 py-1",
         active ? "bg-selected" : "hover:bg-surface-hover",
         // THE DROP INDICATOR — one edge, one class, and the ONLY reason a
         // border appears on this row. `border-brand` is named rather than left

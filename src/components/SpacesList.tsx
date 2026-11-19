@@ -496,7 +496,7 @@ export default function SpacesList({
           so the affordance was a two-step gesture to reach one command. It is the
           same store action through the same closure the root ⌘N chord calls, so the
           no-Space dialog fallback comes from the store and is not re-decided here. */}
-      <div className="flex items-center justify-between px-2.5 py-2">
+      <div className="flex items-center justify-between px-3 py-2">
         <span className="text-ui-base text-foreground-subtlest">Sessions</span>
         <Button
           type="button"
@@ -511,9 +511,23 @@ export default function SpacesList({
       </div>
       {/* The list scroller (inside the content region above — the region is the
           flex column, this is the part that scrolls). */}
-      <div className="flex-1 overflow-y-auto">
+      {/* THE RAIL. `px-3` matches the Tasks row's `p-3` and the command band's
+          `px-3`, and it is what gives a row's `bg-selected` pill a symmetric inset:
+          this box used to carry NO horizontal padding, so an active row's pill ran
+          edge-to-edge across the full 260px while every other row in the pane sat
+          12px in. The rows' own `pl-2` is measured from HERE, so this value and that
+          one are one decision — see the pin that resolves both to pixels. */}
+      <div className="flex-1 overflow-y-auto px-3">
         {views.length === 0 && (
-          <EmptyListLine>No spaces yet. Open a folder to get started.</EmptyListLine>
+          // `px-0` because the scroller now owns the pane's 12px rail: the base's
+          // `p-3` would otherwise sum to 24px and hang the sentence twice as deep
+          // as the rows it replaces. `px-0` BEATS `p-3` — `.px-0` ships after
+          // `.p-3` in `dist/assets/*.css`, and `cn()` keeps both rather than
+          // merging them away (measured through the real `cn()`). `py-3` survives,
+          // so the vertical inset is unchanged.
+          <EmptyListLine className="px-0">
+            No spaces yet. Open a folder to get started.
+          </EmptyListLine>
         )}
         {/* The ACTIVE space's sessions (the Spaces are the top TABS —
             the sidebar is sessions-only: no group headers, no folder
@@ -614,7 +628,20 @@ export default function SpacesList({
           `chromeButton.test.ts`'s source gate requires `chromeButton.ts` to be the ONLY
           production file under `src/components/` carrying the chrome-bar geometry.
           `PANE_COMMAND_ROW` is `h-8 w-full` — the sidebar's box. */}
-      <div className="flex shrink-0 flex-col gap-1 border-t border-border p-2">
+      {/* Two geometry facts about this band, both pinned in `SpacesList.test.tsx`.
+          (1) It keeps a 1px top border for its LAYOUT value only: the slot is still
+          there so the band's height and the doors' position are exactly what they
+          were, but the colour is `border-transparent` so nothing draws — removing
+          the border outright would have moved the band up 1px, a change nobody asked
+          for. The class string is static (no `cn()`) on purpose.
+          (2) The horizontal inset is `px-3` to match the Tasks row's `p-3`, NOT the
+          `p-2` this band was built with: all four doors share `PANE_COMMAND_ROW`'s
+          `px-2`, so the wrapper alone decides where their icons land, and 8px
+          against Tasks' 12px put these three 4px LEFT of Tasks. The axis split is
+          deliberate — `py-2` keeps the vertical inset this band has always had, so
+          aligning the icons does not also grow the pane's bottom edge. The pin
+          resolves BOTH boxes to pixels, so drift on either side reddens it. */}
+      <div className="flex shrink-0 flex-col gap-1 border-t border-transparent px-3 py-2">
         <Button
           type="button"
           variant="ghost"
