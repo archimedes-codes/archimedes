@@ -660,6 +660,48 @@ describe("src/lib/transcript", () => {
       expect(dispositionFromRows([truncateRow({ id: 9 }), inserted])).toBeUndefined();
     });
 
+    it("pins the new emission order — a retry one-liner INSERTed before the notice does not suppress it", () => {
+      // fulcrum PR #33 / ADR 0108's amendment. The four harness one-liners
+      // moved off the shared `{stamp}:system` key onto a fresh
+      // `{stamp}:notice:N` per one-liner, because same-`messageId` chunks
+      // APPEND with no separator and welded 103 of 104 real `:system` rows into
+      // one sentence. That turns a truncated turn's retired-report
+      // `auto_retry_end` line into an INSERT on a NEWER id than any row before
+      // it, so the positional read no longer has an upsert to lean on for that
+      // row — it leans on the ENGINE'S ORDER: a truncated turn emits the
+      // retired-report `auto_retry_end` first and `turn_truncated` after it,
+      // immediately before the settle, so the notice is the newest display row
+      // of its own turn.
+      //
+      // THIS test is the desktop-side half of that invariant. The ordering lives
+      // in the engine repo (`harness/loop/turn.rs`), where no test here can see
+      // it; without this pin a future reorder there — a notice emitted before
+      // the retry close — would redden nothing in this repo while silently
+      // making the footer's truncated-turn line vanish, because the page's last
+      // row would then be the one-liner, which carries no disposition. The rows
+      // are built in the order the engine now emits them, with the ascending ids
+      // `messages_page` returns.
+      const retiredReportLine = msgRowBase({
+        id: 8,
+        kind: "agent-text",
+        messageKey: "a3f9c1:notice:0",
+        payloadJson: JSON.stringify({ text: "Retrying (attempt 2/3…)" }),
+      });
+      expect(
+        dispositionFromRows([retiredReportLine, truncateRow({ id: 9 })]),
+        "a retry one-liner that INSERTed BEFORE the notice must not suppress it",
+      ).toBe("max_tokens");
+
+      // And the reorder, stated so this pin cannot be quietly inverted: the same
+      // two rows with the one-liner LAST read as NO disposition. That is what an
+      // engine-side reorder would look like from here.
+      expect(
+        dispositionFromRows([truncateRow({ id: 8 }), { ...retiredReportLine, id: 9 }]),
+        "the same rows REORDERED (one-liner last) read as no disposition — this \
+is the failure an engine-side swap of the emission order would ship",
+      ).toBeUndefined();
+    });
+
     it("reads the LAST element by position, not the highest id", () => {
       // This page CANNOT arise from `messages_page` today — both arms return
       // ascending ids, so the last element is always the id-max element and this

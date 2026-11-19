@@ -102,8 +102,8 @@ fn persist_frames(
 /// harness mints is namespaced by its incarnation stamp, so the same
 /// counter value in two incarnations is two display rows. A Retraction in
 /// incarnation B erases B's OWN text and thought rows and leaves
-/// incarnation A's text, thought AND system rows untouched — and nothing
-/// unstamped (`m1`, `m1#1`, `system`) is ever written.
+/// incarnation A's text, thought AND one-liner rows untouched — and nothing
+/// unstamped (`m1`, `m1#1`, `notice`) is ever written.
 ///
 /// This is the seam where two Worker lives meet: two `TurnState`s with
 /// different stamps, two FRESH accumulator sets (a new Worker has new ones),
@@ -134,9 +134,13 @@ fn two_incarnations_of_one_session_never_share_a_display_row() {
             "usage": null,
             "assistantMessageEvent": { "type": "thinking_delta", "contentIndex": 0, "delta": "think" },
         })),
-        // The retry one-liner — the id family with NO counter to seed
-        // (`system`), which a counter-seeding design would have left
-        // unstamped and therefore shared.
+        // The retry one-liner — the family that used to be the CONSTANT
+        // (`system`), which had no counter to seed. Fulcrum PR #33 moved the
+        // four one-liner arms onto `{stamp}:notice:N` (`TurnState::notice_id`,
+        // one counter shared by all four arms), so this event now mints a
+        // COUNTER-SEEDED id — and it is still the arm worth asserting here,
+        // because the family it replaces is the one a counter-only stamping
+        // design would have left shared.
         ev(json!({
             "type": "auto_retry_start",
             "attempt": 1,
@@ -216,10 +220,12 @@ fn two_incarnations_of_one_session_never_share_a_display_row() {
         "incarnation A's text and thought rows are intact, the table is {rows:?}"
     );
     assert!(
-        row("agent-text", "aaaaaa:system").2.contains("Retrying"),
-        "the shared one-liner key is stamped too (it has no counter to \
-         seed, so it is the family a counter-only design would leave \
-         shared), the table is {rows:?}"
+        row("agent-text", "aaaaaa:notice:0").2.contains("Retrying"),
+        "the harness one-liner is stamped too — `{{stamp}}:notice:N` since \
+         fulcrum PR #33 moved all four one-liner arms off the shared \
+         `{{stamp}}:system` constant onto one shared counter (`notice:0` is \
+         that counter's first value), the family a counter-only stamping \
+         design would have left shared, the table is {rows:?}"
     );
 
     // B erased its OWN rows — and nothing else.
@@ -242,8 +248,13 @@ fn two_incarnations_of_one_session_never_share_a_display_row() {
         "the discard line is persisted under B's own stamp, the table is {rows:?}"
     );
 
-    // Nothing unstamped was ever written.
-    for unstamped in ["m1", "m1#1", "system"] {
+    // Nothing unstamped was ever written. `notice` REPLACES `system` here:
+    // fulcrum PR #33 deleted `system_chunk`, so NO arm writes a `system` key
+    // any more and a `"system"` entry in this loop is a guard that can never
+    // fire, while `notice` is the LIVE one-liner family this guard exists to
+    // protect. The claim is unchanged — every id family this state mints is
+    // STAMPED, including the one that used to be a bare constant.
+    for unstamped in ["m1", "m1#1", "notice"] {
         assert!(
             !rows.iter().any(|(_, k, _)| k == unstamped),
             "an unstamped id reached the display store: {unstamped}"
@@ -256,7 +267,9 @@ fn two_incarnations_of_one_session_never_share_a_display_row() {
     //
     // The EXACT TOTAL is the proof. Drop the stamp and `m1` / `m1#1`
     // collapse into ONE row each, leaving FOUR rows (`m1`, `m1#1`,
-    // `system`, `retract:1`) where these SIX live side by side. Order of
+    // `notice:0`, `retract:1` — the unstamped shape of the one-liner key is
+    // `:notice:0`, an empty stamp, exactly as `retract:1` is written here)
+    // where these SIX live side by side. Order of
     // failure when the stamp is dropped: the
     // `row("agent-text", "aaaaaa:m1")` LOOKUP above is the FIRST thing to
     // fail (`row` panics on an absent key), this count is the second.
@@ -273,7 +286,7 @@ fn two_incarnations_of_one_session_never_share_a_display_row() {
     assert_eq!(
         rows.len(),
         6,
-        "A's `m1` + `m1#1` + `system` PLUS B's `m1` + `m1#1` + `retract:1` \
+        "A's `m1` + `m1#1` + `notice:0` PLUS B's `m1` + `m1#1` + `retract:1` \
          — six coexisting rows, two Worker lives that never touched each \
          other's keys; the table is {rows:?}"
     );

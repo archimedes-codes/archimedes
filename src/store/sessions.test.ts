@@ -1802,9 +1802,11 @@ describe("compacting (the working indicator's compaction state)", () => {
       content: { type: "text", text },
     });
 
-    // The hazard, spelled out on the one-liners that DO still ship (the retry
-    // line and a result line share the `system` key): two of them in ONE batch
-    // weld into one bubble. This is the shape `normalize` must never emit.
+    // The hazard this reducer-level pin exists for: two `agent_message_chunk`s
+    // sharing a `messageId` weld into ONE bubble, no separator. `"system"` is a
+    // synthetic id here, reproducing the historical welded row — since
+    // fulcrum-harness 0.5.0 (fulcrum PR #33) each one-liner mints its own
+    // `{stamp}:notice:N`, so no two of them share a key any more.
     const welded = applySessionUpdate(
       applySessionUpdate([], systemLine("Retrying (attempt 1/3…)"), 1),
       systemLine(`Compaction failed: ${failure}`),
