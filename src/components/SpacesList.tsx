@@ -614,7 +614,7 @@ export default function SpacesList({
           `chromeButton.test.ts`'s source gate requires `chromeButton.ts` to be the ONLY
           production file under `src/components/` carrying the chrome-bar geometry.
           `PANE_COMMAND_ROW` is `h-8 w-full` — the sidebar's box. */}
-      <div className="flex shrink-0 flex-col gap-1 border-t border-border p-2">
+      <div className="flex shrink-0 flex-col gap-1 p-2">
         <Button
           type="button"
           variant="ghost"

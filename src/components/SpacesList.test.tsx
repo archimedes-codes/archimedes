@@ -1629,10 +1629,10 @@ describe("SpacesList (archive, ADR 0016)", () => {
     expect(contentRegion.contains(screen.getByRole("button", { name: "Skills" }))).toBe(
       true,
     );
-    // The hairline separator, and it is a STATIC class string (no `cn()` to merge a
-    // border away). `border-t border-border` is the repo's existing separator recipe.
-    expect(band.className).toContain("border-t");
-    expect(band.className).toContain("border-border");
+    // The band carries NO separator: the hairline above it was removed on purpose,
+    // so a future `border-t` re-addition reddens this.
+    expect(band.className).not.toContain("border-t");
+    expect(band.className).not.toContain("border-border");
   });
 
   it("a pressed view door wears the active row's bg-selected, and neither modal button ever does", () => {
