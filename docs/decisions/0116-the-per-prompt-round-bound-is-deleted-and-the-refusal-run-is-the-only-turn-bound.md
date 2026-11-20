@@ -135,21 +135,31 @@ actually consistent with.
   `Cargo.lock` is the pin; the manifest's pin comment now carries one line noting that 0.5.1 is the
   release that removes the per-prompt round bound. `cargo check` compiles **unchanged** against 0.5.1 —
   that is the expected result, not a sign the update did nothing.
-- **The lockfile moved further than the pin, and the move is recorded here rather than reverted.** Of
-  the 34 changed lines in `Cargo.lock`, 2 are the pin (version + checksum); the other 15 dependency
-  EDGES drop `windows-sys` from `0.61.2` to `0.59.0` / `0.60.2` / `0.45.0` (`socket2`, `muda`,
-  `tray-icon`, `window-vibrancy`, `uds_windows`, `rustls-platform-verifier`, `anstyle-query`,
-  `anstyle-wincon`, `dirs-sys`, `errno`, `tempfile`, `quinn-udp`, `rustix`, `winapi-util`, `os_pipe`).
-  Every edge is legal before and after — each dependent's requirement admits both the old and the new
-  version (`socket2 0.6.5` wants `>=0.60, <0.62`; `muda 0.20.0` wants `>=0.60, <=0.61`; `tempfile
-  3.27.0` wants `>=0.52, <0.62`; `os_pipe 1.2.3` wants `>=0.28, <=0.61`) — `windows-sys 0.61.2` is not
-  yanked, and no package *version* changed anywhere else in the lock: only edges moved. The engine
-  caused it indirectly by forcing a re-unification of the desktop's graph, not by changing its own
-  byte-identical 22-dependency list (its lock holds all of these at `0.61.2` at both 0.5.0 and 0.5.1),
-  and it is not reproducible away: `cargo update -p fulcrum-harness --precise 0.5.1` yields these exact
-  34 lines while an unrelated `cargo update -p once_cell` yields zero. Blast radius is
-  **Windows-only** (`windows-sys` is a `cfg(windows)` dependency), so the Linux CI legs and the green
-  local suite are unaffected, and re-resolving does not avoid it.
+- **The lockfile moved further than the pin, and the move is a repair, not drift.** Of the 34 changed
+  lines in `Cargo.lock`, 2 are the pin (version + checksum); the other 15 dependency EDGES drop
+  `windows-sys` from `0.61.2` to `0.59.0` / `0.60.2` / `0.45.0` (`socket2`, `muda`, `tray-icon`,
+  `window-vibrancy`, `uds_windows`, `rustls-platform-verifier`, `anstyle-query`, `anstyle-wincon`,
+  `dirs-sys`, `errno`, `tempfile`, `quinn-udp`, `rustix`, `winapi-util`, `os_pipe`). **Six of those
+  fifteen edges were illegal as pinned**: the parent lock held `windows-sys 0.61.2` under dependents
+  whose published requirement excludes it — `muda 0.20.0`, `tray-icon 0.25.1` and `window-vibrancy
+  0.8.1` want `>=0.60, <=0.61`, `quinn-udp 0.5.15` `>=0.52, <=0.61`, `winapi-util 0.1.11`
+  `>=0.48.0, <=0.61`, `os_pipe 1.2.3` `>=0.28, <=0.61` — and `<=0.61` is `<=0.61.0` in cargo's semver,
+  which `0.61.2` does not satisfy. The re-resolve around the new engine version **corrected those six
+  to versions every dependent accepts**; the other nine edges moved and were legal either way
+  (`anstyle-query 1.1.5` / `anstyle-wincon 3.0.11` want `>=0.60.2, <0.62`; `dirs-sys 0.5.0` `>=0.59.0`;
+  `errno 0.3.14`, `rustix 1.1.4` and `tempfile 3.27.0` `>=0.52, <0.62`; `rustls-platform-verifier
+  0.7.1` `>=0.52.0, <0.62.0`; `socket2 0.6.5` and `uds_windows 1.2.1` `>=0.60, <0.62`). Stated plainly:
+  **the parent lock carried six edges that did not satisfy their dependents' requirements**, and that
+  is what makes this churn a repair rather than drift. `windows-sys 0.61.2` is not yanked, no other
+  package *version* changed anywhere in the lock, and **why those six had been left pinned is not
+  established here**. The engine caused the move indirectly by forcing a re-unification of the
+  desktop's graph, not by changing its own byte-identical 22-dependency list (its lock holds all of
+  these at `0.61.2` at both 0.5.0 and 0.5.1), and it is not reproducible away: `cargo update -p
+  fulcrum-harness --precise 0.5.1` reproduces these exact 34 lines while an unrelated `cargo update -p
+  once_cell` yields zero — the churn is specific to re-resolving around the engine and no narrower
+  command minimises it. Blast radius is **Windows-only** (`windows-sys` is a `cfg(windows)`
+  dependency), so the Linux CI legs and the green local suite are unaffected, and re-resolving does not
+  avoid it.
 - **`attention.ts`'s `stopReasons[id] === "end_turn"` whitelist is now load-bearing, not free.**
   `docs/features/honest-turn-outcome-surfaces-known-gaps.md` gap 4 claimed `max_turn_requests` had
   zero Rust construction sites and therefore failed closed *for free*; that was already false (the

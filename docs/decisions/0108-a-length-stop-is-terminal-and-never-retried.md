@@ -283,5 +283,6 @@ decision is unchanged**, and so are the frame, the disposition and every mapping
 `Length` stop is still terminal and never retried, and `Capped` still resolves as
 `StopReason::MaxTurnRequests`. What moved is the context this decision's machinery was described
 against: the identical-refusal run (`MAX_IDENTICAL_REFUSAL_RUNS = 3`) is now the **sole** producer of
-`turn_capped`, so the turn loop this prose and the issue #193 work describe has one bound, not two.
+`turn_capped`, so the turn loop this decision's machinery runs inside has one bound, not two.
 See ADR 0116.
+Re-run: `grep -c 'self.emit(RpcEvent::turn_capped)' <fulcrum-harness>/src/harness/loop.rs` → 1.
