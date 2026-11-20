@@ -114,6 +114,7 @@ tauri-build = { version = "2", features = [] }
 # graph churn, because the engine's 22 dependencies are identical between the two
 # forms. A lockfile that churns beyond that means something else resolved
 # differently — investigate before committing.
+# 0.5.1 removes the engine's per-prompt round bound — see ADR 0116.
 #
 # Working on the crate alongside the desktop? Do NOT edit this line to a path
 # (that would commit a dep that cannot resolve for anyone else). Copy
