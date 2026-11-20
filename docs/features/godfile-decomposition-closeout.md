@@ -9,6 +9,11 @@ verified-by: every number below re-measured on `main` at `22f61dd1` (the squash 
   before/after pair was taken against `1355cd2a`, the commit PR #206 branched from. Nothing here is
   copied from the plan family this doc replaces, and the plan's own figures were measured at an
   older HEAD — where the two disagree, the numbers below are the current ones.
+re-verified: 2026-11-20 — only the `agent/errors.rs` bullet in "What was deliberately NOT split" was
+  touched: its stated reason was false (ADR 0063 is not a one-file rule — see the 2026-11-20 amendment),
+  it quoted a `//!` header sentence that has since been re-worded, and the one cost the shape does enable
+  now has a closure at `src-tauri/tests/error_wire_gate.rs`. The 1135 code-line figure was re-measured with
+  the ratchet's own classifier and still reproduces. No other number in this record was re-run that day.
 ---
 
 # godfile-decomposition — close-out record
@@ -110,11 +115,25 @@ mechanical reason, not a deferral for lack of time.
   `useSessions.setState({...})` object-literal key lists get TypeScript's excess-property check
   (TS2353), so a slice split fails `pnpm build` on ~102 of them. The cheap version nobody has pulled
   is extracting the pure selectors and the `SessionsState` interface, leaving the write-set alone.
-- **`agent/errors.rs` (1135) — ruled against three times over**, though it is mechanically the
-  cleanest split available. Its own `//!` header says *"do NOT split this file by layer"*,
-  `docs/features/improvement-boundary-residue-closeout.md` and the 2026-11-07 audit agree, and ADR
-  0063 wants one file to own the IPC error English. This is the case that proves "long" and "bad" are
-  different claims — reversing it needs a new argument, not a new line count.
+- **`agent/errors.rs` (1135 code lines) — declined again, on coherence and measured payoff.** It is
+  mechanically the cleanest split available, and the case that proves "long" and "bad" are different
+  claims. The reason is **not** "ADR 0063 wants one file to own the IPC error English" — that reading is
+  false, and the 2026-11-20 amendment says so: every sentence in 0063 that places a variant's English is
+  per-variant or per-enum (`:39` "next to the variant", `:78`'s colon enumerating **one** variant's four
+  edits), and the ADR states the opposite of a file rule twice (`:94` "chosen by the wire, not by the
+  file"; `:105` "never the module it is declared in"). The `//!` header's own "out of it" clause, which
+  read as a per-family prohibition, has been re-worded to what its reason clause supports — do not move
+  an IPC family to a **non-IPC layer**. What the decline rests on is coherence (twelve families share
+  `InvokeErrorExt`, and twelve files means twelve `impl From` blocks that can each diverge) plus a cost
+  case that measured empty on all four axes: 0 of 87 audit findings and 0 of 61–76 known-gaps entries
+  blame length; fix density 2.01/kLOC against a repo line-weighted 1.98; median diff 58.5 LOC against a
+  repo median commit of 358; 18.5k tokens against the 40k/51k/72k/83k files the census names. See the
+  amendment and `docs/research/agent-errors-rs-per-family-guarantee-and-the-reopen-argument.md`. The one
+  real cost the shape does enable is a **gating** gap — `SettingsError` had 4 of 12 `kind` spellings
+  asserted anywhere, `McpError` 2 of 4 and `AgentsError` 2 of 3 (a clear majority unpinned in each;
+  `SpacesError` sat at exactly half), and no test enumerated the families at all. A split makes that
+  strictly worse — twelve independent omissions, still no enumerator — and it is closed by
+  `src-tauri/tests/error_wire_gate.rs`.
 - **`commands/tasks.rs`** (worst risk-per-line: 14 `pub(crate)` widenings, an `include_str!` region
   delimited by a banner the split would move), **`StageEditor.tsx`** (needs a 3-deep split to be
   honest — a redesign), **`TaskDetailDialog.tsx`** (the artifact reader's `requestIdRef` is a

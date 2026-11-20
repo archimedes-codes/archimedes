@@ -2,23 +2,27 @@
 //! enums (`SessionError`, `HistoryError`, `AttentionError`, `ClipboardError`,
 //! `OpenError`, `FilesError`, `SettingsError`, `SpacesError`, `McpError`,
 //! `AgentsError`, `TasksError`) plus the `UpdateError` tuple struct — twelve
-//! families, each with
-//! its OWN hand-written `impl From<…> for tauri::ipc::InvokeError`, because none
-//! of them derives `Serialize`. Five (`SettingsError`, `SpacesError`, `McpError`,
-//! `AgentsError`, `TasksError`) hand the finished map to `InvokeErrorExt::from_value`; the other
-//! seven build `InvokeError(Value::Object(..))` inline. `DbError`/`FsError` stay
-//! with their own layers (`storage` / the crate's `fs_backend.rs`) because they are
-//! NOT IPC types — the wire contract fixes the envelope, and the error type is
-//! chosen by the WIRE, not by the file. So do NOT split this file by layer, and do
-//! NOT move an IPC family out of it with the argument that it belongs next to its
-//! callers.
+//! families, each with its OWN hand-written `impl From<…> for
+//! tauri::ipc::InvokeError`, because none of them derives `Serialize`. Five
+//! (`SettingsError`, `SpacesError`, `McpError`, `AgentsError`, `TasksError`)
+//! hand the finished map to `InvokeErrorExt::from_value`; the other seven build
+//! `InvokeError(Value::Object(..))` inline. `DbError`/`FsError` stay with their
+//! own layers (`storage` / the crate's `fs_backend.rs`) because they are NOT
+//! IPC types — the wire contract fixes the envelope, and the error type is
+//! chosen by the WIRE, not by the file. So do NOT move an IPC family out of
+//! this file into a non-IPC layer — `storage`, the crate's `fs_backend.rs`, or
+//! the command module that constructs it — the wire chooses the type, never
+//! the file it sits in. A per-family split of this file was considered and
+//! declined on coherence and measured payoff; see the 2026-11-20 amendment to
+//! ADR 0063, cited at the end of this header.
 //!
 //! DECISION (F7): the TypeScript side keeps NO error-kind mirror.
 //! `src/lib/errors.ts` — ten `kind` unions — was deleted in this run (FE5) because
 //! nothing imported it and Rust owns every `kind()` vocabulary below. That
-//! absence is a real gap, not an oversight: `src/` branches on `.kind` in ~128
-//! places against strings this file alone defines. Do not re-add a TS mirror; the
-//! `kind()` strings here are the single source of truth.
+//! absence is a real gap, not an oversight: `src/` branches on `.kind` in 83
+//! non-test lines (93 occurrences) against strings this file alone defines. Do
+//! not re-add a TS mirror; the `kind()` strings here are the single source of
+//! truth.
 //!
 //! The wire contract this file implements — the `{kind, message, …}` envelope,
 //! the rule that RUST owns the sentence the user reads, and why there is no

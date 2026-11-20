@@ -2,6 +2,15 @@
 status: live
 last-verified: 2026-10-31
 verified-by: read against this tree at `29d9563` (the post-merge gate); the Gate 1 figures are kept as what was measured at `377ea86`, not silently rewritten (see the two-gate note below and *Corrections on re-derivation* at the end). A THIRD pass (2026-10-31, at `057f10f`) re-derived the prose rather than the numbers: the `needs-auth` unblock recipe's acceptance claim was FALSE and has been rewritten from a throwaway-worktree implementation (see *Third pass* and the recipe's measured tables), and the Gate 2 commit counts are pinned to `29d9563` instead of `HEAD`
+re-verified: 2026-11-20 — three of this recipe's steps were checked against HEAD and **none of them landed as
+  written**: `settings_error_kind_spellings_are_frozen` still does not exist in `src-tauri/`, and neither do the
+  two command-level pins (`test_mcp_server_a_401_on_an_oauth_server_is_the_auth_kind`,
+  `test_mcp_server_a_non_auth_failure_keeps_the_test_failed_kind`), so `mcp_auth_failed` is now frozen by the
+  gate at `src-tauri/tests/error_wire_gate.rs` but the 401→auth-kind *routing* is still unproven by any test.
+  Step 1 itself did land (`commands/settings.rs:217` maps the 401 onto `SettingsError::McpAuthFailed`). The
+  ratchet reason is recorded at the recipe's file-list row 2 and in *The missing drift pin*, and that section's
+  code sketch was re-checked: `SettingsError` has 12 variants, not the nine the sketch claimed. No other figure
+  in this record was re-run that day.
 ---
 
 # improvement-correctness-seams — close-out record
@@ -237,7 +246,7 @@ never mentioned. Without this step there is nothing to branch on and the rest of
 | # | file | change |
 |---|---|---|
 | 1 | `src-tauri/src/commands/settings.rs` | in `test_mcp_server`, match `test_server`'s raw `"needs-auth"` marker BEFORE the blanket `.map_err(SettingsError::McpTestFailed)` wrap and map it to the EXISTING `SettingsError::McpAuthFailed`. No new variant; the wire kind already exists both sides. Add the two command-level pins (below). |
-| 2 | `src-tauri/src/agent/errors.rs` | **the missing drift pin** — `settings_error_kind_spellings_are_frozen` (see below). |
+| 2 | `src-tauri/src/agent/errors.rs` | **the missing drift pin** — `settings_error_kind_spellings_are_frozen` (see below). **CLOSED ELSEWHERE (2026-11-20): that per-family test never landed and is superseded — the gate at `src-tauri/tests/error_wire_gate.rs` (`settings_error_kinds_are_frozen_and_complete`) is the closure that shipped. See "Why the fourth pin did not land, and what did instead" below.** |
 | 3 | `src/lib/errors.ts` | add `"mcp_auth_failed"` to `McpTestErrorKind` (`:164`) and retire the blocked-candidate comment at `:159`. |
 | 4 | `src/components/settings/McpSection.tsx` | the result-state shape change + `kind` branch **with the sentence fallback kept**. |
 | 5 | `src/components/settings/McpSection.test.tsx` | un-skip `:153` **and edit its mock `kind`** to `mcp_auth_failed`; rewrite the `:136–152` comment block, which currently prescribes the wrong recipe. |
@@ -272,18 +281,43 @@ union the badge branches on — passes the **entire** Rust suite: **1,651 passed
 (`--lib`), and `tsc --noEmit` stays clean because `errors.ts` is a type-only module nothing imports the
 spelling from. The badge would break on the user's screen with every gate green.
 
-The fix is the fourth pin, in the same shape as the other three:
+**CLOSED (2026-11-20), but NOT by the fourth pin.** The closure that shipped is
+`src-tauri/tests/error_wire_gate.rs` — `settings_error_kinds_are_frozen_and_complete` gates all **twelve**
+`SettingsError` variants (re-counted at HEAD: 12, not nine — the OIDC trio and `Other` came later) from one
+macro entry each supplying pattern, spelling **and** construction, asserted against an independent literal
+that does not read `kind()`. The measured typo above — `"mcp_auth_faild"` — fails that gate today. The
+reason the per-family test inside `errors.rs` did not land is mechanical, not a change of mind: the file is
+baselined at **1135** code lines in `scripts/file-size-baseline.txt`, `scripts/check-file-size.sh` fails on
+`measured > baseline`, and an inline `#[cfg(test)]` region counts toward that number — so a pin written
+inside `errors.rs` reddens the ratchet. The gate is outside the instrument by the rule that already retires
+`src-tauri/tests/**`, and it covers nine variant-bearing families rather than one.
+
+**Two other steps of this recipe also never landed, and the reader should not assume they did:** the two
+command-level pins this section goes on to specify (`test_mcp_server_a_401_on_an_oauth_server_is_the_auth_kind`
+and `test_mcp_server_a_non_auth_failure_keeps_the_test_failed_kind`) exist nowhere in `src-tauri/` at HEAD, so
+`mcp_auth_failed` and `mcp_test_failed` are still asserted only by `kind()`'s own arm plus the new gate. Step 1
+*did* land — `commands/settings.rs:217` maps the 401 onto `SettingsError::McpAuthFailed` — so the behaviour is
+right and the command-level *proof* is what is missing. The gate covers the spelling, not the routing: only a
+401-listener test would catch the wrap being reverted to `McpTestFailed`.
+
+The shape this section prescribed, kept as the history of what was asked for (and wrong in its count):
 
 ```rust
 #[test]
 fn settings_error_kind_spellings_are_frozen() { /* all nine variants → their nine spellings */ }
 ```
 
+`settings_error_kind_spellings_are_frozen` does not exist anywhere in `src-tauri/` at HEAD; the only
+occurrence of the name is a comment in the gate file explaining that it never landed.
+
 Verified in the probe: with the pin in place, the same `mcp_auth_faild` typo fails
 `settings_error_kind_spellings_are_frozen` (`left: [… "mcp_auth_faild" …]` vs
 `right: [… "mcp_auth_failed" …]`). Note the pin freezes spellings, not the TS union — a Rust-side
 *added* variant still needs the `errors.ts` edit caught by review; the pin's doc comment must name both
 TS mirrors (`SettingsErrorKind` and `McpTestErrorKind`) so the reader knows which two files to check.
+That caveat is now narrower than it was: `src/lib/errors.ts` **is deleted** and no TS union exists at HEAD,
+so there is no mirror left to move — but the *added-variant* half survives in a stronger form, since the
+gate's exhaustive `match` makes an ungated new variant a compile error rather than a review catch.
 
 #### The two Rust pins the command needs (the recipe previously had none)
 
@@ -446,7 +480,7 @@ what changed here:
 | parked test `:153` | "un-skips green **as written**, the unblock's arbiter" | **un-skip-with-edit**: its mock `kind` must change `mcp_test_failed` → `mcp_auth_failed`, so it is NOT an independent arbiter |
 | the sentence match at `:114` | branch on `kind` **instead of** it | branch on `kind` **and keep** it — `:118` pins the legacy envelope and reddens otherwise |
 | acceptance check | the parked TS test | **two new Rust command pins** (a 401 listener asserting `mcp_auth_failed`, a 500 listener asserting `mcp_test_failed`); the first is genuinely red-first |
-| drift coverage | assumed adequate | **no `SettingsError` kind pin existed** — a misspelled `mcp_auth_failed` passes 1,651 Rust tests + `tsc`; `settings_error_kind_spellings_are_frozen` is now named as a required step |
+| drift coverage | assumed adequate | **no `SettingsError` kind pin existed** — a misspelled `mcp_auth_failed` passes 1,651 Rust tests + `tsc`; `settings_error_kind_spellings_are_frozen` is now named as a required step **(CLOSED 2026-11-20 by a different device: that named test never landed and cannot, because `errors.rs` is ratcheted at 1135 code lines and an inline `#[cfg(test)]` region counts. The closure is the gate at `src-tauri/tests/error_wire_gate.rs`, which gates nine variant-bearing families by exhaustive match plus an independent frozen literal, and scans for all twelve `From` impls.)** |
 | Gate 2 commit counts | quoted from `HEAD` | pinned to `29d9563` (61/52/9), with the `HEAD` re-derivation (62/53/9) stated |
 | Gate 1's place in history | "`377ea86`, the last branch commit before the merge" | `2eeba39` was the tip; `377ea86` is the last code/gate commit |
 | the `needs-auth` headline | "0 hits in … `src/lib/errors.ts`" next to a bullet citing `errors.ts:159` | hyphen 0/1/1, underscore 0/0/1 — the strings are named |

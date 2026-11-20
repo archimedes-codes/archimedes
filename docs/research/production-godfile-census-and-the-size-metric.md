@@ -518,11 +518,25 @@ which matters directly: the first person to split these files will be reading a 
    NOT claim 1,000 is a *defect* threshold** — it claims 1,000 is the number the ecosystem enforces and
    the number the context cost makes urgent. That is a different and weaker claim, stated so
    deliberately.
-2. **`errors.rs`: mechanically clean vs thrice-ruled-against.** Zero code coupling, zero consumer
-   edits, zero source lints — and a `//!` header, a close-out doc, an audit, and ADR 0063 all saying
-   don't. This report does not resolve it; it names it as the sharpest available example of "long" ≠
-   "bad" and defers to the recorded decision unless the "one place owns the error English" guarantee is
-   explicitly re-affirmed per-family.
+2. **`errors.rs`: mechanically clean vs thrice-ruled-against — RESOLVED (2026-11-20).** Zero code
+   coupling, zero consumer edits, zero source lints — and a `//!` header, a close-out doc, an audit, and
+   ADR 0063 all saying don't. This report deferred to the recorded decision *"unless the 'one place owns
+   the error English' guarantee is explicitly re-affirmed per-family"*. **That condition is now met.**
+   ADR 0063's 2026-11-20 amendment answers it directly: every sentence in 0063 that places a variant's
+   user-facing English is per-variant or per-enum (`:39` *"next to the variant — one place, one language,
+   one owner"*; `:78`'s colon enumerating **one variant's** four edits), and the ADR states the opposite
+   of a file rule twice — *"The error type is chosen by the wire, not by the file"* (`:94`) and *"never the
+   module it is declared in"* (`:105`). The guarantee is that the variant, its `#[error(…)]` sentence, its
+   `kind()` arm and its `From` arm stay **together**; it survives any layout that keeps them together, and
+   the amendment names and forbids the one layout that would weaken it (a shared `wire.rs` holding all
+   twelve `From` impls). The decline therefore stands, but on its actual grounds — coherence plus a cost
+   case that measured empty on all four axes — not on a one-file rule, and the `//!` header clause this
+   report quoted at `:317` has been re-worded to what its reason clause supports. The one real cost the
+   shape does enable (three families with the majority of their `kind` spellings unpinned, a fourth at
+   exactly half, and no test enumerating families at all)
+   is a **gating** gap that a split makes strictly worse; it is closed by
+   `src-tauri/tests/error_wire_gate.rs`. See `docs/research/agent-errors-rs-per-family-guarantee-and-the-reopen-argument.md`.
+   The item stays numbered so the deferral it corrects remains readable.
 3. **`session/mod.rs`'s rationale scatter.** A split forces the poison-recovery rationale to be
    restated per file. Arguably better than today's 2,136-line distance; also a prose obligation with a
    real chance of rotting. Not priced.
