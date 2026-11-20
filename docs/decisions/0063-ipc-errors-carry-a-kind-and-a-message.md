@@ -172,3 +172,149 @@ case, and any Rust-side reword of that sentence breaks the badge silently while 
 valid. Naming it here so nobody reads the badge as an example of switching on `kind`: it is the
 opposite — the case for giving the auth arm its own kind, which is a frontend-and-settings change
 tracked separately, not a reword of the sentence.
+
+## Amendment (2026-11-20) — the error-English guarantee is per-family, not per-file, and `errors.rs` stays one file anyway
+
+Asked by card #38, which asked whether the three recorded refusals to split
+`src-tauri/src/agent/errors.rs` should be reopened, and answered from
+`docs/research/agent-errors-rs-per-family-guarantee-and-the-reopen-argument.md`, measured at
+`add3054a`. The decision above is unchanged and not renumbered, and so is the 2026-10-30 amendment;
+this section answers the question, records the correction two living docs need for having read this
+ADR as a one-file rule, and reaffirms the decline on its actual grounds. This ADR is NOT superseded
+and its `status` is unchanged, and no number is minted for a reaffirmation — for the reason ADR 0079
+gives: *"a `superseded-by` would erase the record of which decisions were re-affirmed, which is the
+part a future reader needs."*
+
+### The guarantee is per-variant and per-enum; the path inside it is a locator, not the rule
+
+Both sentences in this ADR that say where a new variant's user-facing English goes are scoped to one
+variant:
+
+> "adding an error variant means writing its user-facing English in `errors.rs`, in the `#[error(…)]`
+> attribute, **next to the variant** — one place, one language, one owner" — `:39`
+>
+> "**A new error variant is a three-line obligation in one file**: the variant, its `#[error(…)]`
+> sentence, and its arms in `kind()` and the `From` match" — `:78`
+
+`:39` defines its own "one place" as *next to the variant*; "one language" is English-vs-`kind`, "one
+owner" is Rust-vs-frontend. `:78`'s colon enumerates **one variant's** four edits, so "in one file"
+quantifies over that enumeration and not over the repository — and `:111-113` says the
+exhaustive-matching thing is a property of "each **enum's** `kind()` match and its `From` match". The
+ADR then says the **opposite** of a file rule twice, in its own 2026-10-30 amendment: *"The error
+type is chosen by the wire, not by the file"* (`:94`) and *"The discriminator is the wire surface a
+command answers on, never the module it is declared in"* (`:105`). The frozen-kind table at
+`:117-123` is keyed on the error type and names no path at all.
+
+The load-bearing half — "the derive stays off" — is a coherence-and-exhaustiveness property for the
+same reason. With no `Serialize` on the enum, Tauri's blanket `impl<T: Serialize> From<T> for
+InvokeError` cannot apply, so a command returning `Result<_, FamilyError>` has no implicit conversion
+and does not compile unless the hand-written impl exists; and that impl's payload match and the
+`kind()` match are exhaustive with no catch-all arm. Both matches are written **over the enum**, and
+an enum's `thiserror::Error` attribute and its impls must live in the crate that defines it, so the
+property attaches to the enum plus its two matches wherever the enum is declared. It survives any
+layout that keeps **enum + `kind()` + `From` together**, which is what a per-family split does.
+
+**The one layout that would weaken it is forbidden here.** A shared `wire.rs` holding all twelve
+`impl From<…> for tauri::ipc::InvokeError` — separating each family's wire arm from its own enum — is
+legal Rust, **keeps** the compile error, and destroys the "`next to the variant`" locality `:39`
+actually requires: the sentence, the `kind()` arm and the payload arm for one variant would sit in
+different files, and the failure this ADR was written to end is precisely the payload nobody had to
+think about. Nothing forbade that shape before this paragraph. It does not satisfy this ADR, whatever
+directory layout a future proposal picks.
+
+### This ADR is not a one-file rule, and two living docs say that it is
+
+`docs/features/godfile-decomposition-closeout.md:116` records the decline as *"ADR 0063 wants one
+file to own the IPC error English"*, and
+`docs/research/production-godfile-census-and-the-size-metric.md:319` counts against the split *"ADR
+0063's guarantee that a new variant's user-facing English lands in **one** file"*. Both are false as
+readings of this file, on the quotes above; a reader who tests either will find it does not hold, and
+the honest reading is the one in the preceding sub-section — one hand-written `From` impl per error
+type, no `Serialize` derive, both matches exhaustive, the sentence beside its variant. The correction
+belongs to those two docs and not to this file — an ADR amends itself and does not rewrite what cites
+it — and they carry the `last-verified:` apparatus that makes correcting them routine. The census's
+own deferral condition is met by this section: its unresolved-contradiction item `2` deferred the
+question *"unless the 'one place owns the error English' guarantee is explicitly re-affirmed
+per-family"*, and that is what the sub-section above does.
+
+**The decline stands anyway, and it never rested on this ADR.** What carries it is coherence plus
+payoff: `docs/features/improvement-boundary-residue-closeout.md:267` (*"its ten families share
+`InvokeErrorExt` and are coherent; splitting buys a directory and nothing else"*) and
+`docs/reviews/2026-11-07-codebase-improvement.md:369` (*"splitting buys an `errors/` directory and
+nothing else"*) are benefit-claims, and benefit-claims are the kind a measurement can re-examine.
+This time the measurement confirmed them.
+
+### The file header's "out of it" is broader than the reason attached to it, and it is being re-worded
+
+`src-tauri/src/agent/errors.rs:12-14` reads *"So do NOT split this file by layer, and do NOT move an
+IPC family out of it with the argument that it belongs next to its callers."* Read against its own
+reason clause one sentence earlier — *"`DbError`/`FsError` stay with their own layers (`storage` /
+the crate's `fs_backend.rs`) because they are NOT IPC types — the wire contract fixes the envelope,
+and the error type is chosen by the WIRE, not by the file"* (`:9-11`) — what the clause reaches is
+the **non-IPC-layer** move: a family leaving the IPC file for `storage`, for `fs_backend`, or for
+`commands/` beside the command that constructs it. An `errors/` sibling changes no layer and gains no
+non-IPC home, so the reason does not reach it. The counter-reading is stated here so it is not
+quietly suppressed: "out of **it**" read as *this file* rather than *this layer* does forbid a
+per-family split, on letter alone. That is the one sentence in the whole corpus that can be read as
+prohibiting the move — and **a file header is not an ADR**, so the layout rule that actually governs
+here is `:94`/`:105`: the wire chooses the type, never the module. The header is being re-worded to
+say what its reason clause supports (do not move an IPC family to a non-IPC layer), with a pointer
+back to this amendment for the per-family decision.
+
+### The split stays declined: the cost case measured empty on every axis
+
+Four candidate costs were measured and none is supported. **Defects:** 0 of 87 audit findings and 0
+of 61–76 known-gaps entries attribute a defect to file length. **Churn:** 16 commits in twelve
+months, one of them a `fix:`, and a fix density of **2.01 per kLOC against a repo line-weighted
+average of 1.98** — rank 46 of 115, dead median. **Review size:** median diff **58.5 LOC against a
+repo median commit of 358**. **Agent context:** 18.5k tokens, 4.5×–19× below the four files the
+census names as expensive (40k/51k/72k/83k). Against that, the payoff is twelve files averaging ~41
+production code lines each, largest 94, five of them under 32 — plus two costs the split would newly
+incur: `trait InvokeErrorExt` (`errors.rs:538`, five users) is file-private today and would have to
+widen and move, and **14 `errors.rs:<N>` prose citations would rot**, 3 of them in production source,
+where no compiler or test catches a stale line number. The file's production half is 497 code lines,
+already under the 1,000 bar; the 1,135 the ledger carries is 56% inline tests.
+
+**The one real cost the file's shape enables is a missing gate, not a long file** — and it gets worse
+per family, not better, as the count of files grows. See the next sub-section.
+
+### The `kind`-spelling gate is now an obligation of this contract
+
+Twelve families carry a `From … for tauri::ipc::InvokeError` at HEAD, and that impl — not a name
+suffix — is what makes something an IPC error family under this ADR. As of this amendment, each must
+be gated:
+
+- **Nine variant-bearing families** (`SessionError`, `HistoryError`, `AttentionError`,
+  `ClipboardError`, `SettingsError`, `SpacesError`, `TasksError`, `McpError`, `AgentsError`) are
+  gated by an **exhaustive `match`** over their own variants, one entry per variant supplying both
+  the frozen spelling and its construction, so "arm added, construction forgotten" is not expressible
+  and a new variant is a compile error in the gate.
+- **`OpenError` and `UpdateError`** are gated through their `kind_of` code tables (`:372-384`,
+  `:451-472`), whose vocabularies are already frozen by `open_error_kind_of_maps_the_refusal_codes`
+  and `update_error_kind_of_maps_the_frozen_code_table`. `OpenError` has exactly one variant and
+  `UpdateError` is a tuple struct with none, so an exhaustive `match` over each has one arm and the
+  property is vacuous by construction there. Those two pins are deliberately not duplicated.
+- **`FilesError` is exempt, with its reason**: it has a `From` impl and no `kind()` method, by the
+  decision recorded at `errors.rs:512-520` — *"Do not 'fix' the inconsistency by adding a method
+  nothing calls."*
+
+The gate is `src-tauri/tests/error_wire_gate.rs`, added beside this amendment, and it lives outside
+`errors.rs` because that file is ledgered at 1135 code lines and the ratchet fails on growth, so a
+pin added inside it would redden the guard. Why the obligation is not decorative: rewriting a Rust
+arm to `SettingsError::McpAuthFailed(_) => "mcp_auth_faild"` — a real typo — passed **1,651 Rust
+tests and a clean `tsc`** (`docs/features/improvement-correctness-seams-closeout.md:264-279`), and
+the pin named there as a required step, `settings_error_kind_spellings_are_frozen`, still does not
+exist at HEAD.
+
+**Correcting `:127`, from here and not in place.** The 2026-10-30 amendment justifies
+`AttentionError`'s family-prefixed kinds with *"one frontend union holds every family's kinds"*. That
+sentence is present tense and false at HEAD: `src/lib/errors.ts` was deleted (F7 —
+`docs/features/improvement-boundary-residue-closeout.md:245`) and no TypeScript union over the kinds
+exists anywhere in `src/` today. It is left standing above as written and corrected here, per the
+convention ADR 0016 states, because it is the record of what was true when that choice was taken. The
+**reason survives the artifact**: `kind` is a supporter-quotable identifier and a bare `empty_body`
+does not say which wire it came from, and that argument does not need a frontend union to hold it.
+The single-source-of-truth claim in the header (`errors.rs:18-21`) is unaffected — one definition per
+`kind` is unchanged — and nothing outside `errors.rs` branches on a `kind` value from a union; the 83
+non-test `.kind` sites in `src/` branch on strings, which is exactly why the gate above is the
+enforcement rather than a type.
