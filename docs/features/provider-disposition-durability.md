@@ -52,10 +52,10 @@ message_key = '{stamp}:truncate:N'
 payload_json = {"text":"Response was truncated before completion","disposition":"length"}
 ```
 
-A **Capped** turn (issue #193 — the engine's own `MAX_MODEL_ROUNDS_PER_PROMPT` or
-`MAX_IDENTICAL_REFUSAL_RUNS` bound, not a provider fact) rides the **same** `agent-text` row kind with a
-different value and its **own** unique key, because the shared `{stamp}:system` key APPENDS and a second
-notice would weld into the first:
+A **Capped** turn (issue #193 — the engine's own `MAX_IDENTICAL_REFUSAL_RUNS` bound, now its ONLY turn
+bound since `fulcrum-harness 0.5.1` deleted the per-prompt round bound (ADR 0116), not a provider fact)
+rides the **same** `agent-text` row kind with a different value and its **own** unique key, because the
+shared `{stamp}:system` key APPENDS and a second notice would weld into the first:
 
 ```
 kind        = 'agent-text'

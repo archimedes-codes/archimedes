@@ -132,8 +132,14 @@ retry at all.
    sites to stop inventing a reason.
 3. **No end-to-end proof from a live provider to the footer.** The proof is the router unit test plus the
    pins in §2.
-4. **`max_turn_requests` has zero Rust construction sites**, so any guard or test for it is dead code by
-   construction. The whitelist fails closed on it for free.
+4. **`max_turn_requests` has no *round* construction site any more, and its one producer is live.**
+   The engine's per-prompt round bound was deleted in `fulcrum-harness 0.5.1` (ADR 0116); the sole
+   producer of `turn_capped` is now the identical-refusal run, which the desktop maps in
+   `router.rs::resolve_turn`. So the `attention.ts` `=== "end_turn"` whitelist is **load-bearing**, not
+   free: it is the only thing between a refusal-capped turn and a "finished — waiting for you"
+   announcement. An earlier version of this gap said the value had *zero* Rust construction sites and
+   that the whitelist therefore failed closed for free — that was already false (the router is its
+   first construction site) and is doubly false now.
 5. **`auto_retry_end`'s `final_error` is write-only in both repos** — 0 readers in `src/`, and `normalize`'s
    `{ success, .. }` arm discards it before a frame is built. Surfacing the real retry reason needs a
    renderer decision.

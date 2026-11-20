@@ -307,10 +307,11 @@ pub(crate) enum TurnDisposition {
     /// (issue #190) The provider cut the reply off at its output cap
     /// (`FinishReason::Length` — the engine's `turn_truncated` frame).
     Truncated,
-    /// (issue #193) The engine's OWN turn bound stopped the turn (the round
-    /// ceiling `MAX_MODEL_ROUNDS_PER_PROMPT`, or a run of identical refused tool
-    /// batches `MAX_IDENTICAL_REFUSAL_RUNS` — the engine's `turn_capped` frame).
-    /// The turn did not finish and nothing about the provider is at fault.
+    /// (issue #193) The engine's OWN turn bound stopped the turn (a run of
+    /// identical refused tool batches `MAX_IDENTICAL_REFUSAL_RUNS` — the engine's
+    /// `turn_capped` frame; since `fulcrum-harness 0.5.1` that run is the ONLY
+    /// producer, the per-prompt round bound being deleted with ADR 0116). The turn
+    /// did not finish and nothing about the provider is at fault.
     Capped,
 }
 

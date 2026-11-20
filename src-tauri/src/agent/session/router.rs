@@ -148,10 +148,10 @@ impl SessionManager {
                 // stream and never reaches the next iteration's bound check. If
                 // that ever changed, `Truncated` would WIN: it is the more
                 // specific provider fact (it names what the provider did), and
-                // the round bound firing afterwards would be describing a turn
-                // we already know the reason for. Implementing that preference
-                // needs a compare, not an assign — so it stays a documented
-                // impossibility rather than a branch no event sequence can reach.
+                // the identical-refusal run firing afterwards would be describing
+                // a turn we already know the reason for. Implementing that
+                // preference needs a compare, not an assign — so it stays a
+                // documented impossibility rather than a branch no event sequence can reach.
                 if !is_subagent {
                     let stashed = match e {
                         RpcEvent::turn_truncated => Some(TurnDisposition::Truncated),
@@ -1075,11 +1075,12 @@ mod tests {
     ///
     /// The desktop half of the fix, and the first construction site
     /// `StopReason::MaxTurnRequests` has ever had. The engine emits
-    /// `turn_capped` BEFORE `turn_end` / `agent_settled` on the same pipe (the
-    /// round ceiling `MAX_MODEL_ROUNDS_PER_PROMPT`, or a run of identical refused
-    /// tool batches), `route_event` stashes it, `resolve_turn` maps it. The bug
-    /// this pins is the SAME silent one #190 fixed for `length`: with no arm
-    /// naming the frame, a capped turn resolved as `end_turn` — the composer
+    /// `turn_capped` BEFORE `turn_end` / `agent_settled` on the same pipe (a run
+    /// of identical refused tool batches — since `fulcrum-harness 0.5.1` that run
+    /// is the ONLY producer of this frame, the per-prompt round bound being
+    /// deleted with ADR 0116), `route_event` stashes it, `resolve_turn` maps it.
+    /// The bug this pins is the SAME silent one #190 fixed for `length`: with no
+    /// arm naming the frame, a capped turn resolved as `end_turn` — the composer
     /// unlocked, no footer line, and `attention.ts` announced it as "finished —
     /// waiting for you".
     #[test]

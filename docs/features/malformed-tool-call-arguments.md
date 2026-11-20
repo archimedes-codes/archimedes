@@ -35,7 +35,7 @@ times in 19 minutes and nothing bounded it.
 | Link | Fix |
 |---|---|
 | The parser erased the defect | `ToolCall.defect: Option<ArgumentDefect>` (`{kind, message, raw}`) preserves the parse error and the raw text; one head arm in `unknown_param_error` names what actually happened |
-| The turn loop was unbounded | `MAX_MODEL_ROUNDS_PER_PROMPT` + `MAX_IDENTICAL_REFUSAL_RUNS`; a capped turn settles as `turn_capped` → `StopReason::MaxTurnRequests` |
+| The turn loop was unbounded | `MAX_IDENTICAL_REFUSAL_RUNS` (3 consecutive identical refused batches); a capped turn settles as `turn_capped` → `StopReason::MaxTurnRequests`. This is now the ONLY turn bound — the per-prompt round bound was deleted in `fulcrum-harness 0.5.1` (ADR 0116) |
 | A `function_call` vanished on the Responses wire | every terminal event now flushes its tool calls, and a `completed` without `status: "completed"` stops claiming success |
 | Which OpenAI-shaped wire was live was undecidable afterwards | the chosen `WireApi` is logged at construction to `eprintln!` **and** the always-on `diagnostics` channel |
 
@@ -46,22 +46,22 @@ into a plausible non-empty call. Five harnesses (pi, cline, LangChain, opencode,
 `arguments: {}` and carry the discriminator in a separate optional field. None repairs `{}` itself, and
 neither does this.
 
-## 2. The loop bound counts a ROUND, not an HTTP request
+## 2. The surviving bound is a RUN bound, and there is no round bound behind it
 
-This is the sentence most likely to be misread later. Worst case is
-`MAX_MODEL_ROUNDS_PER_PROMPT × RetryPolicy.max_attempts` **plus** uncounted `compact_if_due` summary
-calls, because `RetryPolicy::call_with_retry` can issue several provider calls inside one round. The
-upstream band (opencode 32, kiro 50, crush 64, cline 1000) justifies the **magnitude only** — it was read
-from other projects' code and **never measured against our traffic**, and the run bound of 3 is a starting
-value for the same reason. The bound is **per-prompt**: a re-prompt restarts both counters, so the user
-must intervene. Neither constant is configurable — not on `ModelOptions`. A bound can only fire at the top
-of the **next** iteration; `run_tool_batch`'s `join_all` has no bound of its own, so there is no mid-batch
-preemption.
+`MAX_IDENTICAL_REFUSAL_RUNS = 3` is the **only** turn bound the engine has. It is **per-prompt** — a
+re-prompt restarts the counter, so the user must intervene — it is **not configurable** (not on
+`ModelOptions`), and it bounds **consecutive byte-identical refused batches** and nothing else. There
+used to be a per-prompt round bound behind it; `fulcrum-harness 0.5.1` deleted it (ADR 0116), so a
+loop this guard does not recognise is now stopped by nothing at all. The guard can only fire at the
+top of the **next** iteration: `run_tool_batch`'s `join_all` has no bound of its own, so there is no
+mid-batch preemption and a batch of looping children costs unbounded time inside one batch.
 
 ## 3. The refusal guard is deliberately biased to MISS
 
-A false positive here ends a user's prompt, which is worse than a loop that runs to the 64-round ceiling.
-Three review rounds were spent removing false positives, and every exclusion is pinned individually:
+A false positive here ends a user's prompt, and since 0.5.1 there is no second bound to catch a loop
+the guard mis-reads — so the cost of a false positive is a prompt lost for nothing, and the cost of a
+miss is a prompt that never ends. Three review rounds were spent removing false positives, and every
+exclusion is pinned individually:
 
 - A **permission denial** and a **declined `sudo_exec` confirm** are user decisions, not re-send
   instructions. Both thread a structural `denied` flag.
@@ -76,7 +76,10 @@ Three review rounds were spent removing false positives, and every exclusion is 
   caught by `a_call_using_an_advertised_alias_is_never_a_refusal_run`, **not** by the census test.
 - `ls {}` advertises `path` as required, defaults it to the cwd, and **succeeds** — excluded by the
   `is_error` half. The `ls` spec/executor contradiction is still unfixed and is its own card.
-- Wrong-type required values (`bash {"command": 42}`) and empty alias values fall to the round ceiling.
+- Wrong-type required values (`bash {"command": 42}`) and empty alias values fall to **no bound at
+  all**. They used to fall to the per-prompt round bound; `fulcrum-harness 0.5.1` deleted it (ADR
+  0116), and this guard does not see them, so that class is now unbounded. The doc no longer promises
+  a backstop for it.
 
 `src/source_lints.rs::every_denial_marking_site_in_the_batch_is_accounted` pins the count of
 denial-marking and run-marking sites, because a `bool` is not un-forgettable and a non-exhaustive enum
@@ -105,7 +108,11 @@ because a `json!` fixture would silently track the struct.
 
 ## 5. Two vocabularies, and where the capped turn is read
 
-`turn_capped` is emitted by the engine and read **only** by the desktop. `resolve_turn` decides via an
+`turn_capped` is emitted by the engine and consumed in **two** places: the desktop, and the engine's own
+subagent-flow observer (`fulcrum:src/worker/manager/subagent_flow.rs`, which matches
+`RpcEvent::turn_capped` to carry a capped child's failure up to its parent). The desktop is nonetheless
+the only reader that turns the frame into a `StopReason`, and that is the distinction this section cares
+about. `resolve_turn` decides via an
 exhaustive `match` on `(bool, Option<TurnDisposition>)` — it was an `if/else if/else` chain, the one site
 that maps a disposition to a `StopReason`, and the chain silently dropped a new disposition as `end_turn`.
 Cancellation still wins. **Both** clears are required (`resolve_turn_forced` and the `send_prompt`
