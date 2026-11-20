@@ -7,10 +7,23 @@ re-verified: 2026-11-20 — three of this recipe's steps were checked against HE
   two command-level pins (`test_mcp_server_a_401_on_an_oauth_server_is_the_auth_kind`,
   `test_mcp_server_a_non_auth_failure_keeps_the_test_failed_kind`), so `mcp_auth_failed` is now frozen by the
   gate at `src-tauri/tests/error_wire_gate.rs` but the 401→auth-kind *routing* is still unproven by any test.
-  Step 1 itself did land (`commands/settings.rs:217` maps the 401 onto `SettingsError::McpAuthFailed`). The
-  ratchet reason is recorded at the recipe's file-list row 2 and in *The missing drift pin*, and that section's
-  code sketch was re-checked: `SettingsError` has 12 variants, not the nine the sketch claimed. No other figure
-  in this record was re-run that day.
+  **CORRECTED THE SAME DAY: the clause that followed — "Step 1 itself did land (`commands/settings.rs:217` maps
+  the 401 onto `SettingsError::McpAuthFailed`)" — was FALSE. Step 1 did not land either.** `:217` is the
+  `.map_err` on `authenticate_server` inside **`auth_mcp_server`** (declared `:198`), NOT `test_mcp_server`
+  (declared `:185`), and `git log -1 -L 217,217:src-tauri/src/commands/settings.rs` dates that line to `eb8ac18b`
+  (2026-11-05, "Move the engine into fulcrum-core: harness, tools, mcp, providers, worker"), months before this
+  card existed. `test_mcp_server` still ends in the blanket `.map_err(SettingsError::McpTestFailed)` at `:193`
+  with no arm for `test_server`'s raw `"needs-auth"` marker before the wrap, and the wrapper at
+  `src/lib/tauri/commands/settings.ts:67` still states in prose that `kind` is `mcp_test_failed` for EVERY test
+  failure — so the routing (401 → `mcp_auth_failed`) is **unshipped and unproven**, and the new gate freezes the
+  *spelling* only, exactly as the body section argues. The instrument trail for all of it is in *"Two other steps
+  of this recipe also never landed"* below. The ratchet reason is recorded at the recipe's file-list row 2 and in
+  *The missing drift pin*, and that section's code sketch was re-checked: `SettingsError` has 12 variants, not the
+  nine the sketch claimed. Re-run in this correction: the three greps this block itself names (the missing
+  fourth pin, the two command-level pins), the 12-variant recount, the gate's existence, the
+  `src/lib/errors.ts` deletion, and every line number this block or the correction below cites. **No other
+  figure in this record was re-run** — the Gate 1 / Gate 2 counts, the probe tables and the marker censuses
+  still carry only the measurements they were written from.
 ---
 
 # improvement-correctness-seams — close-out record
@@ -295,10 +308,40 @@ inside `errors.rs` reddens the ratchet. The gate is outside the instrument by th
 **Two other steps of this recipe also never landed, and the reader should not assume they did:** the two
 command-level pins this section goes on to specify (`test_mcp_server_a_401_on_an_oauth_server_is_the_auth_kind`
 and `test_mcp_server_a_non_auth_failure_keeps_the_test_failed_kind`) exist nowhere in `src-tauri/` at HEAD, so
-`mcp_auth_failed` and `mcp_test_failed` are still asserted only by `kind()`'s own arm plus the new gate. Step 1
-*did* land — `commands/settings.rs:217` maps the 401 onto `SettingsError::McpAuthFailed` — so the behaviour is
-right and the command-level *proof* is what is missing. The gate covers the spelling, not the routing: only a
-401-listener test would catch the wrap being reverted to `McpTestFailed`.
+`mcp_auth_failed` and `mcp_test_failed` are still asserted only by `kind()`'s own arm plus the new gate.
+
+**Correction (2026-11-20, same day — the sentence that followed this one was FALSE).** What was written there
+was: *"Step 1 *did* land — `commands/settings.rs:217` maps the 401 onto `SettingsError::McpAuthFailed` — so the
+behaviour is right and the command-level *proof* is what is missing."* **Step 1 did not land.** Three
+instruments, all re-run against this tree:
+
+1. **The function's own body.** `:217` is the `.map_err(SettingsError::McpAuthFailed)` on the
+   `authenticate_server` call inside **`auth_mcp_server`** (declared `commands/settings.rs:198`). It is not in
+   `test_mcp_server` at all, and Step 1 of this recipe is explicitly about `test_mcp_server`. That function
+   (`:185–194`) still reads `classify_server` → a 10 s `Duration` → `test_server(...)` → `.await` →
+   `.map(|n| n as u32)` → **`.map_err(SettingsError::McpTestFailed)`** (`:193`) — the blanket wrap, with no arm
+   for `test_server`'s raw `"needs-auth"` marker before it. That absence *is* Step 1.
+2. **`git log -L`.** `git log -1 -L 217,217:src-tauri/src/commands/settings.rs` attributes `:217` to `eb8ac18b`
+   (2026-11-05, "Move the engine into fulcrum-core: harness, tools, mcp, providers, worker (Fulcrum T1–T8)") —
+   the `mcp` move, which carried the pre-existing `auth_mcp_server` wrap along with the code it moved. It predates
+   this card by months, so it cannot be this recipe landing. The misread was a line-number match with no check of
+   which function owned the line.
+3. **The wrapper's prose.** `src/lib/tauri/commands/settings.ts:67` still says `kind` is `mcp_test_failed` **for
+   EVERY test failure** and that "the auth case carries no machine discriminator of its own today". Row 6 of the
+   file list above names that very sentence as the one the unblock turns FALSE. It is still TRUE — as is ADR 0063
+   `:170` ("The `kind` is always `mcp_test_failed`, so there is **no machine discriminator** on the auth case"),
+   row 7's other half. Steps 4 and 5 are likewise unshipped: `McpSection.tsx:113–114` still branches on the
+   **sentence** (`result.error.includes("needs-auth")`) with no `kind` in sight, both catch blocks still store
+   `setResult({ error: describeIpcError(e) })` (`:92`, `:107`) so the component never sees a `kind` to branch on,
+   and `McpSection.test.tsx:155` is still `it.skip` with a mock `kind: "mcp_test_failed"`.
+
+So the behaviour is the one this doc recorded before the recipe was ever run: a 401-on-OAuth from
+`test_mcp_server` reaches the renderer as `mcp_test_failed` with `needs-auth` inside the sentence, and the badge
+decides on that sentence. `mcp_auth_failed` is frozen as a **spelling** by the new gate; the **routing** that
+would put a real 401 on it was never written, and remains unshipped and unproven. That is what the last sentence
+of this paragraph has always argued and it stands unchanged: the gate covers the spelling, not the routing — only
+a 401-listener test would catch the auth arm being dropped from the wrap, and there is no such test. The wrap at
+`:193` is already the blanket `McpTestFailed` one, so there is nothing to revert TO: what is missing is the arm.
 
 The shape this section prescribed, kept as the history of what was asked for (and wrong in its count):
 
