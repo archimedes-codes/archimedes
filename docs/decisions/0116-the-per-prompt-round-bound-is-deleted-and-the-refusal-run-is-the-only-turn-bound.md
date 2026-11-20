@@ -7,7 +7,7 @@ superseded-by:
 # The per-prompt round bound is deleted, and the identical-refusal run is now the ONLY turn bound
 
 `fulcrum-harness 0.5.1` deletes the engine's per-prompt **round bound** (the
-64-model-rounds-per-prompt ceiling) — together with the `model_rounds` counter that fed it and the
+64-model-rounds-per-prompt ceiling) — together with the per-prompt round counter that fed it and the
 guard clause that read it.
 `MAX_IDENTICAL_REFUSAL_RUNS = 3` is untouched and is now the **sole** producer of
 `RpcEvent::turn_capped`.
@@ -135,6 +135,21 @@ actually consistent with.
   `Cargo.lock` is the pin; the manifest's pin comment now carries one line noting that 0.5.1 is the
   release that removes the per-prompt round bound. `cargo check` compiles **unchanged** against 0.5.1 —
   that is the expected result, not a sign the update did nothing.
+- **The lockfile moved further than the pin, and the move is recorded here rather than reverted.** Of
+  the 34 changed lines in `Cargo.lock`, 2 are the pin (version + checksum); the other 15 dependency
+  EDGES drop `windows-sys` from `0.61.2` to `0.59.0` / `0.60.2` / `0.45.0` (`socket2`, `muda`,
+  `tray-icon`, `window-vibrancy`, `uds_windows`, `rustls-platform-verifier`, `anstyle-query`,
+  `anstyle-wincon`, `dirs-sys`, `errno`, `tempfile`, `quinn-udp`, `rustix`, `winapi-util`, `os_pipe`).
+  Every edge is legal before and after — each dependent's requirement admits both the old and the new
+  version (`socket2 0.6.5` wants `>=0.60, <0.62`; `muda 0.20.0` wants `>=0.60, <=0.61`; `tempfile
+  3.27.0` wants `>=0.52, <0.62`; `os_pipe 1.2.3` wants `>=0.28, <=0.61`) — `windows-sys 0.61.2` is not
+  yanked, and no package *version* changed anywhere else in the lock: only edges moved. The engine
+  caused it indirectly by forcing a re-unification of the desktop's graph, not by changing its own
+  byte-identical 22-dependency list (its lock holds all of these at `0.61.2` at both 0.5.0 and 0.5.1),
+  and it is not reproducible away: `cargo update -p fulcrum-harness --precise 0.5.1` yields these exact
+  34 lines while an unrelated `cargo update -p once_cell` yields zero. Blast radius is
+  **Windows-only** (`windows-sys` is a `cfg(windows)` dependency), so the Linux CI legs and the green
+  local suite are unaffected, and re-resolving does not avoid it.
 - **`attention.ts`'s `stopReasons[id] === "end_turn"` whitelist is now load-bearing, not free.**
   `docs/features/honest-turn-outcome-surfaces-known-gaps.md` gap 4 claimed `max_turn_requests` had
   zero Rust construction sites and therefore failed closed *for free*; that was already false (the

@@ -148,10 +148,10 @@ impl SessionManager {
                 // stream and never reaches the next iteration's bound check. If
                 // that ever changed, `Truncated` would WIN: it is the more
                 // specific provider fact (it names what the provider did), and
-                // the round bound firing afterwards would be describing a turn
-                // we already know the reason for. Implementing that preference
-                // needs a compare, not an assign — so it stays a documented
-                // impossibility rather than a branch no event sequence can reach.
+                // the identical-refusal run firing afterwards would be describing
+                // a turn we already know the reason for. Implementing that
+                // preference needs a compare, not an assign — so it stays a
+                // documented impossibility rather than a branch no event sequence can reach.
                 if !is_subagent {
                     let stashed = match e {
                         RpcEvent::turn_truncated => Some(TurnDisposition::Truncated),

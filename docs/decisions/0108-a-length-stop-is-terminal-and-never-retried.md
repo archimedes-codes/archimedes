@@ -274,3 +274,14 @@ mints **no notice at all** — verified live against this deployment's own gatew
 equal to `completion_tokens`, no visible characters, `finish_reason: "stop"`). That shape is invisible to
 this decision's gate, invisible to the Falsifier's query, and unaffected by any cap sizing. It is not a
 counter-example to terminality; it is a different defect, and it is where the remaining user pain is.
+
+## Amendment (2026-11-20) — one of the two producers of `Capped` is gone (ADR 0116)
+
+One of the two producers of `TurnDisposition::Capped` / `RpcEvent::turn_capped` — the engine's
+per-prompt ceiling on model rounds — was deleted in `fulcrum-harness` 0.5.1 (ADR 0116). **This ADR's
+decision is unchanged**, and so are the frame, the disposition and every mapping recorded above: a
+`Length` stop is still terminal and never retried, and `Capped` still resolves as
+`StopReason::MaxTurnRequests`. What moved is the context this decision's machinery was described
+against: the identical-refusal run (`MAX_IDENTICAL_REFUSAL_RUNS = 3`) is now the **sole** producer of
+`turn_capped`, so the turn loop this prose and the issue #193 work describe has one bound, not two.
+See ADR 0116.

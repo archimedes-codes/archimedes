@@ -108,7 +108,11 @@ because a `json!` fixture would silently track the struct.
 
 ## 5. Two vocabularies, and where the capped turn is read
 
-`turn_capped` is emitted by the engine and read **only** by the desktop. `resolve_turn` decides via an
+`turn_capped` is emitted by the engine and consumed in **two** places: the desktop, and the engine's own
+subagent-flow observer (`fulcrum:src/worker/manager/subagent_flow.rs`, which matches
+`RpcEvent::turn_capped` to carry a capped child's failure up to its parent). The desktop is nonetheless
+the only reader that turns the frame into a `StopReason`, and that is the distinction this section cares
+about. `resolve_turn` decides via an
 exhaustive `match` on `(bool, Option<TurnDisposition>)` — it was an `if/else if/else` chain, the one site
 that maps a disposition to a `StopReason`, and the chain silently dropped a new disposition as `end_turn`.
 Cancellation still wins. **Both** clears are required (`resolve_turn_forced` and the `send_prompt`
