@@ -462,6 +462,23 @@ describe("StageEditor — renaming a Stage keeps its slug", () => {
     expect(slice().map((c) => c.stage.slug)).toEqual(["backlog", "doing", "done"]);
   });
 
+  it("filtering a row away discards its uncommitted draft (the field re-shows the stored label)", async () => {
+    renderEditor();
+    fireEvent.change(labelField("doing"), { target: { value: "In flight" } });
+    expect(valueOf(labelField("doing"))).toBe("In flight");
+    fireEvent.change(screen.getByPlaceholderText("Search stages…"), {
+      target: { value: "backlog" },
+    });
+    expect(within(dialog()).queryByTestId("stage-row-doing")).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText("Search stages…"), {
+      target: { value: "" },
+    });
+    // The draft is GONE: it lived with the row, and the row unmounted. The field
+    // shows what the database holds, which is the same rule a refused rename follows.
+    await waitFor(() => expect(valueOf(labelField("doing"))).toBe("Doing"));
+    expect(renameStage).not.toHaveBeenCalled();
+  });
+
   it("a refused rename puts the stored label back in the field and says why", async () => {
     vi.mocked(renameStage).mockRejectedValue({
       kind: "not_found",

@@ -1,0 +1,464 @@
+import { useRef, useState } from "react";
+import type { KeyboardEvent, MouseEvent, ReactElement } from "react";
+import { ChevronDownIcon, ChevronUpIcon, Trash2Icon } from "lucide-react";
+import { MutedCaption } from "../MutedCaption";
+import { RowButton } from "../RowButton";
+import { StageDestinations } from "./StageDestinations";
+import { cn } from "../lib/utils";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
+import { useTasks } from "../../store/tasks";
+import type { SkillInfo, StageDto } from "../../lib/tauri";
+import { CONTROL_ROW, ROW_BUTTON, ROW_SELECT } from "./stageStyles";
+
+/**
+ * One **Stage row** — the whole editing form for one column of the board: its
+ * label, its card count, its slug caption, the Skill a Session started from it
+ * loads (ADR 0098), its destinations (`StageDestinations`), its place in the
+ * order, and its deletion.
+ *
+ * ---------------------------------------------------------------------------
+ * IT READS THE STORE DIRECTLY, THE WAY `SessionRow` DOES
+ * ---------------------------------------------------------------------------
+ *
+ * The five verbs its own controls call — `renameStage`, `setStageSkill`,
+ * `setStageNext`, `reorderStages`, `deleteStage` — come off `useTasks` here rather
+ * than through props, exactly as `spaces/SessionRow.tsx` reads `useSessions` for
+ * its own Stop / Archive. A prop per verb would be five more props for five calls
+ * whose trigger is in this file, and the parent holds none of the state they touch:
+ * `store/tasks` owns the optimistic paint, the whole-slice re-derivation and the
+ * revert into `error` (spec §8.1), which the dialog renders.
+ *
+ * It also reads the board slice itself, for ONE thing `derived` deliberately does
+ * not carry: the LABELS of the other columns. `derived` is `{ cardCount, slugs }` —
+ * the count the row prints and the whole ordered slug list the reorder needs — and
+ * neither can answer "what is `doing` called", which the destination chips, the
+ * add-`Select`'s items and the delete picker all print. The read returns the SAME
+ * array reference the parent already holds (zustand hands out the stored slice, so
+ * this subscription costs no extra render), and it is why `candidates` reaches
+ * `StageDestinations` from here instead of riding in `derived`.
+ *
+ * ---------------------------------------------------------------------------
+ * ONE `role="button"`, AND WHO GETS THE CLICK
+ * ---------------------------------------------------------------------------
+ *
+ * A row is ONE `RowButton` — the app's only hand-rolled `role="button"` row — and
+ * every control nested in it is a native `<button>` or `<input>` with NO `role`
+ * attribute spelled (a `<button>` needs none, and spelling one would give every row
+ * a second `[role="button"]` node, which is what breaks the eight
+ * `.closest('[role="button"]')` reads in `SpacesList.test.tsx`).
+ *
+ * Interaction routing, in one sentence and pinned by the two cases named
+ * `one role per row, and who gets the click` in `StageEditor.test.tsx`: **the row's
+ * single affordance is "focus this Stage's label field", so every nested control
+ * calls `stopPropagation()` on its `onClick` (otherwise the click bubbles into the
+ * row and steals focus out of the control the user just used), and the row's own
+ * `onKeyDown` acts only when `event.target === event.currentTarget` (otherwise an
+ * Enter pressed inside the label `Input` or a nested button bubbles into the row's
+ * Enter handler and moves focus on top of the action that key just performed).** The
+ * sessions-chip precedent in `TaskCard.tsx` established the click half; the keydown
+ * half is new here because this row nests a full form, which no chip-row in the app
+ * does.
+ *
+ * ---------------------------------------------------------------------------
+ * THE SLUG IS A CAPTION, NOT A FIELD
+ * ---------------------------------------------------------------------------
+ *
+ * `createStage` derives the slug from the label in Rust and `renameStage` writes the
+ * label ONLY, because `tasks.stage_slug` points at the slug by string with no
+ * foreign key (spec §5). So the slug is shown quiet and read-only: the mismatch
+ * between "In flight" and `doing` is information the user needs and a rename field
+ * would hide.
+ *
+ * ---------------------------------------------------------------------------
+ * THE LABEL DRAFT IS ROW-LOCAL, AND THAT IS A DECISION WITH A COST
+ * ---------------------------------------------------------------------------
+ *
+ * `draft` is a `useState` on the row, where the field that edits it is. The dialog
+ * used to hold one `Record<string, string>` for all rows, keyed by slug — and that
+ * Record outlived a filtered-out row, so a half-typed label survived filtering the
+ * row away and back. It does not survive now: unmount discards it and the field
+ * re-shows the stored label. `StageEditor.test.tsx`'s
+ * `filtering a row away discards its uncommitted draft` pins the new behaviour,
+ * because the alternative was threading the parent's Record down as a prop and an
+ * `onChange` to match — two more props and the split placement this extraction
+ * exists to remove. The rule it now shares with a REFUSED rename is the one the
+ * field already followed there: what is on screen is what the database holds.
+ */
+export function StageRow({
+  stage,
+  spacePath,
+  derived,
+  skills,
+  pendingDelete,
+  onAskDelete,
+  onDismissDelete,
+}: {
+  stage: StageDto;
+  /** The Space the five verbs this row calls address. `string`, not `string | null`
+   *  — `StageEditor`'s early return makes a Spaceless mount unreachable, so the
+   *  guards these callbacks each carried are now the type's job. */
+  spacePath: string;
+  /** What the parent already computed from the WHOLE column set, so this row does no
+   *  per-row scan for it. See the header for what is deliberately NOT in here. */
+  derived: {
+    /** How many cards this column holds — the number the row prints AND the number
+     *  that decides whether deleting it asks a question. */
+    cardCount: number;
+    /** EVERY column's slug, in board order: ONE array reference, shared by every
+     *  row. Load-bearing — see `moveStage`. */
+    slugs: string[];
+  };
+  /** The Space's Skill catalog, from the dialog's ONE `useMentionCatalogs` mount. */
+  skills: SkillInfo[];
+  /** Is THIS row the one waiting on a delete destination? A boolean and not a slug
+   *  because the parent holds the single-pending-row invariant — one dialog, one
+   *  open question at a time — and this row only ever needs to know whether the
+   *  question is its own. */
+  pendingDelete: boolean;
+  /** Ask the parent to make this row the pending one. */
+  onAskDelete: () => void;
+  /** Tell the parent no row is pending any more. */
+  onDismissDelete: () => void;
+}): ReactElement {
+  const renameStage = useTasks((s) => s.renameStage);
+  const setStageSkill = useTasks((s) => s.setStageSkill);
+  const setStageNext = useTasks((s) => s.setStageNext);
+  const reorderStages = useTasks((s) => s.reorderStages);
+  const deleteStage = useTasks((s) => s.deleteStage);
+  // The column set, for the OTHER columns' labels — see the header. The same
+  // reference the parent renders from, so the two cannot disagree about a name.
+  const columns = useTasks((s) => s.boardsBySpace[spacePath]);
+
+  const { cardCount, slugs } = derived;
+  // `position` and `total` are derived HERE rather than passed in: the row holds the
+  // ordered slug list already, and both are one read off it.
+  const position = slugs.indexOf(stage.slug);
+  const total = slugs.length;
+
+  /** The label being typed, or `null` when the field shows the STORED label. Local
+   *  on purpose: the store holds the STORED label (what the board paints) and this
+   *  holds what is being typed, so the column header never flickers with half-typed
+   *  text. Cleared after a commit — success or refusal — so the field falls back to
+   *  what the store actually has. */
+  const [draft, setDraft] = useState<string | null>(null);
+  /** The row's own focus route. It was a `Map<string, HTMLInputElement>` in the
+   *  parent, existing ONLY so the parent could focus an `Input` a row renders; the
+   *  row's `onClick` is right here, so one local ref replaces the map, its setter
+   *  callback and its unmount cleanup. */
+  const labelRef = useRef<HTMLInputElement>(null);
+
+  const commitLabel = async (): Promise<void> => {
+    const committed = draft;
+    setDraft(null);
+    // NO draft, or a draft identical to the stored label → nothing to write. The
+    // commit fires on every blur, and a blur happens on every click elsewhere in
+    // the dialog, so an ungated commit would rewrite the whole board's labels as the
+    // user worked.
+    if (committed === null || committed === stage.label) return;
+    try {
+      await renameStage(spacePath, stage.slug, committed);
+    } catch {
+      // The store reverted the slice and wrote the sentence into `error`, which this
+      // dialog renders; the draft is already cleared, so the field falls back to the
+      // label the database actually holds.
+    }
+  };
+
+  const addDestination = async (destination: string): Promise<void> => {
+    // `null` (unconfigured) becomes the LIST the user is starting, because choosing
+    // a destination IS configuring the column. The `[]` case is left alone — an
+    // empty list is "configured, and nothing follows this column" (ADR 0099), which
+    // appending to is exactly what the user asked for.
+    const current = stage.nextSlugs ?? [];
+    if (current.includes(destination)) return;
+    try {
+      await setStageNext(spacePath, stage.slug, [...current, destination]);
+    } catch {
+      // Reverted; the store's line explains it (an unknown slug or a self-loop
+      // REFUSES rather than dropping the entry — spec §4).
+    }
+  };
+
+  const writeDestinations = async (next: string[]): Promise<void> => {
+    try {
+      await setStageNext(spacePath, stage.slug, next);
+    } catch {
+      // Reverted; see `addDestination`.
+    }
+  };
+
+  /** The whole-slice reorder (spec §4's `reorder_spaces` contract): swap the two
+   *  slugs LOCALLY and hand the command EVERY column, not the pair that moved.
+   *
+   *  This is why `slugs` is a prop and `position` is not: the row cannot build the
+   *  array from its own position and a count, and a two-slug patch would leave the
+   *  untouched columns holding a stale `sort_order` that can collide with the
+   *  renumbered ones. */
+  const moveStage = async (delta: -1 | 1): Promise<void> => {
+    const at = position;
+    const to = at + delta;
+    if (at === -1 || to < 0 || to >= total) return;
+    const next = [...slugs];
+    [next[at], next[to]] = [next[to]!, next[at]!];
+    await reorderStages(spacePath, next);
+  };
+
+  const requestDelete = (): void => {
+    // An EMPTY column needs no destination and no question — there is nothing to
+    // relocate. A column WITH cards can only be deleted through a destination: a
+    // card whose `stage_slug` names no row is invisible to `get_board`, keeps
+    // costing money through its Session, and can never be clicked again (spec §4.1),
+    // so there is no "delete anyway" escape to offer.
+    //
+    // `cardCount` and not a fresh slice lookup: it is the SAME number the row prints
+    // two lines above, so the caption and the decision cannot disagree.
+    if (cardCount === 0) {
+      void deleteStage(spacePath, stage.slug);
+      return;
+    }
+    onAskDelete();
+  };
+
+  const confirmDelete = async (relocateTo: string): Promise<void> => {
+    onDismissDelete();
+    // ONE call. The relocation is a bulk UPDATE inside `delete_stage`'s own
+    // transaction; `moveTask` per card would run the destination's `on_enter` once
+    // per card — five cards, five compactions, all as a side effect of deleting a
+    // column (spec §4.1).
+    await deleteStage(spacePath, stage.slug, relocateTo);
+  };
+
+  const destinations = stage.nextSlugs;
+  // The columns this Stage could point at: everything EXCEPT itself. A self-loop is
+  // refused by `set_stage_next` (spec §4 — it would be a button that moves a card to
+  // the column it is already in), so offering it would be a control that can fail.
+  const candidates = (columns ?? [])
+    .filter((c) => c.stage.slug !== stage.slug)
+    .map((c) => ({ slug: c.stage.slug, label: c.stage.label }));
+  const labelOf = (slug: string): string =>
+    columns?.find((c) => c.stage.slug === slug)?.stage.label ??
+    // An edge the slice cannot resolve still gets its slug: dropping it here would
+    // shrink the workflow on screen, which is the failure `set_stage_next` refuses to
+    // write in the first place.
+    slug;
+  const focusLabel = (): void => labelRef.current?.focus();
+  const stop = (event: MouseEvent | KeyboardEvent): void => event.stopPropagation();
+
+  return (
+    <RowButton
+      data-testid={`stage-row-${stage.slug}`}
+      className={cn(STAGE_ROW, "cursor-pointer hover:bg-surface-hover")}
+      onClick={() => focusLabel()}
+      // NO `onKeyDown` here, and that is a type fact before a design one:
+      // `RowButtonProps` OMITS `onKeyDown`, because the row's Enter activation
+      // is `RowButton`'s own and it calls the SAME `onClick` this line sets.
+      // So the Enter route to this affordance comes free, and the leak an Enter
+      // pressed inside a nested control would cause is closed at the CHILD end
+      // — every nested control below stops its own `onKeyDown` (`stop`), which
+      // keeps the row's Enter handler from firing on a keypress that belongs to
+      // the control. `preventDefault` is not used anywhere in this row, so
+      // stopping propagation cannot cost a control its own activation.
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <Input
+          ref={labelRef}
+          aria-label={`Label for ${stage.slug}`}
+          className="min-w-0 flex-1"
+          value={draft ?? stage.label}
+          onChange={(event) => setDraft(event.target.value)}
+          onClick={stop}
+          // Enter commits the rename (a field you have to LEAVE to apply is a
+          // field that lies about what is saved), and the event stops here so
+          // the row's Enter handler stays out of it.
+          onKeyDown={(event) => {
+            stop(event);
+            if (event.key === "Enter") void commitLabel();
+          }}
+          onBlur={() => void commitLabel()}
+        />
+        {/* The count, so a rename is not the only thing a row can tell you:
+            how many cards this column holds is what decides whether deleting
+            it will ask a question. */}
+        <span className="shrink-0 rounded-md bg-panel px-2 py-0.5 font-mono text-ui-sm text-foreground-subtlest">
+          {cardCount}
+        </span>
+      </div>
+
+      {/* The slug, read-only. Frozen after `createStage` derives it, so the
+          caption exists to make the label↔slug mismatch VISIBLE rather than
+          to be edited away (spec §5). */}
+      <MutedCaption data-testid={`stage-slug-${stage.slug}`}>
+        {stage.slug}
+      </MutedCaption>
+
+      <div className={CONTROL_ROW}>
+        <Select
+          value={stage.onEnterSkill ?? NO_SKILL}
+          onValueChange={(next) => {
+            void setStageSkill(
+              spacePath,
+              stage.slug,
+              next === NO_SKILL ? null : next,
+            ).catch(() => {
+              // Reverted; the store's line says which Skill was refused.
+            });
+          }}
+        >
+          <SelectTrigger
+            aria-label={`Skill for ${stage.slug}`}
+            className={ROW_SELECT}
+            onClick={stop}
+            // Radix opens on keydown as well as click, so both stop here:
+            // otherwise choosing a Skill with the keyboard also runs the row.
+            onKeyDown={stop}
+          >
+            <SelectValue>
+              {/* A stored Skill the catalog no longer holds (a renamed
+                  directory) would render an EMPTY trigger, which reads as
+                  "nothing configured". Name what is saved instead — the
+                  `PermissionsSection` precedent for the same trap. */}
+              {stage.onEnterSkill ?? "none"}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NO_SKILL}>none</SelectItem>
+            {skills.map((s) => (
+              <SelectItem key={s.path} value={s.name}>
+                {s.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <StageDestinations
+          stageSlug={stage.slug}
+          destinations={destinations}
+          candidates={candidates}
+          labelOf={labelOf}
+          onWrite={(next) => void writeDestinations(next)}
+          onAdd={(slug) => void addDestination(slug)}
+        />
+      </div>
+
+      <div className={CONTROL_ROW}>
+        {/* The column's place in the order — a SEPARATE question from the
+            destinations above (ADR 0099 splits "where does this render" from
+            "what may a Task go to next"), so it is a separate control. */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Move ${stage.slug} up`}
+          title={`Move ${stage.slug} up`}
+          className={ROW_BUTTON}
+          // `aria-disabled` and not `disabled`: the row is what the pointer
+          // lands on, and an inert arrow that still occupies its slot beats one
+          // that appears and disappears as the list moves.
+          aria-disabled={position <= 0 || undefined}
+          onKeyDown={stop}
+          onClick={(event) => {
+            stop(event);
+            if (position <= 0) return;
+            void moveStage(-1);
+          }}
+        >
+          <ChevronUpIcon className="size-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Move ${stage.slug} down`}
+          title={`Move ${stage.slug} down`}
+          className={ROW_BUTTON}
+          aria-disabled={position >= total - 1 || undefined}
+          onKeyDown={stop}
+          onClick={(event) => {
+            stop(event);
+            if (position >= total - 1) return;
+            void moveStage(1);
+          }}
+        >
+          <ChevronDownIcon className="size-4" />
+        </Button>
+
+        {pendingDelete ? (
+          // THE DESTINATION PICKER. It replaces the row's own delete control,
+          // so the only way to proceed is to name a destination — there is no
+          // "delete anyway" control anywhere in this branch (spec §8).
+          <span className="flex min-w-0 flex-wrap items-center gap-1">
+            <span className="min-w-0 truncate text-ui-sm text-foreground-subtle">
+              {cardCount} {cardCount === 1 ? "card" : "cards"} here — move them
+              to
+            </span>
+            <Select onValueChange={(next) => void confirmDelete(next)}>
+              <SelectTrigger
+                aria-label={`Move the cards in ${stage.slug} to`}
+                className={ROW_SELECT}
+                onClick={stop}
+                onKeyDown={stop}
+              >
+                <SelectValue placeholder="Choose a column" />
+              </SelectTrigger>
+              <SelectContent>
+                {candidates.map((c) => (
+                  <SelectItem key={c.slug} value={c.slug}>
+                    {c.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              aria-label={`Cancel deleting ${stage.slug}`}
+              className={ROW_BUTTON}
+              onKeyDown={stop}
+              onClick={(event) => {
+                stop(event);
+                onDismissDelete();
+              }}
+            >
+              <span>Cancel</span>
+            </Button>
+          </span>
+        ) : (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Delete ${stage.slug}`}
+            title={`Delete ${stage.slug}`}
+            className={ROW_BUTTON}
+            onKeyDown={stop}
+            onClick={(event) => {
+              stop(event);
+              requestDelete();
+            }}
+          >
+            <Trash2Icon className="size-4" />
+          </Button>
+        )}
+      </div>
+    </RowButton>
+  );
+}
+
+/** The row shell: Skills' geometry, once. `flex-col` because a Stage row is a
+ *  stack of fields, not a name-and-caption line. ONE consumer — this file — so it
+ *  lives here and not in `stageStyles.ts`. */
+const STAGE_ROW = "group flex min-w-0 flex-col gap-1 rounded-lg px-2.5 py-1.5";
+
+/** The `Select` sentinel for "no Skill". NOT the empty string: Radix refuses an
+ *  `SelectItem` with `value=""`, and `"none"` cannot collide with a Skill name
+ *  because a Skill's directory name is never the literal word `none`. */
+const NO_SKILL = "none";
