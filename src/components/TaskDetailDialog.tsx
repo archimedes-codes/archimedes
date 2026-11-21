@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import { Button } from "./ui/button";
 import { AgentMarkdown } from "./AgentMarkdown";
@@ -15,6 +15,7 @@ import { basenameOfPath } from "../lib/paths";
 import { fileIconFor } from "../lib/fileIcons";
 import { useMentionCatalogs } from "../hooks/useMentionCatalogs";
 import { useSessionStatuses } from "../hooks/useSessionStatus";
+import { useArtifactReader } from "../hooks/useArtifactReader";
 import { launchTaskSession } from "../store/taskLaunch";
 import { useSessions } from "../store/sessions";
 import { useTasks } from "../store/tasks";
@@ -27,7 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
-import type { Artifact, TaskRow, TaskSessionRow } from "../lib/tauri";
+import type { TaskRow, TaskSessionRow } from "../lib/tauri";
 
 /**
  * The **Task detail** modal — what a card opens when it is clicked.
@@ -144,57 +145,14 @@ export default function TaskDetailDialog({
   // action is never announced as a failure.
   const [note, setNote] = useState<string | null>(null);
 
-  // THE ARTIFACT READER's state (issue #180, spec §3). `selectedKey === null` means
-  // nothing is chosen: a card WITH keys does not auto-open one, because the board
-  // read carries names only and fetching a document nobody asked for is exactly the
-  // wire cost the keys-only payload exists to avoid.
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
-  // Its OWN error cell, not the launch `error` above: the two failures are about
-  // different things (a document that would not load vs. a Session that would not
-  // start) and one cell would let a stale launch sentence sit under an artifact
-  // read, or a reader failure claim the launch failed.
-  const [artifactError, setArtifactError] = useState<string | null>(null);
-
-  // The store's action (T3), read through `useTasks` and never as a bare command
-  // import — ADR 0074, which `tauriBoundary.test.ts` / `tauriBarrel.test.ts` enforce.
+  // The artifact reader (ADR 0114): its state and its request epoch live in
+  // `hooks/useArtifactReader`, mounted ONCE here because the rail and the pane
+  // read the SAME selection — two mounts would be two answers to "which key am
+  // I looking at". The store action is read here and passed in, never selected
+  // inside the hook: ADR 0074 puts the barrel read in the component/store.
   const getArtifact = useTasks((state) => state.getArtifact);
-
-  // WHICH key the one in-flight read belongs to. A ref and not state: nothing
-  // renders it, and it has to be readable by a resolution that lands AFTER the
-  // reader has moved on to another key — a `useState` value read inside the `await`
-  // below is the value this closure captured, which is exactly the stale answer.
-  const requestKey = useRef<string | null>(null);
-
-  const selectArtifact = async (key: string): Promise<void> => {
-    requestKey.current = key;
-    setSelectedKey(key);
-    // CLEARED BEFORE the fetch, so a previous document cannot paint under a new key
-    // while the new read is still in flight. This is one of TWO locks: it covers the
-    // in-flight gap, and the identity check after the `await` covers the answer that
-    // arrives after the reader moved on (which no clear can catch).
-    setSelectedArtifact(null);
-    setArtifactError(null);
-    try {
-      const artifact = await getArtifact(task.id, key);
-      // DROPPED, not rendered, when the reader has moved on: two reads can be in
-      // flight and the older one can answer LAST (a big spec over a slow IPC beats a
-      // small one), and painting it would show one key's document under another —
-      // a document lying about which key it is. Blanking the reader would be the
-      // other wrong answer, so the late resolution changes NOTHING.
-      if (requestKey.current !== key) return;
-      // `null` is an ANSWER (no such artifact, or no such Task — the `getTask`
-      // shape) and renders no document rather than an error sentence.
-      setSelectedArtifact(artifact);
-    } catch (err) {
-      // Same rule for the failure: a read the reader no longer asked for must not
-      // write an error sentence into the current view.
-      if (requestKey.current !== key) return;
-      // A rejection is the store RETHROWING (it captures to `error` AND rethrows, so
-      // a caller can tell "failed" from "answered `null`").
-      setArtifactError(describeIpcError(err));
-    }
-  };
+  const { selectedKey, selectedArtifact, artifactError, select } =
+    useArtifactReader({ taskId: task.id, getArtifact });
 
   // `mcpServers` is dropped here and `store/taskLaunch` passes an EMPTY list: this
   // message carries no `[image #3]` marker, and the `#` prefix is the one the
@@ -573,7 +531,7 @@ export default function TaskDetailDialog({
                 // omits the attribute; this is correct and is NOT to be "fixed" to
                 // `"false"`.
                 aria-current={selectedKey === key || undefined}
-                onClick={() => void selectArtifact(key)}
+                onClick={() => void select(key)}
                 className={cn(
                   "flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-ui-sm text-foreground-subtle hover:text-foreground",
                   // Exactly ONE of these reaches the class list, which is also what
