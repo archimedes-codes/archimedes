@@ -7,6 +7,12 @@ verified-by: 6 parallel researcher subagents (Rust storage / Rust agent-session 
   Koru et al. 2008/2009, Nagappan & Ball ICSE 2005, SmartBear/Cisco, Google eng-practices, ESLint,
   Clippy, SwiftLint). 2026-11-16.
 task: tsk_0ef56cb0-1b91-4017-8744-76bc3d7d6f74
+re-verified: 2026-11-21, at `8522173e` — TWO data points corrected, nothing else touched: the
+  `TaskDetailDialog.tsx` *"partial only"* grade and its `requestIdRef` reason (refuted on all three
+  claims; the file is now split — ADR 0114, and the Corrections section of
+  `docs/features/godfile-decomposition-closeout.md`), and `commands/tasks.rs`'s *"14 `pub(crate)`
+  widenings"*, which measures **6**. The census, the fix-density bands and the size-metric argument are
+  unchanged and still stand.
 ---
 
 # Production godfiles: the census, the seams, and whether size is a legitimate split trigger
@@ -93,7 +99,7 @@ done | sort -rn
 | 531 | — | `src/components/Reasoning.tsx` | below the tripwire |
 | 528 | 1,550 | `src/lib/tauri/types.ts` | **size is the wrong lens**; leave it |
 | 504 | 718 | `src/components/StageEditor.tsx` | **blocked on shape** (needs a 3-deep split) |
-| 500 | 882 | `src/components/TaskDetailDialog.tsx` | partial only |
+| 500 | 882 | `src/components/TaskDetailDialog.tsx` | ~~partial only~~ **REFUTED and SPLIT** — see F4 below and ADR 0114 |
 | 468 / 446 / 444 | — | `toolOutput.ts`, `SettingsPage.tsx`, `McpSection.tsx` | low value |
 
 **Files that the raw ranking puts in the queue and the code ranking removes:**
@@ -251,14 +257,22 @@ than a 2,136-line distance — but that is a prose obligation, not a free win.
 | 7 | `router.rs` remaining subjects → 5 files | ~660 lines | **L** | ⚠️ `commands/tasks/tests/artifacts.rs:432` reads `router.rs` by path and asserts `WorkerInboundEvent::TaskRequest` is present — draw the boundary **below** the match arm |
 | 8 | `SpacesList.tsx` → 6 files (1142→470) | 672 lines | **M** | the most concrete seam (`SessionRow`, `ArchivedSection`, `ArchivedSessionRow` are **already at column 0**) and the biggest bill: 2,393 + 1,340 test lines, 11 imports to re-grep |
 | 9 | `session/mod.rs` → ~12 files | 3,101→~390 max | **M** | the 28-import glob above |
-| 10 | `commands/tasks.rs` → 5 files | 534 code | **H** | 14 `pub(crate)` widenings; `board_call` alone has 14 sites across every block; `include_str!("../../tasks.rs")` delimits the region on a `// ── A4` **banner the split moves**; two new filenames collide with existing test filenames |
+| 10 | `commands/tasks.rs` → 5 files | 534 code | **H** | ~~14~~ **6** `pub(crate)` widenings (corrected 2026-11-21: `grep -c "pub(crate)" src-tauri/src/commands/tasks.rs` → 6; ADR 0114 and the closeout's Corrections section — the `include_str!` blocker below still holds, so the decline stands on it alone); `board_call` alone has 14 sites across every block; `include_str!("../../tasks.rs")` delimits the region on a `// ── A4` **banner the split moves**; two new filenames collide with existing test filenames |
 
 **Ruled against, with the reason:** `errors.rs` (F6), `config.rs` / `agents.rs` / `open.rs` /
 `refresh.rs` (below the tripwire on code lines), `SpaceTabs.tsx` and `ChatStream.tsx` (**DONE**),
 `StageEditor.tsx` (**blocked on shape** — extracting the 388-line single return into one `StageRow`
 *relocates* the problem; the honest move is a 3-deep split into six row components),
-`TaskDetailDialog.tsx` (**partial only** — the artifact reader's `requestIdRef` is a request-ordering
-guard whose state feeds two proposed children, so lifting it changes when the fetch fires),
+`TaskDetailDialog.tsx` (**partial only** — **REFUTED, and since SPLIT: 2026-11-21** — ~~the artifact
+reader's `requestIdRef` is a request-ordering guard whose state feeds two proposed children, so lifting it
+changes when the fetch fires~~ *this reason was refuted on all three of its claims*: `requestIdRef` never
+existed — the guard is `const requestKey = useRef<string | null>(null)` — it shared no state with the
+launch path, and the file has 0 `useEffect`s so nothing could move when the fetch fired. It shipped as
+`src/hooks/useArtifactReader.ts` + `src/components/tasks/TaskArtifactSection.tsx`, 500 → **385** code
+lines, test file byte-identical. See **ADR 0114**
+(`docs/decisions/0114-a-request-ordering-guard-lives-with-the-await-and-the-region-it-guards-is-one-child.md`),
+`docs/research/taskdetaildialog-artifact-guard-ownership.md`, and the Corrections section of
+`docs/features/godfile-decomposition-closeout.md`),
 `MessageList.tsx` and `EmptyStateFilm.tsx` (**messy** — 11 of 17 refs cross the seam; the ADR 0070
 liveness probe sits *between* the two effects a split would separate).
 
