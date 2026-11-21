@@ -180,8 +180,17 @@ is a subject-count split, not a ratchet split.
 
 ### 6. The test file is NOT test-transparent — and this is the actual cost
 
-PR #206's splits were cheap because `SpacesList.test.tsx` is 85 `getByText` / 48 `getByRole` / **0
-`getByTestId`**. `TaskDetailDialog.test.tsx` is the inverse: 63 tests across 10 `describe` blocks, **62 testid
+PR #206's splits were cheap because `SpacesList.test.tsx` queries the screen by text and role and NEVER by
+test id: **95 `getByText` / 57 `getByRole` / 0 `getByTestId`** at this branch's HEAD, re-measured here with
+`grep -o <matcher> src/components/SpacesList.test.tsx | wc -l`. (An earlier draft of this report quoted
+**85 / 48 / 0** here without its base. Those were the census's figures, correct at the census's own base
+`4c06b1de` — a commit no ref now carries, local or remote (`git for-each-ref --contains 4c06b1de` prints
+nothing, so it is unreachable and will not survive into a fresh clone); re-measured at `22f61dd1`,
+PR #206's own squash, the same instrument prints **92 / 53 / 0**. The three numbers differ because the file
+grew, +318/−20 lines and 73 → 78 tests; what does NOT differ is the third one.) The load-bearing figure is
+the **zero**, and it is zero at every commit measured — `4c06b1de`, `22f61dd1`, `b2d6ea95` and HEAD — which is
+why a split there cost nothing: nothing in that file pins a node's identity, so moving nodes around underneath
+it moves nothing. `TaskDetailDialog.test.tsx` is the inverse: 63 tests across 10 `describe` blocks, **62 testid
 queries over 8 ids** (`artifact-key` ×20, `task-body` ×12, `task-session-row` ×11, `artifact-body` ×6,
 `artifact-rail` ×5, `detail-scroll` ×5, `session-status-mark` ×2, `artifact-section` ×1), and it asserts DOM
 **structure**:
@@ -277,9 +286,28 @@ the artifact surface is not.
   etc.), and every one of those additions is a line in the barrel ledger above. For a move-only split,
   leaving the 1,589-line test file whole is both the PR #206 precedent and the zero-barrel-count option.
 - The barrel and boundary guards both tolerate a file vanishing mid-sweep and both throw on a *named* path
-  that is missing, so nothing here is keyed on `TaskDetailDialog.tsx` by path. Confirmed by grep: the only
-  mentions of that filename outside its own test are prose comments in `tauriBarrel.test.ts:727`,
-  `TasksBoard.test.tsx:1000` and `:1099`.
+  that is missing, so nothing here is keyed on `TaskDetailDialog.tsx` by path. Confirmed by grep — and note
+  the grep does **not** support an enumeration of the mentions, which is why this bullet no longer attempts
+  one. An earlier draft said the mentions outside the file's own test were the prose comments in
+  `tauriBarrel.test.ts:727`, `TasksBoard.test.tsx:1000` and `:1099`, and that "only" was false even at this
+  report's own base `b2d6ea95`: a fourth prose site sits in a **production** file, `StageEditor.tsx:67`
+  ("`TaskDetailDialog.tsx` and `NewTaskDialog.tsx` document the same reuse"). It is false by more than one
+  at HEAD: the stem now appears **17** times outside `TaskDetailDialog.test.tsx`
+  (`grep -rn TaskDetailDialog src | grep -v '^src/components/TaskDetailDialog.test.tsx:' | wc -l`), because
+  this split's own three new files add five more prose mentions (`tasks/TaskArtifactSection.tsx`,
+  `hooks/useArtifactReader.ts`, `hooks/useArtifactReader.test.ts` — named without line numbers, for the
+  reason ADR 0114 gives: this branch keeps editing them) — the record naming the file it
+  splits grows mentions by splitting it. A list of prose sites is therefore unmaintainable and is not the
+  evidence. The evidence is the **unit** of each mention, and the conclusion stands exactly as written. Drop
+  the implementation file from the count as well as its test and the stem appears **14** times, of which
+  **12 are comments** and the **2** that are not are `TasksBoard.tsx:6` (`import TaskDetailDialog from
+  "./TaskDetailDialog"`) and `TasksBoard.tsx:526` (the JSX mount) — ordinary module usage that a move would
+  update, not a gate. No allowlist, baseline or `toHaveLength` names the path:
+  `grep -n TaskDetailDialog scripts/file-size-baseline.txt` is absent (exit 1), `mutedCaption.test.ts:88`'s
+  `BASELINE` holds only `src/components/MutedCaption.tsx`, and `tauriBarrel.test.ts:769`'s `toHaveLength(56)`
+  counts files produced by filtering a recursive `readdirSync` listing on a `vi.mock("…/lib/tauri")` pattern —
+  a derived set, never a named path. The `TaskDetailDialog.tsx` **spelling** (as opposed to the bare stem)
+  occurs exactly **once** outside the test file: `StageEditor.tsx:67`, prose again.
 
 ### 8. The declined set re-verified (shallow, one or two commands per blocker)
 

@@ -179,9 +179,12 @@ on real disk), the rest from the `grep -c` printed beside each one.
   artifact reader's guard `requestIdRef`. There is no such symbol anywhere in `src/` — the guard was
   `const requestKey = useRef<string | null>(null)` (`TaskDetailDialog.tsx:167` before the split — that
   name is the history of that file and is quoted here as it was; the guard itself now lives on as
-  `requestEpochRef` at `src/hooks/useArtifactReader.ts:87`), touched at four sites, all inside
-  `selectArtifact`. A decline reason that cites a symbol by name must be checked with a grep against
-  the tree, never from prose.
+  `requestEpochRef` at `src/hooks/useArtifactReader.ts` — path only, deliberately unnumbered: this
+  branch keeps editing that file, and the line number this bullet carried (`:87`, correct when it was
+  written at `2ececccb`) was pushed to `:100` by a later commit that inserted a paragraph above it),
+  touched at four sites, all inside `selectArtifact`. A decline reason that cites a symbol by name must
+  be checked with a grep against the tree, never from prose — and the same rule covers the line number
+  beside it: cite the symbol, grep for the symbol, do not pin the line.
 - **The guard shared no state with the launch path, so the coupling this decline rested on did not
   exist.** The reader owned `selectedKey`/`selectedArtifact`/`artifactError`/`requestKey`; the launch
   owned `busy`/`error`/`note`; the intersection was empty, and the file had **0 `useEffect`s**, so the

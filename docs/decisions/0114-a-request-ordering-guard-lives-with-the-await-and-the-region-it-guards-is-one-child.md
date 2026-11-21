@@ -120,9 +120,13 @@ the guard. The new hook must document what it refuses to improve (no abort, no u
   `reorderEpoch`, `checkIdRef`, `publishEpochRef`, `prevKeyRef`, `requestKey` — and a seventh was landing.
   Two naming traps were found while choosing it and both are recorded in the glossary entry: **`guard` is
   already this repo's noun for a source-scanning *test* instrument** (`classNameConvention.test.ts:336`
-  *"the exact shape the guard convicts"*; 497 uses across `src`'s test files), so the runtime mechanism must
-  not be called one; and bare **`epoch`** is on the **Session incarnation** entry's `_Avoid_` list (`CONTEXT.md:41`),
-  so the qualifier **request epoch** is never optional. The existing `requestKey` name is also
+  *"the exact shape the guard convicts"*; **497 occurrences** of the word across `src`'s test files —
+  `grep -rhoi guard src --include='*.test.ts*' | wc -l`, which counts **occurrences case-insensitively**, so a
+  line carrying "Guard" and "guard" contributes two; do not compare it against the **414** below, which is a
+  different instrument over a different unit — `grep -rn … | wc -l` counts **lines**, case-sensitively), so
+  the runtime mechanism must not be called one; and bare **`epoch`** is on the **Session incarnation** entry's
+  `_Avoid_` list (`CONTEXT.md:41`), so the qualifier **request epoch** is never optional. The existing
+  `requestKey` name is also
   semantically wrong — an id claims identity, this token orders — which is an argument for naming the hook's
   return value rather than carrying the old name forward.
   - **Scope: this rules on the mechanism's NAME, not on the word repo-wide.** In code identifiers and in
