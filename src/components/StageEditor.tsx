@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent, ReactElement } from "react";
 import {
   ChevronDownIcon,
   ChevronUpIcon,
-  PlusIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -11,6 +10,8 @@ import { CatalogSearchDialog } from "./CatalogSearchDialog";
 import { IpcErrorLine } from "./IpcErrorLine";
 import { MutedCaption } from "./MutedCaption";
 import { RowButton } from "./RowButton";
+import { AddStageField } from "./stages/AddStageField";
+import { StrictWorkflowToggle } from "./stages/StrictWorkflowToggle";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import {
@@ -20,7 +21,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
-import { Switch } from "./ui/switch";
 import { cn } from "./lib/utils";
 import { useMentionCatalogs } from "../hooks/useMentionCatalogs";
 import { useTasks } from "../store/tasks";
@@ -141,61 +141,19 @@ export default function StageEditor({
     spacePath ? s.boardsBySpace[spacePath] : undefined,
   );
   const error = useTasks((s) => s.error);
-  const createStage = useTasks((s) => s.createStage);
   const renameStage = useTasks((s) => s.renameStage);
   const setStageSkill = useTasks((s) => s.setStageSkill);
   const setStageNext = useTasks((s) => s.setStageNext);
   const reorderStages = useTasks((s) => s.reorderStages);
   const deleteStage = useTasks((s) => s.deleteStage);
-  const setBoardStrict = useTasks((s) => s.setBoardStrict);
-  const getBoardStrict = useTasks((s) => s.getBoardStrict);
   const { skills } = useMentionCatalogs(spacePath);
 
   const [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState<Drafts>({});
-  const [newLabel, setNewLabel] = useState("");
   /** The Stage whose delete is waiting on a destination, or `null`. */
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  /** `null` = NOT KNOWN (the read is in flight, or it failed). See `readStrict`. */
-  const [strict, setStrict] = useState<boolean | null>(null);
 
   const labelRefs = useRef(new Map<string, HTMLInputElement>());
-
-  /** Read the Strict flag. `null` on failure, deliberately: `false` is a FACT about
-   *  the Space and a swallowed read must not hand the Switch that fact as its
-   *  default, because the whole point of reading the flag (rather than defaulting
-   *  it) is that the Switch must show the SAME value `moveTask` enforces. A Switch
-   *  claiming Strict over a board whose drags are all accepted is the failure
-   *  `getBoardStrict`'s own doc says it exists to prevent — so an unread flag
-   *  renders the Switch DISABLED, which is the one state that is not a guess. */
-  const readStrict = useCallback((): void => {
-    if (spacePath === null) return;
-    void getBoardStrict(spacePath).then(
-      (value) => setStrict(value),
-      // The store already wrote the sentence into `error`; the `null` keeps the
-      // Switch inert. No second console line and no throw out of a mount effect.
-      () => setStrict(null),
-    );
-  }, [spacePath, getBoardStrict]);
-
-  useEffect(() => {
-    if (spacePath === null) return;
-    setStrict(null);
-    readStrict();
-  }, [spacePath, readStrict]);
-
-  const toggleStrict = async (next: boolean): Promise<void> => {
-    if (spacePath === null) return;
-    // Paint from the READ, never from the click: the click is a request and the
-    // write can be refused, and this Switch is the one control in this dialog that
-    // claims something about what a DRAG will do.
-    setStrict(next);
-    await setBoardStrict(spacePath, next);
-    // Re-read rather than trust the paint: the store's `setBoardStrict` captures
-    // its failure into `error` and does not rethrow (the `moveTask` shape), so
-    // without this the Switch would keep showing a value the Space refused.
-    readStrict();
-  };
 
   const commitLabel = async (stage: StageDto): Promise<void> => {
     if (spacePath === null) return;
@@ -288,21 +246,6 @@ export default function StageEditor({
     // per card — five cards, five compactions, all as a side effect of deleting a
     // column (spec §4.1).
     await deleteStage(spacePath, slug, relocateTo);
-  };
-
-  const addStage = async (): Promise<void> => {
-    if (spacePath === null) return;
-    const label = newLabel.trim();
-    if (label === "") return;
-    try {
-      await createStage(spacePath, label);
-      // Cleared only on success: a refused collision (T1 refuses rather than
-      // inventing `spike-2`) is a refusal of the SLUG, and the label the user typed
-      // is still what they want to name their column.
-      setNewLabel("");
-    } catch {
-      // The draft stands; the store's line explains the collision.
-    }
   };
 
   // No Space, no dialog at all — and this sits AFTER every hook above, which is
@@ -661,58 +604,16 @@ export default function StageEditor({
     >
       {/* Everything below the rows is SIBLING content the shell inserts after the
           scroller: the error line, the add-a-Stage field, and the Space-level
-          Strict-workflow Switch. */}
+          Strict-workflow Switch. The last two are components, and that is a DOM
+          fact, not a style preference — a component boundary adds no element, so
+          each still renders exactly ONE `<div>` as a sibling of the scroller. A
+          shared footer `<div>` around them would be the extra level
+          `CatalogSearchDialog`'s header says the `parentElement` pins forbid. */}
       <IpcErrorLine error={error} />
 
-      <div className="flex min-w-0 items-center gap-2 border-t border-card-border pt-2">
-        <Input
-          aria-label="New stage label"
-          className="min-w-0 flex-1"
-          placeholder="New stage label"
-          value={newLabel}
-          onChange={(event) => setNewLabel(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") void addStage();
-          }}
-        />
-        {/* A column whose name is empty is a column nobody can rename by sight, so
-            the affordance is inert until there is a name — `aria-disabled` because
-            `Button` is a real `<button>` and the disabled PROPERTY would also be
-            read here; the guard in `addStage` is the one that actually decides. */}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          aria-label="Add stage"
-          className="shrink-0 gap-1"
-          aria-disabled={newLabel.trim() === "" || undefined}
-          onClick={() => void addStage()}
-        >
-          <PlusIcon className="size-3.5" />
-          <span>Add stage</span>
-        </Button>
-      </div>
+      <AddStageField spacePath={spacePath} />
 
-      <div className="flex min-w-0 items-center justify-between gap-2 border-t border-card-border pt-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <Switch
-            checked={strict ?? false}
-            // Inert while the flag is unread — see `readStrict`. Radix puts the
-            // inert half on the `disabled` PROPERTY (there is no `aria-disabled`).
-            disabled={strict === null}
-            aria-label="Strict workflow"
-            onCheckedChange={(checked) => void toggleStrict(checked)}
-          />
-          <span className="min-w-0 text-ui-sm text-foreground-subtle">
-            Strict workflow
-          </span>
-        </div>
-        <MutedCaption>
-          {strict
-            ? "Only the columns a Stage points at can receive a card"
-            : "Any column can receive a card"}
-        </MutedCaption>
-      </div>
+      <StrictWorkflowToggle spacePath={spacePath} />
     </CatalogSearchDialog>
   );
 }
