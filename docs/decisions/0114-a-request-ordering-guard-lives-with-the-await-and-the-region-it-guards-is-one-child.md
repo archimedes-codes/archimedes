@@ -77,8 +77,10 @@ the guard. The new hook must document what it refuses to improve (no abort, no u
 - **`artifactKeys` stays with the dialog.** It is read outside the region three times — the width class at
   `:379`, the section gate at `:486`, the "no detail yet" line at `:801` — and it arrives as a required prop
   (`:117`). Width is decided at open, never on selection, and that is a constraint on the shell.
-- **This is a frontend split, so ADR 0113's mirror test tree does not apply.** That ADR governs Rust
-  `tests/` directories. The precedent here is PR #206, which left `AgentsDialog.test.tsx` (1,284 lines) and
+- **A mirror test tree does not apply here, and the reason does not need a citation: it governs Rust
+  `tests/` directories and this is a frontend split.** (ADR **0113** says so, but that ADR is in flight on
+  another branch and is not in this tree — it may never land, so it is not cited here as authority; the
+  jurisdictional fact is.) The precedent here is PR #206, which left `AgentsDialog.test.tsx` (1,284 lines) and
   `SpacesList.test.tsx` (2,691) whole beside their extracted directories — `src/components/tasks/` has no
   test file at all. Keeping `TaskDetailDialog.test.tsx` intact is both that precedent and the cheaper gate.
 - **`src/lib/tauriBarrel.test.ts:769` asserts `toHaveLength(56)` on the barrel-mocking test files** — a
@@ -104,11 +106,30 @@ the guard. The new hook must document what it refuses to improve (no abort, no u
   `reorderEpoch`, `checkIdRef`, `publishEpochRef`, `prevKeyRef`, `requestKey` — and a seventh was landing.
   Two naming traps were found while choosing it and both are recorded in the glossary entry: **`guard` is
   already this repo's noun for a source-scanning *test* instrument** (`classNameConvention.test.ts:336`
-  *"the exact shape the guard convicts"*; 497 uses across `src`), so the runtime mechanism must not be
-  called one; and bare **`epoch`** is on the **Session incarnation** entry's `_Avoid_` list (`CONTEXT.md:41`),
+  *"the exact shape the guard convicts"*; 497 uses across `src`'s test files), so the runtime mechanism must
+  not be called one; and bare **`epoch`** is on the **Session incarnation** entry's `_Avoid_` list (`CONTEXT.md:41`),
   so the qualifier **request epoch** is never optional. The existing `requestKey` name is also
   semantically wrong — an id claims identity, this token orders — which is an argument for naming the hook's
   return value rather than carrying the old name forward.
+  - **Scope: this rules on the mechanism's NAME, not on the word repo-wide.** In code identifiers and in
+    prose that names the mechanism, the noun is **request epoch**. `guard` is not otherwise reserved —
+    `CONTEXT.md` spends it on a runtime mechanism in a pre-existing entry, **Self-modification guard**
+    (`CONTEXT.md:197-199`; `grep -n "Self-modification guard" CONTEXT.md` → 7 lines), and the glossary warns
+    of that itself: guard is "a word this repo already spends on the self-modification guard"
+    (`CONTEXT.md:355`). So the rule is *within the request-epoch entry, avoid `guard`* — not *nothing in this
+    repo may call anything a guard*. The premise still holds where it counts: the test-instrument sense is the
+    dominant modern one — **414 of the 654 lines in `src` that carry the word are in `*.test.ts(x)`**
+    (`grep -rn guard src --include='*.test.ts*' | wc -l` over `grep -rn guard src | wc -l`) — and both
+    `classNameConvention.test.ts` and `mutedCaption.test.ts` call themselves guards.
+  - **This ADR's H1 (`:7`) and its filename keep the older phrase "request-ordering guard" deliberately**, and
+    the body names the mechanism a `guard` 11 more times (`grep -oi guard` over `:8-104` → 11). That is a
+    known, bounded exception, not an oversight for the next reader to consistify: the path is cited verbatim
+    in four places (`docs/features/godfile-decomposition-closeout.md:153`,
+    `docs/research/taskdetaildialog-artifact-guard-ownership.md:24`,
+    `docs/research/production-godfile-census-and-the-size-metric.md:273`,
+    `docs/roadmap/taskdetail-dialog-artifact-split.md:22`), so a rename is a coordinated four-file move bought
+    for a prose preference. The binding forms are the code identifier and the glossary noun; the filename is a
+    path. Do not "fix" the title to match the rule.
 
 Evidence: `docs/research/taskdetaildialog-artifact-guard-ownership.md` (card artifact key `research`,
 task `tsk_043da34a-1255-495e-9ee1-217448c864f6`).

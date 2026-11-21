@@ -172,9 +172,11 @@ on real disk), the rest from the `grep -c` printed beside each one.
 
 - **`requestIdRef` never existed.** This record's declined-set entry for `TaskDetailDialog.tsx` named the
   artifact reader's guard `requestIdRef`. There is no such symbol anywhere in `src/` — the guard was
-  `const requestKey = useRef<string | null>(null)` (`TaskDetailDialog.tsx:167` before the split, now
-  `src/hooks/useArtifactReader.ts:86`), touched at four sites, all inside `selectArtifact`. A decline
-  reason that cites a symbol by name must be checked with a grep against the tree, never from prose.
+  `const requestKey = useRef<string | null>(null)` (`TaskDetailDialog.tsx:167` before the split — that
+  name is the history of that file and is quoted here as it was; the guard itself now lives on as
+  `requestEpochRef` at `src/hooks/useArtifactReader.ts:87`), touched at four sites, all inside
+  `selectArtifact`. A decline reason that cites a symbol by name must be checked with a grep against
+  the tree, never from prose.
 - **The guard shared no state with the launch path, so the coupling this decline rested on did not
   exist.** The reader owned `selectedKey`/`selectedArtifact`/`artifactError`/`requestKey`; the launch
   owned `busy`/`error`/`note`; the intersection was empty, and the file had **0 `useEffect`s**, so the

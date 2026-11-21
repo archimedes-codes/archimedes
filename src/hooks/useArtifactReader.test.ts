@@ -89,8 +89,8 @@ describe("useArtifactReader — the selection and its read", () => {
   it("a rejection becomes the describeIpcError sentence and does not reject select", async () => {
     // A rejection reaching here is the store RETHROWING (it captures to its own
     // `error` AND rethrows, so a caller can tell "failed" from "answered `null`").
-    // The hook swallows it into `artifactError` exactly as `selectArtifact` does
-    // today — the call site writes `void select(key)`, which is only safe while
+    // The hook swallows it into `artifactError` exactly as `selectArtifact` did
+    // before — the call site writes `void select(key)`, which is only safe while
     // `select` never rejects. The sentence must be `describeIpcError`'s and not a
     // narrower `String(err)`, because the dialog's error line asserts the exact
     // string.

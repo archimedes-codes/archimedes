@@ -37,7 +37,8 @@ import type { Artifact } from "../lib/tauri";
  *
  * The vocabulary is `CONTEXT.md`'s **request epoch** (never "guard", which in
  * this repo names a source-scanning TEST instrument, and never bare "epoch",
- * which belongs to **Session incarnation**). ADR 0114 places it here on the
+ * which belongs to **Session incarnation**), and the hook-local ref that holds
+ * it now carries that noun: `requestEpochRef`. ADR 0114 places it here on the
  * rule that **the epoch lives with the `await` that needs it** — which is also
  * why the hook owns exactly one `await` and why the fetch is INJECTED: the
  * store action's owner stays the dialog (ADR 0074), and the hook stays free of
@@ -83,10 +84,10 @@ export function useArtifactReader({
   // renders it, and it has to be readable by a resolution that lands AFTER the
   // reader has moved on to another key — a `useState` value read inside the `await`
   // below is the value this closure captured, which is exactly the stale answer.
-  const requestKey = useRef<string | null>(null);
+  const requestEpochRef = useRef<string | null>(null);
 
   const select = async (key: string): Promise<void> => {
-    requestKey.current = key;
+    requestEpochRef.current = key;
     setSelectedKey(key);
     // CLEARED BEFORE the fetch, so a previous document cannot paint under a new key
     // while the new read is still in flight. This is one of TWO locks: it covers the
@@ -101,14 +102,14 @@ export function useArtifactReader({
       // small one), and painting it would show one key's document under another —
       // a document lying about which key it is. Blanking the reader would be the
       // other wrong answer, so the late resolution changes NOTHING.
-      if (requestKey.current !== key) return;
+      if (requestEpochRef.current !== key) return;
       // `null` is an ANSWER (no such artifact, or no such Task — the `getTask`
       // shape) and renders no document rather than an error sentence.
       setSelectedArtifact(artifact);
     } catch (err) {
       // Same rule for the failure: a read the reader no longer asked for must not
       // write an error sentence into the current view.
-      if (requestKey.current !== key) return;
+      if (requestEpochRef.current !== key) return;
       // A rejection is the store RETHROWING (it captures to `error` AND rethrows, so
       // a caller can tell "failed" from "answered `null`").
       setArtifactError(describeIpcError(err));

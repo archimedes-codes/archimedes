@@ -113,12 +113,13 @@ about what a **Stage** is called. Both now read the one `columns` slice through 
 both fall back to the **slug** when a lookup misses — "we could not name it" is a different claim from
 "it has no **Stage**".
 
-## The race guards are the rail's problem, not the reader's
+## The race is the rail's problem, not the reader's
 
-`selectArtifact` keeps two locks, clear `selectedArtifact` before the fetch and the `requestKey` ref
-identity check after the `await`. The rail makes that race **more** reachable, not less — two reads
-can be in flight and the older one can answer last, painting one key's document under another. Any
-change that adds a second way to select an artifact has to keep both.
+`select` in `src/hooks/useArtifactReader.ts` keeps two locks, clear `selectedArtifact` before the
+fetch and the `requestEpochRef` identity check after the `await`. The rail makes that race **more**
+reachable, not less — two reads can be in flight and the older one can answer last, painting one
+key's document under another. Any change that adds a second way to select an artifact has to keep
+both.
 
 ## Deliberately absent
 

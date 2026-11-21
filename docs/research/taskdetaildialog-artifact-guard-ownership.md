@@ -219,7 +219,7 @@ the artifact surface is not.
 | `src/components/StageEditor.tsx` | needs a 3-deep split, not a row extraction | 504 code / 718 raw — unchanged | **HELD** |
 | `src/components/chat/MessageList.tsx` | 11 of 17 refs cross the seam | 583 code, **17 `useRef`** confirmed at `:309-803` | **HELD** |
 | `src/components/chat/EmptyStateFilm.tsx` | ADR 0070 probe sits between the effects | 387 code, 11 refs, probe still at `:465` | **HELD** |
-| `src-tauri/src/storage/batching.rs` | 57% of it is prose | 540 code / 1403 raw → **61.5%** non-code | **HELD, stronger** |
+| `src-tauri/src/storage/batching.rs` | 57% of it is prose | 539 code / 1403 raw → **61.6%** non-code (the "57%" was a different quantity — comment-only lines alone; see the closeout's Corrections) | **HELD, stronger** |
 | `src-tauri/src/storage/db.rs` | 4 `include_str!` + vacuous lint + ~51 poison sites | `db/tests/mod.rs:5012/:5041/:5746/:6200`; `REFERENCES spaces` assertion at `:5064` still asserts an absent string; **52** poison expects | **HELD** |
 | `src-tauri/src/agent/session/mod.rs` | 17 recovery sites, partitioning forces the poison decision | 17 `into_inner()`; ratchet reports **1583** code lines | **HELD** |
 | `src-tauri/src/commands/tasks.rs` | **14 `pub(crate)` widenings** | **6**, not 14 | **REFUTED on the count.** The `include_str!("../../tasks.rs")` constraint still holds (`commands/tasks/tests/stages.rs:294`), and `commands/tasks/` already exists as a directory. **The only declined file whose stated blocker got measurably weaker.** |
