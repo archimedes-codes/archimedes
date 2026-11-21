@@ -132,20 +132,32 @@ the guard. The new hook must document what it refuses to improve (no abort, no u
     of that itself: guard is "a word this repo already spends on the self-modification guard"
     (`CONTEXT.md:355`). So the rule is *within the request-epoch entry, avoid `guard`* — not *nothing in this
     repo may call anything a guard*. The premise still holds where it counts: the test-instrument sense is the
-    dominant modern one — **414 of the 654 lines in `src` that carry the word are in `*.test.ts(x)`**
-    (`grep -rn guard src --include='*.test.ts*' | wc -l` over `grep -rn guard src | wc -l`) — and both
-    `classNameConvention.test.ts` and `mutedCaption.test.ts` call themselves guards.
+    dominant modern one — **414 of the 655 lines in `src` that carry the word are in `*.test.ts(x)`**
+    (`grep -rn guard src --include='*.test.ts*' | wc -l` over `grep -rn guard src | wc -l`, both measured at
+    `61614802`) — and both `classNameConvention.test.ts` and `mutedCaption.test.ts` call themselves guards.
+    **Treat that denominator as a snapshot at a commit, not a constant**: an instrument whose denominator is
+    "every line in `src` that carries the word" is invalidated by the act of documenting this very rule — the
+    commit that wrote down "this is unguarded" added the word to `src` and moved the total from 654 to **655**
+    while leaving the numerator at 414. Re-measure before quoting it.
   - **This ADR's H1 (`:7`) and its filename keep the older phrase "request-ordering guard" deliberately**, and
     the body names the mechanism a `guard` 11 more times (`grep -oi guard` over `:8-104` → 11). That is a
     known, bounded exception, not an oversight for the next reader to consistify: the path is cited verbatim
-    in three tracked files (`docs/features/godfile-decomposition-closeout.md:153`,
-    `docs/research/taskdetaildialog-artifact-guard-ownership.md:24`,
-    `docs/research/production-godfile-census-and-the-size-metric.md:273`), plus the branch's own
-    **gitignored** plan (`docs/roadmap/taskdetail-dialog-artifact-split.md:22` — `git check-ignore` confirms;
+    in three tracked files (`docs/features/godfile-decomposition-closeout.md`,
+    `docs/research/taskdetaildialog-artifact-guard-ownership.md`,
+    `docs/research/production-godfile-census-and-the-size-metric.md`), plus the branch's own
+    **gitignored** plan (`docs/roadmap/taskdetail-dialog-artifact-split.md` — `git check-ignore` confirms;
     `.gitignore:36` ignores `docs/roadmap/`), so a rename is a coordinated three-file move plus a local plan
-    bought for a prose preference. The plan does not count as a fourth citation site in its own right: it is
-    not in the tree, so another worktree never sees it — the same reason this ADR refuses to cite **0113**
-    above. The binding forms are the code identifier and the glossary noun; the filename is a
+    bought for a prose preference. **These are cited as files, not as `file:line`** — and for a reason this
+    record has now demonstrated on itself: this scope note used to cite
+    `docs/features/godfile-decomposition-closeout.md:153`, which was true when `2ececccb` wrote it, and
+    `61614802` inserted a section above it in that same file so the ADR's path moved to `:158`
+    (`grep -n "0114-a-request-ordering-guard" docs/features/godfile-decomposition-closeout.md`). A bare line
+    number into a file the same branch edits is the fragile form of the same hazard `AGENTS.md` warns about
+    ("plans carry stale baselines within hours on a busy branch") and `docs/agents/flake-registry.md` states
+    outright ("match on the test NAME, never the line number"). What the ruling rests on is the **path**; the
+    line is an accident of the file's current length. The plan does not count as a fourth citation site in its
+    own right: it is not in the tree, so another worktree never sees it — the same reason this ADR refuses to
+    cite **0113** above. The binding forms are the code identifier and the glossary noun; the filename is a
     path. Do not "fix" the title to match the rule.
 
 Evidence: `docs/research/taskdetaildialog-artifact-guard-ownership.md` (card artifact key `research`,

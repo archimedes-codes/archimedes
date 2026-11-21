@@ -8,6 +8,19 @@ verified-by: one web researcher subagent (5 sources, cited) + primary first-hand
   (run with `TMPDIR` on real disk), `grep`/`git grep` over `src/` and `src-tauri/`, and a line-by-line read
   of `src/components/TaskDetailDialog.tsx` and its 1,589-line test file.
 task: tsk_043da34a-1255-495e-9ee1-217448c864f6
+re-verified: 2026-11-21, at `61614802` — THREE figures corrected, nothing else touched. §6's wrapper
+  counterfactual — that a child adding a helping `<div>` would redden four of the five structural pins — was
+  **asserted and never executed, and it is false**: re-run at this commit, six wrapper variants on the
+  section's returned element each leave **63 passed / 0 failed**, only `overflow-y-auto` reddens **1**, and
+  the falsification control — dropping
+  `shrink-0` from the section's own `className` — reddens **1**, so the zeroes are a measurement and not a
+  blind suite; §6's testid census was wrong in three ways (the queries are **62 over 8 ids**, not "roughly 55
+  over 9"; `meta-row` is never queried as a testid — those rows go through `data-meta-label`; and the raw
+  string counts overcount, e.g. `detail-scroll` 11 strings against 5 queries). The `63 tests / 10 describe
+  blocks` figures were re-run with `npx vitest list` and **hold**. The guard measurement in §1, the seam
+  inventory, the gate sweep and the size figures were **not** re-run that day and still stand as recorded at
+  `b2d6ea95`. `verified-by:` and `last-verified:` above are deliberately left as they were — they record that
+  specific past verification, not this one.
 ---
 
 # TaskDetailDialog's artifact guard: where it must live if the file is split
@@ -168,10 +181,35 @@ is a subject-count split, not a ratchet split.
 ### 6. The test file is NOT test-transparent — and this is the actual cost
 
 PR #206's splits were cheap because `SpacesList.test.tsx` is 85 `getByText` / 48 `getByRole` / **0
-`getByTestId`**. `TaskDetailDialog.test.tsx` is the inverse: 63 tests across 10 `describe` blocks, roughly
-55 testid queries over 9 ids (`task-body` ×12, `artifact-key` ×22, `artifact-rail` ×5, `artifact-body` ×9,
-`detail-scroll` ×5, `task-session-row` ×11, plus `artifact-section`, `session-status-mark`, `meta-row`), and
-it asserts DOM **structure**:
+`getByTestId`**. `TaskDetailDialog.test.tsx` is the inverse: 63 tests across 10 `describe` blocks, **62 testid
+queries over 8 ids** (`artifact-key` ×20, `task-body` ×12, `task-session-row` ×11, `artifact-body` ×6,
+`artifact-rail` ×5, `detail-scroll` ×5, `session-status-mark` ×2, `artifact-section` ×1), and it asserts DOM
+**structure**:
+
+```
+$ grep -oE '(get|getAll|query|queryAll)ByTestId\((`|")[^"`)]+' src/components/TaskDetailDialog.test.tsx \
+    | sed -E 's/.*\((`|")//' | sort | uniq -c | sort -n
+     1 artifact-section
+     2 session-status-mark
+     5 artifact-rail
+     5 detail-scroll
+     6 artifact-body
+    11 task-session-row
+    12 task-body
+    20 artifact-key
+```
+
+Two things a naive census gets wrong, and this paragraph originally did. **Count the *calls*, not the string
+occurrences**: `grep -oE '(get|getAll|query|queryAll)ByTestId' … | wc -l` gives **63**, one more than 62, and
+the extra is a prose `queryByTestId(…)` inside a comment at `:1114`, not a query. And counting the bare id
+strings overcounts worse still — 11 lines carry `detail-scroll` but it is queried **5** times, 22 carry
+`artifact-key` against **20** queries, 9 carry `artifact-body` against **6** — because an id also occurs in
+comments and in the assertion text beside it. **`meta-row` is not a testid at all** (`grep -c "meta-row"
+src/components/TaskDetailDialog.test.tsx` → **0**): those rows are reached through a *different* attribute,
+`data-meta-label`, via `querySelector` at `:1170`. It was in the id list here on the strength of that query,
+which is exactly how an id census acquires a phantom id. The tests do not touch `TaskDetailDialog`'s internals
+by any supported route — they go through the surface — but the surface is testid-and-structure, not role and
+text:
 
 - `rail.parentElement!.classList` — `:1370`
 - `pane.parentElement!.classList` — `:1403`
@@ -180,8 +218,35 @@ it asserts DOM **structure**:
 - `.closest(".overflow-y-auto")` compared by **identity** against the scroller — `:1442-1443`
 
 A React component boundary adds no DOM node, so a child returning the same elements with no added wrapper
-keeps every one of these green. **A child that adds a `<div>` to "help" reddens four of them.** That is the
-one hard constraint of this split. It is satisfiable, and it is not the free pass PR #206's splits had.
+keeps every one of these green — **that** is what made the split possible, and it holds. What this paragraph
+then claimed was false: it said a child that adds a `<div>` to "help" reddens four of them. That counterfactual
+was asserted and never executed. Executed at `61614802` — each variant applied to the section's returned element
+in `src/components/tasks/TaskArtifactSection.tsx`, reverted after every run, with `npx vitest run
+src/components/TaskDetailDialog.test.tsx` as the instrument (ADR 0114 records the same table from `2ececccb`):
+
+| Wrapper on the returned element | Result |
+|---|---|
+| none (HEAD) | 63 passed |
+| bare inert `<div>` | 63 passed |
+| `flex shrink-0 flex-col gap-1` (the section's own classes) | 63 passed |
+| `overflow-hidden` / `space-y-1` / `flex-1` / `min-h-0` | 63 passed each |
+| `overflow-y-auto` | **1 failed** — `detail-scroll is the ONLY scroll container in the dialog, and the rail and pane resolve to it` |
+| *(control)* `shrink-0` dropped from the section's own `className` | **1 failed** — `the pane carries no height cap and no scroller of its own, and its section refuses to compress` |
+
+The control is what makes the zeroes a measurement rather than a blind suite: those pins do go red when the
+section's own classes change. A wrapper escapes because **the suite cannot see upward** — `:1370` and `:1403`
+read the two-column row the child renders *below* any wrapper, `:1469` reads a region the child does not render
+at all, `:1436` counts a **class** an inert wrapper adds none of, and `.closest()` walks **up** past ancestors
+lacking it. So the no-wrapper rule is a **design constraint held by review, not a test-enforced one**: a
+contributor can add a wrapper with nothing in the suite noticing. ADR 0114's Consequences carries the same
+correction together with the arithmetic the rule exists for — `detail-scroll`'s height math depends on the
+section's own `shrink-0` and on its flex column.
+
+The split is still satisfiable, and it is still not the free pass PR #206's splits had — but the honest form of
+that last clause is weaker than this report first claimed. PR #206's `SpacesList` splits were cheap *and*
+test-transparent. This one is cheap and **structurally identical to what the tests already pin, yet untested at
+the boundary**: the guarantee that the child adds no DOM level is carried by review and by the constraint
+written into the child's own comment, not by a red test.
 
 The card asked whether the file queries by role/testid. It does both: roles for the launch buttons
 (`getByRole("button", { name: "Research" })`, `getByRole("alert")`, `getByRole("status")`) and testids for
