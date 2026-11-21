@@ -619,6 +619,24 @@ describe("StageEditor — the destination list is the transition graph", () => {
       ]),
     );
   });
+
+  it("the add-destination trigger reads `Add a destination` again after an append (a second pick is not a no-op)", async () => {
+    renderEditor();
+    // The trigger is UNCONTROLLED with no `value`, so it shows its placeholder —
+    // the ordered destinations are the CHIPS, not this trigger.
+    expect(destinationTrigger("backlog").textContent).toBe("Add a destination");
+    fireEvent.click(destinationTrigger("backlog"));
+    fireEvent.click(await screen.findByRole("option", { name: "Done" }));
+    await waitFor(() =>
+      expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing", "done"]),
+    );
+    // Without the `key` the remount never happens, the uncontrolled Select keeps
+    // its internal selection, and this reads "Done" forever — so picking `doing`
+    // again is a silent no-op the user reads as a broken control.
+    await waitFor(() =>
+      expect(destinationTrigger("backlog").textContent).toBe("Add a destination"),
+    );
+  });
 });
 
 describe("StageEditor — reorder passes the WHOLE column order", () => {
@@ -933,6 +951,18 @@ describe("StageEditor — one role per row, and who gets the click", () => {
     renderEditor();
     fireEvent.click(within(row("done")).getByRole("button", { name: "Move done up" }));
     expect(document.activeElement).not.toBe(labelField("done"));
+  });
+
+  it("clicking a destination chip's remove button does NOT run the row's own action", async () => {
+    renderEditor();
+    const remove = within(row("backlog")).getByRole("button", {
+      name: "Remove Doing from backlog",
+    });
+    fireEvent.click(remove);
+    expect(document.activeElement).not.toBe(labelField("backlog"));
+    await waitFor(() =>
+      expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", []),
+    );
   });
 
   it("Enter inside a nested control does NOT leak into the row's Enter handler", async () => {
