@@ -265,11 +265,12 @@ than a 2,136-line distance — but that is a prose obligation, not a free win.
 **Ruled against, with the reason:** `errors.rs` (F6), `config.rs` / `agents.rs` / `open.rs` /
 `refresh.rs` (below the tripwire on code lines), `SpaceTabs.tsx` and `ChatStream.tsx` (**DONE**),
 `StageEditor.tsx` (**blocked on shape** — **HELD, and since SPLIT: 2026-11-21** — extracting the single
-return (396 raw lines of the unsplit file, not the 388 claimed here) into one `StageRow` *relocates* the
-problem: that claim held and is exactly why `StageDestinations` had to come out as a **second** cut below
-the row. The 3-deep half of the diagnosis held too. ~~the honest move is a 3-deep split into six row
-components~~ *the depth was right, the count was not* — what shipped is **four subject components + one
-styles module**, not six row components: `src/components/stages/` holds `StageRow.tsx` (279 code lines),
+return (`:322-717` of the unsplit file: **396 raw** lines, **387** of them non-blank) into one `StageRow`
+*relocates* the problem: that claim held and is exactly why `StageDestinations` had to come out as a
+**second** cut below the row. The 3-deep half of the diagnosis held too. ~~the honest move is a 3-deep
+split into six row components~~ *the depth was right, the count was not* — what shipped is **four
+subject components + one styles module**, not six row components: `src/components/stages/` holds
+`StageRow.tsx` (279 code lines),
 `StageDestinations.tsx` (111), `AddStageField.tsx` (49), `StrictWorkflowToggle.tsx` (49) and
 `stageStyles.ts` (4), three levels deep (`StageEditor → StageRow → StageDestinations`), with the parent
 **504 → 83** code lines (718 → 187 raw). The 43 pre-existing test bodies in

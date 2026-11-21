@@ -8,9 +8,13 @@ superseded-by:
 
 `src/components/StageEditor.tsx` (504 production code lines) was declined in PR #206 as *"needs a
 3-deep split to be honest — a redesign, deferred"*, and the census's honest shape named the row child
-**`StageRow`** (`docs/research/production-godfile-census-and-the-size-metric.md:258-260`). That name is
+**`StageRow`** (`docs/research/production-godfile-census-and-the-size-metric.md`, §F4 — the paragraph
+that opens *"Ruled against, with the reason:"*, cited by content rather than line number because that
+file grows and a line citation here would orphan on the next census edit). That name is
 already taken: `export interface StageRow` is the TypeScript mirror of `pub struct StageRow`
-(`src-tauri/src/storage/db.rs:553`), imported as a type by 14 TS files. Naming the component `StageRow`
+(`src-tauri/src/storage/db.rs:553`), named in 14 TS files at `main`: 9 import it and 1
+(`src/lib/tauri.ts`) re-exports it, `src/lib/tauri/types.ts` DECLARES it, and the last 3 hold it only as
+a string literal or in comments (see Consequences). Naming the component `StageRow`
 compiles — types and values are separate namespaces — but it puts
 `function StageRow({ stage }: { stage: StageRow })` in one file, and `AgentRow` dodged that collision
 only by luck: its DTO is `AgentDefinitionReportDto`, a *payload*, not a storage row.
@@ -52,9 +56,12 @@ wire — and what is given up is name-for-name traceability at the type level. A
   live in it. Editing that file from a second branch to change a name with zero functional effect is a
   coordination cost paid for nothing.
 - **It keeps a durable doc true instead of making it wrong.**
-  `docs/features/task-board-known-gaps.md:186` cites `StageRow` as a **storage** fact ("`StageRow`
-  carries 7 fields"). Renaming Rust reddens that sentence; renaming TS only leaves it accurate. The
-  census's `:258` citation is about the **component**, and becomes accurate.
+  `docs/features/task-board-known-gaps.md` §3 cites `StageRow` as a **storage** fact, at `:186-187`:
+  *"`STAGE_COLUMNS` is 7 entries, `StageRow` carries `on_enter_skill`, `set_stage_skill` writes it"*
+  (quoted across the file's line break, which falls inside the clause). Renaming Rust reddens that
+  sentence — it names the type as a row of the `stages` table read by `set_stage_skill`; renaming TS
+  only leaves it accurate. The census citation in the first paragraph is about the **component**, and
+  becomes accurate.
 - **The Rust name is the accurate one.** It *is* a row of the `stages` table, and `db.rs` is 2,154 code
   lines with its own approved split — the asymmetry is the price of not reopening it.
 
@@ -83,10 +90,18 @@ wire — and what is given up is name-for-name traceability at the type level. A
   (`interfaceFields(types, "StageWithTasks")` field *types* asserted `toEqual(["StageRow",
   "TaskCardView[]"])`, which parses `types.ts` as text). Set equality means a stale entry and a missing
   entry both redden, so neither edit can be split away from the rename.
-- **The rename is 60 occurrences across 14 TS files**, of which 5 files are prose-only mentions in
-  comments (`taskPrompt.ts`, `tauri.ts`, `tauriBarrel.test.ts`, `taskLaunch.test.ts`,
-  `TaskDetailDialog.test.tsx`). Prose mentions do not break; they go stale, and the ones that name the
-  type as *the wire type* should be updated in the same commit.
+- **The rename is 60 LINES / 64 OCCURRENCES of `StageRow` across 14 TS files at `main`** — the two
+  units differ because four lines carry the name twice (`git grep -c StageRow main -- src | awk -F:
+  '{s+=$NF} END {print s}'` → 60 lines; `git grep -o StageRow main -- src | wc -l` → 64 occurrences).
+  Of the 14 files, **2** mention it only inside comments — `src/lib/taskPrompt.ts` (2 lines, both `*`
+  comment) and `src/store/taskLaunch.test.ts` (1 line, same) — and the other 12 carry at least one
+  non-comment occurrence the rename is forced to touch (the line anchors below are `main`'s, before the
+  rename). Three of the files a loose reading
+  would call "prose" are not: `src/lib/tauri.ts` re-exports the type (`StageRow,` at `:154`),
+  `src/lib/tauriBarrel.test.ts` holds it in the `TAURI_PUBLIC_API` string array (`:439`), and
+  `TaskDetailDialog.test.tsx` imports it (`type StageRow,` at `:27`) and uses it in a `Pick<…>` type
+  at `:130`. Comment-only mentions do not break; they go stale, and the ones that name the type as
+  *the wire type* should be updated in the same commit.
 - **`docs/research/production-godfile-census-and-the-size-metric.md` and
   `docs/features/godfile-decomposition-closeout.md` both cite `StageRow`** as a constraint on the
   `tasks.rs` and `StageEditor` splits. A reader arriving from them needs this ADR to resolve the name.

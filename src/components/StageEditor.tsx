@@ -70,13 +70,13 @@ import type { StageDto } from "../lib/tauri";
  *    standing on. That is now one `map` for the whole dialog.
  *  - THE CANDIDATE SCAN IS NOT. Building the list of other columns a Stage can point
  *    at used to be a `filter().map()` in the same callback, and it is still one per
- *    row per render — it moved VERBATIM into `stages/StageRow.tsx`, where
- *    `candidates` and `labelOf` are its only consumers, and it was not folded into
- *    `derived`. `derived` cannot carry it: it is `{ cardCount, slugs }`, and neither
- *    field can answer "what is `doing` called", which is what a candidate IS.
- *    Putting the labels in `derived` would make the shell the owner of a fact it is
- *    not asked for; `derived` deliberately carries none, and the scan moved to its
- *    only consumer instead.
+ *    row per render — it moved to `stages/StageRow.tsx` NARROWED, not verbatim: the
+ *    `filter` is unchanged, `main`'s `map` yielded the whole `StageDto` where this one
+ *    yields the `{ slug, label }` pair its controls print, and `main`'s inline label
+ *    `find` is now the `labelOf` resolver, a separate scan `StageDestinations` reads.
+ *    `candidates` feeds two `Select`s, this row's delete picker and the add-destination
+ *    one. `derived` cannot carry the scan: it is `{ cardCount, slugs }`, which cannot
+ *    answer "what is `doing` called" — labels there make the shell own a foreign fact.
  *
  * `slugs` is one array PER RENDER handed to every row (the same reference in every
  * `derived` entry, and a fresh one on the next render — see the note on `slugs` in

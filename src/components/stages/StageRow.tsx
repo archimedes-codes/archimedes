@@ -58,23 +58,39 @@ import { CONTROL_ROW, ROW_BUTTON, ROW_SELECT } from "./stageStyles";
  * dialog, whatever the row count. At HEAD the same surface splits them: 2 in
  * `StageEditor.tsx`, 1 in `stages/AddStageField.tsx`, 2 in
  * `stages/StrictWorkflowToggle.tsx` — 5, fixed — plus the 6 CALLS in this file, one
- * set per RENDERED row. So the whole surface costs 6N + 5: the seed board's 3
- * columns go from 10 subscriptions to 23, and a 10-column board to 65. That is +13
- * selector INVOCATIONS per store write on the seed board, and it is worth being
- * exact about what that does and does not buy:
- *  - ZERO extra renders. Five of this row's six selectors return action refs the
- *    store builds once in `create` and never `set`s again, and the sixth returns the
- *    SAME array reference zustand already hands the parent — the store re-derives
- *    the slice on a Stage write (which re-renders the rows either way) and leaves the
- *    reference alone on every other one, so this subscription never renders a row by
- *    itself.
- *  - +13 selector CALLS per store write, which is one function call per subscription
- *    per write and nothing else. On a dialog this size that is the cheaper side of
- *    the trade; a row that rendered a list of thousands would not get to say so.
+ * set per RENDERED row. So the whole surface costs 6N + 5, and the N worth quoting
+ * is the PRODUCT's seed board: `DEFAULT_STAGES` in `src-tauri/src/storage/db.rs` is
+ * `[(&str, &str, Option<&str>); 5]` — backlog, research, approved, doing, done —
+ * and `store/tasks.ts` describes itself as "seeding the five default stages". Five
+ * columns take the surface from 10 subscriptions to 6(5) + 5 = **35**, and a
+ * 10-column board to 65. That is +25 selector INVOCATIONS per store write on the
+ * seed board, and it is worth being exact about what that does and does not buy:
+ *  - ZERO extra renders — but NOT because the store holds the reference still. It
+ *    does not: `load`, `moveTask`, `createTask` and `reorderWithinStage` in
+ *    `store/tasks.ts` each publish a FRESH `boardsBySpace[spacePath]` array, and so
+ *    does every other write, through `paint()` — the spread
+ *    `boardsBySpace: { ...state.boardsBySpace, [spacePath]: … }` appears 7 times in
+ *    that file, six inside those four actions (`moveTask` and `reorderWithinStage`
+ *    twice each, optimistic paint and revert; `load` and `createTask` once each) and
+ *    the seventh being `paint()` itself. The reason the row still costs no
+ *    render is one level up: the parent `StageEditor` subscribes to the SAME slice
+ *    (its own `columns` selector, the first line of its body), so any republish
+ *    re-renders the parent and re-renders every row with it — the row's own
+ *    subscription can therefore never be the thing that causes a render. The five
+ *    action selectors return refs the store builds once in `create` and never `set`s
+ *    again (no `set` in that file names an action), so they add no render either; and
+ *    this row is not `memo`-ised, so nothing about it could skip the parent's
+ *    re-render even if the reference were held.
+ *  - +25 selector CALLS per store write on the seed board, which is one function
+ *    call per subscription per write and nothing else. On a dialog this size that is
+ *    the cheaper side of the trade; a row that rendered a list of thousands would not
+ *    get to say so.
  *
- * (The counts above are CALL SITES: grepping `useTasks(` in this file also matches
- * the two mentions in this paragraph, so it reads 8 where the row's real number is
- * 6.)
+ * (The counts above are CALL SITES, and the bare token is not how to count them —
+ * this header names it in prose elsewhere too. The six are, in order, the five action
+ * selectors (`renameStage`, `setStageSkill`, `setStageNext`, `reorderStages`,
+ * `deleteStage`) back to back at the top of the component body, then the column slice
+ * two lines below them.)
  *
  * ---------------------------------------------------------------------------
  * ONE `role="button"`, AND WHO GETS THE CLICK
