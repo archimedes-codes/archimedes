@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useDragCard } from "./useDragCard";
 import { useWindowDropBackstop } from "./useWindowDropBackstop";
-import type { StageRow, StageWithTasks, TaskCardView } from "../lib/tauri";
+import type { StageDto, StageWithTasks, TaskCardView } from "../lib/tauri";
 
 /**
  * `useDragCard` — the CROSS-COLUMN gesture, and the reason it is a separate hook.
@@ -85,7 +85,7 @@ const layOut = (el: HTMLElement, left: number, width = 200) => {
 // Board fixtures — the NESTED wire shape (`{ stage, tasks }`), never a flat row.
 // ---------------------------------------------------------------------------
 
-const stage = (slug: string): StageRow => ({
+const stage = (slug: string): StageDto => ({
   spacePath: "/w/alpha",
   slug,
   label: slug,

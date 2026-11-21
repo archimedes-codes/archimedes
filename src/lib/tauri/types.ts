@@ -122,8 +122,14 @@ export interface SpaceCheck {
 /**
  * One board column (camelCase over IPC). A slug is unique WITHIN a Space, so two
  * Spaces can both have a `doing` column carrying a different `onEnter`.
+ *
+ * NAMING: this is the TS half of a deliberately asymmetric mirror (ADR 0115). The Rust struct is
+ * `pub struct StageRow` (`src-tauri/src/storage/db.rs`) and KEEPS that name — the type name never
+ * crosses the wire (`#[serde(rename_all = "camelCase")]` renames fields only, and there is no
+ * bindings generator), so TS `StageDto` ↔ Rust `StageRow` is correct, not a drift to fix. Grep
+ * `StageRow` on the Rust side to find it. `StageRow` in `src/components/` is now the COMPONENT.
  */
-export interface StageRow {
+export interface StageDto {
   spacePath: string;
   slug: string;
   label: string;
@@ -328,7 +334,7 @@ export interface TaskCardView {
  *  `tasks` holds [`TaskCardView`]s and NOT bare [`TaskRow`]s: a card is read as
  *  `card.task.id`, and its Sessions as `card.sessions`. */
 export interface StageWithTasks {
-  stage: StageRow;
+  stage: StageDto;
   tasks: TaskCardView[];
 }
 

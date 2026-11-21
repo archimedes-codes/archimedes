@@ -25,7 +25,7 @@ import {
   setStageSkill,
   writeArtifact,
   type SkillInfo,
-  type StageRow,
+  type StageDto,
   type StageWithTasks,
   type TaskCardView,
   type TaskRow,
@@ -113,7 +113,7 @@ const SPACE = "/w/alpha";
  * optional, and the defaults sit BEFORE the spread so a case can override either.
  * `null` is UNCONFIGURED; `nextSlugs: []` is the OTHER answer (configured, leading
  * nowhere — ADR 0099) and a case that means it passes it explicitly. */
-const stage = (slug: string, over: Partial<StageRow> = {}): StageRow => ({
+const stage = (slug: string, over: Partial<StageDto> = {}): StageDto => ({
   spacePath: SPACE,
   slug,
   label: slug[0]!.toUpperCase() + slug.slice(1),
@@ -319,7 +319,7 @@ beforeEach(() => {
 /** The slice as the store holds it now — the dialog writes through the store, so
  *  this is what "the board agrees with the editor" is measured against. */
 const slice = (): StageWithTasks[] => useTasks.getState().boardsBySpace[SPACE] ?? [];
-const stageOf = (slug: string): StageRow | undefined =>
+const stageOf = (slug: string): StageDto | undefined =>
   slice().find((c) => c.stage.slug === slug)?.stage;
 
 describe("StageEditor — the dialog's shape", () => {
@@ -460,6 +460,23 @@ describe("StageEditor — renaming a Stage keeps its slug", () => {
       "doing",
     );
     expect(slice().map((c) => c.stage.slug)).toEqual(["backlog", "doing", "done"]);
+  });
+
+  it("filtering a row away discards its uncommitted draft (the field re-shows the stored label)", async () => {
+    renderEditor();
+    fireEvent.change(labelField("doing"), { target: { value: "In flight" } });
+    expect(valueOf(labelField("doing"))).toBe("In flight");
+    fireEvent.change(screen.getByPlaceholderText("Search stages…"), {
+      target: { value: "backlog" },
+    });
+    expect(within(dialog()).queryByTestId("stage-row-doing")).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText("Search stages…"), {
+      target: { value: "" },
+    });
+    // The draft is GONE: it lived with the row, and the row unmounted. The field
+    // shows what the database holds, which is the same rule a refused rename follows.
+    await waitFor(() => expect(valueOf(labelField("doing"))).toBe("Doing"));
+    expect(renameStage).not.toHaveBeenCalled();
   });
 
   it("a refused rename puts the stored label back in the field and says why", async () => {
@@ -617,6 +634,24 @@ describe("StageEditor — the destination list is the transition graph", () => {
         "done",
         "doing",
       ]),
+    );
+  });
+
+  it("the add-destination trigger reads `Add a destination` again after an append (a second pick is not a no-op)", async () => {
+    renderEditor();
+    // The trigger is UNCONTROLLED with no `value`, so it shows its placeholder —
+    // the ordered destinations are the CHIPS, not this trigger.
+    expect(destinationTrigger("backlog").textContent).toBe("Add a destination");
+    fireEvent.click(destinationTrigger("backlog"));
+    fireEvent.click(await screen.findByRole("option", { name: "Done" }));
+    await waitFor(() =>
+      expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing", "done"]),
+    );
+    // Without the `key` the remount never happens, the uncontrolled Select keeps
+    // its internal selection, and this reads "Done" forever — so picking `doing`
+    // again is a silent no-op the user reads as a broken control.
+    await waitFor(() =>
+      expect(destinationTrigger("backlog").textContent).toBe("Add a destination"),
     );
   });
 });
@@ -935,6 +970,18 @@ describe("StageEditor — one role per row, and who gets the click", () => {
     expect(document.activeElement).not.toBe(labelField("done"));
   });
 
+  it("clicking a destination chip's remove button does NOT run the row's own action", async () => {
+    renderEditor();
+    const remove = within(row("backlog")).getByRole("button", {
+      name: "Remove Doing from backlog",
+    });
+    fireEvent.click(remove);
+    expect(document.activeElement).not.toBe(labelField("backlog"));
+    await waitFor(() =>
+      expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", []),
+    );
+  });
+
   it("Enter inside a nested control does NOT leak into the row's Enter handler", async () => {
     // `RowButton` activates on Enter from its OWN key handler, and keydown BUBBLES
     // from every child — so an Enter pressed while a nested button is focused fires
@@ -955,7 +1002,7 @@ describe("StageEditor — one role per row, and who gets the click", () => {
 /** `stage()` for a row that must keep its cards — the SEED's columns carry the
  *  cards the delete-picker cases need, and a case that re-spells a Stage's edges
  *  must not have to re-spell its cards too. */
-function stage2(slug: string, over: Partial<StageRow> = {}): StageWithTasks {
+function stage2(slug: string, over: Partial<StageDto> = {}): StageWithTasks {
   const base = SEED.find((c) => c.stage.slug === slug)!;
   return { ...base, stage: { ...base.stage, ...over } };
 }

@@ -23,7 +23,7 @@ import {
   setStageSkill,
   startTaskSession,
   writeArtifact,
-  type StageRow,
+  type StageDto,
   type StageWithTasks,
   type TaskCardView,
   type TaskRow,
@@ -106,7 +106,7 @@ const SPACE = "/w/alpha";
  * DIFFERENT answer (configured, leading nowhere — ADR 0099), so a test that means the
  * empty case must pass it explicitly through `over`. Defaults sit BEFORE the spread so
  * `over` can still override either field. */
-const stage = (slug: string, over: Partial<StageRow> = {}): StageRow => ({
+const stage = (slug: string, over: Partial<StageDto> = {}): StageDto => ({
   spacePath: SPACE,
   slug,
   label: slug[0]!.toUpperCase() + slug.slice(1),

@@ -28,7 +28,7 @@ import {
   setSessionConfigOption,
   startTaskSession,
   type SkillInfo,
-  type StageRow,
+  type StageDto,
   type StageWithTasks,
   type TaskRow,
 } from "../lib/tauri";
@@ -81,7 +81,7 @@ vi.mock("../lib/tauri", async () => {
   };
 });
 
-const stage = (slug: string, sortOrder: number): StageRow => ({
+const stage = (slug: string, sortOrder: number): StageDto => ({
   spacePath: SPACE,
   slug,
   label: slug[0]!.toUpperCase() + slug.slice(1),

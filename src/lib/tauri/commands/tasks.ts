@@ -46,7 +46,7 @@ import type {
   ArtifactMeta,
   MoveTaskOutcome,
   SessionInfo,
-  StageRow,
+  StageDto,
   StageWithTasks,
   TaskNumberRow,
   TaskRow,
@@ -252,8 +252,8 @@ export async function createStage(
   spacePath: string,
   label: string,
   skill?: string | null,
-): Promise<StageRow> {
-  return invoke<StageRow>("create_stage", {
+): Promise<StageDto> {
+  return invoke<StageDto>("create_stage", {
     spacePath,
     label,
     skill: skill ?? null,
@@ -265,8 +265,8 @@ export async function renameStage(
   spacePath: string,
   slug: string,
   label: string,
-): Promise<StageRow> {
-  return invoke<StageRow>("rename_stage", { spacePath, slug, label });
+): Promise<StageDto> {
+  return invoke<StageDto>("rename_stage", { spacePath, slug, label });
 }
 
 /**
@@ -284,8 +284,8 @@ export async function setStageSkill(
   spacePath: string,
   slug: string,
   skill: string | null,
-): Promise<StageRow> {
-  return invoke<StageRow>("set_stage_skill", { spacePath, slug, skill });
+): Promise<StageDto> {
+  return invoke<StageDto>("set_stage_skill", { spacePath, slug, skill });
 }
 
 /**
@@ -309,8 +309,8 @@ export async function setStageNext(
   spacePath: string,
   slug: string,
   slugs: string[],
-): Promise<StageRow> {
-  return invoke<StageRow>("set_stage_next", { spacePath, slug, slugs });
+): Promise<StageDto> {
+  return invoke<StageDto>("set_stage_next", { spacePath, slug, slugs });
 }
 
 /**

@@ -130,7 +130,7 @@ function skill(name: string): SkillInfo {
 
 /** A column with no cards — the board shape `get_board` publishes.
  *
- *  `onEnterSkill` / `nextSlugs` are REQUIRED on `StageRow` (the Rust reader always
+ *  `onEnterSkill` / `nextSlugs` are REQUIRED on `StageDto` (the Rust reader always
  *  emits both), so every fixture spells them. Both default to `null` = the state a
  *  pre-#179 column is in; a case that launches from a Skill-bearing column passes
  *  `skill`, because that field is now the ONLY thing that decides which Skill a

@@ -150,8 +150,8 @@ export type {
   // `Serialize` types one-for-one rather than with a `Dto` suffix, because
   // `SpaceRow` and `MessageRow` — the two storage-row types already on this list —
   // carry no suffix either, and the board's consumers (the task store, the board
-  // components) were planned against `TaskRow`/`StageRow`/`StageWithTasks`.
-  StageRow,
+  // components) were planned against `TaskRow`/`StageDto`/`StageWithTasks`.
+  StageDto,
   StageWithTasks,
   TaskCardView,
   TaskRow,
@@ -243,8 +243,8 @@ export {
   // (issue #179, spec §4, ADRs 0098 + 0099) The six Stage verbs and the
   // Strict-workflow pair. All EIGHT enter `TAURI_RUNTIME_API` and
   // `TAURI_PUBLIC_API` in this commit; none adds a TYPE name, because the six
-  // Stage verbs return the already-pinned `StageRow` and the other four return
-  // `void`/`boolean` primitives. `StageRow` itself gains `onEnterSkill` and
+  // Stage verbs return the already-pinned `StageDto` and the other four return
+  // `void`/`boolean` primitives. `StageDto` itself gains `onEnterSkill` and
   // `nextSlugs` in the same commit — widening an existing interface does not move
   // either list, but leaving it narrow would make the wired type a lie.
   createStage,

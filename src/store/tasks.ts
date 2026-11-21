@@ -21,7 +21,7 @@ import {
   writeArtifact as writeArtifactCommand,
   type Artifact,
   type ArtifactMeta,
-  type StageRow,
+  type StageDto,
   type StageWithTasks,
   type TaskCardView,
   type TaskRow,
@@ -162,21 +162,21 @@ interface BoardState {
     spacePath: string,
     label: string,
     skill?: string | null,
-  ) => Promise<StageRow>;
+  ) => Promise<StageDto>;
   /** Rename a column's LABEL. The slug does not move (spec §5 — `tasks.stage_slug`
    *  points at it by string with no foreign key). */
-  renameStage: (spacePath: string, slug: string, label: string) => Promise<StageRow>;
+  renameStage: (spacePath: string, slug: string, label: string) => Promise<StageDto>;
   /** Set or clear the Skill a Session started from this column loads (ADR 0098).
    *  `null` CLEARS it. A second field beside `onEnter`, never a merged one. */
   setStageSkill: (
     spacePath: string,
     slug: string,
     skill?: string | null,
-  ) => Promise<StageRow>;
+  ) => Promise<StageDto>;
   /** Set one column's outgoing transitions (ADR 0099) in button-render order.
    *  `[]` means "configured, and nothing may follow this column" and is NOT the
    *  same answer as the `null` that means "unconfigured, therefore unconstrained". */
-  setStageNext: (spacePath: string, slug: string, slugs: string[]) => Promise<StageRow>;
+  setStageNext: (spacePath: string, slug: string, slugs: string[]) => Promise<StageDto>;
   /** Rewrite the board's column order in one pass.
    *
    *  `slugs` is the board's WHOLE visible slice in its new order — the
@@ -268,7 +268,7 @@ const paint = (
  *  column the Space does not have.
  *
  *  THE SLUG CANNOT MOVE, and that is enforced HERE rather than trusted to the wire:
- *  every call site below passes either a field patch or the `StageRow` the command
+ *  every call site below passes either a field patch or the `StageDto` the command
  *  answered, and a row whose `slug` differs from the column being patched would
  *  re-key the column — orphaning every card under it, because `tasks.stage_slug`
  *  points at the old string with no foreign key (spec §5). `slug` is pinned back
@@ -277,7 +277,7 @@ const paint = (
 const withStage = (
   columns: StageWithTasks[],
   slug: string,
-  patch: Partial<StageRow>,
+  patch: Partial<StageDto>,
 ): StageWithTasks[] =>
   columns.map((c) =>
     c.stage.slug === slug
@@ -574,7 +574,7 @@ export const useTasks = create<BoardState>((set, get) => ({
       set({ error: describeIpcError(err) });
       console.error(`Failed to rename stage ${slug}:`, err);
       // Rethrown, and the reason is the return type: this action answers the
-      // stored `StageRow`, and on a refusal there ISN'T one — handing back the
+      // stored `StageDto`, and on a refusal there ISN'T one — handing back the
       // guessed row would be the confident lie `reorderTasks`' doc warns about in
       // the other direction. The three `void` Stage writes (`reorderStages`,
       // `deleteStage`, `setBoardStrict`) do NOT rethrow, matching `moveTask`: they

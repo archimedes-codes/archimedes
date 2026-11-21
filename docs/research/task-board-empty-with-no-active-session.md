@@ -151,7 +151,7 @@ Ordered by severity. All are the same null, so a fix that repairs only the board
    `src/lib/tauri/commands/catalogs.ts:68-70`) — though the picker is behind `ChatStream`'s early
    return, so this one is a wasted fetch more than a visible defect.
 
-**Checked and NOT in the blast radius:** `StageEditor` (`:312` returns `null`), `NewTaskDialog`
+**Checked and NOT in the blast radius:** `StageEditor` (its early return on a `null` `spacePath`), `NewTaskDialog`
 (unreachable — mounted only from a `disabled` button) and `TaskDetailDialog` (`columns` is
 `undefined`, so `detailCard` is `undefined` and no dialog mounts at all) are unreachable behind
 `disabled` parents; `store/taskLaunch` and `getBoard` take `spacePath: string` non-nullable, so the
