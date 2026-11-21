@@ -113,12 +113,13 @@ about what a **Stage** is called. Both now read the one `columns` slice through 
 both fall back to the **slug** when a lookup misses — "we could not name it" is a different claim from
 "it has no **Stage**".
 
-## The race guards are the rail's problem, not the reader's
+## The race is the rail's problem, not the reader's
 
-`selectArtifact` keeps two locks, clear `selectedArtifact` before the fetch and the `requestKey` ref
-identity check after the `await`. The rail makes that race **more** reachable, not less — two reads
-can be in flight and the older one can answer last, painting one key's document under another. Any
-change that adds a second way to select an artifact has to keep both.
+`select` in `src/hooks/useArtifactReader.ts` keeps two locks, clear `selectedArtifact` before the
+fetch and the `requestEpochRef` identity check after the `await`. The rail makes that race **more**
+reachable, not less — two reads can be in flight and the older one can answer last, painting one
+key's document under another. Any change that adds a second way to select an artifact has to keep
+both.
 
 ## Deliberately absent
 
@@ -135,20 +136,118 @@ change that adds a second way to select an artifact has to keep both.
   error sentence. A read *failure* is different and goes in the pane slot through `IpcErrorLine`,
   never in the launch `error` cell — and a launch failure keeps the dialog open with its own line.
 
+## Unheld after the artifact split
+
+Facts about this surface that are true at HEAD and held by **no** automated check. Each is labelled
+**pre-existing** — also true of `main`, so the split neither caused nor worsened it — or **of this
+branch**, because that is the distinction a future reader needs before deciding what to fix. None of
+this is a verdict on the split; it is the list of which invariants review is carrying.
+
+- **The request epoch orders by key alone — it carries no `taskId`.** `select` in
+  `src/hooks/useArtifactReader.ts` mints the epoch from the artifact **key**
+  (`requestEpochRef.current = key`) and both locks after the `await` compare that one value
+  (`grep -c 'requestEpochRef.current !== key' src/hooks/useArtifactReader.ts` → **2**). `taskId` reaches
+  the hook on one path only, the fetch argument
+  (`grep -vE '^[[:space:]]*(//|\*|/\*|$)' src/hooks/useArtifactReader.ts | grep -c taskId` → **4** code
+  lines: the option, the injected action's signature, the destructure, the call), and no comparison reads
+  it. So a read belonging to a **previous** card can pass both locks and paint, because the keys match:
+  `select("spec.md")` on one card and `select("spec.md")` on the next are the same epoch. The mount site
+  declines to help — `src/components/TasksBoard.tsx` renders the dialog with **no `key` prop**
+  (`grep -A9 '<TaskDetailDialog' src/components/TasksBoard.tsx | grep -c 'key='` → **0**), so React reuses
+  the instance, and with it the hook's state and its ref, if the detail id changes without an unmount.
+  **Reachability: no path found — theoretical at HEAD.** `setDetailTaskId` has three writers and all three
+  are in `TasksBoard.tsx` (`grep -rn 'setDetailTaskId' src/` → **3**): the `useState(null)`, the card click
+  behind `onOpenTask`, the close behind `onClose`. The dialog is a Radix `Dialog.Root` with `open` and no
+  `modal={false}` (`grep -c 'modal={' src/components/TaskDetailDialog.tsx` → **0**), so `modal` is Radix's
+  default `true` and `react-dismissable-layer` sets the body to `pointer-events: none` — the board behind
+  is unclickable while the dialog is up, the id therefore cannot move card-to-card without an intervening
+  close, and a close writes `null`, which drops `detailCard` to `undefined` and unmounts. It becomes
+  reachable the moment anyone adds a next/prev control inside the dialog, a `modal={false}` mount, or a
+  second opener that writes an id while one is already set. **Pre-existing and unchanged by the split:**
+  `git show main:src/components/TaskDetailDialog.tsx` held the identical shape under the older name
+  `requestKey` — minted from `key`, compared `!== key`, no `taskId` anywhere in the comparison — and
+  `git show main:src/components/TasksBoard.tsx` mounts the dialog without a `key` prop as well. The split
+  moved the epoch; it did not choose how wide the epoch is.
+- **Reader state is not reset when the card changes.** The hook has **zero `useEffect`s**
+  (`grep -vE '^[[:space:]]*(//|\*|/\*|$)' src/hooks/useArtifactReader.ts | grep -c useEffect` → **0**), so
+  nothing clears `selectedKey` / `selectedArtifact` / `artifactError` on a card switch: a switch would
+  leave the previous card's key selected with its document under it. Reachable only on the same
+  never-unmounted path as the entry above. **Pre-existing** — the three `useState` cells sat in the dialog
+  body on `main` with no effect beside them either
+  (`git show main:src/components/TaskDetailDialog.tsx | grep -vE '^[[:space:]]*(//|\*|/\*|$)' | grep -c useEffect`
+  → **0**). Use the stripped classifier and not the bare grep: `grep -c useEffect` on the hook prints **2**,
+  both inside its own doc comment, one of them the sentence "This hook has zero `useEffect`s".
+- **The no-wrapper rule on `TaskArtifactSection` is held by review, not by the suite.** A child that adds a
+  wrapper `<div>` is invisible to `TaskDetailDialog.test.tsx`. Measured three times independently during
+  PR #213's review: a bare inert wrapper leaves the file **63/63 green**, and so does a
+  wrapper wearing the section's own `flex shrink-0 flex-col gap-1`. The only wrapper any test catches is one
+  carrying `overflow-y-auto`, and it reddens exactly **1** test (`detail-scroll is the ONLY scroll container
+  in the dialog, and the rail and pane resolve to it`). Those zeroes are a result and not a blind suite — the
+  falsification control, dropping `shrink-0` from the section's **own** `className`, reddens **1**. Verified
+  at HEAD rather than inherited: `grep -c 'data-testid="artifact-section"' src/components/tasks/TaskArtifactSection.tsx`
+  → **1** (one root, no second carrier) and `grep -c 'React.memo' src/components/tasks/TaskArtifactSection.tsx`
+  → **0**. A one-line assertion would close the gap — `artifact-section`'s `parentElement` is the scroller, by
+  identity against `.overflow-y-auto`, the same instrument the pane pins already use — and it was deliberately
+  **not** added, because adding it means editing `TaskDetailDialog.test.tsx`, whose byte-identity to `main`
+  (`git diff main --exit-code -- src/components/TaskDetailDialog.test.tsx` → exit **0**) is this split's proof.
+  **Of this branch**, in the sense that the file it guards did not exist before it; the rule it guards is the
+  scroller's, and older than the split.
+- **Two subjects still live in `TaskDetailDialog.tsx`.** It measures **385** code lines under the ratchet's
+  own classifier (`grep -vcE '^[[:space:]]*(//|\*|/\*|$)' src/components/TaskDetailDialog.tsx` → **385**),
+  against **500** on `main` under the same classifier; the two files the split took out carry **130**
+  (`src/components/tasks/TaskArtifactSection.tsx`) and **37** (`src/hooks/useArtifactReader.ts`). Do not
+  quote `wc -l` (**677**) as the figure — the ratchet's unit is code lines, comments and blanks stripped.
+  What remains is the **sessions list** (`sessions.map`, `SessionStatusMark`, `useSessionStatuses`) and the
+  **launch/edge footer** (`DialogFooter`, `launchTaskSession`, `const launch`), **11** code lines naming
+  those symbols
+  (`grep -vE '^[[:space:]]*(//|\*|/\*|$)' src/components/TaskDetailDialog.tsx | grep -cE 'sessions\.map|SessionStatusMark|useSessionStatuses|DialogFooter|launchTaskSession|const launch ='`
+  → **11** — one instrument for "both are still here", rather than a grep per symbol). ADR 0114's precedent
+  now exists for taking them. The file sits below the 1,000-code-line tripwire and is named nowhere in
+  `scripts/file-size-baseline.txt` (`grep -c 'TaskDetailDialog' scripts/file-size-baseline.txt` → **0**), so
+  this is a **subject-count** observation and not a ratchet claim — `AGENTS.md` is explicit that size is not
+  a defect predictor here, and a future reader should not upgrade this bullet into a size argument.
+- **No gate reads this doc, so a citation here can orphan silently.** A doc that names a symbol the tree no
+  longer carries fails nothing: `grep -rln "docs/features" src/ --include="*.test.ts*"` → **4** files, and
+  on inspection **3** of them name docs in prose comments only (`CodemodeCard.test.tsx` and
+  `paletteTestKit.test.ts` contain no `readFileSync` at all, and `paletteCompleteness.test.ts`'s two
+  `readFileSync` matches are comments describing a read that was dropped). One **partial** gate exists and
+  it is worth naming precisely rather than dismissing: `src/lib/subagentSheetLayout.test.ts` keeps a `PROSE`
+  list, reads `docs/features/subagent-sessions.md` from disk, and fails on an offender line — but it is
+  one doc, one topic, and its offenders are bracketed **Tailwind class syntax**, not symbol names, and its
+  own comment calls itself "the suite's only doc↔code coupling". Nothing scans for a renamed symbol
+  (`grep -rln 'docs/features' scripts/*.sh` → **0** matches; the `docs/` hits across those scripts are
+  comments plus one allowlist string, not a scan), and nothing reads this file at all
+  (`grep -rln 'task-detail-modal' src/ scripts/ .github/` → **0** matches). This branch caught its
+  orphans by hand, in two species: one commit on PR #213 re-pointed this doc's `selectArtifact` /
+  `requestKey` to `select` / `requestEpochRef` — accurate on `main`, orphaned here — and another commit
+  in that PR removed line numbers that had already drifted out from under the prose. Both are **of this
+  branch**, because both were the split's own renames; the absence of a gate is **pre-existing** and
+  applies to every doc in the tree.
+
 ## Pin map
 
-`src/components/TaskDetailDialog.test.tsx`, 61 tests, one `describe` per subject (counts from
+`src/components/TaskDetailDialog.test.tsx`, 63 tests, one `describe` per subject (counts from
 `npx vitest list`, which is the only instrument that expands an `it.each` — this file happens to hold
-none today): `the graph buttons` 16 · `the artifact reader (issue #180)` 8 · `the artifact rail and
-pane` 8 · `the clickable grammar` 6 · `the body renders as markdown` 6 · `what the card cannot show` 5
+none today, and `npx vitest list src/components/TaskDetailDialog.test.tsx | wc -l` → 63):
+`the graph buttons` 16 · `the artifact reader (issue #180)` 8 · `the artifact rail and
+pane` 8 · `the clickable grammar` 6 · `the body renders as markdown` 6 · `what the card cannot show` 7
 · `the modal scrolls (issue #180 follow-up)` 4 · `the session's Stage label` 3 · `the sessions list` 3
 · `closing` 2.
 
 Two gates this file is subject to and one it is not: a dynamic `className` must compose through `cn()`
 (`classNameConvention.test.ts`), and the quiet caption pair `text-ui-xs text-foreground-subtlest` has
-one carrier, `MutedCaption` (`mutedCaption.test.ts`) — the dialog uses both (7 and 9 sites). It holds
-**zero** `rounded-full` literals and is not in `slabFloatSeparation.test.ts`'s `PILLS` census, which
-scans `TaskCard.tsx` (5 fills) and `TasksBoard.tsx` (1).
+one carrier, `MutedCaption` (`mutedCaption.test.ts`). The artifact split moved part of the dialog's
+share of both into `src/components/tasks/TaskArtifactSection.tsx`, so the sites live in two files now,
+counted as **JSX uses**: `grep -c 'className={cn(' ` → **2** in `TaskDetailDialog.tsx` + **2** in
+`TaskArtifactSection.tsx`, and `grep -c '<MutedCaption' ` → **3** + **1**. Both instruments reconcile
+against `main`, where the dialog held all of it alone (**4** and **4**). Do not reach for
+`grep -c MutedCaption` as the instrument: it counts the `import` line and the prose mentions beside the
+uses, and one line can carry an opening and a closing tag, so it prints 9 on `main` and 8 + 2 here and
+adds up to neither. It holds **zero** `rounded-full` literals (`grep -c 'rounded-full'
+src/components/TaskDetailDialog.tsx` → **0**, and 0 in the split-out section too) and is not in
+`slabFloatSeparation.test.ts`'s `PILLS` census, whose two entries are `TaskCard.tsx` (5 literals) and
+`src/components/tasks/TaskColumn.tsx` (1) — the column pill moved to that file when the board was split,
+so `TasksBoard.tsx` now holds 0.
 
 One behaviour to pin rather than "fix": `AgentMarkdown` renders fine with no `SpaceCwdProvider`, but a
 **relative** link inside it refuses as `relative-without-cwd`, because `useSpaceCwd()` answers `null`

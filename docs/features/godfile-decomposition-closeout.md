@@ -14,6 +14,19 @@ re-verified: 2026-11-20 — only the `agent/errors.rs` bullet in "What was delib
   it quoted a `//!` header sentence that has since been re-worded, and the one cost the shape does enable
   now has a closure at `src-tauri/tests/error_wire_gate.rs`. The 1135 code-line figure was re-measured with
   the ratchet's own classifier and still reproduces. No other number in this record was re-run that day.
+  Re-verified again 2026-11-21, during PR #213: the `TaskDetailDialog.tsx` entry under "What was
+  deliberately NOT split" was **refuted** and its split has since shipped, so that entry now records the
+  refutation (ADR 0114), and a `## Corrections made to this record's own numbers` section records it with
+  the four figures re-measured that day — `commands/tasks.rs` `pub(crate)` **6** not 14 (**and that
+  correction was itself wrong: 6 counts the declarations the unsplit file already has, not the widenings a
+  split would need — see the Corrections bullet, which withdraws it**), `db.rs` poison
+  expects **52** not ~51, `batching.rs` non-code **61.6%** not 57%, `session/mod.rs` **17** `into_inner()`
+  (the raw count; `docs/agents/census.md:25` counts **16** production recovery sites once the comment that
+  quotes the pattern is filtered) and **1583** code lines from the ratchet's own run — **1563** was never
+  the census's figure either, it is the `whole-file` column of `scripts/check-file-size.sh:49`'s header
+  table, re-measured at that script's own base `1355cd2a`, while the census says **1,560** on its own
+  `cfg-cut` instrument at its own base `4c06b1de`. Nothing else in this record
+  was re-run that day.
 ---
 
 # godfile-decomposition — close-out record
@@ -106,9 +119,10 @@ mechanical reason, not a deferral for lack of time.
      rationale at every *new* panic-on-poison site.
   Also unmovable: `Db::open` is ~355 lines of sequential migration gates whose *ordering* is the
   design. A split buys navigability; `open` is the actual complexity.
-- **`agent/session/mod.rs` (1563) — deferred, and it is a design change not a file move.** Its
-  poisoned-mutex **recovery** semantics (`unwrap_or_else(|p| p.into_inner())`, 17 sites in `mod.rs`
-  alone) are correct *because* one lock guards a map of independent per-session rows. Partitioning
+- **`agent/session/mod.rs` (1583 code lines by the ratchet's classifier — `grep -vcE '^[[:space:]]*(//|\*|/\*|$)' src-tauri/src/agent/session/mod.rs`; the census's own `cfg-cut` instrument says 1,560 at its base `4c06b1de`) — deferred, and it is a design change not a file move.** Its
+  poisoned-mutex **recovery** semantics (`unwrap_or_else(|p| p.into_inner())`, **16** production sites in `mod.rs`
+  alone — `docs/agents/census.md:25`, counted with its comment-anchored filter; the raw `grep -c "into_inner()"`
+  prints 17 because a prose comment quotes the pattern) are correct *because* one lock guards a map of independent per-session rows. Partitioning
   that map across files forces a per-partition decision on the exact discriminator `AGENTS.md`'s
   poison rule turns on. It belongs with the `db.rs` plan, where the same question is already asked.
 - **`src/store/sessions.ts` (1370) — blocked by arithmetic.** 431 hand-written
@@ -134,13 +148,24 @@ mechanical reason, not a deferral for lack of time.
   `SpacesError` sat at exactly half), and no test enumerated the families at all. A split makes that
   strictly worse — twelve independent omissions, still no enumerator — and it is closed by
   `src-tauri/tests/error_wire_gate.rs`.
-- **`commands/tasks.rs`** (worst risk-per-line: 14 `pub(crate)` widenings, an `include_str!` region
-  delimited by a banner the split would move), **`StageEditor.tsx`** (needs a 3-deep split to be
-  honest — a redesign), **`TaskDetailDialog.tsx`** (the artifact reader's `requestIdRef` is a
-  request-ordering guard; lifting it changes when the fetch fires), **`storage/batching.rs`** (57% of
-  it is the prose arguing a lock ordering). `ChatStream.tsx` and `SpaceTabs.tsx` were already DONE by
-  issue #135 — see `docs/features/chatstream-decomposition-closeout.md`, the precedent this work
-  copied.
+- **`commands/tasks.rs`** (worst risk-per-line: `pub(crate)` widenings — recorded here as 14, **an
+  earlier correction on this branch "measured" it at 6 and that correction is withdrawn below: 6 is the
+  declarations the unsplit file already carries, a different unit, so the 14 stands as an unverified
+  estimate** — and an `include_str!` region delimited by a banner the split would move, which is the
+  blocker that actually holds),
+  **`StageEditor.tsx`** (needs a 3-deep split to be honest — a redesign), **`TaskDetailDialog.tsx`**
+  (**REFUTED, and since SPLIT** — this entry used to read *"the artifact reader's `requestIdRef` is a
+  request-ordering guard; lifting it changes when the fetch fires"*, and every clause of that is false:
+  no such symbol exists, it shared no state with the launch path, and the file has zero `useEffect`s, so
+  nothing moved when the fetch fired. It shipped as `src/hooks/useArtifactReader.ts` +
+  `src/components/tasks/TaskArtifactSection.tsx` — 500 → **385** code lines on the ratchet's classifier,
+  `TaskDetailDialog.test.tsx` byte-identical. Deciding record: **ADR 0114**
+  (`docs/decisions/0114-a-request-ordering-guard-lives-with-the-await-and-the-region-it-guards-is-one-child.md`);
+  evidence: `docs/research/taskdetaildialog-artifact-guard-ownership.md`. The entry is KEPT, not deleted —
+  the useful fact is that this decline reason was wrong), **`storage/batching.rs`** (57% of it is the
+  prose arguing a lock ordering — the comment-only share, re-measured 57.3%; see below).
+  `ChatStream.tsx` and `SpaceTabs.tsx` were already DONE by issue #135 — see
+  `docs/features/chatstream-decomposition-closeout.md`, the precedent this work copied.
 - **Exempt from the ratchet, by allowlist:** `archimedes-film/scene.ts` and `palettes/everforest.ts`
   only. The recorded reason for `scene.ts` matters — its inherited excuse ("it is a data table") is
   **false**, it is 729 lines of graphics engine; the true reason is that the only check that would
@@ -148,6 +173,67 @@ mechanical reason, not a deferral for lack of time.
   in the repo**, so no automated test guards it. `provider_auth/refresh.rs` (866) and
   `commands/update.rs` (734) stay **under** the ratchet on purpose: they are ordinary logic, and
   guarding them is the point.
+
+## Corrections made to this record's own numbers
+
+Recorded because each was a confident, well-formed wrong answer. Re-measured on this branch during
+PR #213's review; the code-line figures come from `scripts/check-file-size.sh` (its own classifier, `TMPDIR`
+on real disk), the rest from the `grep -c` printed beside each one.
+
+- **`requestIdRef` never existed.** This record's declined-set entry for `TaskDetailDialog.tsx` named the
+  artifact reader's guard `requestIdRef`. There is no such symbol anywhere in `src/` — the guard was
+  `const requestKey = useRef<string | null>(null)` (`TaskDetailDialog.tsx:167` before the split — that
+  name is the history of that file and is quoted here as it was; the guard itself now lives on as
+  `requestEpochRef` at `src/hooks/useArtifactReader.ts` — path only, deliberately unnumbered: this
+  branch keeps editing that file, and the line number this bullet carried (`:87`, correct when it was
+  written during PR #213) was pushed to `:100` by a later commit that inserted a paragraph above it),
+  touched at four sites, all inside `selectArtifact`. A decline reason that cites a symbol by name must
+  be checked with a grep against the tree, never from prose — and the same rule covers the line number
+  beside it: cite the symbol, grep for the symbol, do not pin the line.
+- **The guard shared no state with the launch path, so the coupling this decline rested on did not
+  exist.** The reader owned `selectedKey`/`selectedArtifact`/`artifactError`/`requestKey`; the launch
+  owned `busy`/`error`/`note`; the intersection was empty, and the file had **0 `useEffect`s**, so the
+  only thing that fired the read was the rail button's `onClick`. The decline had mistaken
+  **"shares the pane"** for **"shares state"** — the rail and the pane did read the same selection, which
+  is a reason to extract them as ONE child, not a reason to leave the file alone. The split shipped
+  accordingly (ADR 0114, `docs/research/taskdetaildialog-artifact-guard-ownership.md`): 500 → **385**
+  code lines (`grep -vcE '^[[:space:]]*(//|\*|/\*|$)' src/components/TaskDetailDialog.tsx`), with
+  `TaskDetailDialog.test.tsx` byte-identical to the pre-split base and all 63 of its tests passing.
+- **`commands/tasks.rs` is recorded here with 14 `pub(crate)` widenings; an earlier correction on this
+  branch said "measured 6" and that correction was WRONG — the two numbers are different units.**
+  `grep -c "pub(crate)" src-tauri/src/commands/tasks.rs` → **6** counts the `pub(crate)` declarations the
+  **unsplit** file already carries today; the 14 was an estimate of the widenings the **proposed five-file
+  split would require**. Counting the first does not refute the second, so the "2.3× too high" claim this
+  bullet used to make is withdrawn and the 14 stands as **unverified** — nobody has re-derived it item by
+  item. (The one thing that can be said for it: the file holds exactly **14** private top-level `fn`
+  declarations — `grep -cE '^(async )?fn ' src-tauri/src/commands/tasks.rs` → 14 — and those are the
+  population a split would widen from, so the figure is at least consistent with the claim it was making.)
+  This is the same failure this section exists to record, applied to a correction made here: a `grep -c`
+  answers the question its pattern asks, and a pattern over the wrong population prints a confident wrong
+  answer. The file's other blocker **holds**: `include_str!("../../tasks.rs")` delimits a region on a
+  banner the split would move (`src-tauri/src/commands/tasks/tests/stages.rs:294`). The decline therefore
+  **stands**, on that blocker and the unverified 14 — not on a refutation.
+- **Every other declined file's blocker held on re-measurement**, with two figures corrected in the
+  process. `storage/batching.rs`: 539 code / 1403 raw → **61.6%** non-code, not the 57% this record
+  quotes — and 57% was never the same quantity anyway, since comment-only lines alone are **57.3%**
+  (`grep -cE '^[[:space:]]*(//|\*|/\*)'` → 804 of 1403); the prose blocker is stronger than recorded, not
+  weaker. `storage/db.rs`: **52** poison expects, not ~51
+  (`grep -c 'expect("db mutex poisoned")' src-tauri/src/storage/db.rs`). `agent/session/mod.rs`: **17**
+  `into_inner()` (`grep -c "into_inner()" src-tauri/src/agent/session/mod.rs`) — which is that file's
+  number, and is routinely conflated with `db.rs`'s 52. **Read it as the RAW count, not the production
+  count:** `docs/agents/census.md:25` gives **16** production recovery sites for this file, counted with
+  `grep -rn "unwrap_or_else(|p| p.into_inner())" src-tauri/src/agent/session/mod.rs | grep -vE ':\s*//' | wc -l`,
+  and the extra line is `:853`, a prose comment quoting the pattern itself (`sed -n '853p' src-tauri/src/agent/session/mod.rs`).
+  Its size is **1583** code lines per the ratchet's
+  own run (`grep -vcE '^[[:space:]]*(//|\*|/\*|$)' src-tauri/src/agent/session/mod.rs`); the 1563 this record
+  has been quoting since `5756b87c` is not the census's figure — it is the `whole-file` column of
+  `scripts/check-file-size.sh:49`'s
+  header table, measured at that table's own base `1355cd2a` — and the census's number is **1,560**, its own
+  `cfg-cut` instrument at its own base `4c06b1de`. Three instruments, three quantities; `bash scripts/check-file-size.sh --update` printed
+  `baseline unchanged: 11 file(s) over 700 code lines`, so the ledger's `1583` line is this tree's
+  measurement and **1583 is the figure to quote** — a hand-run classifier is not the ratchet's classifier
+  and must not be quoted as a ratchet figure (the research report records the three-way
+  and settles it the same way). The `session/mod.rs` decline holds.
 
 ## One durable lesson from review
 
