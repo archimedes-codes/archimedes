@@ -560,12 +560,16 @@ fn from_impl_families(source: &str) -> BTreeSet<String> {
 /// The `NAME` of every `family_gate!` invocation in the gate's OWN source. This
 /// is what makes arm B a gate and not a list: the set is read out of the file, so
 /// a family that is no longer gated is no longer in it.
+///
+/// The scan runs over `code_only`, not the raw text: an invocation that has been
+/// commented out is a MENTION and must not be counted, or arm B reads green while
+/// that family's checks no longer run.
 fn gated_families(gate_source: &str) -> BTreeSet<String> {
     const CALL: &str = "family_gate!(";
-    gate_source
-        .match_indices(CALL)
+    let code = code_only(gate_source);
+    code.match_indices(CALL)
         .filter_map(|(at, _)| {
-            let tail = &gate_source[at + CALL.len()..];
+            let tail = &code[at + CALL.len()..];
             let name: String = tail
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
@@ -577,6 +581,123 @@ fn gated_families(gate_source: &str) -> BTreeSet<String> {
             }
         })
         .collect()
+}
+
+/// The scan below reads the gate's own text, so it must read CODE and not prose:
+/// a `family_gate!` inside a comment, a doc comment, or a string literal is a
+/// mention, not an invocation. Without this, commenting out a family's test keeps
+/// its name in `gated`, and arm B's missing-family and count checks still pass
+/// while that family's checks no longer run — a green that is a lie.
+///
+/// Returns `source` with every comment removed and every string/char literal's
+/// CONTENTS removed (the delimiters are dropped too, so a `family_gate!(` cannot
+/// be reassembled across a boundary). Line comments, nesting block comments,
+/// raw strings with any number of hashes, escape-bearing literals and lifetimes
+/// are all distinguished; a lifetime emits its `'` because it is code.
+fn code_only(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0usize;
+    let mut block_depth = 0usize;
+
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+
+        if block_depth > 0 {
+            // Rust block comments NEST, so a naive "find the first */" ends the
+            // outer comment at the inner one and resurrects the tail as code.
+            if c == '/' && next == Some('*') {
+                block_depth += 1;
+                i += 2;
+            } else if c == '*' && next == Some('/') {
+                block_depth -= 1;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+
+        if c == '/' && next == Some('/') {
+            // Skip to end of line, but keep the newline: dropping it would splice
+            // the next line onto this one and could join two tokens.
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && next == Some('*') {
+            block_depth += 1;
+            i += 2;
+        } else if c == 'r' && (next == Some('"') || next == Some('#')) {
+            // Raw string: r"…" or r#"…"#. Contents are data, never code.
+            let mut hashes = 0usize;
+            let mut j = i + 1;
+            while chars.get(j) == Some(&'#') {
+                hashes += 1;
+                j += 1;
+            }
+            if chars.get(j) == Some(&'"') {
+                j += 1;
+                loop {
+                    match chars.get(j) {
+                        None => {
+                            j = chars.len();
+                            break;
+                        }
+                        Some('"') => {
+                            let mut k = j + 1;
+                            let mut h = 0usize;
+                            while h < hashes && chars.get(k) == Some(&'#') {
+                                h += 1;
+                                k += 1;
+                            }
+                            if h == hashes {
+                                j = k;
+                                break;
+                            }
+                            j += 1;
+                        }
+                        Some(_) => j += 1,
+                    }
+                }
+                i = j;
+            } else {
+                // `r#` / a bare `r` that is not a raw-string opener: ordinary code.
+                out.push(c);
+                i += 1;
+            }
+        } else if c == '"' {
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                if chars[i] == '\\' {
+                    i += 1; // the escaped char is consumed with its backslash
+                }
+                i += 1;
+            }
+            i += 1; // the closing quote (clamped if the literal is unterminated)
+            i = i.min(chars.len());
+        } else if c == '\'' && (next == Some('\\') || chars.get(i + 2) == Some(&'\'')) {
+            // A char literal ('a', '\n', '\'', '\u{1F600}') — as opposed to a
+            // lifetime `'a`, which is code and falls through to the `else`.
+            let mut j = i + 1;
+            while j < chars.len() {
+                if chars[j] == '\\' {
+                    j += 2; // skip the escape pair, so '\'' does not end early
+                    continue;
+                }
+                if chars[j] == '\'' {
+                    break; // the closing quote
+                }
+                j += 1;
+            }
+            i = (j + 1).min(chars.len());
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+
+    out
 }
 
 /// The secondary count: `^pub (enum|struct) …Error`. Weaker than the `From` scan
@@ -687,5 +808,123 @@ fn every_ipc_error_family_has_a_gate_entry() {
         12,
         "the secondary `^pub (enum|struct) …Error` scan must agree with the \
          `From`-impl count"
+    );
+}
+
+/// The P2 regression: a `family_gate!` that has been commented out is a MENTION,
+/// not an invocation. Greptile's scenario, end to end — take this file's real
+/// text, comment out one gate exactly as a maintainer would, and the derived set
+/// must LOSE that family so arm B's missing-family check goes red naming it.
+///
+/// Before `code_only` this read 9 gates and stayed green with the `McpError`
+/// test disabled: the count check (`gated.len() == 9`) and the missing-family
+/// check both passed while `McpError`'s assertions no longer ran.
+#[test]
+fn a_commented_out_gate_stops_counting() {
+    let gate_source = include_str!("error_wire_gate.rs");
+    let live = gated_families(gate_source);
+    assert!(
+        live.contains("McpError"),
+        "precondition: this file gates `McpError` today (found {live:?})"
+    );
+
+    // Comment the invocation out, leaving everything else — including the gate's
+    // body and the surrounding `#[test]` — untouched. The needle is assembled at
+    // runtime on purpose: this file `include_str!`s itself, so a literal needle
+    // written here would appear in its own source and corrupt the count.
+    let needle = format!("    {}({},", "family_gate!", "McpError");
+    let replaced = gate_source.replacen(&needle, &format!("    // {}", needle.trim_start()), 1);
+    assert_eq!(
+        gate_source.matches(&needle).count(),
+        1,
+        "precondition: the needle must match exactly one live invocation"
+    );
+    assert_ne!(
+        replaced, gate_source,
+        "precondition: the substitution must actually change the text"
+    );
+
+    let after = gated_families(&replaced);
+    assert!(
+        !after.contains("McpError"),
+        "a commented-out `family_gate!(McpError, …)` must NOT count as a gate; \
+         the scan still read {after:?}"
+    );
+    assert_eq!(
+        after.len(),
+        live.len() - 1,
+        "commenting out one gate must drop the derived count by exactly one"
+    );
+}
+
+/// The extractor itself, over synthetic text: every non-code spelling of the
+/// macro name is skipped, and the one live invocation is found. Kept separate
+/// from the test above so a future edit to this file's gates cannot silently
+/// invalidate the mechanism's unit proof.
+#[test]
+fn the_scan_reads_code_and_not_prose() {
+    let source = concat!(
+        "// family_gate!(LineCommented, A => (\"a\", A::A)),\n",
+        "/// family_gate!(DocCommented, A => (\"a\", A::A)),\n",
+        "/* family_gate!(BlockCommented, A => (\"a\", A::A)), */\n",
+        "/* outer /* family_gate!(NestedCommented, …) */ still a comment */\n",
+        "//! family_gate!(ModuleDocCommented, A => (\"a\", A::A)),\n",
+        "const CALL: &str = \"family_gate!(StringLiteral, A => (\\\"a\\\", A::A))\";\n",
+        "const RAW: &str = r#\"family_gate!(RawString, A => (\"a\", A::A))\"#;\n",
+        "const CH: char = '\\''; // a char literal holding a quote\n",
+        "fn takes<'a>(x: &'a str) -> &'a str { x } // lifetimes are code\n",
+        "    family_gate!(Live, A => (\"a\", A::A)),\n",
+    );
+
+    let found = gated_families(source);
+    assert_eq!(
+        found.iter().collect::<Vec<_>>(),
+        vec!["Live"],
+        "only the live invocation counts; every comment, doc comment and string \
+         literal mention must be skipped (and a char literal must not swallow \
+         the code after it)"
+    );
+
+    // The extractor's own name must not be counted as an invocation of itself.
+    assert!(
+        !gated_families(&code_only(source)).contains("CALL"),
+        "the string literal holding the search pattern must not yield a name"
+    );
+}
+
+/// `code_only` keeps code and drops data — asserted directly, because arm B's
+/// soundness rests on it and a subtle tokenizer bug would otherwise show up only
+/// as a mysteriously green gate.
+#[test]
+fn code_only_drops_comments_and_literal_contents_only() {
+    // Code survives: identifiers, lifetimes, punctuation.
+    assert_eq!(
+        code_only("fn takes<'a>(x: &'a str) -> &'a str { x }").replace(' ', ""),
+        "fntakes<'a>(x:&'astr)->&'astr{x}".to_string()
+    );
+
+    // A comment's contents are gone but the line break is preserved, so the next
+    // line cannot be spliced onto this one.
+    assert_eq!(code_only("a // family_gate!(Nope,\nb"), "a \nb".to_string());
+
+    // A literal's contents are gone; the code around it is not, and a `'` inside
+    // a char literal does not swallow the rest of the line.
+    assert_eq!(
+        code_only("let s = \"family_gate!(Nope,\"; let t = 1;"),
+        "let s = ; let t = 1;"
+    );
+    assert_eq!(
+        code_only("let c = '\\''; let t = 1;"),
+        "let c = ; let t = 1;"
+    );
+    assert_eq!(
+        code_only("let r = r#\"a\"#family_gate!(Yes, A);"),
+        "let r = family_gate!(Yes, A);"
+    );
+
+    // Nesting: the outer comment ends at the OUTER `*/`, not the inner one.
+    assert_eq!(
+        code_only("/* a /* b */ family_gate!(StillCommented, A) */ real!(B)"),
+        " real!(B)".to_string()
     );
 }
