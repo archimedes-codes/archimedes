@@ -579,9 +579,15 @@ pub enum SettingsError {
     // ── the direct OIDC login (issue #127) — THREE ADDITIVE variants ─────────
     //
     // Purely additive (the ADR 0063 envelope's own rule): no existing variant's
-    // text or behaviour changed, and the two exhaustive places over this enum
-    // (`kind()` below and the `From<SettingsError> for InvokeError` conversion)
-    // gained new arms only — the compiler is the checklist.
+    // text or behaviour changed. The compiler guards exactly ONE place over this
+    // enum — `kind()` below is exhaustive, so a new variant is a hard error there.
+    // The `From<SettingsError> for InvokeError` conversion is NOT a second guard:
+    // it builds its payload from `err.kind()` and `err.to_string()` and never
+    // names a variant, so it cannot notice one being added. The same is true of
+    // `SpacesError`, `McpError` and `AgentsError`; `TasksError` has one arm, for
+    // `ArtifactTooLarge`. What freezes the SPELLINGS is the independent vocabulary
+    // literal in `src-tauri/tests/error_wire_gate.rs` — outside this file because
+    // this file is ratcheted and may not gain a line.
     /// The `oidc` block the renderer sent is not a valid `OidcConfig` (a missing
     /// `issuer`/`clientId`, a wrong type).
     #[error("invalid OIDC provider configuration: {0}")]
