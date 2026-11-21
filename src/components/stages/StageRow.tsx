@@ -25,7 +25,8 @@ import { CONTROL_ROW, ROW_BUTTON, ROW_SELECT } from "./stageStyles";
  * order, and its deletion.
  *
  * ---------------------------------------------------------------------------
- * IT READS THE STORE DIRECTLY, THE WAY `SessionRow` DOES
+ * IT READS THE STORE DIRECTLY — BUT THE `SessionRow` CITATION IS SPLIT,
+ * BECAUSE THE ROW BREAKS IT IN ONE PLACE
  * ---------------------------------------------------------------------------
  *
  * The five verbs its own controls call — `renameStage`, `setStageSkill`,
@@ -36,14 +37,44 @@ import { CONTROL_ROW, ROW_BUTTON, ROW_SELECT } from "./stageStyles";
  * `store/tasks` owns the optimistic paint, the whole-slice re-derivation and the
  * revert into `error` (spec §8.1), which the dialog renders.
  *
- * It also reads the board slice itself, for ONE thing `derived` deliberately does
- * not carry: the LABELS of the other columns. `derived` is `{ cardCount, slugs }` —
- * the count the row prints and the whole ordered slug list the reorder needs — and
- * neither can answer "what is `doing` called", which the destination chips, the
- * add-`Select`'s items and the delete picker all print. The read returns the SAME
- * array reference the parent already holds (zustand hands out the stored slice, so
- * this subscription costs no extra render), and it is why `candidates` reaches
- * `StageDestinations` from here instead of riding in `derived`.
+ * THE WHOLE-SLICE READ IS THE ONE THING `SessionRow` WOULD NOT DO, and this file
+ * should not cite it for that. `useTasks((s) => s.boardsBySpace[spacePath])`
+ * subscribes the ROW to a store slice, and `SessionRow` deliberately refuses that
+ * shape: it takes `recencyMap` and `badgeMap` as props, and its own prop docs say
+ * so in those words — the pane holds the ONE subscription "so this row adds NO
+ * subscription of its own". This row adds one.
+ *
+ * It does so for ONE thing `derived` deliberately does not carry: the LABELS of the
+ * other columns. `derived` is `{ cardCount, slugs }` — the count the row prints and
+ * the whole ordered slug list the reorder needs — and neither can answer "what is
+ * `doing` called", which the destination chips, the add-`Select`'s items and the
+ * delete picker all print. The only alternative was ANOTHER prop carrying the other
+ * columns' labels up from the shell — an EIGHTH prop, where this row takes seven
+ * today — and it would be a row→parent→row round trip for data the parent already
+ * holds, computed per row for a question only this row's chips ask.
+ *
+ * THE COST, measured rather than assumed (the way `stageStyles.ts` states its own
+ * exception). `main`'s one-file shell held 10 `useTasks(` CALLS for the whole
+ * dialog, whatever the row count. At HEAD the same surface splits them: 2 in
+ * `StageEditor.tsx`, 1 in `stages/AddStageField.tsx`, 2 in
+ * `stages/StrictWorkflowToggle.tsx` — 5, fixed — plus the 6 CALLS in this file, one
+ * set per RENDERED row. So the whole surface costs 6N + 5: the seed board's 3
+ * columns go from 10 subscriptions to 23, and a 10-column board to 65. That is +13
+ * selector INVOCATIONS per store write on the seed board, and it is worth being
+ * exact about what that does and does not buy:
+ *  - ZERO extra renders. Five of this row's six selectors return action refs the
+ *    store builds once in `create` and never `set`s again, and the sixth returns the
+ *    SAME array reference zustand already hands the parent — the store re-derives
+ *    the slice on a Stage write (which re-renders the rows either way) and leaves the
+ *    reference alone on every other one, so this subscription never renders a row by
+ *    itself.
+ *  - +13 selector CALLS per store write, which is one function call per subscription
+ *    per write and nothing else. On a dialog this size that is the cheaper side of
+ *    the trade; a row that rendered a list of thousands would not get to say so.
+ *
+ * (The counts above are CALL SITES: grepping `useTasks(` in this file also matches
+ * the two mentions in this paragraph, so it reads 8 where the row's real number is
+ * 6.)
  *
  * ---------------------------------------------------------------------------
  * ONE `role="button"`, AND WHO GETS THE CLICK
@@ -109,10 +140,11 @@ export function StageRow({
   /** What the parent already computed from the WHOLE column set, so this row does no
    *  per-row scan for it. See the header for what is deliberately NOT in here. */
   derived: {
-    /** How many cards this column holds — the number the row prints AND the number
-     *  that decides whether deleting it asks a question. */
+    /** How many cards this column holds — the number the row PRINTS. Print-only:
+     *  the delete decision reads the slice at click time instead, because a column
+     *  absent from the slice must not read as an empty one. See `requestDelete`. */
     cardCount: number;
-    /** EVERY column's slug, in board order: ONE array reference, shared by every
+    /** EVERY column's slug, in board order: ONE array PER RENDER, shared by every
      *  row. Load-bearing — see `moveStage`. */
     slugs: string[];
   };
@@ -218,9 +250,16 @@ export function StageRow({
     // costing money through its Session, and can never be clicked again (spec §4.1),
     // so there is no "delete anyway" escape to offer.
     //
-    // `cardCount` and not a fresh slice lookup: it is the SAME number the row prints
-    // two lines above, so the caption and the decision cannot disagree.
-    if (cardCount === 0) {
+    // THE DISCRIMINATOR, at click time and from the slice: a column ABSENT from the
+    // slice is not a column with NO CARDS. "I know nothing about this column" and
+    // "this column holds nothing" are different facts, and they must not share an
+    // arm — the first is inert on `main` and the second deletes. So the count that
+    // decides is read here, and `derived.cardCount` stays what it always was: the
+    // number printed two lines above. This `find` costs nothing per render — it runs
+    // on a click, and the slice it reads is the subscription this row already holds.
+    const column = columns?.find((c) => c.stage.slug === stage.slug);
+    if (column === undefined) return;
+    if (column.tasks.length === 0) {
       void deleteStage(spacePath, stage.slug);
       return;
     }
@@ -284,9 +323,9 @@ export function StageRow({
           }}
           onBlur={() => void commitLabel()}
         />
-        {/* The count, so a rename is not the only thing a row can tell you:
-            how many cards this column holds is what decides whether deleting
-            it will ask a question. */}
+        {/* The count, so a rename is not the only thing a row can tell you: how many
+            cards this column holds is what tells you whether deleting it will ask a
+            question. Printed here; the delete arm reads the slice itself. */}
         <span className="shrink-0 rounded-md bg-panel px-2 py-0.5 font-mono text-ui-sm text-foreground-subtlest">
           {cardCount}
         </span>

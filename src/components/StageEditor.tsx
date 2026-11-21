@@ -60,13 +60,29 @@ import type { StageDto } from "../lib/tauri";
  * WHAT THIS FILE STILL COMPUTES, AND WHY ONLY ONCE
  * ---------------------------------------------------------------------------
  *
- * `derived` is one `Map` built from `columns` before the return: per column, the
- * card count it prints and the ONE ordered slug array every row shares. Before this
- * was hoisted, each row did its own `columns?.find()` for the count and its own
- * `filter().map()` for the candidates, inside a `renderRow` callback that runs per
- * row per render. `slugs` is a single array reference handed to every row — the rows
- * never mutate it (each builds its own copy to swap in), so sharing it is free and
- * it is what lets a row satisfy `reorderStages`' whole-slice contract.
+ * `derived` is one `Map` built from `columns` before the return, and it hoists
+ * exactly ONE of the two scans a row used to run. It is worth separating the two,
+ * because the header would otherwise claim a hoist that half-happened:
+ *
+ *  - THE COUNT IS HOISTED. `cardCount` is the per-column `tasks.length`, and before
+ *    this it was a `columns?.find()` inside a `renderRow` callback that runs per row
+ *    per render — N finds for N rows, each finding the column the pass was already
+ *    standing on. That is now one `map` for the whole dialog.
+ *  - THE CANDIDATE SCAN IS NOT. Building the list of other columns a Stage can point
+ *    at used to be a `filter().map()` in the same callback, and it is still one per
+ *    row per render — it moved VERBATIM into `stages/StageRow.tsx`, where
+ *    `candidates` and `labelOf` are its only consumers, and it was not folded into
+ *    `derived`. `derived` cannot carry it: it is `{ cardCount, slugs }`, and neither
+ *    field can answer "what is `doing` called", which is what a candidate IS.
+ *    Putting the labels in `derived` would make the shell the owner of a fact it is
+ *    not asked for; `derived` deliberately carries none, and the scan moved to its
+ *    only consumer instead.
+ *
+ * `slugs` is one array PER RENDER handed to every row (the same reference in every
+ * `derived` entry, and a fresh one on the next render — see the note on `slugs` in
+ * `stages/StageRow.tsx`) — the rows never mutate it (each builds its own copy to
+ * swap in), so sharing it is free and it is what lets a row satisfy `reorderStages`'
+ * whole-slice contract.
  */
 export interface StageEditorProps {
   /** The **Space** whose board is being configured. `null` renders nothing — the
@@ -102,8 +118,9 @@ export default function StageEditor({
   if (spacePath === null) return null;
 
   const slugs = (columns ?? []).map((c) => c.stage.slug);
-  // ONE pass over the columns for the two facts every row needs, so the row does no
-  // scan of its own. `slugs` is the SAME array reference in every entry.
+  // ONE pass over the columns for the two facts every row needs. It hoists the
+  // COUNT, not the candidate scan — see the header. `slugs` is the SAME array
+  // reference in every entry, and a new array on the next render.
   const derived = new Map(
     (columns ?? []).map((c) => [
       c.stage.slug,
