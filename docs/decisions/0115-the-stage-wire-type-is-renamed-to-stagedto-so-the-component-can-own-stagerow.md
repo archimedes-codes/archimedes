@@ -50,8 +50,8 @@ wire — and what is given up is name-for-name traceability at the type level. A
   regenerates from the Rust name. The rename is source-level on both sides of the seam; renaming Rust
   would buy a symmetry nothing consumes.
 - **Renaming it would collide with an approved plan that owns that file.**
-  `docs/roadmap/db-split-and-mirror-test-tree.md` (`status: committed`) opens with
-  `git mv src-tauri/src/storage/db.rs src-tauri/src/storage/db/mod.rs` and splits the file into 8
+  `docs/roadmap/db-split-and-mirror-test-tree.md` (`status: committed`) specifies
+  `git mv src-tauri/src/storage/db.rs src-tauri/src/storage/db/mod.rs` and splits the file into 9
   subject siblings; `pub struct StageRow`, `stage_row_from`, `STAGE_COLUMNS` and `StageWithTasks` all
   live in it. Editing that file from a second branch to change a name with zero functional effect is a
   coordination cost paid for nothing.
