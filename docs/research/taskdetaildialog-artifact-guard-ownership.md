@@ -8,9 +8,9 @@ verified-by: one web researcher subagent (5 sources, cited) + primary first-hand
   (run with `TMPDIR` on real disk), `grep`/`git grep` over `src/` and `src-tauri/`, and a line-by-line read
   of `src/components/TaskDetailDialog.tsx` and its 1,589-line test file.
 task: tsk_043da34a-1255-495e-9ee1-217448c864f6
-re-verified: 2026-11-21, at `61614802` — THREE figures corrected, nothing else touched. §6's wrapper
+re-verified: 2026-11-21, during PR #213 — THREE figures corrected, nothing else touched. §6's wrapper
   counterfactual — that a child adding a helping `<div>` would redden four of the five structural pins — was
-  **asserted and never executed, and it is false**: re-run at this commit, six wrapper variants on the
+  **asserted and never executed, and it is false**: re-run during that review, six wrapper variants on the
   section's returned element each leave **63 passed / 0 failed**, only `overflow-y-auto` reddens **1**, and
   the falsification control — dropping
   `shrink-0` from the section's own `className` — reddens **1**, so the zeroes are a measurement and not a
@@ -229,9 +229,9 @@ text:
 A React component boundary adds no DOM node, so a child returning the same elements with no added wrapper
 keeps every one of these green — **that** is what made the split possible, and it holds. What this paragraph
 then claimed was false: it said a child that adds a `<div>` to "help" reddens four of them. That counterfactual
-was asserted and never executed. Executed at `61614802` — each variant applied to the section's returned element
-in `src/components/tasks/TaskArtifactSection.tsx`, reverted after every run, with `npx vitest run
-src/components/TaskDetailDialog.test.tsx` as the instrument (ADR 0114 records the same table from `2ececccb`):
+was asserted and never executed. Executed during PR #213's review — each variant applied to the section's
+returned element in `src/components/tasks/TaskArtifactSection.tsx`, reverted after every run, with `npx vitest
+run src/components/TaskDetailDialog.test.tsx` as the instrument (ADR 0114 records the same table from PR #213):
 
 | Wrapper on the returned element | Result |
 |---|---|

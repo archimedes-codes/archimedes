@@ -7,7 +7,7 @@ verified-by: 6 parallel researcher subagents (Rust storage / Rust agent-session 
   Koru et al. 2008/2009, Nagappan & Ball ICSE 2005, SmartBear/Cisco, Google eng-practices, ESLint,
   Clippy, SwiftLint). 2026-11-16.
 task: tsk_0ef56cb0-1b91-4017-8744-76bc3d7d6f74
-re-verified: 2026-11-21, at `8522173e` — TWO data points corrected, nothing else touched: the
+re-verified: 2026-11-21, during PR #213 — TWO data points corrected, nothing else touched: the
   `TaskDetailDialog.tsx` *"partial only"* grade and its `requestIdRef` reason (refuted on all three
   claims; the file is now split — ADR 0114, and the Corrections section of
   `docs/features/godfile-decomposition-closeout.md`), and `commands/tasks.rs`'s *"14 `pub(crate)`

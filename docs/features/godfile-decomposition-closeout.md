@@ -14,7 +14,7 @@ re-verified: 2026-11-20 — only the `agent/errors.rs` bullet in "What was delib
   it quoted a `//!` header sentence that has since been re-worded, and the one cost the shape does enable
   now has a closure at `src-tauri/tests/error_wire_gate.rs`. The 1135 code-line figure was re-measured with
   the ratchet's own classifier and still reproduces. No other number in this record was re-run that day.
-  Re-verified again 2026-11-21, at `8522173e`: the `TaskDetailDialog.tsx` entry under "What was
+  Re-verified again 2026-11-21, during PR #213: the `TaskDetailDialog.tsx` entry under "What was
   deliberately NOT split" was **refuted** and its split has since shipped, so that entry now records the
   refutation (ADR 0114), and a `## Corrections made to this record's own numbers` section records it with
   the four figures re-measured that day — `commands/tasks.rs` `pub(crate)` **6** not 14, `db.rs` poison
@@ -171,8 +171,8 @@ mechanical reason, not a deferral for lack of time.
 
 ## Corrections made to this record's own numbers
 
-Recorded because each was a confident, well-formed wrong answer. Re-measured on this branch at
-`8522173e`; the code-line figures come from `scripts/check-file-size.sh` (its own classifier, `TMPDIR`
+Recorded because each was a confident, well-formed wrong answer. Re-measured on this branch during
+PR #213's review; the code-line figures come from `scripts/check-file-size.sh` (its own classifier, `TMPDIR`
 on real disk), the rest from the `grep -c` printed beside each one.
 
 - **`requestIdRef` never existed.** This record's declined-set entry for `TaskDetailDialog.tsx` named the
@@ -181,7 +181,7 @@ on real disk), the rest from the `grep -c` printed beside each one.
   name is the history of that file and is quoted here as it was; the guard itself now lives on as
   `requestEpochRef` at `src/hooks/useArtifactReader.ts` — path only, deliberately unnumbered: this
   branch keeps editing that file, and the line number this bullet carried (`:87`, correct when it was
-  written at `2ececccb`) was pushed to `:100` by a later commit that inserted a paragraph above it),
+  written during PR #213) was pushed to `:100` by a later commit that inserted a paragraph above it),
   touched at four sites, all inside `selectArtifact`. A decline reason that cites a symbol by name must
   be checked with a grep against the tree, never from prose — and the same rule covers the line number
   beside it: cite the symbol, grep for the symbol, do not pin the line.

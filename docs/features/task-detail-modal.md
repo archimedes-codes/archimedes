@@ -178,8 +178,8 @@ this is a verdict on the split; it is the list of which invariants review is car
   → **0**). Use the stripped classifier and not the bare grep: `grep -c useEffect` on the hook prints **2**,
   both inside its own doc comment, one of them the sentence "This hook has zero `useEffect`s".
 - **The no-wrapper rule on `TaskArtifactSection` is held by review, not by the suite.** A child that adds a
-  wrapper `<div>` is invisible to `TaskDetailDialog.test.tsx`. Measured three times independently, at
-  `2ececccb`, `61614802` and `a3a82806`: a bare inert wrapper leaves the file **63/63 green**, and so does a
+  wrapper `<div>` is invisible to `TaskDetailDialog.test.tsx`. Measured three times independently during
+  PR #213's review: a bare inert wrapper leaves the file **63/63 green**, and so does a
   wrapper wearing the section's own `flex shrink-0 flex-col gap-1`. The only wrapper any test catches is one
   carrying `overflow-y-auto`, and it reddens exactly **1** test (`detail-scroll is the ONLY scroll container
   in the dialog, and the rail and pane resolve to it`). Those zeroes are a result and not a blind suite — the
@@ -218,10 +218,11 @@ this is a verdict on the split; it is the list of which invariants review is car
   (`grep -rln 'docs/features' scripts/*.sh` → **0** matches; the `docs/` hits across those scripts are
   comments plus one allowlist string, not a scan), and nothing reads this file at all
   (`grep -rln 'task-detail-modal' src/ scripts/ .github/` → **0** matches). This branch caught its
-  orphans by hand, in two species: `2ececccb` re-pointed this doc's `selectArtifact` / `requestKey` to
-  `select` / `requestEpochRef` — accurate on `main`, orphaned here — and `4f80c6cf` removed line numbers
-  that had already drifted out from under the prose. Both are **of this branch**, because both were the
-  split's own renames; the absence of a gate is **pre-existing** and applies to every doc in the tree.
+  orphans by hand, in two species: one commit on PR #213 re-pointed this doc's `selectArtifact` /
+  `requestKey` to `select` / `requestEpochRef` — accurate on `main`, orphaned here — and another commit
+  in that PR removed line numbers that had already drifted out from under the prose. Both are **of this
+  branch**, because both were the split's own renames; the absence of a gate is **pre-existing** and
+  applies to every doc in the tree.
 
 ## Pin map
 
