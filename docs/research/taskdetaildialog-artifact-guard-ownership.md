@@ -319,7 +319,7 @@ the artifact surface is not.
 | `src-tauri/src/storage/batching.rs` | 57% of it is prose | 539 code / 1403 raw → **61.6%** non-code (the "57%" was a different quantity — comment-only lines alone; see the closeout's Corrections) | **HELD, stronger** |
 | `src-tauri/src/storage/db.rs` | 4 `include_str!` + vacuous lint + ~51 poison sites | `db/tests/mod.rs:5012/:5041/:5746/:6200`; `REFERENCES spaces` assertion at `:5064` still asserts an absent string; **52** poison expects | **HELD** |
 | `src-tauri/src/agent/session/mod.rs` | 17 recovery sites (the **raw** count — see the re-measured column), partitioning forces the poison decision | **16** production recovery sites (`grep -rn "unwrap_or_else(|p| p.into_inner())" src-tauri/src/agent/session/mod.rs \| grep -vE ':\s*//' \| wc -l`, the instrument `docs/agents/census.md:25` gives, which counts 16 here); the raw `grep -c "into_inner()"` prints **17** because `:853` is a prose comment quoting the pattern; ratchet reports **1583** code lines | **HELD** |
-| `src-tauri/src/commands/tasks.rs` | **14 `pub(crate)` widenings** | **6**, not 14 | **REFUTED on the count.** The `include_str!("../../tasks.rs")` constraint still holds (`commands/tasks/tests/stages.rs:294`), and `commands/tasks/` already exists as a directory. **The only declined file whose stated blocker got measurably weaker.** |
+| `src-tauri/src/commands/tasks.rs` | **14 `pub(crate)` widenings** | The re-measurement printed **6** and that re-measurement was **the wrong instrument**: `grep -c "pub(crate)"` counts the declarations the unsplit file already carries, not the widenings a five-file split would require. The 14 is a cost estimate for a split that was never performed; it is **UNVERIFIED, not refuted** (the file holds exactly **14** private top-level `fn`s — `grep -cE '^(async )?fn ' src-tauri/src/commands/tasks.rs` — the population a split would widen from, so the figure is consistent with its own claim). | **HELD, but only on the `include_str!` blocker** (`commands/tasks/tests/stages.rs:294`); `commands/tasks/` already exists as a directory. The count claim is **neither confirmed nor refuted** — it was never measured in its own unit. **The cautionary case: this is the one declined file whose blocker was "weakened" by a re-measurement that compared two different quantities.** |
 
 Baseline membership unchanged: 11 entries, largest `db.rs` at 2154, `TaskDetailDialog.tsx` not among them,
 and nothing new crossed 1,000. Ratchet green — `TMPDIR=$PWD/.tmp bash scripts/check-file-size.sh` →
@@ -329,7 +329,8 @@ real disk**: the first run died with `printf: write error: Disk quota exceeded` 
 Decline-reason taxonomy for the next planner: `StageEditor` = **shape** (needs a redesign);
 `MessageList` / `EmptyStateFilm` = **state** (refs cross the seam); `batching.rs` / `errors.rs` = **prose**
 (the file argues its own case); `TaskDetailDialog` = **test structure** (now shown to be satisfiable);
-`commands/tasks.rs` = **mechanical, and the count was wrong**.
+`commands/tasks.rs` = **mechanical, and its count was never measured in its own unit** (the `include_str!`
+blocker is the only one proven to hold).
 
 ---
 
@@ -382,8 +383,10 @@ Decline-reason taxonomy for the next planner: `StageEditor` = **shape** (needs a
   re-run first-hand. The seam cost grades therefore carry no adversarial second opinion.
 - **No measured test count for a `useArtifactReader` test file.** It depends entirely on whether the hook
   takes the fetch as an argument (0 barrel mocks, count stays 56) or imports the barrel (+1).
-- **`commands/tasks.rs` was checked shallowly** — the `pub(crate)` count was measured, the rest of its
-  blockers were not re-derived. It is the one declined file that may deserve its own look.
+- **`commands/tasks.rs` was checked shallowly** — and the one thing that was "measured" there was measured
+  in the wrong unit (see the table row: `grep -c "pub(crate)"` counts today's declarations, not the widenings
+  a split needs), so its `pub(crate)` blocker is **still unmeasured** as well as the rest of its blockers,
+  which were not re-derived. It is the one declined file that may deserve its own look.
 
 ## Evidence
 

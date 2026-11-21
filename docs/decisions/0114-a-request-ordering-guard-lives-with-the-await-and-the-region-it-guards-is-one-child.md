@@ -121,11 +121,38 @@ the guard. The new hook must document what it refuses to improve (no abort, no u
   belongs to the *test-structure* class of decline reason — satisfiable — not to the *shape* class
   (`StageEditor`) or the *prose* class (`errors.rs`, `batching.rs`). `docs/features/godfile-decomposition-closeout.md`
   should be corrected when the split lands, not before.
-- **Same re-check found one other stale decline.** `commands/tasks.rs` is recorded with *"14 `pub(crate)`
-  widenings"*; measured now there are **6**. Its `include_str!("../../tasks.rs")` constraint still holds
-  (`commands/tasks/tests/stages.rs:294`). Every other declined file's blocker **held** on re-measurement.
+- **Same re-check found one other stale decline — and the re-check was wrong.** `commands/tasks.rs` is
+  recorded with *"14 `pub(crate)` widenings"*; this bullet used to say *"measured now there are **6**"*, and
+  that measurement answers a different question. `grep -c "pub(crate)" src-tauri/src/commands/tasks.rs` → 6
+  counts the `pub(crate)` declarations the **unsplit** file carries today; the 14 estimates the widenings the
+  **proposed five-file split would require**. Six existing declarations cannot refute a fourteen-required
+  estimate — they are different units — so the 14 is **UNVERIFIED, not refuted** (what can be said for it:
+  the file holds exactly **14** private top-level `fn` declarations, the population a split would widen
+  from). Its `include_str!("../../tasks.rs")` constraint still holds
+  (`commands/tasks/tests/stages.rs:294`), and that is the blocker the decline actually rests on. Every other
+  declined file's blocker **held** on re-measurement. **The lesson generalizes the one this ADR already
+  states about `requestIdRef`: a decline reason must be measured in the unit it claims. Citing a symbol that
+  does not exist is one failure; counting the wrong population and calling it a refutation is the other, and
+  this branch shipped both.**
 - **The pattern now has a name: `CONTEXT.md`'s "request epoch".** It had six spellings — `loadEpoch`,
   `reorderEpoch`, `checkIdRef`, `publishEpochRef`, `prevKeyRef`, `requestKey` — and a seventh was landing.
+  - **The name covers the placement rule, NOT a shared strength, and the six spellings are not
+    interchangeable.** Four of them are **per-request counters** incremented on each request and therefore
+    monotonic — `loadEpoch` (`src/store/tasks.ts`, `let loadEpoch = 0` then `loadEpoch += 1`), `reorderEpoch`
+    (`src/store/sessions.ts`, `{ sessions: 0, spaces: 0 }` then `+= 1`), `checkIdRef` (`useRef(0)` then
+    `++checkIdRef.current`) and `publishEpochRef` (`useRef(0)` then `.current += 1`) — while the seventh,
+    `requestEpochRef` in `src/hooks/useArtifactReader.ts`, is a **selection check**: `useRef<string | null>`
+    holding the artifact **key**, assigned rather than incremented. Both drop a superseded answer, but only
+    the counter can tell "still the newest" from "back to the request I already made"; a selection check
+    compares a value that can come round, so `plan` → `research` → `plan` lets the first `plan`'s answer
+    through. **This ADR rules on where the token lives and what it is called; it does not rule that every
+    spelling is equally strong, and no caller should read it as licensing that.** The move-only split
+    deliberately did not strengthen the artifact reader's check — see
+    `docs/research/taskdetaildialog-artifact-guard-ownership.md` and the "Unheld after the artifact split"
+    section of `docs/features/task-detail-modal.md`, which already records that the epoch orders by key
+    alone. The weaker shape is a property of the code that predates this ADR; what this branch changed was
+    the NAME, and a name that implies monotonicity would have been a new error, so `CONTEXT.md` states both
+    shapes rather than one.
   Two naming traps were found while choosing it and both are recorded in the glossary entry: **`guard` is
   already this repo's noun for a source-scanning *test* instrument** (`classNameConvention.test.ts:336`
   *"the exact shape the guard convicts"*; **497 occurrences** of the word across `src`'s test files —

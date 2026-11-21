@@ -7,11 +7,14 @@ verified-by: 6 parallel researcher subagents (Rust storage / Rust agent-session 
   Koru et al. 2008/2009, Nagappan & Ball ICSE 2005, SmartBear/Cisco, Google eng-practices, ESLint,
   Clippy, SwiftLint). 2026-11-16.
 task: tsk_0ef56cb0-1b91-4017-8744-76bc3d7d6f74
-re-verified: 2026-11-21, during PR #213 — TWO data points corrected, nothing else touched: the
+re-verified: 2026-11-21, during PR #213 — TWO data points touched, nothing else: the
   `TaskDetailDialog.tsx` *"partial only"* grade and its `requestIdRef` reason (refuted on all three
   claims; the file is now split — ADR 0114, and the Corrections section of
   `docs/features/godfile-decomposition-closeout.md`), and `commands/tasks.rs`'s *"14 `pub(crate)`
-  widenings"*, which measures **6**. The census, the fix-density bands and the size-metric argument are
+  widenings"* — where **this re-verification's own correction was the error**: it replaced that cost
+  estimate with the **6** `pub(crate)` declarations the unsplit file already carries, which is a
+  different quantity and refutes nothing (corrected again the same day; see the F4 row and the
+  closeout's Corrections). The census, the fix-density bands and the size-metric argument are
   unchanged and still stand.
 ---
 
@@ -257,7 +260,7 @@ than a 2,136-line distance — but that is a prose obligation, not a free win.
 | 7 | `router.rs` remaining subjects → 5 files | ~660 lines | **L** | ⚠️ `commands/tasks/tests/artifacts.rs:432` reads `router.rs` by path and asserts `WorkerInboundEvent::TaskRequest` is present — draw the boundary **below** the match arm |
 | 8 | `SpacesList.tsx` → 6 files (1142→470) | 672 lines | **M** | the most concrete seam (`SessionRow`, `ArchivedSection`, `ArchivedSessionRow` are **already at column 0**) and the biggest bill: 2,393 + 1,340 test lines, 11 imports to re-grep |
 | 9 | `session/mod.rs` → ~12 files | 3,101→~390 max | **M** | the 28-import glob above |
-| 10 | `commands/tasks.rs` → 5 files | 534 code | **H** | ~~14~~ **6** `pub(crate)` widenings (corrected 2026-11-21: `grep -c "pub(crate)" src-tauri/src/commands/tasks.rs` → 6; ADR 0114 and the closeout's Corrections section — the `include_str!` blocker below still holds, so the decline stands on it alone); `board_call` alone has 14 sites across every block; `include_str!("../../tasks.rs")` delimits the region on a `// ── A4` **banner the split moves**; two new filenames collide with existing test filenames |
+| 10 | `commands/tasks.rs` → 5 files | 534 code | **H** | **14 `pub(crate)` widenings — a cost ESTIMATE for the proposed five-file split, and still UNVERIFIED.** A correction landed 2026-11-21 replacing it with **6**, and that correction was itself the error: `grep -c "pub(crate)" src-tauri/src/commands/tasks.rs` → 6 counts the `pub(crate)` declarations the **unsplit** file already carries, not the widenings a split would require — a different unit, so it refutes nothing. (The file holds exactly **14** private top-level `fn` declarations — `grep -cE '^(async )?fn ' src-tauri/src/commands/tasks.rs` → 14 — the population a split would widen from, so 14 is consistent with its own claim; nobody has re-derived it item by item.) The `include_str!` blocker below **holds**, so the decline stands on it alone; `board_call` alone has 14 sites across every block; `include_str!("../../tasks.rs")` delimits the region on a `// ── A4` **banner the split moves**; two new filenames collide with existing test filenames |
 
 **Ruled against, with the reason:** `errors.rs` (F6), `config.rs` / `agents.rs` / `open.rs` /
 `refresh.rs` (below the tripwire on code lines), `SpaceTabs.tsx` and `ChatStream.tsx` (**DONE**),

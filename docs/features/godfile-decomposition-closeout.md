@@ -17,7 +17,9 @@ re-verified: 2026-11-20 — only the `agent/errors.rs` bullet in "What was delib
   Re-verified again 2026-11-21, during PR #213: the `TaskDetailDialog.tsx` entry under "What was
   deliberately NOT split" was **refuted** and its split has since shipped, so that entry now records the
   refutation (ADR 0114), and a `## Corrections made to this record's own numbers` section records it with
-  the four figures re-measured that day — `commands/tasks.rs` `pub(crate)` **6** not 14, `db.rs` poison
+  the four figures re-measured that day — `commands/tasks.rs` `pub(crate)` **6** not 14 (**and that
+  correction was itself wrong: 6 counts the declarations the unsplit file already has, not the widenings a
+  split would need — see the Corrections bullet, which withdraws it**), `db.rs` poison
   expects **52** not ~51, `batching.rs` non-code **61.6%** not 57%, `session/mod.rs` **17** `into_inner()`
   (the raw count; `docs/agents/census.md:25` counts **16** production recovery sites once the comment that
   quotes the pattern is filtered) and **1583** code lines from the ratchet's own run — **1563** was never
@@ -146,8 +148,11 @@ mechanical reason, not a deferral for lack of time.
   `SpacesError` sat at exactly half), and no test enumerated the families at all. A split makes that
   strictly worse — twelve independent omissions, still no enumerator — and it is closed by
   `src-tauri/tests/error_wire_gate.rs`.
-- **`commands/tasks.rs`** (worst risk-per-line: `pub(crate)` widenings — recorded here as 14, **measured
-  6**, corrected below — and an `include_str!` region delimited by a banner the split would move),
+- **`commands/tasks.rs`** (worst risk-per-line: `pub(crate)` widenings — recorded here as 14, **an
+  earlier correction on this branch "measured" it at 6 and that correction is withdrawn below: 6 is the
+  declarations the unsplit file already carries, a different unit, so the 14 stands as an unverified
+  estimate** — and an `include_str!` region delimited by a banner the split would move, which is the
+  blocker that actually holds),
   **`StageEditor.tsx`** (needs a 3-deep split to be honest — a redesign), **`TaskDetailDialog.tsx`**
   (**REFUTED, and since SPLIT** — this entry used to read *"the artifact reader's `requestIdRef` is a
   request-ordering guard; lifting it changes when the fetch fires"*, and every clause of that is false:
@@ -194,12 +199,20 @@ on real disk), the rest from the `grep -c` printed beside each one.
   accordingly (ADR 0114, `docs/research/taskdetaildialog-artifact-guard-ownership.md`): 500 → **385**
   code lines (`grep -vcE '^[[:space:]]*(//|\*|/\*|$)' src/components/TaskDetailDialog.tsx`), with
   `TaskDetailDialog.test.tsx` byte-identical to the pre-split base and all 63 of its tests passing.
-- **`commands/tasks.rs` is recorded here with 14 `pub(crate)` widenings; the measured count is 6**
-  (`grep -c "pub(crate)" src-tauri/src/commands/tasks.rs` → **6**). That was the risk case for the
-  worst-risk-per-line file in the census, so the number was load-bearing and it was 2.3× too high. The
-  file's other blocker **holds**: `include_str!("../../tasks.rs")` delimits a region on a banner the split
-  would move (`src-tauri/src/commands/tasks/tests/stages.rs:294`). The decline therefore **stands**, but
-  on one reason instead of three.
+- **`commands/tasks.rs` is recorded here with 14 `pub(crate)` widenings; an earlier correction on this
+  branch said "measured 6" and that correction was WRONG — the two numbers are different units.**
+  `grep -c "pub(crate)" src-tauri/src/commands/tasks.rs` → **6** counts the `pub(crate)` declarations the
+  **unsplit** file already carries today; the 14 was an estimate of the widenings the **proposed five-file
+  split would require**. Counting the first does not refute the second, so the "2.3× too high" claim this
+  bullet used to make is withdrawn and the 14 stands as **unverified** — nobody has re-derived it item by
+  item. (The one thing that can be said for it: the file holds exactly **14** private top-level `fn`
+  declarations — `grep -cE '^(async )?fn ' src-tauri/src/commands/tasks.rs` → 14 — and those are the
+  population a split would widen from, so the figure is at least consistent with the claim it was making.)
+  This is the same failure this section exists to record, applied to a correction made here: a `grep -c`
+  answers the question its pattern asks, and a pattern over the wrong population prints a confident wrong
+  answer. The file's other blocker **holds**: `include_str!("../../tasks.rs")` delimits a region on a
+  banner the split would move (`src-tauri/src/commands/tasks/tests/stages.rs:294`). The decline therefore
+  **stands**, on that blocker and the unverified 14 — not on a refutation.
 - **Every other declined file's blocker held on re-measurement**, with two figures corrected in the
   process. `storage/batching.rs`: 539 code / 1403 raw → **61.6%** non-code, not the 57% this record
   quotes — and 57% was never the same quantity anyway, since comment-only lines alone are **57.3%**
