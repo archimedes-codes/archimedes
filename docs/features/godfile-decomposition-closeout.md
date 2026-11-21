@@ -153,7 +153,25 @@ mechanical reason, not a deferral for lack of time.
   declarations the unsplit file already carries, a different unit, so the 14 stands as an unverified
   estimate** — and an `include_str!` region delimited by a banner the split would move, which is the
   blocker that actually holds),
-  **`StageEditor.tsx`** (needs a 3-deep split to be honest — a redesign), **`TaskDetailDialog.tsx`**
+  **`StageEditor.tsx`** (**SPLIT** — this entry used to read *"needs a 3-deep split to be honest — a
+  redesign"*; the **depth** was right and the **redesign** was not. The census's other half — that
+  extracting the single return into one `StageRow` *relocates* rather than solves the problem —
+  also held, and it is the reason a second cut was needed: `StageDestinations` had to come out of the row
+  as its own subject. What shipped is **three levels deep** (`StageEditor → StageRow →
+  StageDestinations`) with **four subject components + one styles module**, not the census's predicted
+  *"six row components"*: `src/components/stages/StageRow.tsx` (279 code lines),
+  `stages/StageDestinations.tsx` (111), `stages/AddStageField.tsx` (49),
+  `stages/StrictWorkflowToggle.tsx` (49), `stages/stageStyles.ts` (4) — the parent **504 → 83** code
+  lines (718 → 187 raw) on the ratchet's classifier. The rename that made the row's natural name
+  available touched the TS wire type only (`StageDto`); the Rust `pub struct StageRow` is deliberately
+  unchanged. Test contract: `StageEditor.test.tsx`'s 43 pre-existing test bodies are unmodified and the
+  file imports nothing new — 46 `it(` blocks now, the 3 additions being pins. One declared behaviour
+  change: a half-typed label draft is now **discarded when its row unmounts** (previously it survived a
+  filter-away and reappeared), and it is pinned by a test. Deciding record: **ADR 0115**
+  (`docs/decisions/0115-the-stage-wire-type-is-renamed-to-stagedto-so-the-component-can-own-stagerow.md`);
+  evidence: `docs/research/production-godfile-census-and-the-size-metric.md`. The entry is KEPT, not
+  deleted — the useful fact is that PR #206's decline was right about the **depth** and wrong about the
+  **redesign**: the honest shape was three levels of subject extraction, not a redesign), **`TaskDetailDialog.tsx`**
   (**REFUTED, and since SPLIT** — this entry used to read *"the artifact reader's `requestIdRef` is a
   request-ordering guard; lifting it changes when the fetch fires"*, and every clause of that is false:
   no such symbol exists, it shared no state with the launch path, and the file has zero `useEffect`s, so

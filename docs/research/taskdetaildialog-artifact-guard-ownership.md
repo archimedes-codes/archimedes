@@ -290,7 +290,7 @@ the artifact surface is not.
   the grep does **not** support an enumeration of the mentions, which is why this bullet no longer attempts
   one. An earlier draft said the mentions outside the file's own test were the prose comments in
   `tauriBarrel.test.ts:727`, `TasksBoard.test.tsx:1000` and `:1099`, and that "only" was false even at this
-  report's own base `b2d6ea95`: a fourth prose site sits in a **production** file, `StageEditor.tsx:67`
+  report's own base `b2d6ea95`: a fourth prose site sits in a **production** file, `StageEditor.tsx`
   ("`TaskDetailDialog.tsx` and `NewTaskDialog.tsx` document the same reuse"). It is false by more than one
   at HEAD: the stem now appears **17** times outside `TaskDetailDialog.test.tsx`
   (`grep -rn TaskDetailDialog src | grep -v '^src/components/TaskDetailDialog.test.tsx:' | wc -l`), because
@@ -307,13 +307,13 @@ the artifact surface is not.
   `BASELINE` holds only `src/components/MutedCaption.tsx`, and `tauriBarrel.test.ts:769`'s `toHaveLength(56)`
   counts files produced by filtering a recursive `readdirSync` listing on a `vi.mock("…/lib/tauri")` pattern —
   a derived set, never a named path. The `TaskDetailDialog.tsx` **spelling** (as opposed to the bare stem)
-  occurs exactly **once** outside the test file: `StageEditor.tsx:67`, prose again.
+  occurs exactly **once** outside the test file: a prose comment in `StageEditor.tsx`'s header, prose again.
 
 ### 8. The declined set re-verified (shallow, one or two commands per blocker)
 
 | File | Stated reason | Re-measured now | Verdict |
 |---|---|---|---|
-| `src/components/StageEditor.tsx` | needs a 3-deep split, not a row extraction | 504 code / 718 raw — unchanged | **HELD** |
+| `src/components/StageEditor.tsx` | needs a 3-deep split, not a row extraction | 504 code / 718 raw → re-measured **83 code / 187 raw** for the parent; the body moved to `src/components/stages/` — `StageRow.tsx` **279**, `StageDestinations.tsx` **111**, `AddStageField.tsx` **49**, `StrictWorkflowToggle.tsx` **49**, `stageStyles.ts` **4** code lines | ~~**HELD**~~ **SPLIT** — the stated reason **held** (it did need three levels, and a single `StageRow` would indeed have relocated the problem: `StageDestinations` had to come out as the second cut). What did not hold is the census's *"six row components"*: four subject components + one styles module shipped, and it was a decomposition, not the redesign PR #206 deferred it as. Deciding record: **ADR 0115** (`docs/decisions/0115-the-stage-wire-type-is-renamed-to-stagedto-so-the-component-can-own-stagerow.md`); evidence: `docs/features/godfile-decomposition-closeout.md` |
 | `src/components/chat/MessageList.tsx` | 11 of 17 refs cross the seam | 583 code, **17 `useRef`** confirmed at `:309-803` | **HELD** |
 | `src/components/chat/EmptyStateFilm.tsx` | ADR 0070 probe sits between the effects | 387 code, 11 refs, probe still at `:465` | **HELD** |
 | `src-tauri/src/storage/batching.rs` | 57% of it is prose | 539 code / 1403 raw → **61.6%** non-code (the "57%" was a different quantity — comment-only lines alone; see the closeout's Corrections) | **HELD, stronger** |
@@ -326,7 +326,10 @@ and nothing new crossed 1,000. Ratchet green — `TMPDIR=$PWD/.tmp bash scripts/
 "312 production file(s) walked, largest src-tauri/src/storage/db.rs 2154", exit 0. **It needs `TMPDIR` on
 real disk**: the first run died with `printf: write error: Disk quota exceeded` on the shared `/tmp` tmpfs.
 
-Decline-reason taxonomy for the next planner: `StageEditor` = **shape** (needs a redesign);
+Decline-reason taxonomy for the next planner: `StageEditor` = **shape** (needs a redesign) **and since
+SPLIT** — the shape diagnosis was half right: the depth was real and a single-row extraction would have
+relocated the problem, which is why the split needed a second cut (`StageDestinations`), but it was not a
+redesign and it did not need six row components;
 `MessageList` / `EmptyStateFilm` = **state** (refs cross the seam); `batching.rs` / `errors.rs` = **prose**
 (the file argues its own case); `TaskDetailDialog` = **test structure** (now shown to be satisfiable);
 `commands/tasks.rs` = **mechanical, and its count was never measured in its own unit** (the `include_str!`

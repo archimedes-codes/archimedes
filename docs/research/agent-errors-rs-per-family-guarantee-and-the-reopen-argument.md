@@ -312,9 +312,10 @@ owned by their own cards (`tsk_31`, `tsk_32`, `tsk_33`).
 
 Three consequences for this card:
 
-1. **0112 is untracked and unimplemented.** `git status --porcelain` shows it as `??` (as do `0113`, `0114`,
-   `0115`), and `scripts/check-file-size.sh` still defines only `HARD_GATE=1000` and `SEED_THRESHOLD=700` — no
-   classifier, no test gate, no second baseline. Its premise (241 test sources, 19 over 1,000, guard sees none)
+1. **0112 is untracked and unimplemented.** `git status --porcelain` shows it as `??` (as does `0113`;
+   `0114` and `0115` have since been committed), and `scripts/check-file-size.sh` still defines only
+   `HARD_GATE=1000` and `SEED_THRESHOLD=700` — no classifier, no test gate, no second baseline. Its
+   premise (241 test sources, 19 over 1,000, guard sees none)
    is in the tree; its decision is not, and CI does not read it.
 2. **0112's own table omits `errors.rs`.** It says "five of the nine"; measured at HEAD it is **six**. Its
    superseded-threshold table (`0112:30-36`) lists `settings.rs` 628 and `agents.rs` 915 as **"not caught"** at a

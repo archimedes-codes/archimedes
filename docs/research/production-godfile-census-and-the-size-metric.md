@@ -101,7 +101,7 @@ done | sort -rn
 | 550 | 934 | `src/components/AgentsDialog.tsx` | **best value-per-risk in the TS set** |
 | 531 | — | `src/components/Reasoning.tsx` | below the tripwire |
 | 528 | 1,550 | `src/lib/tauri/types.ts` | **size is the wrong lens**; leave it |
-| 504 | 718 | `src/components/StageEditor.tsx` | **blocked on shape** (needs a 3-deep split) |
+| 504 | 718 | `src/components/StageEditor.tsx` | ~~**blocked on shape** (needs a 3-deep split)~~ **HELD, and since SPLIT** — re-measured **83 code / 187 raw**; the 3-deep shape held but the *"six row components"* count in F4 did not — see F4 below and ADR 0115 |
 | 500 | 882 | `src/components/TaskDetailDialog.tsx` | ~~partial only~~ **REFUTED and SPLIT** — see F4 below and ADR 0114 |
 | 468 / 446 / 444 | — | `toolOutput.ts`, `SettingsPage.tsx`, `McpSection.tsx` | low value |
 
@@ -264,8 +264,23 @@ than a 2,136-line distance — but that is a prose obligation, not a free win.
 
 **Ruled against, with the reason:** `errors.rs` (F6), `config.rs` / `agents.rs` / `open.rs` /
 `refresh.rs` (below the tripwire on code lines), `SpaceTabs.tsx` and `ChatStream.tsx` (**DONE**),
-`StageEditor.tsx` (**blocked on shape** — extracting the 388-line single return into one `StageRow`
-*relocates* the problem; the honest move is a 3-deep split into six row components),
+`StageEditor.tsx` (**blocked on shape** — **HELD, and since SPLIT: 2026-11-21** — extracting the single
+return (396 raw lines of the unsplit file, not the 388 claimed here) into one `StageRow` *relocates* the
+problem: that claim held and is exactly why `StageDestinations` had to come out as a **second** cut below
+the row. The 3-deep half of the diagnosis held too. ~~the honest move is a 3-deep split into six row
+components~~ *the depth was right, the count was not* — what shipped is **four subject components + one
+styles module**, not six row components: `src/components/stages/` holds `StageRow.tsx` (279 code lines),
+`StageDestinations.tsx` (111), `AddStageField.tsx` (49), `StrictWorkflowToggle.tsx` (49) and
+`stageStyles.ts` (4), three levels deep (`StageEditor → StageRow → StageDestinations`), with the parent
+**504 → 83** code lines (718 → 187 raw). The 43 pre-existing test bodies in
+`StageEditor.test.tsx` are unmodified — the only edits to that file are the `StageRow` → `StageDto`
+identifiers the rename forced and the 3 added pins — and it imports nothing new. One declared
+behaviour change — a half-typed label draft is discarded when its row unmounts — is itself pinned. See
+**ADR 0115**
+(`docs/decisions/0115-the-stage-wire-type-is-renamed-to-stagedto-so-the-component-can-own-stagerow.md`),
+which renames the TS wire type to `StageDto` so the component could take the freed `StageRow` name (the
+Rust `pub struct StageRow` is deliberately unchanged), and
+`docs/features/godfile-decomposition-closeout.md`),
 `TaskDetailDialog.tsx` (**partial only** — **REFUTED, and since SPLIT: 2026-11-21** — ~~the artifact
 reader's `requestIdRef` is a request-ordering guard whose state feeds two proposed children, so lifting it
 changes when the fetch fires~~ *this reason was refuted on all three of its claims*: `requestIdRef` never

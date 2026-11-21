@@ -82,7 +82,7 @@ Runtime counts (`npx vitest list`, not `it(` grep): `NewTaskDialog.test.tsx` **9
 **Stays green, wrongly** — the silent-green set, and *not* where the card looked:
 
 - **`taskPrompt.test.ts`** — the default `destination()` fixture is documented as *"the SEEDED `discuss` stage — the sixth entry of Rust's `DEFAULT_STAGES`"* (`:38-41`). That sentence asserts a **seed fact** and becomes false. The assertions at `:274` (`not.toContain("$discuss")`) and `:308` (`message.indexOf("$discuss")`) **pass forever regardless**, because `"$discuss"` is a string literal the fixtures concatenate. The file keeps pinning a `$discuss`-before-`<task` ordering for a launch that can no longer be produced. The card files this under *"stale, not broken"* — it is the one file that will keep passing while asserting nothing.
-- **`StageEditor.test.tsx:482,492`** — mock-injects `skill("discuss")` and asserts `getByRole("option", {name:"discuss"})`: passes indefinitely, testing a catalog entry that no longer exists.
+- **`StageEditor.test.tsx`**, the case *"offers `none` plus every Skill the catalog holds"* — mock-injects `skill("discuss")` and asserts `getByRole("option", {name:"discuss"})`: passes indefinitely, testing a catalog entry that no longer exists.
 
 **Discriminator for the implementer** (decides ~5 files): *does this fixture assert what the **SEED** contains, or what a **USER** could have made?* Seed claims get corrected; user-data claims stay.
 
