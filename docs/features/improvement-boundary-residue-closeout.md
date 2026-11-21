@@ -2,7 +2,7 @@
 status: live
 last-verified: 2026-11-07
 verified-by: the wave-4 gate at the tip of `feature/codebase-improvement-1107` (Rust 565 lib + 15 seams tests, clippy 0 warnings, fmt clean; frontend 172 files / 3479 tests / 1 skipped; `pnpm build` clean). The alias figures are the audit's, restated with attribution — the census instrument was a throwaway under `/tmp` and was never committed, so they are NOT re-derivable from this checkout (see the census section). The Rust, IPC and testid figures name their instruments, and the Rust 565/563 and IPC 52 figures are re-runnable here. Hashes below are PRE-SQUASH and will be orphaned by the squash-merge — locate by the content signatures given, not by hash.
-re-verified: 2026-11-09 — the engine crate was renamed `fulcrum-core` → `fulcrum-harness` and re-pinned to crates.io `0.1.0`, so the `pub use` instrument below now reads `pub use fulcrum_harness` and still prints **11** / **12**, unchanged (the rename added and removed no `pub use`, so the counts re-confirm themselves); the crate-side file addresses now read `fulcrum/src/<path>.rs`; and the `cargo clean -p` method note was re-measured under the registry source. Nothing else in this record was re-run that day.
+re-verified: 2026-11-09 — the engine crate was renamed `fulcrum-core` → `fulcrum-harness` and re-pinned to crates.io `0.1.0`, so the `pub use` instrument below now reads `pub use fulcrum_harness` and still prints **11** / **12**, unchanged (the rename added and removed no `pub use`, so the counts re-confirm themselves); the crate-side file addresses now read `fulcrum/src/<path>.rs`; and the `cargo clean -p` method note was re-measured under the registry source. Nothing else in this record was re-run that day. Re-verified again 2026-11-20: the two `agent/errors.rs` entries under "Decisions recorded instead of executed" were corrected against HEAD — the family count is **twelve** (the eleven `{kind, message, …}`-envelope enums plus the `UpdateError` tuple struct), not ten; the `.kind` branch figure is **83** non-test lines / **93** occurrences (`grep -rn '\.kind' src/ --include='*.ts' --include='*.tsx' | grep -vE '\.test\.(ts|tsx):'`), not ~128; and the `kind`-spelling gap those entries left open is now closed by the gate at `src-tauri/tests/error_wire_gate.rs`. Nothing else in this record was re-run that day either.
 ---
 
 # improvement-boundary-residue — close-out record
@@ -243,10 +243,13 @@ Each of these was considered and declined with evidence. They are verdicts, not 
 before re-proposing.
 
 - **`src/lib/errors.ts` deleted, not imported.** Importing meant editing ~12 component sites, three inside
-  other tasks' owned sets, which would have collapsed two waves. Rust already freezes all ten vocabularies,
-  so deletion removed a mirror with **zero importers**, not a working guard. The gap is real and stated:
-  `src/` has ~128 `.kind` branch sites with no TS-side type binding. The absence is recorded in
-  `agent/errors.rs`.
+  other tasks' owned sets, which would have collapsed two waves. Rust owns every vocabulary below and
+  freezes them — **twelve** families, five of them carrying a dedicated frozen-vocabulary pin (`HistoryError`,
+  `AttentionError`, `ClipboardError`, `OpenError`, `UpdateError`) and `TasksError`'s complete pin living in
+  `commands/tasks/tests/board.rs` — so deletion removed a mirror with **zero importers**, not a working
+  guard. The gap is real and stated: `src/` has **83** non-test `.kind` branch lines (93 occurrences) with no
+  TS-side type binding. The absence is recorded in `agent/errors.rs`, and the gate at
+  `src-tauri/tests/error_wire_gate.rs` now enforces all **twelve**.
 - **`FilesError::kind()` left absent.** Its two variants are matched inline by the only code reading its
   kind discrimination; a method would be dead code normalising shape at zero behavioural value. A
   leave-comment is in the file. (`SessionError::kind` WAS made `pub`, to match its siblings.)
@@ -264,8 +267,10 @@ before re-proposing.
 - **`archimedes-film/scene.ts` not split** — verbatim art-file port, zero growth across the audited window,
   and the only large file whose tests are smaller than its production. Splitting destroys the auditability
   that makes it safe.
-- **`agent/errors.rs` not split** — its ten families share `InvokeErrorExt` and are coherent; splitting
-  buys a directory and nothing else. Its `//!` header now names all ten instead of two.
+- **`agent/errors.rs` not split** — its **twelve** families share `InvokeErrorExt` and are coherent;
+  splitting buys a directory and nothing else. Its `//!` header now names all **twelve** instead of two.
+  The decline is reaffirmed, with the per-family answer and the measured cost case, in the 2026-11-20
+  amendment to ADR 0063.
 
 ---
 
