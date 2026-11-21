@@ -63,7 +63,7 @@ holds the one shape that works against a non-cancellable command.
 
 The honest cost is recorded too: hand-rolled async bookkeeping is the pre-library shape and the invariant
 "latest wins" lives in a mutable ref no type enforces. That argues for a named hook owning **exactly one**
-`await` — this component already has a second `await` path, the launch at `:319-361` — and not for spreading
+`await` — this component already has a second `await` path, the launch at `:313-351` — and not for spreading
 the guard. The new hook must document what it refuses to improve (no abort, no unmount guard) the way
 `src/hooks/useAsyncAction.ts` documents its own refusals.
 
@@ -93,8 +93,22 @@ the guard. The new hook must document what it refuses to improve (no abort, no u
   asserts `rail.parentElement` (`:1370`), `pane.parentElement` (`:1403`), the sessions wrapper's
   `parentElement` (`:1469`), that `dialog().querySelectorAll(".overflow-y-auto")` has length 1 (`:1436`),
   and `.closest(".overflow-y-auto")` by identity (`:1442-1443`). A component boundary adds no DOM node, so a
-  child returning the same elements is invisible to all five; a child that adds a wrapper `<div>` reddens
-  four of them.
+  child returning the same elements is invisible to all five — **that** is what made the split possible, and it
+  holds. This bullet went on to claim *"a child that adds a wrapper `<div>` reddens four of them."* **That was
+  asserted and never executed, and it is false.** Executed at `2ececccb`: a bare inert wrapper leaves **63
+  passed / 0 failed**, and so does a wrapper carrying `flex shrink-0 flex-col gap-1`; the falsification control
+  is that the pins are live — dropping `shrink-0` from the section's own `className` reddens **1**. None of
+  these assertions can see upward: `:1370` and `:1403` read the two-column row rendered *below* any wrapper,
+  `:1469` reads a region the child does not render, `:1436` counts a **class** an inert wrapper adds none of,
+  and `.closest()` walks **up** past ancestors lacking it. The only wrapper the suite catches is one wearing
+  `overflow-y-auto`, and it reddens exactly **one** test: `detail-scroll is the ONLY scroll container in the
+  dialog, and the rail and pane resolve to it`. So the no-wrapper rule is a **design constraint, not a
+  test-enforced one** — it is unguarded, a contributor may add a wrapper with nothing reddening, and what holds
+  it is **review**, together with the arithmetic the rule exists for: `detail-scroll`'s height math depends on
+  the section's own `shrink-0` and its flex column. An ADR must not rest a ruling on a measurement that does not
+  reproduce; that is exactly the failure this ADR was written to catch — the decline reason cited
+  `requestIdRef`, a symbol never checked against the tree — and it is the same failure when the ADR does it to
+  itself.
 - **PR #206's Out-of-scope entry and the census's "partial only" grade are now stale.** `TaskDetailDialog`
   belongs to the *test-structure* class of decline reason — satisfiable — not to the *shape* class
   (`StageEditor`) or the *prose* class (`errors.rs`, `batching.rs`). `docs/features/godfile-decomposition-closeout.md`
@@ -124,11 +138,14 @@ the guard. The new hook must document what it refuses to improve (no abort, no u
   - **This ADR's H1 (`:7`) and its filename keep the older phrase "request-ordering guard" deliberately**, and
     the body names the mechanism a `guard` 11 more times (`grep -oi guard` over `:8-104` → 11). That is a
     known, bounded exception, not an oversight for the next reader to consistify: the path is cited verbatim
-    in four places (`docs/features/godfile-decomposition-closeout.md:153`,
+    in three tracked files (`docs/features/godfile-decomposition-closeout.md:153`,
     `docs/research/taskdetaildialog-artifact-guard-ownership.md:24`,
-    `docs/research/production-godfile-census-and-the-size-metric.md:273`,
-    `docs/roadmap/taskdetail-dialog-artifact-split.md:22`), so a rename is a coordinated four-file move bought
-    for a prose preference. The binding forms are the code identifier and the glossary noun; the filename is a
+    `docs/research/production-godfile-census-and-the-size-metric.md:273`), plus the branch's own
+    **gitignored** plan (`docs/roadmap/taskdetail-dialog-artifact-split.md:22` — `git check-ignore` confirms;
+    `.gitignore:36` ignores `docs/roadmap/`), so a rename is a coordinated three-file move plus a local plan
+    bought for a prose preference. The plan does not count as a fourth citation site in its own right: it is
+    not in the tree, so another worktree never sees it — the same reason this ADR refuses to cite **0113**
+    above. The binding forms are the code identifier and the glossary noun; the filename is a
     path. Do not "fix" the title to match the rule.
 
 Evidence: `docs/research/taskdetaildialog-artifact-guard-ownership.md` (card artifact key `research`,

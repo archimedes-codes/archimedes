@@ -133,7 +133,11 @@ and forms ([React 19 release post](https://react.dev/blog/2024-12-05/react-19)),
 bookkeeping is the documented pre-library shape, and the invariant "latest wins" lives in a mutable ref no
 type enforces, so *"the bug returns the moment a second `await` path is added"*
 ([TkDodo](https://tkdodo.eu/blog/react-query-as-a-state-manager)). This component **already has a second
-`await` path** — the launch at `:319-361`. That is an argument for putting the guard in a named hook that
+`await` path** — the launch at `:313-351` (`const launch = async` opens at `:313`, its
+`await launchTaskSession` is at `:320`, the closing `};` is at `:351`; verify with
+`git show b2d6ea95:src/components/TaskDetailDialog.tsx | sed -n '313p;320p;351p'` — the range this doc
+used to quote, `:319-361`, starts mid-`try` and runs ten lines past the function into the `return (<Dialog`
+JSX that begins at `:360`). That is an argument for putting the guard in a named hook that
 owns exactly one await, where the invariant has a home and a test. It is not an argument for spreading it.
 
 **The guard is load-bearing and it is pinned.** `src/components/TaskDetailDialog.test.tsx:868-905` ("an
@@ -150,13 +154,13 @@ Any extraction that loses the guard turns `:868` red and nothing else.
 | Artifact reader state + guard + `selectArtifact` `:147-197` | **19** | `task.id`, `getArtifact` | 4 cells |
 | Sessions list `:652-780` | 75 | `sessions`, 4 `useSessions` slices, `statusById`, `spacePath` | — |
 | Launch footer `edges.map` `:807-862` | 43 | `edges`, `noSpace`, `busy`, `skills` | via `launch` |
-| `edges` useMemo + `launch` + launch state `:139-364` | 48 | `columns`, `catalogs`, `spacePath`, `task` | `busy`/`error`/`note` |
+| `edges` useMemo + `launch` `:293-364` (the 3 state cells it writes are declared at `:139-146`, outside the counted span) | 48 | `columns`, `catalogs`, `spacePath`, `task` | `busy`/`error`/`note` |
 | Shell + header + scroller `:365-443` | 63 | `task`, `stageLabel`, `money`, `artifactKeys` | — |
 | Body markdown `:444-485` | 36 | `task.body` | — |
 | Meta + note + error + empty `:781-806` | 23 | `task.specPath`, `task.id`, `note`, `error` | — |
-| `MetaRow` `:866-882` | 17 | — | — |
+| `MetaRow` `:866-882` | 10 | — | — |
 
-Three subjects, cleanly separated: **reader ≈ 126**, **sessions ≈ 85**, **launch ≈ 91**. `MetaRow` is
+Three subjects, cleanly separated: **reader ≈ 125**, **sessions ≈ 85**, **launch ≈ 91**. `MetaRow` is
 already an in-file private component, which is the precedent for "a helper may stay in the file". The file
 is 500 code lines / 882 raw — below the 1,000 tripwire and not in `scripts/file-size-baseline.txt`, so this
 is a subject-count split, not a ratchet split.
@@ -221,7 +225,7 @@ the artifact surface is not.
 | `src/components/chat/EmptyStateFilm.tsx` | ADR 0070 probe sits between the effects | 387 code, 11 refs, probe still at `:465` | **HELD** |
 | `src-tauri/src/storage/batching.rs` | 57% of it is prose | 539 code / 1403 raw → **61.6%** non-code (the "57%" was a different quantity — comment-only lines alone; see the closeout's Corrections) | **HELD, stronger** |
 | `src-tauri/src/storage/db.rs` | 4 `include_str!` + vacuous lint + ~51 poison sites | `db/tests/mod.rs:5012/:5041/:5746/:6200`; `REFERENCES spaces` assertion at `:5064` still asserts an absent string; **52** poison expects | **HELD** |
-| `src-tauri/src/agent/session/mod.rs` | 17 recovery sites, partitioning forces the poison decision | 17 `into_inner()`; ratchet reports **1583** code lines | **HELD** |
+| `src-tauri/src/agent/session/mod.rs` | 17 recovery sites (the **raw** count — see the re-measured column), partitioning forces the poison decision | **16** production recovery sites (`grep -rn "unwrap_or_else(|p| p.into_inner())" src-tauri/src/agent/session/mod.rs \| grep -vE ':\s*//' \| wc -l`, the instrument `docs/agents/census.md:25` gives, which counts 16 here); the raw `grep -c "into_inner()"` prints **17** because `:853` is a prose comment quoting the pattern; ratchet reports **1583** code lines | **HELD** |
 | `src-tauri/src/commands/tasks.rs` | **14 `pub(crate)` widenings** | **6**, not 14 | **REFUTED on the count.** The `include_str!("../../tasks.rs")` constraint still holds (`commands/tasks/tests/stages.rs:294`), and `commands/tasks/` already exists as a directory. **The only declined file whose stated blocker got measurably weaker.** |
 
 Baseline membership unchanged: 11 entries, largest `db.rs` at 2154, `TaskDetailDialog.tsx` not among them,
@@ -248,12 +252,27 @@ Decline-reason taxonomy for the next planner: `StageEditor` = **shape** (needs a
 
 ## Unresolved contradictions
 
-1. **Poison-site counts are quoted pasted together.** `AGENTS.md` says 17 recovery sites in
-   `session/mod.rs`; the closeout says ~51 in `db.rs`. Both are right about their own file — 17
-   `into_inner()` and 52 `expect("db mutex poisoned")` respectively — and the numbers are routinely mixed.
-2. **`session/mod.rs` code lines: 1563 (census) vs 1583 (the ratchet's own run) vs 1589 (my
-   reimplementation).** The ratchet is authoritative: **1583**. My classifier is not its classifier and
-   should not be quoted as a ratchet figure.
+1. **Poison-site counts are quoted pasted together.** `docs/agents/census.md:25` says **16** recovery
+   sites in `session/mod.rs` (`grep -rn "unwrap_or_else(|p| p.into_inner())" src-tauri/src/agent/session/mod.rs
+   | grep -vE ':\s*//' | wc -l` → 16); the closeout says ~51 in `db.rs`. Both are right about their own
+   file — 16 production `into_inner()` recoveries and 52 `expect("db mutex poisoned")` respectively — and
+   the numbers are routinely mixed. The 17 that circulates for `mod.rs` is the **raw** count, and it is
+   inflated: `grep -c "into_inner()" src-tauri/src/agent/session/mod.rs` → **17**, because `:853` is a prose
+   comment quoting the pattern itself (`sed -n '853p' …` shows it). `AGENTS.md:132` carries only the policy
+   one-liner and **no count at all** (`grep -n "into_inner\|recovery site" AGENTS.md` → that one line), so
+   this figure has never come from `AGENTS.md`. `census.md:22-35` names the comment-anchored filter as the
+   instrument and warns in as many words not to read a raw grep as the production count.
+2. **`session/mod.rs` code lines: three instruments, three quantities, and the labels got crossed.**
+   **1563** is not a census figure — it is the `whole-file` column of `scripts/check-file-size.sh`'s own
+   header table (`sed -n '49p' scripts/check-file-size.sh` → `… 3112  1563  1561`), and that table was
+   re-measured at `1355cd2a`, the ratchet's own base: `git show 1355cd2a:src-tauri/src/agent/session/mod.rs
+   | grep -vcE '^[[:space:]]*(//|\*|/\*|$)'` → **1563**. The **census** says **1,560**, which is its own
+   `cfg-cut` instrument at its own base `4c06b1de` (cut at the first top-level `#[cfg(test)]`, then strip
+   comments and blanks) and is correct for that pair. **1583** is the ratchet's whole-file classifier on
+   this tree (`grep -vcE '^[[:space:]]*(//|\*|/\*|$)' src-tauri/src/agent/session/mod.rs` → 1583, and
+   `scripts/file-size-baseline.txt:9` agrees). The ratchet is authoritative for the ratchet's number:
+   **1583**. The third figure that appeared here, 1589, was a hand-run classifier and is not quoted as a
+   ratchet figure.
 3. **Idiomatic vs. smell (Finding 4) is genuinely unresolved in the literature.** React's own docs teach the
    ref flag; the query-library school calls the same shape the pre-library approach. Both sides are above;
    no winner was picked, and the recommendation rests on the repo's own five precedents rather than on

@@ -138,18 +138,28 @@ both.
 
 ## Pin map
 
-`src/components/TaskDetailDialog.test.tsx`, 61 tests, one `describe` per subject (counts from
+`src/components/TaskDetailDialog.test.tsx`, 63 tests, one `describe` per subject (counts from
 `npx vitest list`, which is the only instrument that expands an `it.each` — this file happens to hold
-none today): `the graph buttons` 16 · `the artifact reader (issue #180)` 8 · `the artifact rail and
-pane` 8 · `the clickable grammar` 6 · `the body renders as markdown` 6 · `what the card cannot show` 5
+none today, and `npx vitest list src/components/TaskDetailDialog.test.tsx | wc -l` → 63):
+`the graph buttons` 16 · `the artifact reader (issue #180)` 8 · `the artifact rail and
+pane` 8 · `the clickable grammar` 6 · `the body renders as markdown` 6 · `what the card cannot show` 7
 · `the modal scrolls (issue #180 follow-up)` 4 · `the session's Stage label` 3 · `the sessions list` 3
 · `closing` 2.
 
 Two gates this file is subject to and one it is not: a dynamic `className` must compose through `cn()`
 (`classNameConvention.test.ts`), and the quiet caption pair `text-ui-xs text-foreground-subtlest` has
-one carrier, `MutedCaption` (`mutedCaption.test.ts`) — the dialog uses both (7 and 9 sites). It holds
-**zero** `rounded-full` literals and is not in `slabFloatSeparation.test.ts`'s `PILLS` census, which
-scans `TaskCard.tsx` (5 fills) and `TasksBoard.tsx` (1).
+one carrier, `MutedCaption` (`mutedCaption.test.ts`). The artifact split moved part of the dialog's
+share of both into `src/components/tasks/TaskArtifactSection.tsx`, so the sites live in two files now,
+counted as **JSX uses**: `grep -c 'className={cn(' ` → **2** in `TaskDetailDialog.tsx` + **2** in
+`TaskArtifactSection.tsx`, and `grep -c '<MutedCaption' ` → **3** + **1**. Both instruments reconcile
+against `main`, where the dialog held all of it alone (**4** and **4**). Do not reach for
+`grep -c MutedCaption` as the instrument: it counts the `import` line and the prose mentions beside the
+uses, and one line can carry an opening and a closing tag, so it prints 9 on `main` and 8 + 2 here and
+adds up to neither. It holds **zero** `rounded-full` literals (`grep -c 'rounded-full'
+src/components/TaskDetailDialog.tsx` → **0**, and 0 in the split-out section too) and is not in
+`slabFloatSeparation.test.ts`'s `PILLS` census, whose two entries are `TaskCard.tsx` (5 literals) and
+`src/components/tasks/TaskColumn.tsx` (1) — the column pill moved to that file when the board was split,
+so `TasksBoard.tsx` now holds 0.
 
 One behaviour to pin rather than "fix": `AgentMarkdown` renders fine with no `SpaceCwdProvider`, but a
 **relative** link inside it refuses as `relative-without-cwd`, because `useSpaceCwd()` answers `null`

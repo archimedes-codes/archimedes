@@ -44,14 +44,37 @@ export interface TaskArtifactSectionProps {
  * store read, no `await`, no request epoch of its own — the epoch lives with the
  * `await` that needs it, and the only `await` is in the hook.
  *
- * ## It adds NO DOM level
+ * ## It adds NO DOM level — a rule held by REVIEW, not by the suite
  *
  * The returned root IS the `artifact-section` `<div>`, with nothing wrapped around it.
- * `TaskDetailDialog.test.tsx` asserts structure through `.parentElement` (the rail's,
- * the pane's) and through the dialog's single `.overflow-y-auto` scroller by identity,
- * and a component boundary contributes no node — so this file is invisible to those
- * pins exactly as long as it returns one element and no wrapper `<div>`. A wrapper
- * would redden four of them.
+ * Keep it that way: this is the layout contract, and the section's `shrink-0` and its
+ * flex column are what the `detail-scroll` scroller's height arithmetic depends on (see
+ * the comment on the root below).
+ *
+ * What the component boundary buys is real. A React boundary contributes no node, so a
+ * wrapper-less child returning the same elements is invisible to every structural pin in
+ * `TaskDetailDialog.test.tsx` — `rail.parentElement` (`:1370`), `pane.parentElement`
+ * (`:1403`), the sessions wrapper's `parentElement` (`:1469`), the single
+ * `.overflow-y-auto` counted at `:1436`, and `.closest(".overflow-y-auto")` by identity
+ * (`:1442-1443`). That is why this split was possible at all.
+ *
+ * What the boundary does NOT buy is protection — and this very comment used to claim it
+ * did, saying a wrapper `<div>` would redden four of those pins. That counterfactual was
+ * never executed, and it is false. Measured at `2ececccb`: a bare inert wrapper leaves
+ * the suite **63/63 green**, and so does a wrapper carrying the
+ * section's own `flex shrink-0 flex-col gap-1`. The pins cannot see upward — `:1370` and
+ * `:1403` read the two-column row this file renders BELOW any wrapper, `:1469` reads a
+ * region this file does not render, `:1436` counts a CLASS an inert wrapper adds none
+ * of, and `.closest()` walks UP past ancestors lacking that class. The falsification
+ * control is that these pins are live: dropping `shrink-0` from the section's own
+ * `className` reddens 1 test, so the zeroes above are a real result and not a blind
+ * suite.
+ *
+ * The ONE wrapper any test catches is one wearing `overflow-y-auto`, and it reddens
+ * exactly one test: `detail-scroll is the ONLY scroll container in the dialog, and the
+ * rail and pane resolve to it`. So the no-wrapper rule is a **design constraint, not a
+ * test-enforced one** — it is unguarded, and a contributor can add a wrapper with
+ * nothing in the suite noticing. Review is what holds it. (ADR 0114, Consequences.)
  *
  * ## `artifactKeys.length > 0` is the CALLER's gate
  *

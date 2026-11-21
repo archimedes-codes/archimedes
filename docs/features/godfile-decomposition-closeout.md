@@ -19,7 +19,11 @@ re-verified: 2026-11-20 — only the `agent/errors.rs` bullet in "What was delib
   refutation (ADR 0114), and a `## Corrections made to this record's own numbers` section records it with
   the four figures re-measured that day — `commands/tasks.rs` `pub(crate)` **6** not 14, `db.rs` poison
   expects **52** not ~51, `batching.rs` non-code **61.6%** not 57%, `session/mod.rs` **17** `into_inner()`
-  and **1583** code lines from the ratchet's own run, not the census's 1563. Nothing else in this record
+  (the raw count; `docs/agents/census.md:25` counts **16** production recovery sites once the comment that
+  quotes the pattern is filtered) and **1583** code lines from the ratchet's own run — **1563** was never
+  the census's figure either, it is the `whole-file` column of `scripts/check-file-size.sh:49`'s header
+  table, re-measured at that script's own base `1355cd2a`, while the census says **1,560** on its own
+  `cfg-cut` instrument at its own base `4c06b1de`. Nothing else in this record
   was re-run that day.
 ---
 
@@ -113,9 +117,10 @@ mechanical reason, not a deferral for lack of time.
      rationale at every *new* panic-on-poison site.
   Also unmovable: `Db::open` is ~355 lines of sequential migration gates whose *ordering* is the
   design. A split buys navigability; `open` is the actual complexity.
-- **`agent/session/mod.rs` (1563) — deferred, and it is a design change not a file move.** Its
-  poisoned-mutex **recovery** semantics (`unwrap_or_else(|p| p.into_inner())`, 17 sites in `mod.rs`
-  alone) are correct *because* one lock guards a map of independent per-session rows. Partitioning
+- **`agent/session/mod.rs` (1583 code lines by the ratchet's classifier — `grep -vcE '^[[:space:]]*(//|\*|/\*|$)' src-tauri/src/agent/session/mod.rs`; the census's own `cfg-cut` instrument says 1,560 at its base `4c06b1de`) — deferred, and it is a design change not a file move.** Its
+  poisoned-mutex **recovery** semantics (`unwrap_or_else(|p| p.into_inner())`, **16** production sites in `mod.rs`
+  alone — `docs/agents/census.md:25`, counted with its comment-anchored filter; the raw `grep -c "into_inner()"`
+  prints 17 because a prose comment quotes the pattern) are correct *because* one lock guards a map of independent per-session rows. Partitioning
   that map across files forces a per-partition decision on the exact discriminator `AGENTS.md`'s
   poison rule turns on. It belongs with the `db.rs` plan, where the same question is already asked.
 - **`src/store/sessions.ts` (1370) — blocked by arithmetic.** 431 hand-written
@@ -199,11 +204,19 @@ on real disk), the rest from the `grep -c` printed beside each one.
   weaker. `storage/db.rs`: **52** poison expects, not ~51
   (`grep -c 'expect("db mutex poisoned")' src-tauri/src/storage/db.rs`). `agent/session/mod.rs`: **17**
   `into_inner()` (`grep -c "into_inner()" src-tauri/src/agent/session/mod.rs`) — which is that file's
-  number, and is routinely conflated with `db.rs`'s 52. Its size is **1583** code lines per the ratchet's
-  own run, where the census says 1563; `bash scripts/check-file-size.sh --update` printed
+  number, and is routinely conflated with `db.rs`'s 52. **Read it as the RAW count, not the production
+  count:** `docs/agents/census.md:25` gives **16** production recovery sites for this file, counted with
+  `grep -rn "unwrap_or_else(|p| p.into_inner())" src-tauri/src/agent/session/mod.rs | grep -vE ':\s*//' | wc -l`,
+  and the extra line is `:853`, a prose comment quoting the pattern itself (`sed -n '853p' src-tauri/src/agent/session/mod.rs`).
+  Its size is **1583** code lines per the ratchet's
+  own run (`grep -vcE '^[[:space:]]*(//|\*|/\*|$)' src-tauri/src/agent/session/mod.rs`); the 1563 this record
+  has been quoting since `5756b87c` is not the census's figure — it is the `whole-file` column of
+  `scripts/check-file-size.sh:49`'s
+  header table, measured at that table's own base `1355cd2a` — and the census's number is **1,560**, its own
+  `cfg-cut` instrument at its own base `4c06b1de`. Three instruments, three quantities; `bash scripts/check-file-size.sh --update` printed
   `baseline unchanged: 11 file(s) over 700 code lines`, so the ledger's `1583` line is this tree's
   measurement and **1583 is the figure to quote** — a hand-run classifier is not the ratchet's classifier
-  and must not be quoted as a ratchet figure (the research report records the 1563/1583/1589 three-way
+  and must not be quoted as a ratchet figure (the research report records the three-way
   and settles it the same way). The `session/mod.rs` decline holds.
 
 ## One durable lesson from review

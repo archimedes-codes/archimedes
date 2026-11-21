@@ -16,8 +16,21 @@ import type { Artifact } from "../lib/tauri";
  *   ceremony. `useActionState`/`useTransition` are no better here — they are
  *   built for mutations and forms, and they order by SERIALIZING, which changes
  *   when the fetch fires.
- * - **No unmount guard.** No site in this repo has one, and adding a
- *   cancellation flag would change what a late resolve does.
+ * - **No unmount guard.** This hook adds none, which is `useAsyncAction`'s own
+ *   refusal carried over — and the claim is about scope, not about the repo: the
+ *   repo does have cancellation flags (a `grep -rl` for the `let cancelled` /
+ *   `let disposed` flag declaration over `src` `*.ts`/`*.tsx`, test files excluded,
+ *   → **8** files; `AgentMarkdown.tsx:279-294` and `CodemodeCard.tsx:149-164` are
+ *   the closest analogues, a `.then` that `setState`s behind a flag). Note the
+ *   instrument excludes this file on purpose: quoting the full declaration string
+ *   here would make this comment a ninth match, which is the exact trap
+ *   `session/mod.rs:853` records for the poison-site grep. Every one of the 8 sits
+ *   in a `useEffect` body whose cleanup sets the flag — 7 in a React effect, the
+ *   8th in a non-React module's `dispose()` — so the flag is borrowed from a
+ *   lifecycle that owns a teardown. This hook has zero `useEffect`s and no teardown
+ *   to hand a flag to; it is event-driven, and its epoch is the ordering mechanism.
+ *   Adding a flag here would also change what a late resolve does, which is the
+ *   same reason `useAsyncAction` declines it.
  * - **`select` never rejects.** It swallows a rejection into `artifactError`
  *   exactly as `selectArtifact` did before it was lifted out of the dialog, and
  *   the call site relies on that: it writes `void select(key)`, which would
