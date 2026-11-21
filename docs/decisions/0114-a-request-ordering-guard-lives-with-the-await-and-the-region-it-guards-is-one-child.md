@@ -69,6 +69,14 @@ the guard. The new hook must document what it refuses to improve (no abort, no u
 
 ## Consequences
 
+- **Every bare line number below that cites `TaskDetailDialog.tsx` is `b2d6ea95` (`main`) — the pre-split
+  base, 882 raw lines where this branch's HEAD has 677.** `:379`, `:486`, `:801`, `:117`, `:161`,
+  `:313-351`, `:556-611`, `:612-642`, `:575` and `:576` point elsewhere at HEAD; they are kept rather than
+  stripped because each names its symbol in the prose beside it, so the symbol is the citation and the
+  number is a hint. The other numbers here DO resolve at HEAD — `TaskDetailDialog.test.tsx` and
+  `tauriBarrel.test.ts` are byte-identical between the two commits, which is the point of the split, and
+  the `CONTEXT.md` / `store/tasks.ts` / `classNameConvention.test.ts` cites sit in files this branch leaves
+  alone. Dropping the numbers instead would shift this file's own, the hazard the scope note records.
 - **The guard is pinned by exactly one test.** `TaskDetailDialog.test.tsx:868-905` ("an out-of-order
   resolution cannot paint one key's document under another") hangs both reads on manual promise `slots` and
   answers them out of order; its own comment states that clearing on select cannot catch this case. An
@@ -144,7 +152,9 @@ the guard. The new hook must document what it refuses to improve (no abort, no u
     commit that wrote down "this is unguarded" added the word to `src` and moved the total from 654 to **655**
     while leaving the numerator at 414. Re-measure before quoting it.
   - **This ADR's H1 (`:7`) and its filename keep the older phrase "request-ordering guard" deliberately**, and
-    the body names the mechanism a `guard` 11 more times (`grep -oi guard` over `:8-104` → 11). That is a
+    the body names the mechanism a `guard` 11 more times (`grep -oi guard` over `:8-112` → 11; the upper
+    bound was `104` until the Consequences qualification bullet was inserted above it on this same branch,
+    which moved the endpoint and not the count — re-measure, do not trust either figure). That is a
     known, bounded exception, not an oversight for the next reader to consistify: the path is cited verbatim
     in three tracked files (`docs/features/godfile-decomposition-closeout.md`,
     `docs/research/taskdetaildialog-artifact-guard-ownership.md`,

@@ -183,8 +183,14 @@ export function TaskArtifactSection({
           className={cn(
             "flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-ui-sm text-foreground-subtle hover:text-foreground",
             // Exactly ONE of these reaches the class list, which is also what
-            // stops a selected row's hover from replacing its own fill (the same
-            // measured reasoning `SessionListRow.tsx:129` records).
+            // stops a selected row's hover from replacing its own fill — the
+            // reasoning `SessionListRow.tsx` records in its header note on the
+            // `cn()` call above its own `active ? … "bg-selected" : … "hover:bg-surface-hover"`
+            // arm: the two ternary arms are mutually exclusive and both land in
+            // tailwind-merge's background group, so exactly one reaches the
+            // string. Cited by that note's WORDING, not by a line number — the
+            // number this cite carried (`:129`) had already drifted out from
+            // under it (that line is a `badge?:` prop declaration today).
             selectedKey === key ? "bg-selected text-foreground" : "hover:bg-surface-hover",
           )}
         >
@@ -202,8 +208,17 @@ export function TaskArtifactSection({
             data-testid="artifact-key-chevron"
             // The lone token is fine here: the `mutedCaption.test.ts` census
             // matches the ADJACENT PAIR `text-ui-xs text-foreground-subtlest`,
-            // and `SpacesList.tsx:1046` already spells this same glyph's chevron
-            // with it alone.
+            // and the sidebar's own collapsed-state chevron spells this same
+            // glyph with the token alone — look in `SpacesList`'s archived
+            // toggle, now in `spaces/ArchivedSection.tsx`: the
+            // `{open ? <ChevronDownIcon …/> : <ChevronRightIcon …/>}` pair on
+            // the `Archived` row button, both arms
+            // `size-4 shrink-0 text-foreground-subtlest` (measured at `:135`
+            // for the right-pointing arm). Cited by that glyph-and-token pair
+            // and not by a number: the number this cite carried (`:1046`) was
+            // true while the toggle still lived inside the 1,163-line
+            // `SpacesList.tsx`, and PR #206 moved it out — the file is 750
+            // lines now, so that line does not exist at all.
             className="size-3.5 shrink-0 text-foreground-subtlest"
           />
         </button>
