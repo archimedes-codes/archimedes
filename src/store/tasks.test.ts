@@ -20,7 +20,7 @@ import {
   type Artifact,
   type ArtifactMeta,
   type MoveTaskOutcome,
-  type StageRow,
+  type StageDto,
   type StageWithTasks,
   type TaskCardView,
   type TaskRow,
@@ -132,7 +132,7 @@ const OTHER = "/w/beta";
  * UNCONFIGURED, matching every pre-#179 column; `nextSlugs: []` means something
  * different (configured, leading nowhere — ADR 0099), so a test wanting the empty
  * case passes it through `over`. Defaults sit BEFORE the spread so `over` wins. */
-const stage = (slug: string, over: Partial<StageRow> = {}): StageRow => ({
+const stage = (slug: string, over: Partial<StageDto> = {}): StageDto => ({
   spacePath: SPACE,
   slug,
   label: slug[0]!.toUpperCase() + slug.slice(1),
@@ -188,7 +188,7 @@ const linkedCardOf = (
 ): TaskCardView => ({ task: row, sessions, costUsd, artifactKeys });
 
 /** A two-column board, NESTED the way the wire shape is (`{ stage, tasks }`). */
-const board = (...cols: [StageRow, TaskRow[]][]): StageWithTasks[] =>
+const board = (...cols: [StageDto, TaskRow[]][]): StageWithTasks[] =>
   cols.map(([s, tasks]) => ({ stage: s, tasks: tasks.map(cardOf) }));
 
 const backlog = stage("backlog");
@@ -240,7 +240,7 @@ beforeEach(() => {
   ]) {
     vi.mocked(fn).mockReset();
   }
-  // The Stage verbs answer the STORED `StageRow`, and every action merges that row
+  // The Stage verbs answer the STORED `StageDto`, and every action merges that row
   // back over its own optimistic guess — so a default that ignores its arguments
   // would overwrite whatever a case painted. These defaults echo the arguments back,
   // which is what the Rust side actually does, so a case that only checks the ERROR
@@ -693,7 +693,7 @@ describe("useTasks.createTask / useTasks.linkSession", () => {
 /** The Stage row the T3 `createStage` fake answers with. `spike` is the column a
  *  test ADDS, and its slug is spelled by the FAKE COMMAND rather than by the
  *  store — which is the point of `createStage`'s await-then-paint shape. */
-const spikeStage = (over: Partial<StageRow> = {}): StageRow => ({
+const spikeStage = (over: Partial<StageDto> = {}): StageDto => ({
   spacePath: SPACE,
   slug: "spike",
   label: "Spike",
@@ -819,7 +819,7 @@ describe("useTasks.createStage / useTasks.renameStage (T3)", () => {
   });
 
   it("renameStage shows what the SERVER stored when it trims the label", async () => {
-    // The command answers the stored `StageRow`, and the optimistic paint is a
+    // The command answers the stored `StageDto`, and the optimistic paint is a
     // guess about it. Merging the row back is what stops the board showing a label
     // the database refused to store.
     vi.mocked(renameStage).mockResolvedValue(
@@ -861,7 +861,7 @@ describe("useTasks.createStage / useTasks.renameStage (T3)", () => {
       message: "no such stage: nope",
     });
     // Rethrown, and the reason is the return type: this action answers the STORED
-    // `StageRow` and on a refusal there is not one to hand back. The `void` Stage
+    // `StageDto` and on a refusal there is not one to hand back. The `void` Stage
     // writes below (`reorderStages`, `deleteStage`, `setBoardStrict`) do not
     // rethrow — they have nothing to return, so the reverted slice plus `error` is
     // the whole report, exactly as `moveTask` has always reported.
@@ -931,7 +931,7 @@ describe("useTasks.setStageSkill / useTasks.setStageNext (T3)", () => {
     // resolving: the success path merges the wire's row back over the guess, so an
     // assertion made after the await would pass for an implementation that painted
     // a sorted copy and then quietly corrected itself one round trip later.
-    vi.mocked(setStageNext).mockReturnValue(new Promise<StageRow>(() => {}));
+    vi.mocked(setStageNext).mockReturnValue(new Promise<StageDto>(() => {}));
     void useTasks.getState().setStageNext(SPACE, "backlog", [
       "doing",
       "backlog",
@@ -1464,7 +1464,7 @@ describe("the board's wire shape — the Rust↔TS drift pin (issue #174)", () =
 
     // The column carries CARDS, not rows — the other half of the wrapper.
     expect(interfaceFields(types, "StageWithTasks").map((f) => f.type)).toEqual([
-      "StageRow",
+      "StageDto",
       "TaskCardView[]",
     ]);
 

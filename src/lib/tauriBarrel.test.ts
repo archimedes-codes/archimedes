@@ -295,9 +295,9 @@ const TAURI_PUBLIC_API = [
   // §3) entered both in the commit that added its wrapper and its re-export.
   //
   // (issue #179, ADRs 0098 + 0099) The eight Stage/board-strict wrappers join it
-  // here: six Stage verbs returning the already-pinned `StageRow`, plus the
+  // here: six Stage verbs returning the already-pinned `StageDto`, plus the
   // Strict-workflow pair returning `void`/`boolean`. NO new TYPE name enters —
-  // `StageRow` gains two FIELDS in the same commit, and widening an existing
+  // `StageDto` gains two FIELDS in the same commit, and widening an existing
   // interface moves neither list.
   "createStage",
   "createTask",
@@ -424,7 +424,7 @@ const TAURI_PUBLIC_API = [
   "setSessionArchived",
   "setSessionConfigOption",
   // (issue #179) The two Stage writes: the launch Skill (ADR 0098) and the
-  // outgoing transition graph (ADR 0099). Both return the pinned `StageRow`.
+  // outgoing transition graph (ADR 0099). Both return the pinned `StageDto`.
   "setStageNext",
   "setStageSkill",
   "setSpaceTrusted",
@@ -436,7 +436,7 @@ const TAURI_PUBLIC_API = [
   "spaceForPath",
   "SpaceRow",
   "StalledPayload",
-  "StageRow",
+  "StageDto",
   "StageWithTasks",
   "startSession",
   "startTaskSession",
@@ -486,14 +486,14 @@ const TAURI_RUNTIME_API = [
   "closeSession",
   "compactSession",
   // (Task board, ADR 0090) The board wrappers. The SIX companion type names
-  // (`StageRow`/`StageWithTasks`/`TaskCardView`/`TaskRow`/`TaskSessionRow`
+  // (`StageDto`/`StageWithTasks`/`TaskCardView`/`TaskRow`/`TaskSessionRow`
   // `/MoveTaskOutcome`) are
   // in `TAURI_PUBLIC_API` ONLY — they vanish at runtime, so they never enter this
   // list (the `AccessRule`/`AccessDirection` precedent). No count stated here on
   // purpose: this file's own header says the ARRAY is the expectation.
   //
   // (issue #179, ADRs 0098 + 0099) The eight Stage/strict wrappers enter HERE too
-  // — all eight are runtime values. `StageRow` gains two FIELDS in the same commit
+  // — all eight are runtime values. `StageDto` gains two FIELDS in the same commit
   // and no TYPE name moves, for the reason spelled on `TAURI_PUBLIC_API`.
   "createStage",
   "createTask",

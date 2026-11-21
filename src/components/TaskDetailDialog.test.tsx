@@ -24,7 +24,7 @@ import {
   startTaskSession,
   type SessionInfo,
   type SkillInfo,
-  type StageRow,
+  type StageDto,
   type StageWithTasks,
   type TaskRow,
   type TaskSessionRow,
@@ -117,7 +117,7 @@ function skill(name: string): SkillInfo {
 
 /** A column, in the nested shape `get_board` publishes.
  *
- *  `onEnterSkill` / `nextSlugs` are REQUIRED on `StageRow` (the Rust reader always
+ *  `onEnterSkill` / `nextSlugs` are REQUIRED on `StageDto` (the Rust reader always
  *  emits both), so they are spelled here rather than left optional. Both default to
  *  `null` = the pre-#179 state, and `nextSlugs: null` specifically means
  *  UNCONFIGURED — the renderer then falls back to the column at `sortOrder + 1`,
@@ -127,7 +127,7 @@ function column(
   slug: string,
   label = slug,
   tasks: TaskRow[] = [],
-  over: Partial<Pick<StageRow, "sortOrder" | "onEnterSkill" | "nextSlugs">> = {},
+  over: Partial<Pick<StageDto, "sortOrder" | "onEnterSkill" | "nextSlugs">> = {},
 ): StageWithTasks {
   return {
     stage: {

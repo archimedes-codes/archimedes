@@ -61,7 +61,7 @@ import type { TaskRow } from "./tauri";
 
 /**
  * The **destination Stage** a launch is aimed at — the whole of what a launch needs
- * to know about a column, and every field of it is DATA read from a `StageRow`.
+ * to know about a column, and every field of it is DATA read from a `StageDto`.
  *
  * This shape is the replacement for the deleted mode union: where a mode was a
  * TypeScript literal that a `switch` translated into a skill name and a column, a
@@ -90,7 +90,7 @@ export interface TaskLaunchDestination {
    *  OPTIONAL and read by ONE consumer: `createTaskFromDraft`. This module never
    *  looks at it, because a message is only ever built for a launch — so the shape
    *  spec §6.1 describes (`{ slug, label, onEnterSkill }`) still satisfies this type
-   *  everywhere, and a destination resolved from a `StageRow` has nothing to say. It
+   *  everywhere, and a destination resolved from a `StageDto` has nothing to say. It
    *  lives here rather than as a second argument because "which column" and "does it
    *  launch" are two facts about the SAME button, and a `launches: boolean` parameter
    *  beside a destination parameter is two arguments that can disagree. */

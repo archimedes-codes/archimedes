@@ -24,7 +24,7 @@ import { Switch } from "./ui/switch";
 import { cn } from "./lib/utils";
 import { useMentionCatalogs } from "../hooks/useMentionCatalogs";
 import { useTasks } from "../store/tasks";
-import type { StageRow } from "../lib/tauri";
+import type { StageDto } from "../lib/tauri";
 
 /**
  * The **Stage editor** — the dialog the board header's `Configure` control opens
@@ -197,7 +197,7 @@ export default function StageEditor({
     readStrict();
   };
 
-  const commitLabel = async (stage: StageRow): Promise<void> => {
+  const commitLabel = async (stage: StageDto): Promise<void> => {
     if (spacePath === null) return;
     const draft = drafts[stage.slug];
     setDrafts((rest) => {
@@ -221,7 +221,7 @@ export default function StageEditor({
   };
 
   const addDestination = async (
-    stage: StageRow,
+    stage: StageDto,
     destination: string,
   ): Promise<void> => {
     if (spacePath === null) return;
@@ -240,7 +240,7 @@ export default function StageEditor({
   };
 
   const setDestinations = async (
-    stage: StageRow,
+    stage: StageDto,
     next: string[],
   ): Promise<void> => {
     if (spacePath === null) return;
@@ -264,7 +264,7 @@ export default function StageEditor({
     await reorderStages(spacePath, next);
   };
 
-  const requestDelete = (stage: StageRow): void => {
+  const requestDelete = (stage: StageDto): void => {
     if (spacePath === null) return;
     // An EMPTY column needs no destination and no question — there is nothing to
     // relocate. A column WITH cards can only be deleted through a destination: a
@@ -320,7 +320,7 @@ export default function StageEditor({
   );
 
   return (
-    <CatalogSearchDialog<StageRow>
+    <CatalogSearchDialog<StageDto>
       open={spacePath !== null}
       onOpenChange={(nextOpen) => !nextOpen && onClose()}
       title="Configure stages"

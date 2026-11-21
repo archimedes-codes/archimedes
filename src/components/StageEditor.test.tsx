@@ -25,7 +25,7 @@ import {
   setStageSkill,
   writeArtifact,
   type SkillInfo,
-  type StageRow,
+  type StageDto,
   type StageWithTasks,
   type TaskCardView,
   type TaskRow,
@@ -113,7 +113,7 @@ const SPACE = "/w/alpha";
  * optional, and the defaults sit BEFORE the spread so a case can override either.
  * `null` is UNCONFIGURED; `nextSlugs: []` is the OTHER answer (configured, leading
  * nowhere — ADR 0099) and a case that means it passes it explicitly. */
-const stage = (slug: string, over: Partial<StageRow> = {}): StageRow => ({
+const stage = (slug: string, over: Partial<StageDto> = {}): StageDto => ({
   spacePath: SPACE,
   slug,
   label: slug[0]!.toUpperCase() + slug.slice(1),
@@ -319,7 +319,7 @@ beforeEach(() => {
 /** The slice as the store holds it now — the dialog writes through the store, so
  *  this is what "the board agrees with the editor" is measured against. */
 const slice = (): StageWithTasks[] => useTasks.getState().boardsBySpace[SPACE] ?? [];
-const stageOf = (slug: string): StageRow | undefined =>
+const stageOf = (slug: string): StageDto | undefined =>
   slice().find((c) => c.stage.slug === slug)?.stage;
 
 describe("StageEditor — the dialog's shape", () => {
@@ -955,7 +955,7 @@ describe("StageEditor — one role per row, and who gets the click", () => {
 /** `stage()` for a row that must keep its cards — the SEED's columns carry the
  *  cards the delete-picker cases need, and a case that re-spells a Stage's edges
  *  must not have to re-spell its cards too. */
-function stage2(slug: string, over: Partial<StageRow> = {}): StageWithTasks {
+function stage2(slug: string, over: Partial<StageDto> = {}): StageWithTasks {
   const base = SEED.find((c) => c.stage.slug === slug)!;
   return { ...base, stage: { ...base.stage, ...over } };
 }
