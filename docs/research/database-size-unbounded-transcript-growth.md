@@ -386,6 +386,10 @@ returned a page to the filesystem, and with `auto_vacuum = 0` and zero `VACUUM` 
 which a fix succeeds or fails: a prune that ships without a `VACUUM` story reclaims 0 file bytes.
 
 **3. The "not expressible" conclusion is too strong — the parent link is obtainable, just not for free.**
+> **Partly superseded (design, same day).** The "cross-repo change" cost named below is **wrong**: the
+> desktop owns the schema (every `sessions` column was added by a desktop `gate(…)`) and the router can
+> fill the parent in after the crate creates the row. See "Approved design" part 1. The racy-delivery-id
+> finding stands and is the basis of the design's write guard.
 The report proved correctly that `sessions` has **no** parent column (re-verified against
 `PRAGMA table_info`: id, cwd, created_at, title, capabilities_json, archived, context_usage_json,
 is_subagent, todos_json, sort_order, cost_usd, title_stage) and that `cwd` is a Space-level proxy that
@@ -411,6 +415,9 @@ lives in `src-tauri/src/storage/db/sessions.rs:248` and `:255` (both arms of `li
 `:295` (`session_recency`). The behaviour is unchanged; only the paths moved.
 
 **5. The archive trigger is unnecessary — which removes the proposal's whole prerequisite.**
+> **Superseded by the design (same day).** True as a *bytes* argument, and the owner overruled it on
+> other grounds: the archive trigger makes retention **user-caused and immediate** rather than a timer,
+> and the one-time upgrade sweep covers what no trigger can reach. Do not read this as "skip the trigger".
 `list_sessions` filters `is_subagent = 0` in **both** arms, so a child's transcript is unreachable
 whether or not its parent is archived. Scoping a prune on `is_subagent` + an age bound therefore gets
 **the identical reclaim with no schema change and no cross-repo dependency.** The parent column buys
@@ -459,11 +466,12 @@ is running when the prune executes (which also satisfies hazard 7). `SessionMana
 
 ## Proposed direction (user-proposed 2026-11-14 — measured feasibility, NOT a design)
 
-> **Read "Corrections and additions, 2026-11-22" first.** Two claims below are superseded: *"not
-> expressible against the current schema"* (corrections 3 and 5 — the parent id is obtainable, and the
-> archive trigger turns out to be unnecessary, so no schema change gates a first implementation), and
-> the 2,107 MB ceiling (correction 6 measures **2,042 MB at a 24 h age bound**, which is the figure the
-> owner then approved against). The rest stands.
+> **Read "Approved design (2026-11-22)" before acting on anything below.** Three claims here are
+> superseded: *"not expressible against the current schema"* (corrections 3 and 5 — the parent id is
+> obtainable desktop-side, and the trigger question was settled by the owner, not by the byte count);
+> the 2,107 MB ceiling (correction 6 measures **2,042 MB at a 24 h age bound**); and *"nothing can
+> display the kept summary"* — **false**, the parent's own `subagent` tool-result row already carries the
+> child's report and `ToolCallCard` renders it. The rest stands.
 
 > *"If a session is archived, and sub-sessions it has — so subagent runs — should be deleted, but only
 > the final message (usually a summary) kept. This should help cut down the DB size."*
@@ -535,7 +543,96 @@ the right thing is to delete the subagent row **entirely** and keep nothing.
 723 MB `native_messages` half is not gated on it; and neither is worth shipping without a `VACUUM`
 story, or the file stays 2.8 GB with the bytes merely moved to the freelist.
 
+## Approved design (2026-11-22) — supersedes both "Proposed direction" and "Approved scope"
+
+> **Terminology, settled against `CONTEXT.md` first.** The predicate is a **closed Subagent
+> session** — one whose **Worker process** has exited, which is terminal and irreversible because a
+> Subagent session is *ephemeral, no resume* (glossary, ADR 0025). **Do not write "settled"** —
+> `agent_settled` is a *turn*-level event that fires many times per session, and the glossary lists
+> "Settle timeout" under _Avoid_ precisely because conflating turn-end with liveness was the defect
+> ADR 0055 existed to fix. Nor **"Dead"** — a child that finished successfully is not a **Dead
+> Subagent**, which means specifically *silent with nothing in flight for the Dead bound*. The two
+> tables are the **stored display rows** (`messages`) and the **provider transcript**
+> (`native_messages`) — `CONTEXT.md:332`, not "display/native transcript".
+
+Six parts. This **supersedes the "archive trigger is unnecessary" argument in correction 5** — the
+owner chose the archive trigger anyway, and correctly: correction 5 measured only *bytes*, and the
+archive trigger's real value is that retention becomes **user-caused and immediate** rather than a
+timer. The one-time sweep then covers what no trigger can reach.
+
+**1. `sessions.parent_session_id`** — nullable, **no `DEFAULT`**. `NULL` means "parent never known",
+which is honest for the ~50% already orphaned; a `DEFAULT` would invent a parent, re-creating the
+phantom-`$0.00` defect the `cost_usd` migration refuses (`db/mod.rs:686-696`). Added by a desktop
+`gate(&mut conn, "sessions", "parent_session_id", …)`. **No crate change** — this corrects correction
+3: `SessionInfo` being the pinned crate's type does not block it, because the crate's
+`ensure_session_row` creates the child row and the desktop fills the parent in afterwards.
+
+**2. The router writes it.** `route_event(session_id, is_subagent: true, payload{sessionId})` is the
+single funnel for every child frame and already holds `self.driver.db` (`router.rs:317`). Write AFTER
+`p.apply(…)` so the row exists. **Guard: only when `session_id != child_id`** — when they are equal the
+crate's `drives` lookup missed and the delivery id is the child's own id, the racy case `pump.rs`'s
+`delivery_id` documents. Skipping is *safe*: it leaves `NULL`, never a wrong parent. Idempotent,
+self-heals on the next frame. A parent is always a main session (`subagent` is stripped from a child's
+tools), so one column and two levels.
+
+**3. Archive prunes its closed children.** `set_session_archived(id, true)` → per closed child:
+`BatchingPersistence::flush_session(child)`, then delete every `native_messages` row and every
+`messages` row except `MAX(id)`. **Inline, not deferred** — a parent's children are hundreds of rows;
+only the `VACUUM` is expensive.
+
+**4. Delete prunes its children** — the same verb. This is the case the archive trigger can *never*
+reach: **1,325 of 2,643 existing children (50.1%)** have a parent that was already deleted, because
+`ON DELETE CASCADE` destroys the parent's rows (the ones naming the children) while the children
+survive. Delete is confined to stored sessions (Archived + Detached per ADR 0016), so no live-parent
+path exists to guard.
+
+**5. One-time upgrade sweep, marked by `PRAGMA user_version`.** Verified unused (`grep` exit 1), so it
+needs no meta table and no schema change. On boot, if below the marker: sweep every closed child older
+than **24 hours**, then set the marker. **Not inside `Db::open`** — `db/mod.rs:556-558` records that the
+gates are "the expensive writes … the reason an upgrade-first open used to stall the window", and a 2 GB
+delete there reintroduces exactly that stall. The precedent for the *shape* (one-time, destructive,
+idempotent-by-construction, one transaction) is `db/mod.rs:575-584`, the `agent_id` drop-migration.
+
+**6. `VACUUM`** — background, after boot, off the main thread, only when
+`SessionManager::session_count() == 0`, and only when `freelist_count × page_size` exceeds a threshold.
+Accepted consequence: `Db` holds ONE `Connection` behind a `Mutex`, so a `VACUUM` blocks every other DB
+verb for its multi-second duration; the idle gate mitigates, it does not cure.
+
+**Why this is safe.** The idle gate is what makes it *correct*, not merely polite. `session_count() ==
+0` means no session has a `live` slice, so no child can be running — which answers ADR 0055's objection
+to a duration bound alone (a child deadlocked inside a tool holds an outstanding `tool_call_id` forever
+and is **never** reaped, so it can outlive any age bound). For the archive and delete triggers,
+"closed" plus the buffer bound covers it: `DEFAULT_FLUSH_INTERVAL` is **250 ms** (`batching.rs:276`) and
+the buffer is **in-memory only** (no `CREATE TABLE` in `batching.rs`), so a >24 h-old child cannot have
+rows in it — **the age bound closes the resurrection hole for the sweep by construction**, and the two
+triggers close it explicitly with `flush_session`.
+
+**Reclaim: 2,042 MB of a 2,825 MB file (72%)** at upgrade, keeping 23.4 MB of final reports.
+
+**The reader question is CLOSED, and the report was wrong about it.** "The kept row has no reader" is
+**false**. A child's final report is delivered to the parent as the `subagent` tool result and persisted
+in the **parent's own** stored display row — `payload_json.rawOutput.content[0].text`, which this change
+does not touch — and `ToolCallCard` renders `rawOutput` on expand (`ToolCallCard.tsx:31`, `:71-73`).
+Measured: **1,102** `subagent` tool-call rows in main sessions carry a `rawOutput`, **961** of them over
+500 chars, max **212 KB**; of the 2,449 children whose last display row is `agent-text`, **889 (36.3%)**
+match a parent's `rawOutput` on a 160-char prefix. So the kept row is partly **redundant**, and it is
+kept anyway (owner's decision) for 23.4 MB — 0.8% — because the 64% that do not match have not had
+their cause measured, and the child's own last row is the only verbatim copy for those.
+
+### What must be fixed in the same change
+
+Four verified items, each detailed under "Docs the change must confront" below: the stale
+`subagent-sessions.md`; `transcript-diff-channel.md`'s now-false `verified-by` probe; the §5.1 "no data,
+no knob" posture the `VACUUM` threshold must answer with a measurement; and an appended `## Amendment`
+section on ADR 0025 retiring *"inspectable in a debug view"* (`0117` free; `superseded-by:` is reserved
+for whole-decision replacement and is **not** the instrument here).
+
 ## Approved scope (2026-11-22) — decided, not yet designed
+
+> **Superseded by "Approved design (2026-11-22)" above.** Kept as the record of the scope decision.
+> Its "the archive trigger was dropped" and "no schema change" lines are **no longer the plan** — the
+> owner reinstated the archive trigger and the `parent_session_id` column, and added the one-time
+> upgrade sweep. Its measurements still stand.
 
 Put to the owner as three questions with measured figures; these are the answers. **This records a
 decision, not a design** — no code was written, and the card is in research to have the design written.
@@ -599,12 +696,17 @@ Three pieces of existing prose interact with this change, and two of them are al
   unbatched because batching reddens `src-tauri/tests/ipc.rs::a_subagent_transcript_persists_as_a_hidden_ephemeral_row`
   — ADR 0025's pin — which a background deleter could race.
 
-**The question the decision must actually answer.** The kept final-report row has **no reader** (§"The
-gap this proposal exposes", re-verified: `SubagentTranscript.tsx` reads the in-memory `useSubagents`
-store, never the DB). Keeping one row per child while nothing can display it re-commits the exact error
-ADR 0025 is being corrected for, 70× smaller. The decision must either **name the reader** it is shipping
-or planning (the parent's `SubagentDelegatingCard` rendering its child's final report), or **justify the
-row as provenance/audit only** and say out loud that it is not for display.
+**The question the decision must actually answer — ANSWERED, and the answer was "the report was wrong".**
+The claim that the kept final-report row has **no reader** (§"The gap this proposal exposes", and the
+re-verification above) is **false**. A child's final report is delivered to the parent as the `subagent`
+tool result and persisted in the **parent's own** stored display row — `payload_json.rawOutput.content[0].text`,
+which this change does not touch — and `ToolCallCard` renders `rawOutput` on expand (`ToolCallCard.tsx:31`,
+`:71-73`). Measured on the live DB: 1,102 `subagent` tool-call rows in main sessions carry a `rawOutput`,
+961 over 500 chars, max 212 KB; of the 2,449 children whose last display row is `agent-text`, 889
+(36.3%) match a parent's `rawOutput` on a 160-char prefix. So the row **does** have a reader, and is
+partly **redundant** with it. It is kept anyway for 23.4 MB (0.8%), because the 64% non-matching majority
+have not had their cause measured and the child's own last row is the only verbatim copy for those. See
+"Approved design" for the full resolution.
 
 **And the reviewer question the ADR should pre-empt:** `resume_native_session`
 (`src-tauri/src/agent/session/mod.rs`) has **no `is_subagent` guard** — verified, the function body never
