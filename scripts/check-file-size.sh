@@ -23,8 +23,10 @@
 # Drops blank lines, whole-line `//`, block-comment continuation lines starting
 # `*`, and lines starting `/*`. KNOWN LIMIT, pinned by a test: a JSX comment's
 # braces are NOT stripped, so `{/* … */}` counts as code. The bar is 1,000 code
-# lines and the largest PRODUCTION `.tsx` file here is 583
-# (`src/components/chat/MessageList.tsx`); since ADR 0112 the walk also reads `.tsx`
+# lines and the largest PRODUCTION `.tsx` file here is `MessageList.tsx` in
+# `src/components/chat/` at 583, re-measured at 2fb9a2a7 — a per-file figure, not one
+# of the walk counts, so it is stamped once here rather than tracked everywhere it is
+# quoted. Since ADR 0112 the walk also reads `.tsx`
 # TEST files, and the largest `.tsx` of ANY class is 2,128
 # (`src/components/settings/SettingsPage.test.tsx`), which sits in the TEST book
 # under the test gate. The limit still costs nothing today, on an argument different
@@ -32,7 +34,7 @@
 # 66-line `{/* … */}` block in `SubagentModals.tsx` is counted whole, and stripping
 # every JSX comment would take 139 lines off `SpacesList.tsx` — but it changes no
 # verdict, because no `.tsx` file of either class sits within its own over-count of a
-# threshold: the production class's largest is 583 against a 700 seed and a 1,000
+# threshold: the production class's largest is that same 583 against a 700 seed and a 1,000
 # gate, and all EIGHT ledgered test `.tsx` entries measure 0 JSX lines, so their
 # recorded figures are exact. Stated because an unlisted inaccuracy in a metric
 # becomes an argument later.
@@ -83,17 +85,29 @@
 #   NOT reproducible on the current tree. Neither is the 6,128-line figure quoted
 #   below for its test module, which is now a 13-code-line shell beside its own split.)
 #
-# THE COUNTS THAT FOLLOW, re-measured on this tree at 7a1a0f37 — the commit that
-# merged the `db` split in, so this is the first table stamped on a tree that actually
-# contains it (same instrument, now classified — `--update` remains the only
-# authoritative source). The table this one replaced carried beef4b27's figures, the
-# pre-merge branch tip: the new guard without the split, under prose that claimed the
-# current tree.
+# THE COUNTS THAT FOLLOW, re-measured on this tree at 2fb9a2a7 — the commit this table
+# is stamped against (same instrument, now classified — `--update` remains the only
+# authoritative source). THE STAMP IS NOT CEREMONY, IT IS THE POINT: this table moved
+# within a single PR. The row it replaces carried 7a1a0f37's figures — the commit that
+# merged the `db` split in, and the first table stamped on a tree that actually contains
+# it — and that table in turn replaced beef4b27's, the pre-merge branch tip: the new
+# guard without the split, under prose that claimed the current tree. Between 7a1a0f37
+# and 2fb9a2a7 the TEST class gained one file (`storage/db/tests/seams.rs`, 125 code
+# lines, under the 1,000 test seed so it correctly does not enter the ledger) and one of
+# its files crossed the 500 bar (`storage/db/tests/migrations.rs`, 490 -> 504). That is
+# one walked file and one over-500 file of drift inside one change, which is exactly why
+# no figure in this file is quoted without its commit any more. READ A MISMATCH BETWEEN
+# A STAMPED FIGURE AND YOUR OWN RE-MEASUREMENT AS "THIS WAS TRUE THEN", NOT AS "THIS IS
+# BROKEN NOW": re-run the walk this guard runs (`git ls-files -z -- src-tauri/src
+# src-tauri/tests src`, classified by `classify_file`, counted by `code_lines`) and the
+# difference is drift in the tree, not a defect in the argument. Nothing that runs at
+# check time reads these numbers — the refusals below compare `$n_walked` and
+# `$n_over_big`, measured fresh on every run.
 #
-#   class        walked   >200   >500   >700   >1000   >1500   >2000
+#   class        walked   >200   >500   >700   >1000   >1500   >2000      at 2fb9a2a7
 #   production     329     80     22     12       8       2       1
-#   test           254    134     64     36      19       8       4
-#   COMBINED       583    214     86     48      27      10       5
+#   test           255    134     65     36      19       8       4
+#   COMBINED       584    214     87     48      27      10       5
 #
 # The production row is the walk this script has always done. (ADR 0112 quotes 312
 # production files and this script's own earlier comment 298; both were measured at
@@ -119,20 +133,33 @@
 # 0 and 0 satisfies the gate, the ratchet and both floors at once — the floors ask
 # about the walk and about the other files, never about one file's unreadability.
 #
-# BOTH FLOORS MEASURE THE COMBINED WALK, BOTH CLASSES TOGETHER (583 today, 86 over
-# 500), and their VALUES are untouched by ADR 0112. What that choice buys, stated
-# plainly because the earlier sentence here argued the opposite and was wrong: the
-# combined walk is 583 against a floor of 250, and the TEST CLASS ALONE IS 254 — four
-# files above the floor, not below it. So the combined floor DETECTS A TOTAL BLACKOUT
-# (a walk that read nothing, or a pathspec that matches nothing) AND NOT A SINGLE-CLASS
-# ONE: drop either class from the walk entirely and the other still clears 250 on its
-# own, so a half-blind walk is green here. A class that reads nothing is caught
+# BOTH FLOORS MEASURE THE COMBINED WALK, BOTH CLASSES TOGETHER, and their VALUES are
+# untouched by ADR 0112: `FLOOR_FILES=250` and `FLOOR_OVER_BIG=1`, neither one re-tuned
+# when the walk grew from one class to two. What that choice buys, stated plainly because
+# the earlier sentence here argued the opposite and was wrong: the combined walk sits well
+# above a floor of 250, and EACH CLASS CLEARS THAT FLOOR ON ITS OWN — the test class by a
+# handful of files, the production class by a few dozen. So the combined floor DETECTS A
+# TOTAL BLACKOUT (a walk that read nothing, or a pathspec that matches nothing) AND NOT A
+# SINGLE-CLASS ONE: drop either class from the walk entirely and the other still clears 250
+# by itself, so a half-blind walk is green here. A class that reads nothing is caught
 # downstream by `print_class_positive_line`'s empty-measurement refusal, not by this
-# floor. The only shape that would catch the single-class regression AT THE FLOOR is a
-# per-class floor set WELL BELOW each class's current size — and that was NOT done
-# here, so read it as a known limit of this tripwire rather than as a protection it
-# provides. A 4-file margin cannot tell "this half is healthy" from "this half read
-# nothing", which is the whole question a floor is supposed to answer.
+# floor. The only shape that would catch the single-class blackout AT THE FLOOR is a
+# per-class floor set WELL BELOW each class's size, and that was deliberately NOT done
+# here — so a half-blind walk is a KNOWN LIMIT of this tripwire, not a case it covers.
+#
+# THE MARGIN IS STATED QUALITATIVELY ON PURPOSE, and that is a fix, not a softening: this
+# paragraph is the second time it has had to be re-worded because a number in it rotted.
+# The sentence it replaced carried the test class's exact head-count over the floor; that
+# figure moved by one file WITHIN ONE PR (a new 125-line mirror child landed), and it moves
+# again on the next test file anyone adds. A floor argument whose validity is pinned to
+# yesterday's head-count reads as a broken guard the moment the tree moves, which is worse
+# than no argument. What survives the drift is the SHAPE: each class sits only a few files
+# (test) to a few dozen (production) above the 250 floor, and both clear it, so neither can
+# substitute for the other and neither is what this floor is watching. The exact figures
+# are still given, stamped with the commit they were measured at — at 2fb9a2a7 the walk was
+# 584 files (329 production + 255 test) with 87 over 500 (22 production + 65 test) — but
+# they are PROVENANCE for that shape, not its premises. Re-measure them at your own commit
+# and expect a different number: that is the tree moving, not the argument failing.
 #
 # The VALUES stay combined and un-re-tuned, and that is the deliberate part: ADR
 # 0112's Consequences say so in as many words — "they ask about the walk, not about
@@ -200,25 +227,33 @@ TEST_HARD_GATE=1000     # the same bar, for the test class (ADR 0112)
 TEST_SEED_THRESHOLD=1000 # `--update` records TEST files above this — the same 1,000,
                          # so the ledger never holds a test entry the gate does not
                          # govern, and no test file is governed on the sly.
-# THE TWO FLOORS MEASURE THE COMBINED WALK — production AND test together, 583 files
-# and 86 over 500 today — and NEITHER VALUE was re-tuned when the walk grew from 319
-# to 583. They ask "did this metric read any file at all", which is a question about
-# the walk, not about one class, and that is exactly why their value stayed combined.
-# What they therefore CANNOT do is catch a walk that lost one class: 583 clears a 250
-# floor, and EACH class clears it alone (329 production, 254 test), so the floor
-# detects a TOTAL blackout and not a single-class one. The earlier sentence here said
-# a per-class floor "would REDDEN A HEALTHY TREE" because the test class was 243 files
-# — that was true of the tree at the ADR 0112 change and is FALSE of this one, where
-# the test class is 254, four files ABOVE the floor. Per-class floors set well below
-# each class's current size is the only shape that would catch the single-class
-# regression, and it was deliberately NOT done here (ADR 0112's Consequences forbid
-# re-tuning these values to the new denominator), so treat a half-blind walk as a
-# KNOWN LIMIT of this floor; the per-class positive-line refusal is what sees it.
+# THE TWO FLOORS MEASURE THE COMBINED WALK — production AND test together — and NEITHER
+# VALUE was re-tuned when the walk grew from a single class to two. They ask "did this
+# metric read any file at all", which is a question about the walk, not about one class,
+# and that is exactly why their value stayed combined. What they therefore CANNOT do is
+# catch a walk that lost one class: the combined walk clears a 250 floor comfortably, and
+# EACH class clears it alone, so the floor detects a TOTAL blackout and not a single-class
+# one. The earlier sentence here said a per-class floor "would REDDEN A HEALTHY TREE"
+# because the test class was 243 files — that was true of the tree at the ADR 0112 change
+# and is FALSE of the tree this file describes, where the test class sits ABOVE the floor.
+# Which is the reason the margin is now stated as a shape rather than as a number: the
+# exact head-count over the floor moved by one file inside one PR, so an argument carried
+# on that number rots on the next test file anyone adds. Measured at 2fb9a2a7 the walk was
+# 584 files, 329 production + 255 test, against FLOOR_FILES=250 — so BOTH classes clear
+# the floor, the test class by a handful of files and the production class by a few dozen,
+# and neither can stand in for the other. Per-class floors set well below each class's size
+# is the only shape that would catch the single-class regression, and it was deliberately
+# NOT done here (ADR 0112's Consequences forbid re-tuning these values to the new
+# denominator), so treat a half-blind walk as a KNOWN LIMIT of this floor; the per-class
+# positive-line refusal is what sees it.
 OVER_500_BAR=500
 FLOOR_FILES=250     # COMBINED classes, and read the paragraph above for what that
-                    # does and does not detect: either class alone (329 / 254) clears
-                    # it, so it catches a walk that read NOTHING and not one that read
-                    # only half the tree. Value deliberately unchanged.
+                    # does and does not detect: BOTH classes clear it on their own, so it
+                    # catches a walk that read NOTHING and not one that read only half the
+                    # tree. Value deliberately unchanged. (Clearance measured at 2fb9a2a7:
+                    # 329 production + 255 test against 250 — both above it, the test class
+                    # only slightly. Re-measure at your own commit; a different number there
+                    # is the tree moving, not this floor failing.)
 FLOOR_OVER_BIG=1
 
 # The baselines live next to the instrument, so the two cannot be edited apart.
@@ -333,7 +368,8 @@ walk_tracked_files() {
 
 # THE CLASSIFIER. Sets the global `CLASS` to `production` or `test` for one walked
 # path. (A global and not command substitution: this runs once per walked file, and
-# 583 forks to read four characters back would be the slowest thing in the script.)
+# a fork per walked file — several hundred, both classes together — to read four
+# characters back would be the slowest thing in the script.)
 #
 # THE RULE IS THE ONE THE WALK USED TO RETIRE ON, INVERTED, VERBATIM — a
 # `*.test.ts(x)` sibling, or anything under a directory named `tests`. Keeping the
@@ -416,7 +452,7 @@ class_seed_threshold() {
 # absent. Either way the run must not print the clean line — and that is as true of
 # the test class as of the production one. A run that found every test file under
 # its gate while the test ledger was simply MISSING would otherwise print the
-# positive line with 254 files ungoverned in silence, which is the state ADR 0112
+# positive line with the whole test class ungoverned in silence, which is the state ADR 0112
 # exists to end, arriving back as a green.
 #
 # Sets `baseline_present` (0/1) for the caller. `--update` is the generation route,
@@ -670,7 +706,7 @@ verdict_class() {
 # `production file(s) walked` is the PRODUCTION walked count, which is what the
 # harness's real-tree agreement pin compares against its own mirrored walk — and
 # the test line is appended after it, so nothing the existing harness asserts on
-# moves. A combined `583 file(s) walked` would have been the tidier sentence and
+# moves. A combined `N file(s) walked` would have been the tidier sentence and
 # would have broken that pin, which is a feature: the two classes have different
 # gates and different ledgers, so they report separately.
 #
@@ -799,9 +835,9 @@ run_guard() {
   #
   # ITS DENOMINATOR IS THE WHOLE WALK, BOTH CLASSES, and its VALUE is unchanged by
   # ADR 0112 (see THE NUMBERS). What that denominator can and cannot detect is stated
-  # there and not glossed here: 583 walked against a floor of 250, and EACH class
-  # alone clears 250 (329 production, 254 test), so this floor catches a walk that
-  # read NOTHING and NOT a walk that lost one class. A class that reads nothing is
+  # there and not glossed here: the combined walk clears a floor of 250 comfortably and
+  # EACH class clears it alone, so this floor catches a walk that read NOTHING and NOT a
+  # walk that lost one class. A class that reads nothing is
   # caught by `print_class_positive_line`'s empty-measurement refusal, and a per-class
   # floor is the shape that would catch it here — deliberately not done (see THE
   # NUMBERS; the values are not re-tuned to the new denominator).
@@ -815,7 +851,7 @@ run_guard() {
   # a fixture of two production files and no test files, so the corrected line still
   # reads exactly that there).
   if ((n_walked < FLOOR_FILES)); then
-    fail "the walk is BLIND: $n_prod_walked production file(s) walked under $root, floor is $FLOOR_FILES ($n_walked walked in both classes)" "the floor measures the WHOLE walk, both classes: production $n_prod_walked + test $n_test_walked = $n_walked. It asks whether this metric read any file at all, so it is NOT applied per class — and note that this means it detects a TOTAL blackout only: either class on its own (329 production, 254 test) clears this floor, so a walk that lost one class entirely is caught by the per-class positive-line refusal, not here" "a metric that read no file must not read as green (this tree holds 583 tracked .rs/.ts/.tsx files: 329 production + 254 test)" "check the walk's pathspecs against the tree: \`git ls-files -z -- src-tauri/src src-tauri/tests src\`"
+    fail "the walk is BLIND: $n_prod_walked production file(s) walked under $root, floor is $FLOOR_FILES ($n_walked walked in both classes)" "the floor measures the WHOLE walk, both classes: production $n_prod_walked + test $n_test_walked = $n_walked. It asks whether this metric read any file at all, so it is NOT applied per class — and note that this means it detects a TOTAL blackout only: BOTH classes clear this floor on their own (measured at 2fb9a2a7: 329 production + 255 test against a floor of 250), so a walk that lost one class entirely is caught by the per-class positive-line refusal, not here" "a metric that read no file must not read as green (the tree at 2fb9a2a7 held 584 tracked .rs/.ts/.tsx files: 329 production + 255 test — re-measure it, your tree may differ, and that is drift and not this refusal failing)" "check the walk's pathspecs against the tree: \`git ls-files -z -- src-tauri/src src-tauri/tests src\`"
   fi
 
   # Measure every walked file: `<count><TAB><path>`, into its class's file.
@@ -873,7 +909,7 @@ run_guard() {
   n_over_big="$(awk -F'\t' -v bar="$OVER_500_BAR" '$1 > bar { c++ } END { print c + 0 }' \
     "$tmp_dir/measured.production" "$tmp_dir/measured.test")"
   if ((n_over_big < FLOOR_OVER_BIG)); then
-    fail "the walk is BLIND: $n_over_big file(s) over $OVER_500_BAR code lines among $n_walked walked files, floor is $FLOOR_OVER_BIG" "this tree holds 86 such files across both classes (22 production, 64 test), so ZERO means the classifier stopped classifying (or the walk opened nothing) — either way this is not a green"
+    fail "the walk is BLIND: $n_over_big file(s) over $OVER_500_BAR code lines among $n_walked walked files, floor is $FLOOR_OVER_BIG" "the tree at 2fb9a2a7 held 87 such files across both classes (22 production, 65 test), so ZERO means the classifier stopped classifying (or the walk opened nothing) — either way this is not a green"
   fi
 
   # --- exemptions: validated, then applied ------------------------------------
@@ -1481,7 +1517,7 @@ run_self_test() {
   # against an independently mirrored walk; this is the same claim for the test line,
   # and the same defect class). Pointing the test class's largest-file sort at the
   # PRODUCTION measurements — `sort … measured.production` in the test call — prints
-  # a production path under the test label (`254 test file(s) walked, largest
+  # a production path under the test label (`N test file(s) walked, largest
   # …/naming.rs 2007`) and left BOTH suites green until this case existed, because
   # every other assertion asks about a count, a gate or a ledger and none of them
   # asks which FILE the test line names.
