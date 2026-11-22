@@ -432,14 +432,23 @@ Reproduces the 2026-11-14 last-row census exactly (2,447 children end on `agent-
 `tool-call`, 73 on `agent-thought`), so **keep `MAX(id)` per session and do NOT filter on
 `kind = 'agent-text'`** — a kind filter keeps *nothing* for the 6% that end on another kind.
 
-**7. New hazard, found in the write path: the display write is an UPSERT, so a prune can be undone.**
+**7. New hazard, found in the write path: the display write is an UPSERT, so a prune can be undone —
+and the row that comes back is mis-ordered.**
 `record_message` (`db/messages.rs:28`) and `record_messages_batch` (`:85`) both use
 `ON CONFLICT(session_id, kind, message_key) DO UPDATE SET payload_json = excluded.payload_json` — not
-an insert-if-absent. Display rows reach it through `BatchingPersistence`, which **buffers rows and
-flushes on an interval**. A prune that deletes a session's rows while its rows are still in that buffer
-will have them **re-inserted by the next flush**, resurrecting the transcript and silently undoing the
-reclaim. Any prune must therefore be gated on the buffer being empty for the target sessions (or run
-only when nothing is live). Not previously recorded anywhere.
+an insert-if-absent, but functionally an **upsert that inserts when the key is absent**, which is all
+resurrection needs. Display rows reach it through `BatchingPersistence`, which **buffers rows per slot
+and flushes on an interval**. A prune that deletes a session's rows while its slots are still in that
+buffer will have them **re-inserted by the next flush**. Three consequences, each worse than the last:
+  - the reclaim is silently undone;
+  - the resurrected row gets a **new, larger `rowid`**, and every read orders by `id`
+    (`messages_for` `:112` `ORDER BY id`; `messages_page` `:139`/`:159`) — so it reappears **at the END
+    of the transcript**, out of its original position. This is a correctness defect, not just a size one;
+  - because the `sessions` row is deliberately **kept**, the FK does **not** refuse the late insert. Had
+    the parent row been deleted, `PRAGMA foreign_keys` would reject it. Keeping the row is exactly what
+    makes this failure silent.
+  Any prune must therefore be gated on the batch buffer holding nothing for the target sessions (or run
+  only when nothing is live, which subsumes it). Not previously recorded anywhere.
 
 **8. An age bound alone is unsafe as a settle test — ADR 0055 says so.** ADR 0055 removed the absolute
 duration bound precisely because *"a Worker that deadlocks INSIDE a tool keeps an outstanding
@@ -551,6 +560,17 @@ Out of scope, deliberately: the `parent_session_id` column; a *reader* for the k
 2026-11-14 section proved none exists, so the 23.4 MB is kept for a future surface, not a current one);
 `agent-thought` retention in **main** sessions; `codemode`'s unbounded nested-call payload; the
 unbounded `read`-tool image path; the 481 MB WebKitCache; the 219 MB of stale pre-rename dirs.
+
+**Recording constraint for the design.** ADR 0025's justification is the parenthetical *"never archived,
+hidden from Space lists, inspectable in a debug view"* — and the rows were persisted precisely because
+they were *"previously discarded, which is why a 32-minute subagent's work was un-inspectable after the
+fact"*. **Deleting at 24 h re-creates that defect on a delay**, so the new decision must say what changed
+in the *argument*, not merely that the bytes are large. This repo's instrument for that is an
+`## Amendment (YYYY-MM-DD) — <scope>` section appended to the original file, opening by naming what still
+stands and stating *"This ADR is NOT superseded"* — 33 of 108 ADRs use it, and ADR 0025 already carries
+one (its 2026-10-18 crash-log amendment). `superseded-by:` in front matter is reserved for whole-decision
+replacement. `0117` is free (verified against the directory *and* `git log --all --diff-filter=A`; the
+sole duplicate is the pre-existing `0086`).
 
 ## Related
 
