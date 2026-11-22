@@ -3,7 +3,8 @@
 //! The premise every commit-counting test here rests on is that a `Db` opened
 //! over a real file runs in WAL, so a commit appends frames to the `-wal`
 //! sidecar and the sidecar's length is a COMMIT COUNTER. Task 2 established that
-//! instrument (`storage::db::tests::wal_frame_count`) and recorded why the two
+//! instrument (`storage::db::tests::support::wal_frame_count`) and recorded why
+//! the two
 //! `PRAGMA`-level candidates are NOT commit counters (`data_version` moved by 1
 //! for 12 autocommits; `total_changes` does not step back on a rollback). This
 //! module re-derives the counter locally instead of reaching into `db.rs`'s
@@ -1563,7 +1564,7 @@ async fn replace_refuses_its_atomic_rewrite_when_the_pre_flush_fails() {
 /// `Err` can only mean "withheld", and that half is pinned by a round-trip above;
 /// `Insert`'s proceed-past-it is not observable at all, and is pinned here.
 ///
-/// This is the same instrument the schema guards in `storage/db.rs`'s tests and
+/// This is the same instrument the schema guards in `storage/db/tests/` and
 /// `commands/update.rs::the_relaunch_path_drains_the_batch_before_it_exits` use, for
 /// the same stated reason: the alternative to a source pin is a comment, and a comment
 /// is exactly what was wrong here — the docs claimed `Insert` and `Replace` behaved

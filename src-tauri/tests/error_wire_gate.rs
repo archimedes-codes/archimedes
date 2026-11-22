@@ -7,12 +7,16 @@
 //! `scripts/file-size-baseline.txt`, and `scripts/check-file-size.sh` fails on
 //! `measured_count > baseline_count` — so that file may not gain ONE code line,
 //! and an inline `#[cfg(test)]` region counts toward that number. A pin written
-//! inside `errors.rs` reddens the ratchet. `walk_production_files` retires
-//! `*/tests/*`, which is why the gate lives here, in `src-tauri/tests/`, under
-//! the same rule that already retires every other file in this directory.
-//! (Known expiry: untracked `docs/decisions/0112-…` would give test sources
-//! their own class, gate and baseline at the same 1,000 lines. Placement is
-//! therefore correct-but-not-permanent, and recorded as such.)
+//! inside `errors.rs` reddens the ratchet, which is why the gate lives here, in
+//! `src-tauri/tests/`. **ADR 0112 superseded the other half of the reason this
+//! comment used to give** — the walk used to RETIRE `*/tests/*` entirely, and the
+//! function that did it carried a name saying so. Both are gone:
+//! the walk (`walk_tracked_files`) now classifies a test source as its own
+//! governed class, gated and seeded at 1,000 code lines against
+//! `scripts/file-size-baseline-test.txt`, so a gate placed in this directory is
+//! governed rather than invisible. Placement is therefore correct AND permanent:
+//! this file is under the test gate, `errors.rs` is not, and moving a pin the
+//! other way would still redden the production ratchet.
 //!
 //! # What this file adds over the pins already in `errors.rs`
 //!

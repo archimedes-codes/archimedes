@@ -780,9 +780,11 @@ fn space_methods_agree_on_the_canonical_key() {
 ///
 /// The two writers are deliberately different in shape, which is what makes
 /// the equality worth pinning: `record_session` stores the RAW
-/// `info.cwd.display()` (`src/storage/db.rs:317-325` — no canonicalization at
-/// all) while `upsert_space` stores `space_key()`'s RE-CANONICALIZED value
-/// (`:645` calling `:742-746`). They agree today only because production hands
+/// `info.cwd.display()` (`Db::record_session` in `src/storage/db/sessions.rs` —
+/// no canonicalization at all) while `upsert_space` stores `space_key()`'s
+/// RE-CANONICALIZED value (`Db::upsert_space` in `src/storage/db/spaces.rs`
+/// calling `space_key` in `src/storage/db/seams.rs`). They agree today only
+/// because production hands
 /// both an already-canonicalized cwd (`agent/session/mod.rs:1133` start,
 /// `:1156` resume).
 ///

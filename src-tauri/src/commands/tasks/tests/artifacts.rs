@@ -424,7 +424,7 @@ fn d2_ships_the_artifacts_block_and_the_verbs_that_answer_it_together() {
             "the launch block tells a Session which artifact keys its card has",
         ),
         (
-            format!("{manifest}/src/storage/db.rs"),
+            format!("{manifest}/src/storage/db/seams.rs"),
             "impl TaskStore for Db",
             "the desktop implements the crate's board seam on the `Db`",
         ),
@@ -517,8 +517,9 @@ fn the_comment_stripper_removes_prose_and_keeps_code() {
 
 /// Strip comments so a source-text pin reads CODE and not commentary.
 ///
-/// LINE comments go first and that order is load-bearing, not stylistic: `db.rs`
-/// documents a path as `docs/roadmap/*.md` inside a `///` comment, and `/*` there
+/// LINE comments go first and that order is load-bearing, not stylistic: the
+/// `TaskRow` doc in `storage/db/rows.rs` documents a path as `docs/roadmap/*.md`
+/// inside a `///` comment, and `/*` there
 /// would open a block that never closes — so a block-first stripper deletes the rest
 /// of the file and the pin fails for a reason that has nothing to do with the code.
 /// Dropping the `///` line first makes that `/*` vanish with it. The block pass then

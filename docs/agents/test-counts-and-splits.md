@@ -12,7 +12,10 @@ the time it was next read. Run the instrument; do not trust a number.
 
 **Any test COUNT is compiler-derived or it is wrong, and the two ways a grep
 disagrees point in opposite directions.** Measured on one file
-(`crates/fulcrum-core/src/worker/manager/tests/mod.rs`): a loose grep for
+(**external** — `crates/fulcrum-core/src/worker/manager/tests/mod.rs`, in the in-tree
+`fulcrum-core` crate before it was extracted to its own repo at **`820baf6b`** (2026-11-05); that path
+does not exist in this checkout and cannot be re-run here. The in-repo equivalent to take the three
+instruments to is `src-tauri/src/agent/session/tests/mod.rs`): a loose grep for
 `#[test` over-counted, an anchored `^\s*#\[test\]$` grep under-counted, and
 `cargo test -- --list` agreed with the exact-form attribute count. The loose grep
 over-counted because a doc comment mentioned the attribute in prose; the strict
@@ -57,6 +60,14 @@ from one file and not the other makes every name read as BOTH deleted and added
 
 ## Splitting a test region: by SUBJECT, not by line ratio
 
+**A test source is a GOVERNED SUBJECT, not blast radius.** `scripts/check-file-size.sh`
+walks test files as their own class, gated and seeded at **1,000 code lines** with
+their own ledger (`scripts/file-size-baseline-test.txt`) —
+`docs/decisions/0112-the-size-ratchet-governs-test-sources-as-their-own-class-gated-at-the-same-1000-code-lines.md`.
+That governs **size**; it does not change what decides a split, which is still the
+subject count below. A test file over 1,000 is a `--update` diff a reviewer sees,
+not on its own a thing to split.
+
 **One `describe` / one `#[cfg(test)]` module = one subject, and >~25 tests in one
 block is a tripwire to go find that boundary, not a number to satisfy.** The
 trigger is **subject count**: no single block may hold more than ~25
@@ -71,8 +82,13 @@ costs no new mocks.
 
 The shape that works is `mod tests;` + a `tests/` directory (e.g.
 `src/foo/tests/mod.rs`), **not** a `tests.rs` sibling —
-`find src-tauri/src -name 'tests.rs'` reports **0** sites. Locate the existing
-directory-shaped ones with `find src-tauri/src -type d -name tests`, which
+`find src-tauri/src -name 'tests.rs'` reports **0** sites. Once a production unit
+is split, the test tree **MIRRORS** it: one `tests/` child per production child,
+**same name**, `tests/mod.rs` stays a shell of `mod` declarations, and
+`tests/support.rs` is the only non-mirror child
+(`docs/decisions/0113-a-split-production-unit-gets-a-mirror-test-tree-one-tests-child-per-production-child.md`).
+Locate the existing directory-shaped ones with `find src-tauri/src -type d -name
+tests`, which
 currently prints `commands/files/tests`, `commands/tasks/tests`,
 `storage/db/tests`, `storage/batching/tests`, `agent/session/tests`. Do not trust
 that list over the command: it has been under-counted before (three were named
@@ -87,6 +103,14 @@ re-run. The judgement holds on its own terms: four files it lists (`errors.rs`,
 production bodies, so splitting them buys nothing. The deeper reason stands
 regardless — a **file-level** ratio cannot name a block, so it is blind to the
 hazard this rule exists to catch.
+
+**A ratio is a different instrument from an absolute per-file threshold, and it
+stays rejected.** What ADR 0112 introduced is the latter: one number, per file,
+per class, no comparison to anything else. It **does not revive the ratio**, it
+does not make "the test body is bigger than the production body" a trigger
+anywhere, and nothing in it licenses splitting a test region by ratio. Read the
+paragraph above as still in force, and read ADR 0112 as adding a size ratchet
+beside it rather than replacing this.
 
 ## Citing and measuring
 
@@ -140,10 +164,9 @@ whether a candidate crosses subjects.
   hover-action click swallowing, the Archived section's
   collapse/ordering/empty-state, unarchive, and the collapsed rail's marks and
   icons.
-- `src-tauri/src/storage/db/tests/mod.rs` — one flat module, no inner grouping,
-  over at least the sessions, tasks, spaces, board, artifacts and message-record
-  subjects. The same cautionary shape as `session/tests/mod.rs`: every table in
-  the schema shares one file.
+- ~~`src-tauri/src/storage/db/tests/mod.rs` — one flat module, no inner
+  grouping, over at least the sessions, tasks, spaces, board, artifacts and
+  message-record subjects.~~ **FIXED — see the section below the list.**
 - `src-tauri/src/agent/session/naming.rs`'s `#[cfg(test)] mod tests` — excerpt
   construction, quote/whitespace trimming, title capping (incl. multi-byte),
   reasoning-level forwarding, and composed-key resolution.
@@ -158,6 +181,37 @@ Candidates to inspect rather than assume (each reads as plausibly one subject or
 several — read the titles): `SidePane (the status panel)`,
 `MessageList scroll behavior`, `chatAttachments`. In Rust, `config.rs` is a
 Rust-side candidate by the same instrument.
+
+### Mirror status (ADR 0113) and the size class (ADR 0112), separated
+
+The three instruments are different and a unit can fail one and pass another, so
+they are named separately here — conflating them is how `storage/batching.rs` has
+been mis-cited as a mirror violation.
+
+- **`storage/db/tests/` — compliant, and it is the worked example.** Its
+  `tests/mod.rs` is a shell of `mod` declarations and nothing else, one
+  child per production sibling
+  (`db/tests/{artifacts,board,messages,migrations,open,rows,seams,sessions,spaces,
+  stages,tasks}.rs` plus `support.rs` as the only non-mirror child), mirroring the
+  ten-subject production split plus the `mod.rs` parent through `open.rs`.
+  Its largest child, `db/tests/sessions.rs`, is 1,086 code lines / 30
+  tests: **over** ADR 0112's test gate, so it is ledgered in
+  `scripts/file-size-baseline-test.txt`, and it is **not** a subject-count
+  violation — those 30 tests hold one subject (session persistence), which the
+  ~25 rule permits. Ledgered, not exempted: adding a line there is a `--update`
+  diff a reviewer sees.
+- **`agent/session/tests/` — still a violation, on both instruments.** One flat
+  `mod.rs`, 3,178 code lines (over the gate, ledgered) with zero inner `mod`
+  declarations, against production children `naming.rs`, `router.rs` and
+  `naming/prompt.rs`. It has its own card; it is not `db`'s fix to make.
+- **`storage/batching.rs` — a subject-count violation, NOT a mirror violation.**
+  One production file with one `tests/mod.rs`, so the mirror is trivially
+  satisfied; its 1,079 test code lines over ~30 test attributes are the subject
+  count problem and a governed size. Do not cite it as a mirror failure.
+- **`agent/session/naming.rs`'s inline `#[cfg(test)] mod tests`** is the shape
+  ADR 0112 exists to make visible: 1,680 of that file's 2,007 code lines are the
+  inline region, so it is governed **wherever it sits** — inline today, and if it
+  were relocated it would be caught by the test gate instead.
 
 ## Historic, and deliberately unreproducible
 
@@ -177,9 +231,10 @@ printed it against the pre-fix tree prints nothing against HEAD.
   a brace counter now print nothing against the current file, and `grep -n
   '^describe(' src/components/ChatStream.test.tsx` finds no
   `describe("ChatStream",` at all. Reproduces only against `6690966d^`.
-- `describe("SpacesList")` in `src/components/SpacesList.test.tsx`: 37 `it(`,
-  now 16 — the Agents-modal cluster left for `SpacesList.agents.test.tsx` in
-  **`650bfe55`**.
+- `describe("SpacesList")` in `src/components/SpacesList.test.tsx`: 37 `it(` before the
+  Agents-modal cluster left for `SpacesList.agents.test.tsx` in **`650bfe55`**. No "now" figure is
+  recorded, because this file records no totals on purpose — the cluster's departure is the claim, the
+  residual count is yours to re-run.
 - `mod session_tests` in `src-tauri/src/agent/session/mod.rs`: 71 test
   attributes. That module **no longer exists anywhere**; **`936dcafe`** moved it
   to `src-tauri/src/agent/session/tests/mod.rs`. Its anchors

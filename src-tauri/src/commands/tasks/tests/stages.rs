@@ -323,15 +323,22 @@ fn the_relocation_does_not_call_move_task() {
     );
     // The relocation lives in storage, where the bypass of the Strict gate costs
     // nothing — the reason the gate is in `Db::move_task` and not here.
-    let db_source = include_str!("../../../storage/db.rs");
+    let db_source = include_str!("../../../storage/db/stages.rs");
     let delete_body = {
         let start = db_source
             .find("pub fn delete_stage(")
-            .expect("delete_stage is defined in db.rs");
+            .expect("delete_stage is defined in db/stages.rs");
         let rest = &db_source[start..];
+        // The body ends at the first line that is exactly `    }` — the close of
+        // the method. It used to end at the NEXT method's doc line, which worked
+        // only because `set_board_strict` happened to follow `delete_stage` in the
+        // single `db.rs`; the ADR 0113 split made `delete_stage` the LAST method in
+        // its own `impl Db` block, so the next thing is the `impl`'s own brace.
+        // The method's own indentation is therefore the delimiter, and it is
+        // subject-independent: no future reordering can move it.
         let end = rest
-            .find("\n    /// The Strict-workflow toggle")
-            .expect("the next method delimits the body");
+            .find("\n    }")
+            .expect("the method's closing brace delimits the body");
         &rest[..end]
     };
     assert!(

@@ -135,8 +135,9 @@ builds, and the Linux DMABUF variables — is `README.md`'s `## Releasing`.
   panic may have left genuinely unusable. **Both existing behaviours are
   correct and must not change.** The session registry recovers (see the comment
   block above its per-session state accessors in
-  `src-tauri/src/agent/session/mod.rs`); `src-tauri/src/storage/db.rs` panics,
-  because `Db` holds ONE `rusqlite::Connection` and a panic mid-transaction can
+  `src-tauri/src/agent/session/mod.rs`); the `storage/db/` unit panics — at 52
+  sites across the seven subject siblings that hold a `Db` verb — because `Db`
+  holds ONE `rusqlite::Connection` and a panic mid-transaction can
   leave that single connection unusable. **Any NEW panic-on-poison site must
   carry a one-line rationale for why its resource is single and shared** —
   `record_messages_batch` is the in-repo example. The census, the per-file
@@ -147,14 +148,26 @@ builds, and the Linux DMABUF variables — is `README.md`'s `## Releasing`.
   kind: no `describe` / `#[cfg(test)]` block may hold more than ~25 unrelated
   tests, a 40-test block over one subject is fine and a 20-test block spanning two
   subjects is already wrong (`docs/agents/test-counts-and-splits.md`). **Raw code
-  line size is a look-at signal at 1,000 production code lines**, enforced as a
-  *ratchet* by `scripts/check-file-size.sh`: a file crossing 1,000 needs an entry
-  in `scripts/file-size-baseline.txt`, and a baselined file may not grow by even
+  line size is a look-at signal at 1,000 code lines**, enforced as a *ratchet* by
+  `scripts/check-file-size.sh`, which walks **two classes**, each with its own gate,
+  seed threshold and ledger: **production** (gate 1,000, seed 700,
+  `scripts/file-size-baseline.txt`) and **test** (gate *and* seed 1,000,
+  `scripts/file-size-baseline-test.txt`). No test source is excluded any more, so a
+  test region is governed **wherever it lives** — inline, moved into `foo/tests/`,
+  or a `*.test.ts(x)` sibling. A baselined file may not grow by even
   one code line — a rise is a `--update` diff a reviewer sees, never a threshold
-  someone edits. The instrument is **code lines** (comments and blanks stripped,
-  an inline `#[cfg(test)] mod tests` **counted**, because a ratchet that cut at
-  `#[cfg(test)]` could be satisfied by moving code into the test module), and the
-  command to re-measure any file is `bash scripts/check-file-size.sh`. **Size is
+  someone edits. **The test-class gate is what closes the relocation dodge, not the
+  inline count.** The inline `#[cfg(test)] mod tests` is still counted for a
+  different reason — a file cannot shed lines into its own test module to shrink —
+  and it does *not* catch relocating a region **smaller** than 1,000, which is where
+  `errors.rs` sits. Two ADRs in `docs/decisions/`, by filename:
+  `0112-the-size-ratchet-governs-test-sources-as-their-own-class-gated-at-the-same-1000-code-lines.md`
+  records that boundary, and
+  `0113-a-split-production-unit-gets-a-mirror-test-tree-one-tests-child-per-production-child.md`
+  supplies the MIRROR naming rule a split follows. The instrument is **code lines**
+  (comments and blanks stripped, an inline test module **counted**) and
+  `bash scripts/check-file-size.sh` re-measures any file — it reads **both** ledgers
+  and prints one positive line per class, so check both. **Size is
   NOT a defect predictor here, and this bullet must not be read as "big files are
   buggy".** Measured in this repo: fix density by size band is **non-monotonic**
   (600–1000 is the worst band at 2.61 fixes/kLOC, 1000+ is *better* at 1.79), the

@@ -63,6 +63,11 @@ trap 'rm -rf "$tmp_root"' EXIT
 # outside this suite must not be able to hide a write this suite made, nor fake a
 # red this suite did not earn.
 baseline_pre_hash="$(cksum "$repo_root/scripts/file-size-baseline.txt" 2>/dev/null || true)"
+# The SECOND BOOK gets the same guard for the same reason, and it matters MORE here:
+# the test ledger is new in this change, so a `--update` over the real tree added for
+# the new class would be a brand-new way for this suite to rewrite the input it is
+# testing, in a file nobody has yet learned to watch.
+baseline_test_pre_hash="$(cksum "$repo_root/scripts/file-size-baseline-test.txt" 2>/dev/null || true)"
 
 # Runs the script under test, capturing exit status and merged output. The
 # `|| status=$?` is what keeps `set -e` from aborting the driver on the exits
@@ -107,6 +112,25 @@ assert_not_contains() {
     echo "       actual output:           $haystack"
     failures=$((failures + 1))
   fi
+}
+
+# THE OTHER INSTRUMENT: the census variant, which stops at the first
+# `#[cfg(test)]` line. This is what the plan's census measured, and what a ratchet
+# built on it would have recorded. It lives here so the pins can ask "could a cutting
+# instrument have written this ledger?" of the real checkout, which is the only
+# question that tells the two instruments apart at all.
+#
+# DEFINED UP HERE rather than beside the real-tree pins that use it, because bash
+# binds a call to a function defined EARLIER in the file: case 13d cross-checks the
+# guard's new production/inline-test split against this instrument, and a helper
+# defined 400 lines below that case would be a `command not found` wearing the clothes
+# of an assertion. Case 18b's uses are unaffected — they run after this point either
+# way.
+instrument_cut_lines() {
+  local file="$1" n
+  n="$(awk '/#\[cfg\(test)\]/{exit} {print}' "$file" |
+    grep -vcE '^[[:space:]]*(//|\*|/\*|$)' || true)"
+  printf '%s\n' "${n:-0}"
 }
 
 # The baseline line for a path, or empty. Tab-separated `<count>\t<path>`, read
@@ -166,13 +190,19 @@ fixture() {
     printf 'export const v%s = %s;\n' "$i" "$i" >"$root/src/f$i.ts"
   done
   # 600 code lines: clears the "at least one file over 500" floor (the real tree
-  # has 27 such files) and stays under the 700 seed threshold and the 1,000 gate,
-  # so it is inert for every case that is not about the floors.
+  # has 87 such files at 2fb9a2a7, 22 production + 65 test — re-measure it, your
+  # tree may differ) and stays under the 700 seed threshold and the 1,000 gate, so
+  # it is inert for every case that is not about the floors.
   emit_code 600 'export const b' >"$root/src/big.ts"
   printf 'export const scene = 1;\n' >"$root/src/lib/archimedes-film/scene.ts"
   printf 'export const palette = 1;\n' >"$root/src/lib/palettes/everforest.ts"
-  # Header-only baseline: nothing grandfathered, which is the state case 1 needs.
+  # Header-only baselines, BOTH classes: nothing grandfathered, which is the state
+  # case 1 needs. The test ledger is here from the first fixture because ADR 0112
+  # made a missing ledger an UNCHECKED run for EITHER class — a fixture that shipped
+  # only the production one would report the missing test ledger on every case, and
+  # every planted red below would be that absence rather than the plant.
   printf '# fixture baseline\n' >"$root/scripts/file-size-baseline.txt"
+  printf '# fixture baseline\n' >"$root/scripts/file-size-baseline-test.txt"
   git -C "$root" init -q
   git -C "$root" add -A
 }
@@ -181,7 +211,10 @@ fixture() {
 # the counts and the floors are identical — ONLY the path lengths differ, and that
 # difference is what makes the SIGPIPE race in the guard's success line visible.
 # The race depends on how many bytes `sort` still has left to write when the reader
-# downstream of it closes the pipe, so `measured_file`'s SIZE is the dial: the
+# downstream of it closes the pipe, so the per-class `measured.<class>` ROW FILE's
+# SIZE is the dial (before ADR 0112 it was the single `measured_file`; the guard now
+# writes one row file per class and this fixture's test class is empty, so the dial
+# is `measured.production`): the
 # short-path fixture gives ~3 KB of sort output and fires 0 times in 40 runs
 # against the buggy pipeline (it is blind to the defect), this one gives ~62 KB and
 # fires 20 times in 20. Padded to 240 and not longer, to stay under the 255-byte
@@ -356,8 +389,10 @@ assert_contains "and the floor it fell short of" "floor is 250" "$output"
 assert_not_contains "and a blind walk is never reported as green" "file sizes within baseline" "$output"
 
 # 8b. THE SECOND FLOOR ARM: enough files, but nothing over 500 code lines. The
-#     real tree has 27 such files, so a walk that finds ZERO is a classifier that
-#     stopped classifying — or a tree it never read. Both must redden.
+#     real tree has 87 such files at 2fb9a2a7 (22 production, 65 test — re-measure
+#     it, your tree may differ), so a walk that finds ZERO is a classifier that
+#     stopped classifying — or a tree it never read.
+#     Both must redden.
 fixture no_big_files
 rm "$root/src/big.ts"
 git -C "$root" add -A
@@ -618,6 +653,59 @@ run_check "$root" --update
 after="$(baseline_count "$root/scripts/file-size-baseline.txt" 'src-tauri/src/dodge.rs')"
 assert_eq "and the re-measured figure is unchanged (the dodge buys nothing)" "713" "$after"
 
+# 13d. ADR 0112'S REPORTING CONSEQUENCE: a flagged PRODUCTION file with an inline
+#      `#[cfg(test)]` region names which of its two subjects it is complaining about —
+#      `N code lines (production P + inline tests I)`. This is DISPLAY, not a second
+#      instrument, and the assertions below are what keep it that way:
+#
+#   - the run is still RED on the whole-file figure, so the split cannot become a cut
+#     a file satisfies by moving code into its test module (case 13's argument,
+#     restated against the message this split could have been misused to introduce);
+#   - a production file with NO inline region carries no split at all, so the
+#     sentence every pre-ADR-0112 case pins stays byte-identical for the ordinary case;
+#   - a TEST file's violation carries no split either — its whole body IS its subject.
+#
+# THE CUT HALF IS CROSS-CHECKED against `instrument_cut_lines`, the harness's mirror
+# of the census instrument, so a split that drifted from the instrument the plan's
+# figures were taken with shows up here instead of in an argument. That function is
+# DEFINED above the cases for exactly this reason: bash binds a call to a function
+# already defined, and a helper defined 300 lines below the case that calls it is a
+# `command not found` wearing the clothes of an assertion.
+fixture inline_split_reported
+{
+  emit_code 1000 'const p'
+  printf '#[cfg(test)]\n'
+  printf 'mod tests {\n'
+  emit_code 8 '    const t'
+  printf '}\n'
+} >"$root/src-tauri/src/splitreport.rs"   # 1000 + 11 = 1011 whole-file, 1000 under a cut
+git -C "$root" add -A
+run_check "$root"
+assert_contains "a flagged production file reports its production/inline-test split" \
+  "src-tauri/src/splitreport.rs: 1011 code lines (production 1000 + inline tests 11)" "$output"
+assert_eq "and the production half equals what the cfg(test)-cut instrument measures" "1000" \
+  "$(instrument_cut_lines "$root/src-tauri/src/splitreport.rs")"
+assert_eq "and the run is still red on the whole-file figure (the split does not become the measurement)" \
+  "1" "$status"
+
+# ... AND NO SPLIT FOR A FILE WITH NO INLINE REGION: the sentence is the one every
+# pre-ADR-0112 case pins, unchanged.
+fixture inline_split_absent
+emit_code 1001 'const p' >"$root/src-tauri/src/plainsplit.rs"
+git -C "$root" add -A
+run_check "$root"
+assert_eq "a production file with no inline #[cfg(test)] region is refused" "1" "$status"
+assert_contains "and its message is the original sentence, unchanged" \
+  "src-tauri/src/plainsplit.rs: 1001 code lines — over the 1000-line hard gate with no baseline entry" "$output"
+# A TEST file's own violation carries no split either: its whole body IS its subject.
+mkdir -p "$root/src/lib/tests"
+emit_code 1001 '    const t' >"$root/src/lib/tests/splitless.rs"
+git -C "$root" add -A
+run_check "$root"
+assert_eq "and a test-class violation is refused" "1" "$status"
+assert_contains "with no production/inline split on it" \
+  "src/lib/tests/splitless.rs: 1001 code lines — over the 1000-line hard gate with no baseline entry" "$output"
+
 # 14. THE EXEMPTIONS HAVE TEETH, IN BOTH DIRECTIONS. An exempt file is not seeded
 #     and may grow freely — that is ALL an exemption buys, since none of the
 #     exempt files is anywhere near the gate — but the hard 1,000 gate still
@@ -666,19 +754,36 @@ assert_eq "an exemption with no cited reason on its line exits 1" "1" "$status"
 assert_contains "and the refusal says a reason is required" "reason" "$output"
 assert_not_contains "and a reasonless exemption is never reported as green" "file sizes within baseline" "$output"
 
-# 15. THE PRODUCTION SCOPE. `*.test.ts(x)` and anything under a `tests/` directory
-#     are not production, and a 1,100-line test file is not a size violation.
-#     Inline `mod tests` IS production (case 13); a directory named `tests` is not.
-fixture scope_excludes
+# 15. THE TEST CLASS IS IN SCOPE. THIS CASE IS INVERTED FROM THE ONE IT REPLACES,
+#     DELIBERATELY, AND HERE IS WHY.
+#
+#     It used to assert the OPPOSITE: that a `tests/` file and two `*.test.ts(x)`
+#     files at 1,100 code lines exited 0 and were not named, under the header "THE
+#     PRODUCTION SCOPE". That was the contract ADR 0112 was written to end — the
+#     guard retired 243 test sources while flagging a production file for the inline
+#     test region inside it, which made relocating a test region a free dodge on both
+#     sides of the arithmetic. The plan's instruction to keep every existing case
+#     green is therefore UNSATISFIABLE for this one case: a case that pins the
+#     discarded contract and a case that pins the new one are contradictory, and the
+#     new one wins. What survives the rewrite unchanged is the case's real job —
+#     naming which files the walk takes as its own — and 15b, which pins that the
+#     scope is no WIDER than the two roots, still holds and is untouched.
+#
+#     Inline `mod tests` IS production (case 13); a directory named `tests` is a TEST.
+fixture scope_includes_test_sources
 mkdir -p "$root/src-tauri/src/agent/tests"
 emit_code 1100 'const p' >"$root/src-tauri/src/agent/tests/module.rs"
 emit_code 1100 'export const x' >"$root/src/lib/Big.test.ts"
 emit_code 1100 'export const x' >"$root/src/lib/Big.test.tsx"
 git -C "$root" add -A
 run_check "$root"
-assert_eq "a tests/ file and *.test.ts(x) over 1,000 lines are out of scope" "0" "$status"
-assert_not_contains "the tests/ file is not named" "src-tauri/src/agent/tests/module.rs" "$output"
-assert_not_contains "neither is the *.test.ts file" "src/lib/Big.test.ts" "$output"
+assert_eq "a tests/ file and *.test.ts(x) over 1,000 code lines are IN scope and refused" "1" "$status"
+assert_contains "the tests/ file is named" "src-tauri/src/agent/tests/module.rs" "$output"
+assert_contains "so is the *.test.ts file" "src/lib/Big.test.ts" "$output"
+assert_contains "and so is the *.test.tsx file" "src/lib/Big.test.tsx" "$output"
+# All three at once: the run reports every offence in both classes rather than
+# stopping at the first, so a single red tells the whole story.
+assert_contains "and the refusal counts all three" "3 file(s) broke the size ratchet" "$output"
 
 # 15b. And the scope is not accidentally WIDER than the two production roots.
 fixture scope_outside
@@ -702,6 +807,138 @@ git -C "$root" add -A
 run_check "$root"
 assert_eq "a depth-1 file under src-tauri/src is walked (git's ** needs a slash)" "1" "$status"
 assert_contains "and named" "src-tauri/src/toplevel.rs" "$output"
+
+# 15d. A TEST SOURCE IS ITS OWN WALKED CLASS, GATED AT THE SAME 1,000 (ADR 0112).
+#
+# WHY THIS CASE EXISTS, AND WHY THE SEED IS THE SAME NUMBER AS THE GATE.
+#
+# The classifier retires a file from the PRODUCTION class on two conditions: a
+# `*.test.ts`/`*.test.tsx` name, or a path segment `tests/`. Those two conditions
+# used to be a DISCARD, so the largest file in the repository at the time this
+# decision was taken — `src-tauri/src/storage/db/tests/mod.rs`, 6,128 code lines —
+# was walked by nothing, while `agent/session/naming.rs` was flagged for the 1,680
+# lines of its INLINE `#[cfg(test)]` region. Moving a test region out of a file was
+# therefore a free dodge, and it was free on BOTH sides: at the predecessor report's
+# 2,000-line threshold, relocating naming.rs's region left the file at 327 AND put
+# the region under a gate it could never reach. 1,000 is the number that closes
+# exactly that arithmetic, and the test class is SEEDED at 1,000 as well so the
+# ledger never records a test file the gate does not govern.
+#
+# THE FIXTURE IS THE DODGE, SPARED ONLY BY THE GATE. Nothing else in this fixture is
+# over any bar — the production file sits at 200 — so the only thing that can redden
+# this run is the test file, and the run cannot be attributed to the production class.
+fixture test_class_gate
+mkdir -p "$root/src-tauri/src/storage/db/tests"
+emit_code 1050 '    const t' >"$root/src-tauri/src/storage/db/tests/mod.rs" # 1,050 test code lines
+emit_code 200  'const p'     >"$root/src-tauri/src/tiny.rs"                 # 200 production code lines
+git -C "$root" add -A
+run_check "$root"
+assert_eq "a test source over 1,000 code lines is refused" "1" "$status"
+# The class header is what makes this attributable to the TEST class and not to a
+# production complaint: it names the class, its own gate and its own ledger.
+assert_contains "and the refusal says which class it is complaining about" \
+  "test class — gate 1000, ledger scripts/file-size-baseline-test.txt:" "$output"
+assert_contains "and names the test source at its own figure" \
+  "src-tauri/src/storage/db/tests/mod.rs: 1050 code lines — over the 1000-line hard gate with no baseline entry" "$output"
+# The production file in the same run is NOT the reason this run failed. Asserting
+# its absence is what makes the plant above attributable to the test class alone.
+assert_eq "and the 200-line production file in the same run is not named" "" \
+  "$(printf '%s\n' "$output" | grep -F 'src-tauri/src/tiny.rs' || true)"
+
+# ... AND THE CLASS IS A GATE, NOT A BAN: the same file well under 1,000 is green, so
+# the assertion above cannot be satisfied by a blanket refusal of anything living
+# under a `tests/` directory.
+emit_code 900 '    const t' >"$root/src-tauri/src/storage/db/tests/mod.rs" # 900 test code lines
+git -C "$root" add -A
+run_check "$root"
+assert_eq "and a 900-code-line test source is green (1,000 is the bar, not the presence of a test)" \
+  "0" "$status"
+assert_not_contains "and the green run reports no violation at all" "broke the size ratchet" "$output"
+
+# 15e. THE TEST CLASS IS ITS OWN CLASS IN BOTH DIRECTIONS: it has its OWN ledger, so
+#      a test file cannot shelter under a production entry and a production file
+#      cannot be flagged by a test entry. `--update` seeds the test ledger at the test
+#      class's own 1,000 threshold — a 900-line test file is walked, governed, and NOT
+#      recorded, which is the one visible difference between the two classes.
+fixture test_class_ledger
+mkdir -p "$root/src-tauri/src/agent/tests" "$root/src/hooks/tests"
+emit_code 1100 '    const t' >"$root/src-tauri/src/agent/tests/module.rs" # 1,100 test code lines
+emit_code 900  '    const u' >"$root/src/hooks/tests/quiet.test.ts"        # 900 test code lines
+emit_code 800  'const p'     >"$root/src-tauri/src/seeded.rs"             # 800 production code lines
+git -C "$root" add -A
+run_check "$root"
+assert_eq "a 1,100-code-line test source is refused with the ledger absent (missing is UNCHECKED, not free)" \
+  "1" "$status"
+assert_contains "and it is refused against the TEST ledger, not waved through" \
+  "test class — gate 1000, ledger scripts/file-size-baseline-test.txt:" "$output"
+assert_contains "naming the file at its figure" \
+  "src-tauri/src/agent/tests/module.rs: 1100 code lines — over the 1000-line hard gate with no baseline entry" "$output"
+
+run_check "$root" --update
+assert_eq "seeding the test class exits 0 once every file is under its own limit" "0" "$status"
+assert_eq "the production ledger records the 800-line production file (over its 700 seed threshold)" "800" \
+  "$(baseline_count "$root/scripts/file-size-baseline.txt" 'src-tauri/src/seeded.rs')"
+assert_eq "the test ledger records the 1,100-line test file (over its 1,000 seed threshold)" "1100" \
+  "$(baseline_count "$root/scripts/file-size-baseline-test.txt" 'src-tauri/src/agent/tests/module.rs')"
+assert_eq "and the test ledger holds no entry for the 900-line test file (the test class seeds at 1,000, not 700)" "" \
+  "$(baseline_count "$root/scripts/file-size-baseline-test.txt" 'src/hooks/tests/quiet.test.ts')"
+# THE TWO LEDGERS ARE DISJOINT, and the classifier is spelled here the way the guard
+# spells it: a `tests/` DIRECTORY is a path CONTAINING `/tests/`, and a `.test.ts(x)`
+# is a SUFFIX. Anchoring both arms at `$` (as this needle first did) makes
+# `foo/tests/mod.rs` look like a production path and turns the first assertion below
+# into a green that cannot fire — the same "confident green built on a search that
+# could not match" the guard itself refuses.
+assert_eq "and no test path leaked into the production ledger" "" \
+  "$(awk -F'\t' '!/^#/ && NF == 2 { print $2 }' "$root/scripts/file-size-baseline.txt" |
+     grep -E '(/tests/|\.test\.tsx?$)' || true)"
+assert_eq "and no production path leaked into the test ledger" "" \
+  "$(awk -F'\t' '!/^#/ && NF == 2 { print $2 }' "$root/scripts/file-size-baseline-test.txt" |
+     grep -vE '(/tests/|\.test\.tsx?$)' || true)"
+# Two ledgers, one format: the ledger line format is unchanged in shape, so the class
+# must never appear as a third column in either file.
+assert_eq "and neither ledger grew a third field" "" \
+  "$(awk -F'\t' '!/^#/ && NF > 2 { print FILENAME ": " NF " fields" }' \
+     "$root/scripts/file-size-baseline.txt" "$root/scripts/file-size-baseline-test.txt")"
+
+# A LEDGER THAT ONLY EXISTS FOR ONE CLASS IS NOT A CLEAN RUN. A check that found
+# every test file under its gate while the test ledger was simply ABSENT would print
+# the positive line with the whole class ungoverned in silence — the state ADR 0112
+# exists to end, arriving back as a green. Both classes get the missing-is-UNCHECKED
+# treatment the production class has always had.
+cp "$root/scripts/file-size-baseline-test.txt" "$root/test-ledger.tmp"
+rm "$root/scripts/file-size-baseline-test.txt"
+run_check "$root"
+assert_eq "a plain check with no test ledger refuses rather than reporting a clean tree" "1" "$status"
+assert_contains "naming the test ledger as the missing one, and saying how to make one" \
+  "the baseline file is missing or unreadable: scripts/file-size-baseline-test.txt" "$output"
+mv "$root/test-ledger.tmp" "$root/scripts/file-size-baseline-test.txt"
+# The same refusal, from the other direction, for the class that always had it. The
+# ledger is moved aside and put BACK rather than deleted, because the case below this
+# one needs a tree with both ledgers present — a red here must not be the absence
+# this absence is pinning.
+cp "$root/scripts/file-size-baseline.txt" "$root/prod-ledger.tmp"
+rm "$root/scripts/file-size-baseline.txt"
+run_check "$root"
+assert_eq "and the same holds for the production ledger (both classes get the same treatment)" "1" "$status"
+assert_contains "naming the production ledger as the missing one" \
+  "the baseline file is missing or unreadable: scripts/file-size-baseline.txt" "$output"
+assert_contains "and pointing at --update" "--update" "$output"
+assert_not_contains "and never printing the clean line" "file sizes within baseline" "$output"
+mv "$root/prod-ledger.tmp" "$root/scripts/file-size-baseline.txt"
+
+# ... and the class SEPARATES the two verdicts: a test file over its entry is named
+# while the production class is entirely clean, and the production largest is
+# reported from the production class alone and never from a test file.
+emit_code 1300 '    const t' >"$root/src-tauri/src/agent/tests/module.rs"
+git -C "$root" add -A
+run_check "$root"
+assert_eq "a test file grown past 1,000 over its own entry is refused" "1" "$status"
+assert_contains "naming the test file and its ratchet figure" \
+  "src-tauri/src/agent/tests/module.rs: 1300 > baseline 1100" "$output"
+assert_contains "and the class that ledger belongs to" \
+  "test class — gate 1000, ledger scripts/file-size-baseline-test.txt:" "$output"
+assert_eq "and no PRODUCTION file is named on a run whose only offence is a test file" "" \
+  "$(printf '%s\n' "$output" | grep -F 'src-tauri/src/seeded.rs' || true)"
 
 # 16. THE POSITIVE LINE, checkable: the count walked plus the largest file by
 #     path and number (the sibling prints `versions match: X.Y.Z`).
@@ -780,18 +1017,36 @@ assert_eq "the real tree is green against its committed baseline" "0" "$status"
 assert_contains "and it walked the production tree" "production file(s) walked" "$output"
 
 # --- helpers for the real-tree cases 18b-18e ------------------------------
-# The instrument's own walk, mirrored: same pathspecs, same extensions, same two
-# exclusions. Duplicated deliberately rather than shelling out to the guard, so
-# the predicates below can ask the walk a question the guard never asks. Case 18e
-# asserts this mirror's COUNT against the guard's own positive line, which is what
-# turns a drift between the two into a red instead of a silently un-pinned pin.
+# The instrument's own walk, mirrored: same pathspecs, same extensions, same
+# classifier. Duplicated deliberately rather than shelling out to the guard, so the
+# predicates below can ask the walk a question the guard never asks. Case 18e asserts
+# this mirror's COUNT against the guard's own positive line, which is what turns a
+# drift between the two into a red instead of a silently un-pinned pin.
+#
+# THE SECOND ARGUMENT IS THE CLASS, and the default is `production` — the shape every
+# pre-ADR-0111 caller in this file uses, so those pins keep asking the question they
+# always asked. `all` walks everything the guard walks; `test` is the new class.
+# `classify_walked_path` is the guard's rule verbatim, and it is defined ONCE here so
+# a mirror that drifted from the guard would drift in one place and show up in the
+# count-agreement pin at the end of 18e.
+classify_walked_path() {
+  local rel="$1"
+  case "$rel" in
+    *.test.ts | *.test.tsx) printf 'test\n'; return ;;
+  esac
+  case "/$rel" in
+    */tests/*) printf 'test\n'; return ;;
+  esac
+  printf 'production\n'
+}
+
 ledger_walk_paths() {
-  local r="$1" rel
+  local r="$1" want="${2:-production}" rel cls
   git -C "$r" ls-files -z -- src-tauri/src src-tauri/tests src |
     while IFS= read -r -d '' rel; do
       case "$rel" in *.rs) ;; *.ts | *.tsx) ;; *) continue ;; esac
-      case "$rel" in *.test.ts | *.test.tsx) continue ;; esac
-      case "/$rel" in */tests/*) continue ;; esac
+      cls="$(classify_walked_path "$rel")"
+      [[ "$want" == all || "$cls" == "$want" ]] || continue
       printf '%s\n' "$rel"
     done
 }
@@ -800,27 +1055,21 @@ ledger_walk_paths() {
 # `sort` invocations below are the SAME sort and break a tie the same way.
 TABS="$(printf '\t')"
 
-# THE OTHER INSTRUMENT: the census variant, which stops at the first
-# `#[cfg(test)]` line. This is what the plan's census measured, and what a ratchet
-# built on it would have recorded. It lives here so the pins below can ask "could
-# a cutting instrument have written this ledger?" of the real checkout, which is
-# the only question that tells the two instruments apart at all.
-instrument_cut_lines() {
-  local file="$1" n
-  n="$(awk '/#\[cfg\(test)\]/{exit} {print}' "$file" |
-    grep -vcE '^[[:space:]]*(//|\*|/\*|$)' || true)"
-  printf '%s\n' "${n:-0}"
-}
-
 # The whole-file instrument, mirrored: `code_lines`' classifier verbatim, applied
 # to every path `ledger_walk_paths` visits, as `<count><TAB><path>`.
+#
+# THE SECOND ARGUMENT IS THE CLASS, with the same default as `ledger_walk_paths`'s
+# (`production`), so every pre-existing caller measures what it always measured. The
+# argument exists so 18d-TEST can rank the TEST class the same way — the mirror of the
+# production ranking, built from the same two helpers, rather than a second copy of
+# the walk and the instrument that could drift from the one everything else trusts.
 instrument_measured() {
-  local r="$1" p n
+  local r="$1" cls="${2:-production}" p n
   while IFS= read -r p; do
     [[ -z "$p" ]] && continue
     n="$(grep -vcE '^[[:space:]]*(//|\*|/\*|$)' -- "$r/$p" || true)"
     printf '%s\t%s\n' "${n:-0}" "$p"
-  done <<<"$(ledger_walk_paths "$r")"
+  done <<<"$(ledger_walk_paths "$r" "$cls")"
 }
 
 # The guard's own ranking of a `<count><TAB><path>` list — the identical
@@ -855,11 +1104,18 @@ ledger_entries_cut_short() {
 # same snapshot instead of a possibly-different one per case.
 real_walk="$(ledger_walk_paths "$repo_root")"
 real_baseline="$repo_root/scripts/file-size-baseline.txt"
+# The TEST ledger's path, spelled once for the cases below. Held as a RELATIVE path
+# so the two books are named the same way in an assertion's text and on disk.
+real_test_ledger_rel="scripts/file-size-baseline-test.txt"
 
 # The tree as the whole-file instrument ranks it, computed ONCE and shared by 18c
 # (which asks which three files are largest) and 18d (which asks which one is).
 # Recomputed on every run: nothing below recites a file name or a figure.
 tree_ranked="$(instrument_rank "$(instrument_measured "$repo_root")")"
+# The TEST class ranked the same way, from the same two helpers, computed ONCE for
+# the same reason — 18d-TEST asks the test line which file it ranked, and asks it of
+# the same snapshot the production pins ask theirs.
+test_tree_ranked="$(instrument_rank "$(instrument_measured "$repo_root" test)")"
 
 # 18b. THE INSTRUMENT PIN ON THE REAL TREE, in comparative form and with no
 #      leaderboard in it. Two claims, both of the shape `recorded > cut`:
@@ -992,6 +1248,45 @@ assert_eq "and the recomputed largest-file expectation has the shape \`largest <
 assert_contains "the success line names the file the instrument measures as largest, with its figure" \
   "$expected_largest" "$output"
 
+# 18d-TEST. THE SAME PIN ON THE TEST LINE — the symmetric counterpart of 18d above,
+# built from the same mirrored walk and the same instrument, so it is not new
+# machinery. WHY IT HAD TO BE ADDED RATHER THAN ASSUMED: a reviewer pointed the test
+# class's largest-file sort at `measured.production` and the guard printed
+# `254 test file(s) walked, largest src-tauri/src/agent/session/naming.rs 2007` — a
+# PRODUCTION path printed under the TEST label — and BOTH suites stayed green. Every
+# other real-tree pin asks about a count, a gate, a ledger or a figure, and none of
+# them asked WHICH FILE the test line names, so the most legible claim the test class
+# makes was the one nobody read. On this tree the two classes genuinely disagree about
+# the winner (the largest production file is `naming.rs` at 2,007, the largest test
+# file is `src/store/sessions.test.ts` at 5,543), which is what makes the needle
+# discriminating rather than merely decorative.
+#
+# Recomputed, not recited, for 18c's reason: a frozen figure reddens the moment the
+# tree moves, and the tree is mid-decomposition.
+expected_largest_test="$(printf '%s\n' "$test_tree_ranked" | awk -F'\t' 'NR == 1 { print "largest " $2 " " $1 }')"
+assert_eq "and the recomputed TEST largest-file expectation has the shape \`largest <path> <figure>\`" \
+  "ok" "$(case "$expected_largest_test" in
+            'largest '*[![:space:]]' '[0-9]*) echo ok ;;
+            *) echo "malformed: [$expected_largest_test]" ;;
+          esac)"
+# THE TEST LINE, selected by its LABEL and not by position — a guard that printed the
+# two lines in the other order must not be able to satisfy this by reading the
+# production line. ` test file(s) walked` carries the leading space for the same
+# reason: the production line's own text cannot match it.
+test_positive_line="$(printf '%s\n' "$output" | grep -F ' test file(s) walked' || true)"
+assert_eq "and the run printed a TEST positive line at all" "1" \
+  "$(printf '%s\n' "$test_positive_line" | grep -c . || true)"
+assert_contains "the TEST success line names the file the instrument measures as largest IN THE TEST CLASS, with its figure" \
+  "$expected_largest_test" "$test_positive_line"
+# The blunt form of the same claim, and the one that fires on the mutation directly:
+# the production class's own largest file must not appear on the test line. Naming it
+# from `tree_ranked` keeps this recomputed too — no path is written into this file.
+prod_largest_path="$(printf '%s\n' "$tree_ranked" | awk -F'\t' 'NR == 1 { print $2 }')"
+assert_eq "and the TEST line names no production file (the largest production path is absent from it)" \
+  "" "$(case "$test_positive_line" in
+          *"$prod_largest_path"*) printf '%s' "test line names production file $prod_largest_path" ;;
+        esac)"
+
 # 18b-TEETH. THE CUT INSTRUMENT, SIMULATED, so the pin in 18b is PROVEN to catch it
 # rather than merely asserted to (AGENTS.md: a pin that passes on the broken thing
 # is worse than no pin). The fixture is case 13c's shape — 700 production code lines
@@ -1032,29 +1327,52 @@ ledger_is_exempt() {
 }
 
 # Ledger entries naming a path this walk does not visit. Empty output = none.
+#
+# The third argument names the LEDGER FILE and defaults to the production one, so the
+# pre-ADR-0112 calls below keep asking about the book they always asked about. A DEAD
+# ENTRY is the hand-authoring move this predicate exists for and it is equally fatal
+# in either book: an entry for a path the walk does not visit guards nothing, and no
+# later reader can tell it apart from a file that simply moved.
 ledger_dead_entries() {
   local r="$1" paths="$2" p bad=""
+  # A SEPARATE statement, and not part of the `local` above: bash expands every word
+  # of a `local` command BEFORE it performs any of the assignments, so spelling the
+  # default as `${3:-$r/…}` inside the same declaration reads an unset `$r` and dies
+  # under `set -u` — measured, `r: unbound variable`, on the two-argument calls.
+  local ledger="${3:-}"
+  [[ -n "$ledger" ]] || ledger="$r/scripts/file-size-baseline.txt"
   while IFS= read -r p; do
     [[ -z "$p" ]] && continue
     grep -qxF -- "$p" <<<"$paths" || bad="$bad$p"$'\n'
-  done < <(awk -F'\t' '!/^#/ && NF == 2 { print $2 }' "$r/scripts/file-size-baseline.txt")
+  done < <(awk -F'\t' '!/^#/ && NF == 2 { print $2 }' "$ledger")
   printf '%s' "$bad"
 }
 
-# Production files over the seed threshold with NO ledger entry, exemptions
-# excepted. The threshold is spelled here as the number the ledger's own header
-# publishes; the two exempt files sit ABOVE it (scene.ts 729, everforest.ts 707)
-# and are absent from the ledger by agreement, which is why the exemption check
-# is not optional — without it this pin reddes on a green tree.
+# Files of one class over THAT CLASS'S seed threshold with NO ledger entry,
+# exemptions excepted.
+#
+# The threshold is a parameter and the caller spells it, because the two classes have
+# different ones (production 700, test 1,000 — ADR 0112) and a pin that applied 700 to
+# the test class would demand ledger entries for 34 test files the gate does not
+# govern. The number the production caller passes is the one the production ledger's
+# own header publishes; the two exempt files sit ABOVE it (scene.ts 729,
+# everforest.ts 707) and are absent from the ledger by agreement, which is why the
+# exemption check is not optional — without it this pin reddes on a green tree. The
+# exemption table holds production paths only (the guard validates it against the
+# production class), so it costs the test-class call nothing and excuses nothing.
 ledger_missing_entries() {
-  local r="$1" paths="$2" p n bad=""
+  local r="$1" paths="$2" bar="${4:-700}" p n bad=""
+  # The ledger default is a separate statement for the `set -u` reason spelled out in
+  # `ledger_dead_entries` above.
+  local ledger="${3:-}"
+  [[ -n "$ledger" ]] || ledger="$r/scripts/file-size-baseline.txt"
   while IFS= read -r p; do
     [[ -z "$p" ]] && continue
     ledger_is_exempt "$p" && continue
     n="$(grep -vcE '^[[:space:]]*(//|\*|/\*|$)' -- "$r/$p" || true)"
     n="${n:-0}"
-    ((n > 700)) || continue
-    awk -F'\t' -v q="$p" '$2 == q { found = 1 } END { exit !found }' "$r/scripts/file-size-baseline.txt" ||
+    ((n > bar)) || continue
+    awk -F'\t' -v q="$p" '$2 == q { found = 1 } END { exit !found }' "$ledger" ||
       bad="$bad$p($n)"$'\n'
   done <<<"$paths"
   printf '%s' "$bad"
@@ -1132,16 +1450,74 @@ mv "$root/ledger.tmp" "$root/scripts/file-size-baseline.txt"
 assert_eq "TEETH: a file over 700 code lines with its ledger entry deleted is refused" \
   "src-tauri/src/alive.rs(800)" "$(ledger_missing_entries "$root" "$dropped_walk")"
 
+# 18e-TEST. THE SAME TWO PREDICATES OVER THE TEST LEDGER, WITH TEETH OF THEIR OWN.
+#
+# WHY THE NEW CLASS NEEDS ITS OWN PLANT AND NOT A REUSE OF THE ONE ABOVE. Both books
+# are read by the same `read_baseline` and policed by the same guard loop, so it is
+# tempting to say the production pins above cover them. They do not: the predicates
+# take the LEDGER PATH as an argument, and a pin that only ever passes the production
+# path would stay green while the test ledger filled with dead entries or lost entries
+# for 6,128-line files. That is the whole failure mode ADR 0112 introduces — a second
+# book that exists and is nobody's responsibility. Same shape as above: an honest
+# ledger first (so a predicate that fires on nothing cannot hide), then the plant,
+# which must NAME the planted path.
+fixture ledger_dead_entry_test
+mkdir -p "$root/src-tauri/src/storage/db/tests"
+emit_code 1100 '    const t' >"$root/src-tauri/src/storage/db/tests/mod.rs" # 1,100 test code lines
+git -C "$root" add -A
+run_check "$root" --update
+assert_eq "the test-class dead-entry fixture seeds (--update exits 0)" "0" "$status"
+assert_eq "and the test file is recorded in the test ledger" "1100" \
+  "$(baseline_count "$root/scripts/file-size-baseline-test.txt" 'src-tauri/src/storage/db/tests/mod.rs')"
+test_dead_walk="$(ledger_walk_paths "$root" test)"
+test_ledger_rel="scripts/file-size-baseline-test.txt"
+assert_eq "an honest test ledger draws no complaint from the dead-entry pin" \
+  "" "$(ledger_dead_entries "$root" "$test_dead_walk" "$root/$test_ledger_rel")"
+printf '999\tsrc-tauri/src/storage/db/tests/RETIRED_NEVER_EXISTED.rs\n' >>"$root/$test_ledger_rel"
+assert_eq "TEETH: a TEST ledger entry naming a path the walk never visits is refused" \
+  "src-tauri/src/storage/db/tests/RETIRED_NEVER_EXISTED.rs" \
+  "$(ledger_dead_entries "$root" "$test_dead_walk" "$root/$test_ledger_rel")"
+
+fixture ledger_dropped_entry_test
+mkdir -p "$root/src-tauri/src/storage/db/tests"
+emit_code 1100 '    const t' >"$root/src-tauri/src/storage/db/tests/mod.rs" # 1,100 test code lines
+git -C "$root" add -A
+run_check "$root" --update
+assert_eq "the test-class dropped-entry fixture seeds (--update exits 0)" "0" "$status"
+dropped_test_walk="$(ledger_walk_paths "$root" test)"
+assert_eq "an honest test ledger draws no complaint from the test-class missing-entry pin" \
+  "" "$(ledger_missing_entries "$root" "$dropped_test_walk" "$root/$test_ledger_rel" 1000)"
+# THE SAME DODGE, IN THE NEW CLASS: one deleted line takes a 1,100-code-line test file
+# off the ratchet. The guard itself does not refuse it — it refuses an un-ledged file
+# only ABOVE the gate, so the file can then sit at 1,050 and grow to 1,999 with nothing
+# recorded anywhere. Only this predicate sees the deletion.
+grep -v 'storage/db/tests/mod.rs' "$root/$test_ledger_rel" >"$root/test-ledger.tmp"
+mv "$root/test-ledger.tmp" "$root/$test_ledger_rel"
+assert_eq "TEETH: a test file over 1,000 code lines with its ledger entry deleted is refused" \
+  "src-tauri/src/storage/db/tests/mod.rs(1100)" \
+  "$(ledger_missing_entries "$root" "$dropped_test_walk" "$root/$test_ledger_rel" 1000)"
+
 # ... and the same two predicates over the COMMITTED ledger of the real checkout,
 # mutation-free: the file is read, never regenerated.
 real_walk="$(ledger_walk_paths "$repo_root")"
+real_test_walk="$(ledger_walk_paths "$repo_root" test)"
 assert_eq "the committed ledger names no path this walk does not visit" \
   "" "$(ledger_dead_entries "$repo_root" "$real_walk")"
 assert_eq "the committed ledger holds an entry for every production file over 700 code lines (exemptions excepted)" \
   "" "$(ledger_missing_entries "$repo_root" "$real_walk")"
+# ... with TEST-CLASS COUNTERPARTS over the same real checkout, at the test class's
+# own 1,000. These two are what stop the new book from rotting unnoticed: a rename
+# nobody followed, or a 6,128-line test file dropped from the ledger, both go green
+# inside the guard and red here.
+assert_eq "the committed TEST ledger names no path this walk does not visit" \
+  "" "$(ledger_dead_entries "$repo_root" "$real_test_walk" "$repo_root/$real_test_ledger_rel")"
+assert_eq "the committed TEST ledger holds an entry for every test file over 1,000 code lines" \
+  "" "$(ledger_missing_entries "$repo_root" "$real_test_walk" "$repo_root/$real_test_ledger_rel" 1000)"
 
 # THE ONE DIRECTIONAL NUMBER CHECK, the only one safe to make while a plan is
-# shrinking files: above today's figure is a lag, below it is a growth.
+# shrinking files: above today's figure is a lag, below it is a growth. Run over BOTH
+# books — a test entry understating its file is the same growth the production entry
+# would be, and the guard refuses it, so a pin here cannot false-redden on a lag.
 understated=""
 while IFS=$'\t' read -r rec u_path; do
   [[ -f "$repo_root/$u_path" ]] || continue
@@ -1149,16 +1525,31 @@ while IFS=$'\t' read -r rec u_path; do
   act="${act:-0}"
   ((rec < act)) && understated="$understated$u_path($rec<$act)"$'\n'
 done < <(awk -F'\t' '!/^#/ && NF == 2 { print $1 "\t" $2 }' "$real_baseline")
+understated_test=""
+while IFS=$'\t' read -r rec u_path; do
+  [[ -f "$repo_root/$u_path" ]] || continue
+  act="$(grep -vcE '^[[:space:]]*(//|\*|/\*|$)' -- "$repo_root/$u_path" || true)"
+  act="${act:-0}"
+  ((rec < act)) && understated_test="$understated_test$u_path($rec<$act)"$'\n'
+done < <(awk -F'\t' '!/^#/ && NF == 2 { print $1 "\t" $2 }' "$repo_root/$real_test_ledger_rel")
 assert_eq "and no entry UNDERSTATES its file (above is a shrink not yet re-seeded, below is a growth)" \
   "" "$understated"
+assert_eq "and no entry in the TEST ledger UNDERSTATES its file either" \
+  "" "$understated_test"
 
 # The mirrored walk is only trustworthy while it agrees with the instrument, and
 # the guard's own positive line is the cheapest witness: a pathspec or exclusion
 # drifting apart would otherwise un-pin both real-tree assertions in silence.
+# BOTH CLASSES NOW, because a classifier that drifted in only one direction would
+# move one class's count and not the other's, and a single-line agreement would
+# still hold. The two lines are printed by the same run of the same guard.
 run_check "$repo_root"
 n_mirrored="$(printf '%s\n' "$real_walk" | grep -c . || true)"
+n_mirrored_test="$(printf '%s\n' "$real_test_walk" | grep -c . || true)"
 assert_contains "the mirrored walk agrees with the guard's own count" \
   "$n_mirrored production file(s) walked" "$output"
+assert_contains "and the mirrored TEST walk agrees with the guard's own test count" \
+  "$n_mirrored_test test file(s) walked" "$output"
 
 # ---------------------------------------------------------------------------
 # 19. THE TOP-THREE MEMBERSHIP CLAIM, ON A FIXTURE WHERE LAG IS IMPOSSIBLE.
@@ -1244,8 +1635,20 @@ assert_eq "and the guard's own run stays green on that ledger (an over-recorded 
 baseline_post_hash="$(cksum "$repo_root/scripts/file-size-baseline.txt" 2>/dev/null || true)"
 assert_eq "this run leaves the tracked baseline byte-for-byte as it found it (no case may rewrite the ledger it tests)" \
   "$baseline_pre_hash" "$baseline_post_hash"
+assert_eq "and it leaves the tracked TEST baseline byte-for-byte as it found it too (the new book is not this suite's to rewrite)" \
+  "$baseline_test_pre_hash" "$(cksum "$repo_root/scripts/file-size-baseline-test.txt" 2>/dev/null || true)"
 assert_eq "and git status reports the tracked baseline clean after the whole suite" \
   "" "$(git -C "$repo_root" status --porcelain -- scripts/file-size-baseline.txt)"
+# The TEST ledger's second witness is `git diff` (worktree vs index) rather than
+# `git status --porcelain`, and the reason is the file's life stage and not a
+# softening: this ledger is NEW in this change, so before its first commit porcelain
+# legitimately reports `A ` — an index entry, not a rewrite — and a `""` needle would
+# red a healthy tree for the state every Task-2 run is in. `git diff --quiet` asks the
+# question the witness is actually for, "did this suite change the file it reads", and
+# it is the stricter form of that question: it reddens the moment the worktree copy
+# stops matching the index, whatever the index itself looks like against HEAD.
+assert_eq "and the worktree copy of the TEST baseline matches its index entry after the whole suite (no case may rewrite the ledger it tests)" \
+  "0" "$(git -C "$repo_root" diff --quiet -- scripts/file-size-baseline-test.txt; echo $?)"
 
 
 if ((failures > 0)); then

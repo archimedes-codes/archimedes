@@ -152,7 +152,8 @@ fn ensure_session_row_creates_a_hidden_subagent_row() {
 ///
 /// `record_session_cost` is a bare `UPDATE … WHERE id = ?1`, and an
 /// `UPDATE` that matches no row is `Ok(())` with nothing written
-/// (`record_session_cost_on_a_missing_row_is_a_silent_no_op` in `db.rs`).
+/// (`record_session_cost_on_a_missing_row_is_a_silent_no_op` in
+/// `storage/db/tests/sessions.rs`).
 /// `apply_interactive_event` therefore has to `ensure_session_row` BEFORE
 /// the write — which is the whole reason it takes `is_subagent`: a
 /// subagent's row is created lazily by the persister, and its FIRST priced

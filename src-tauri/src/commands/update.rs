@@ -1332,8 +1332,8 @@ mod tests {
     /// is what this reads the file for, and it is the honest shape of the
     /// exposure: an ordering pin, not a durability proof.
     ///
-    /// This is the same instrument the schema guards in `storage/db.rs`'s tests
-    /// use (`include_str!` + count), for the same reason: the alternative to a
+    /// This is the same instrument the schema guards in `storage/db/tests/` use
+    /// (`include_str!` + count), for the same reason: the alternative to a
     /// source pin is a comment, and a comment is what failed here in the first
     /// place — the relaunch path documented that it replayed the `Exit` teardown
     /// while quietly not replaying the flush.
