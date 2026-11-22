@@ -190,8 +190,9 @@ fixture() {
     printf 'export const v%s = %s;\n' "$i" "$i" >"$root/src/f$i.ts"
   done
   # 600 code lines: clears the "at least one file over 500" floor (the real tree
-  # has 27 such files) and stays under the 700 seed threshold and the 1,000 gate,
-  # so it is inert for every case that is not about the floors.
+  # has 86 such files, 22 production + 64 test) and stays under the 700 seed
+  # threshold and the 1,000 gate, so it is inert for every case that is not about
+  # the floors.
   emit_code 600 'export const b' >"$root/src/big.ts"
   printf 'export const scene = 1;\n' >"$root/src/lib/archimedes-film/scene.ts"
   printf 'export const palette = 1;\n' >"$root/src/lib/palettes/everforest.ts"
@@ -388,8 +389,9 @@ assert_contains "and the floor it fell short of" "floor is 250" "$output"
 assert_not_contains "and a blind walk is never reported as green" "file sizes within baseline" "$output"
 
 # 8b. THE SECOND FLOOR ARM: enough files, but nothing over 500 code lines. The
-#     real tree has 27 such files, so a walk that finds ZERO is a classifier that
-#     stopped classifying — or a tree it never read. Both must redden.
+#     real tree has 86 such files (22 production, 64 test), so a walk that finds
+#     ZERO is a classifier that stopped classifying — or a tree it never read.
+#     Both must redden.
 fixture no_big_files
 rm "$root/src/big.ts"
 git -C "$root" add -A
@@ -1054,13 +1056,19 @@ TABS="$(printf '\t')"
 
 # The whole-file instrument, mirrored: `code_lines`' classifier verbatim, applied
 # to every path `ledger_walk_paths` visits, as `<count><TAB><path>`.
+#
+# THE SECOND ARGUMENT IS THE CLASS, with the same default as `ledger_walk_paths`'s
+# (`production`), so every pre-existing caller measures what it always measured. The
+# argument exists so 18d-TEST can rank the TEST class the same way — the mirror of the
+# production ranking, built from the same two helpers, rather than a second copy of
+# the walk and the instrument that could drift from the one everything else trusts.
 instrument_measured() {
-  local r="$1" p n
+  local r="$1" cls="${2:-production}" p n
   while IFS= read -r p; do
     [[ -z "$p" ]] && continue
     n="$(grep -vcE '^[[:space:]]*(//|\*|/\*|$)' -- "$r/$p" || true)"
     printf '%s\t%s\n' "${n:-0}" "$p"
-  done <<<"$(ledger_walk_paths "$r")"
+  done <<<"$(ledger_walk_paths "$r" "$cls")"
 }
 
 # The guard's own ranking of a `<count><TAB><path>` list — the identical
@@ -1103,6 +1111,10 @@ real_test_ledger_rel="scripts/file-size-baseline-test.txt"
 # (which asks which three files are largest) and 18d (which asks which one is).
 # Recomputed on every run: nothing below recites a file name or a figure.
 tree_ranked="$(instrument_rank "$(instrument_measured "$repo_root")")"
+# The TEST class ranked the same way, from the same two helpers, computed ONCE for
+# the same reason — 18d-TEST asks the test line which file it ranked, and asks it of
+# the same snapshot the production pins ask theirs.
+test_tree_ranked="$(instrument_rank "$(instrument_measured "$repo_root" test)")"
 
 # 18b. THE INSTRUMENT PIN ON THE REAL TREE, in comparative form and with no
 #      leaderboard in it. Two claims, both of the shape `recorded > cut`:
@@ -1234,6 +1246,45 @@ assert_eq "and the recomputed largest-file expectation has the shape \`largest <
           esac)"
 assert_contains "the success line names the file the instrument measures as largest, with its figure" \
   "$expected_largest" "$output"
+
+# 18d-TEST. THE SAME PIN ON THE TEST LINE — the symmetric counterpart of 18d above,
+# built from the same mirrored walk and the same instrument, so it is not new
+# machinery. WHY IT HAD TO BE ADDED RATHER THAN ASSUMED: a reviewer pointed the test
+# class's largest-file sort at `measured.production` and the guard printed
+# `254 test file(s) walked, largest src-tauri/src/agent/session/naming.rs 2007` — a
+# PRODUCTION path printed under the TEST label — and BOTH suites stayed green. Every
+# other real-tree pin asks about a count, a gate, a ledger or a figure, and none of
+# them asked WHICH FILE the test line names, so the most legible claim the test class
+# makes was the one nobody read. On this tree the two classes genuinely disagree about
+# the winner (the largest production file is `naming.rs` at 2,007, the largest test
+# file is `src/store/sessions.test.ts` at 5,543), which is what makes the needle
+# discriminating rather than merely decorative.
+#
+# Recomputed, not recited, for 18c's reason: a frozen figure reddens the moment the
+# tree moves, and the tree is mid-decomposition.
+expected_largest_test="$(printf '%s\n' "$test_tree_ranked" | awk -F'\t' 'NR == 1 { print "largest " $2 " " $1 }')"
+assert_eq "and the recomputed TEST largest-file expectation has the shape \`largest <path> <figure>\`" \
+  "ok" "$(case "$expected_largest_test" in
+            'largest '*[![:space:]]' '[0-9]*) echo ok ;;
+            *) echo "malformed: [$expected_largest_test]" ;;
+          esac)"
+# THE TEST LINE, selected by its LABEL and not by position — a guard that printed the
+# two lines in the other order must not be able to satisfy this by reading the
+# production line. ` test file(s) walked` carries the leading space for the same
+# reason: the production line's own text cannot match it.
+test_positive_line="$(printf '%s\n' "$output" | grep -F ' test file(s) walked' || true)"
+assert_eq "and the run printed a TEST positive line at all" "1" \
+  "$(printf '%s\n' "$test_positive_line" | grep -c . || true)"
+assert_contains "the TEST success line names the file the instrument measures as largest IN THE TEST CLASS, with its figure" \
+  "$expected_largest_test" "$test_positive_line"
+# The blunt form of the same claim, and the one that fires on the mutation directly:
+# the production class's own largest file must not appear on the test line. Naming it
+# from `tree_ranked` keeps this recomputed too — no path is written into this file.
+prod_largest_path="$(printf '%s\n' "$tree_ranked" | awk -F'\t' 'NR == 1 { print $2 }')"
+assert_eq "and the TEST line names no production file (the largest production path is absent from it)" \
+  "" "$(case "$test_positive_line" in
+          *"$prod_largest_path"*) printf '%s' "test line names production file $prod_largest_path" ;;
+        esac)"
 
 # 18b-TEETH. THE CUT INSTRUMENT, SIMULATED, so the pin in 18b is PROVEN to catch it
 # rather than merely asserted to (AGENTS.md: a pin that passes on the broken thing

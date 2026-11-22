@@ -23,8 +23,19 @@
 # Drops blank lines, whole-line `//`, block-comment continuation lines starting
 # `*`, and lines starting `/*`. KNOWN LIMIT, pinned by a test: a JSX comment's
 # braces are NOT stripped, so `{/* … */}` counts as code. The bar is 1,000 code
-# lines and the largest .tsx file here is 622, so the limit costs nothing today; it
-# is stated because an unlisted inaccuracy in a metric becomes an argument later.
+# lines and the largest PRODUCTION `.tsx` file here is 583
+# (`src/components/chat/MessageList.tsx`); since ADR 0112 the walk also reads `.tsx`
+# TEST files, and the largest `.tsx` of ANY class is 2,128
+# (`src/components/settings/SettingsPage.test.tsx`), which sits in the TEST book
+# under the test gate. The limit still costs nothing today, on an argument different
+# from the one this comment used to make: the JSX over-count is NOT small — one
+# 66-line `{/* … */}` block in `SubagentModals.tsx` is counted whole, and stripping
+# every JSX comment would take 139 lines off `SpacesList.tsx` — but it changes no
+# verdict, because no `.tsx` file of either class sits within its own over-count of a
+# threshold: the production class's largest is 583 against a 700 seed and a 1,000
+# gate, and all EIGHT ledgered test `.tsx` entries measure 0 JSX lines, so their
+# recorded figures are exact. Stated because an unlisted inaccuracy in a metric
+# becomes an argument later.
 #
 # IT COUNTS AN INLINE `#[cfg(test)] mod tests` AS PART OF THE FILE. That diverges
 # from the census ON PURPOSE. The census audited PRODUCTION size and correctly cut
@@ -66,26 +77,39 @@
 #   src/components/AgentsDialog.tsx        934          550               550
 #   src/components/TasksBoard.tsx          751          398               398
 #
-# THE COUNTS THAT FOLLOW, re-measured on this tree at the ADR 0112 change (same
-# instrument, now classified — `--update` remains the only authoritative source):
+#   (`src-tauri/src/storage/db.rs` no longer exists — ADR 0113 split it into
+#   `storage/db/{mod,rows,seams,artifacts,board,messages,migrations,sessions,spaces,
+#   stages,tasks}.rs` — so this row is provenance for the 1355cd2a measurement and is
+#   NOT reproducible on the current tree. Neither is the 6,128-line figure quoted
+#   below for its test module, which is now a 13-code-line shell beside its own split.)
+#
+# THE COUNTS THAT FOLLOW, re-measured on this tree at 7a1a0f37 — the commit that
+# merged the `db` split in, so this is the first table stamped on a tree that actually
+# contains it (same instrument, now classified — `--update` remains the only
+# authoritative source). The table this one replaced carried beef4b27's figures, the
+# pre-merge branch tip: the new guard without the split, under prose that claimed the
+# current tree.
 #
 #   class        walked   >200   >500   >700   >1000   >1500   >2000
-#   production     319     76     23     13       9       3       2
-#   test           243    125     60     34      19       9       5
-#   COMBINED       562    201     83     47      28      12       7
+#   production     329     80     22     12       8       2       1
+#   test           254    134     64     36      19       8       4
+#   COMBINED       583    214     86     48      27      10       5
 #
 # The production row is the walk this script has always done. (ADR 0112 quotes 312
 # production files and this script's own earlier comment 298; both were measured at
 # earlier commits, and the `**` pathspecs the plan illustrates are not what this walk
-# runs — see THE WALK below. `--update` is the only authoritative source here.) The 13
-# production files over 700 are the 11 the instrument RECORDS
+# runs — see THE WALK below. `--update` is the only authoritative source here.) The 12
+# production files over 700 are the 10 the instrument RECORDS
 # (`scripts/file-size-baseline.txt`) plus the 2 it EXEMPTS —
-# `scene.ts` 729 and `everforest.ts` 707 — which is why the baseline has 11 lines
-# and the census says 13: an exemption means "not ratcheted", and an exempt file
+# `scene.ts` 729 and `everforest.ts` 707 — which is why the baseline has 10 lines
+# and the census says 12: an exemption means "not ratcheted", and an exempt file
 # that is not in the ledger is the only way to say that. The test class is SEEDED at
 # its own 1,000 rather than at 700, so 19 test files are ledgered and gated at once
 # (12 frontend `*.test.ts(x)`, 4 integration `src-tauri/tests/`, 3 Rust `foo/tests/`),
-# the largest being `src-tauri/src/storage/db/tests/mod.rs` at 6,128.
+# the largest being `src/store/sessions.test.ts` at 5,543. (The 6,128 this comment
+# used to name as the class's largest was `src-tauri/src/storage/db/tests/mod.rs`
+# BEFORE the ADR 0113 split; that path is now a 13-code-line shell and the figure is
+# pre-split provenance, not today's head of the test ledger.)
 #
 # A VACUITY FLOOR closes the loop (check-commands.sh calls it a blind-walk
 # tripwire): a walk that finds fewer than 250 files, or finds ZERO files over 500
@@ -95,13 +119,26 @@
 # 0 and 0 satisfies the gate, the ratchet and both floors at once — the floors ask
 # about the walk and about the other files, never about one file's unreadability.
 #
-# BOTH FLOORS MEASURE THE COMBINED WALK, BOTH CLASSES TOGETHER (562 today, 83 over
-# 500), and their VALUES are untouched by ADR 0112. They are deliberately NOT
-# per-class denominators: the test class alone is 243 files, so a floor of 250
-# applied per class would REDEMN A HEALTHY TREE, which is a worse outcome than the
-# blindness the floor exists to catch. ADR 0112's Consequences say so in as many
-# words — "they ask about the walk, not about one file, so they are unchanged by
-# this decision and must not be re-tuned to the new denominator".
+# BOTH FLOORS MEASURE THE COMBINED WALK, BOTH CLASSES TOGETHER (583 today, 86 over
+# 500), and their VALUES are untouched by ADR 0112. What that choice buys, stated
+# plainly because the earlier sentence here argued the opposite and was wrong: the
+# combined walk is 583 against a floor of 250, and the TEST CLASS ALONE IS 254 — four
+# files above the floor, not below it. So the combined floor DETECTS A TOTAL BLACKOUT
+# (a walk that read nothing, or a pathspec that matches nothing) AND NOT A SINGLE-CLASS
+# ONE: drop either class from the walk entirely and the other still clears 250 on its
+# own, so a half-blind walk is green here. A class that reads nothing is caught
+# downstream by `print_class_positive_line`'s empty-measurement refusal, not by this
+# floor. The only shape that would catch the single-class regression AT THE FLOOR is a
+# per-class floor set WELL BELOW each class's current size — and that was NOT done
+# here, so read it as a known limit of this tripwire rather than as a protection it
+# provides. A 4-file margin cannot tell "this half is healthy" from "this half read
+# nothing", which is the whole question a floor is supposed to answer.
+#
+# The VALUES stay combined and un-re-tuned, and that is the deliberate part: ADR
+# 0112's Consequences say so in as many words — "they ask about the walk, not about
+# one file, so they are unchanged by this decision and must not be re-tuned to the new
+# denominator". Re-tuning the floors to per-class denominators is out of scope for
+# this change; tightening what the combined floor claims to detect is not.
 #
 # Usage: check-file-size.sh [repo-root] [--self-test] [--update]   (root default: .)
 #   repo-root    the checkout to read (its `src-tauri/src`, `src`, and this file's
@@ -163,15 +200,25 @@ TEST_HARD_GATE=1000     # the same bar, for the test class (ADR 0112)
 TEST_SEED_THRESHOLD=1000 # `--update` records TEST files above this — the same 1,000,
                          # so the ledger never holds a test entry the gate does not
                          # govern, and no test file is governed on the sly.
-# THE TWO FLOORS MEASURE THE COMBINED WALK — production AND test together, 562 files
-# and 83 over 500 today — and NEITHER VALUE was re-tuned when the walk grew from 319
-# to 562. They ask "did this metric read any file at all", which is a question about
-# the walk, not about one class. Measuring them per class would REDDEN A HEALTHY
-# TREE: the test class alone is 243 files, below a 250 floor, so a green tree would
-# fail the very check that exists to catch an unread one.
+# THE TWO FLOORS MEASURE THE COMBINED WALK — production AND test together, 583 files
+# and 86 over 500 today — and NEITHER VALUE was re-tuned when the walk grew from 319
+# to 583. They ask "did this metric read any file at all", which is a question about
+# the walk, not about one class, and that is exactly why their value stayed combined.
+# What they therefore CANNOT do is catch a walk that lost one class: 583 clears a 250
+# floor, and EACH class clears it alone (329 production, 254 test), so the floor
+# detects a TOTAL blackout and not a single-class one. The earlier sentence here said
+# a per-class floor "would REDDEN A HEALTHY TREE" because the test class was 243 files
+# — that was true of the tree at the ADR 0112 change and is FALSE of this one, where
+# the test class is 254, four files ABOVE the floor. Per-class floors set well below
+# each class's current size is the only shape that would catch the single-class
+# regression, and it was deliberately NOT done here (ADR 0112's Consequences forbid
+# re-tuning these values to the new denominator), so treat a half-blind walk as a
+# KNOWN LIMIT of this floor; the per-class positive-line refusal is what sees it.
 OVER_500_BAR=500
-FLOOR_FILES=250     # combined classes; the test class alone (243) is BELOW this by
-                    # design — do not apply this floor per class
+FLOOR_FILES=250     # COMBINED classes, and read the paragraph above for what that
+                    # does and does not detect: either class alone (329 / 254) clears
+                    # it, so it catches a walk that read NOTHING and not one that read
+                    # only half the tree. Value deliberately unchanged.
 FLOOR_OVER_BIG=1
 
 # The baselines live next to the instrument, so the two cannot be edited apart.
@@ -286,7 +333,7 @@ walk_tracked_files() {
 
 # THE CLASSIFIER. Sets the global `CLASS` to `production` or `test` for one walked
 # path. (A global and not command substitution: this runs once per walked file, and
-# 562 forks to read four characters back would be the slowest thing in the script.)
+# 583 forks to read four characters back would be the slowest thing in the script.)
 #
 # THE RULE IS THE ONE THE WALK USED TO RETIRE ON, INVERTED, VERBATIM — a
 # `*.test.ts(x)` sibling, or anything under a directory named `tests`. Keeping the
@@ -369,7 +416,7 @@ class_seed_threshold() {
 # absent. Either way the run must not print the clean line — and that is as true of
 # the test class as of the production one. A run that found every test file under
 # its gate while the test ledger was simply MISSING would otherwise print the
-# positive line with 243 files ungoverned in silence, which is the state ADR 0112
+# positive line with 254 files ungoverned in silence, which is the state ADR 0112
 # exists to end, arriving back as a green.
 #
 # Sets `baseline_present` (0/1) for the caller. `--update` is the generation route,
@@ -474,8 +521,8 @@ update_class_ledger() {
   fi
   # The verdict below must be taken against the ledger that was JUST written, not
   # the one that was there before. Without this, `--update` on a fresh tree would
-  # seed `db.rs` at 2,154 (and `db/tests/mod.rs` at 6,128) and then refuse its own
-  # seed as an unbaselined file over the gate — the documented generation route
+  # seed `naming.rs` at 2,007 (and `sessions.test.ts` at 5,543) and then refuse its
+  # own seed as an unbaselined file over the gate — the documented generation route
   # would exit 1 on the tree it just made green.
   read_baseline "$baseline" "$baseline_rows"
 }
@@ -529,7 +576,9 @@ inline_test_split() {
 # every production-only message in the existing harness byte-identical.
 verdict_class() {
   local root="$1" cls="$2" tmp_dir="$3" exempt_file="$4"
-  local gate rel measured_rows baseline_rows violations_class split
+  # `split` is declared ONCE, in the loop's list below — it was declared in both
+  # lists, which is harmless but reads as two different variables.
+  local gate rel measured_rows baseline_rows violations_class
   # ADR 0112's reporting consequence, applied to the PRODUCTION class only: a test
   # file's whole body IS its test subject, so "production P + inline tests I" would
   # be noise there, and the classifier has already put every `tests/` file in the
@@ -605,11 +654,98 @@ verdict_class() {
 }
 
 # ---------------------------------------------------------------------------
+# THE POSITIVE LINE, one per class — the sibling prints `versions match: X.Y.Z`. A
+# count and the largest file make the claim checkable by eye: if the walked count
+# falls off a cliff, or the largest file is one nobody expected, the walk changed and
+# this green is not the green the guard advertises.
+#
+# AT FILE SCOPE and not nested inside `run_guard`. It used to be defined there, which
+# made it a global anyway (bash has no nested scopes) while reading as if it were not;
+# the move is mechanical, and `$root` — which the empty-measurement refusal names in
+# its message, and which was an enclosing `run_guard` local it read implicitly — is
+# now its first parameter.
+#
+# ONE LINE PER CLASS, production first. The production line is BYTE-IDENTICAL to
+# the one this script printed before ADR 0112 — the count beside
+# `production file(s) walked` is the PRODUCTION walked count, which is what the
+# harness's real-tree agreement pin compares against its own mirrored walk — and
+# the test line is appended after it, so nothing the existing harness asserts on
+# moves. A combined `583 file(s) walked` would have been the tidier sentence and
+# would have broken that pin, which is a feature: the two classes have different
+# gates and different ledgers, so they report separately.
+#
+# THE SORT WRITES A FILE AND THE FIRST LINE IS READ FROM IT, never
+# `sort … | head -n1`. That was the shape here, and under `set -euo pipefail` it
+# was a race that killed this very line: `head` exits after one line and closes
+# the pipe, `sort` is still writing and dies of SIGPIPE (141), `pipefail`
+# propagates the 141, the command substitution returns non-zero, and `set -e`
+# aborts BEFORE the positive line prints — a guard whose green was intermittently
+# a silent 141, measured at ~1 run in 10 on this tree. It is not a `head`
+# peculiarity, it is any downstream reader that stops early: `sed -n 1q` short
+# reads the same way. There is no pipe in the construction below, so there is no
+# reader to close one — `sort`'s only destination is a file it writes to
+# completion, and `read` takes one line from a FILE whose remaining bytes nobody
+# has to consume. `head -n1 <"$largest_file"` would be a pipe again (to the
+# command substitution) and is deliberately not used. THIS SHAPE IS KEPT FOR BOTH
+# CLASSES; a second `sort | head` for the test class would reintroduce the race.
+#
+# Pinned by `check-file-size.test.sh` case 16b, which runs this 25 times in a
+# row against a fixture sized so the old pipeline failed 24 of 25: one run of a
+# race proves nothing. And WHICH FILE each line names is pinned per class, by this
+# script's own `--self-test` (a fixture whose two classes disagree about the winner)
+# and by harness case 18d for the production line on the real tree — pointing one
+# class's sort at the other class's `measured.<class>` file prints a confident line
+# about the wrong subject, and until those cases existed both suites stayed green on
+# exactly that mutation.
+print_class_positive_line() {
+  local root="$1" cls="$2" n_class="$3" tmp_dir="$4"
+  # A class the walk found nothing for prints nothing. This is not a loosened
+  # refusal: the vacuity floors measure the COMBINED walk, so a tree with no test
+  # sources at all is legitimately green for the test class (there is nothing in
+  # that ledger to govern), and every existing fixture in the harness is that
+  # shape. What must never happen is a line with an EMPTY path and figure in it —
+  # that is the confident green built on a measurement that read nothing, and the
+  # refusal below is what stops it for a class that DID walk files.
+  if ((n_class == 0)); then
+    return 0
+  fi
+  local largest_file="$tmp_dir/largest.$cls"
+  LC_ALL=C sort -t"$TABS" -k1,1rn -k2,2 "$tmp_dir/measured.$cls" >"$largest_file"
+  local largest_line="" largest_path="" largest_count=""
+  # `IFS=` (and not a tab IFS) keeps the line intact so the two cuts below still
+  # split at the FIRST tab, exactly as they did before. `|| true` is here because
+  # `read` returns 1 at an EOF that carries no newline — an empty sort output must
+  # reach the refusal below, not abort through `set -e` with 128+0.
+  IFS= read -r largest_line <"$largest_file" || true
+  if [[ -z "$largest_line" ]]; then
+    # Unreachable behind the vacuity floors and the unreadable-file refusal (every
+    # walked file of a class that walked files has a row), so this is not a guard
+    # against a real input, it is the refusal that keeps the positive line TRUE
+    # whenever it does print: a `largest  ` with nothing in either field is a
+    # confident green built on a measurement that read nothing, which is what this
+    # whole script exists to refuse.
+    fail "the $cls class walked $n_class file(s) but measured none to rank under $root" "the positive line would print an empty count and an empty path; a green that cannot name the biggest file it saw is not a green"
+  fi
+  largest_count="${largest_line%%"$TABS"*}"
+  largest_path="${largest_line#*"$TABS"}"
+  printf 'file sizes within baseline: %s %s file(s) walked, largest %s %s\n' \
+    "$n_class" "$cls" "$largest_path" "$largest_count"
+}
+
+# ---------------------------------------------------------------------------
 # The guard.
 run_guard() {
   local root="$1" update="$2"
   local cls
-  declare -A baseline_presence=()
+  # ONE PLAIN SCALAR PER CLASS, and deliberately NOT `declare -A baseline_presence`:
+  # an associative array is a bash 4 construct, and this repo's guards avoid it on
+  # purpose (check-temp-dir-census.sh carries the same comment for its `local -A`)
+  # because the job matrix includes `macos-latest`, whose `/bin/bash` is 3.2 and
+  # would stop here with `declare: -A: invalid option` and exit 2. The array bought
+  # nothing anyway — it was keyed by the two literal strings `production` and `test`,
+  # which are exactly two variables. Both are written before they are read (see the
+  # two `read_class_baseline` calls below), so they carry no default.
+  local presence_production presence_test
 
   if [[ ! -d "$root" ]]; then
     echo "error: repo root is not a directory: $root" >&2
@@ -661,16 +797,25 @@ run_guard() {
   # walk that read nothing would otherwise write an empty baseline and make every
   # later run green forever. This is the guard's most important line.
   #
-  # ITS DENOMINATOR IS THE WHOLE WALK, BOTH CLASSES, and its value is unchanged by
-  # ADR 0112 (see THE NUMBERS). Applying it per class would redden a HEALTHY tree:
-  # the test class is 243 files here, below a 250 floor, so the check that exists to
-  # catch an unread walk would fire on a read one. The pinned phrase below,
-  # `<N> production file(s) walked`, is the shape `check-file-size.test.sh` case 8
-  # asserts; it carries the COMBINED count, which is why the line after it spells out
-  # the split rather than leaving the word "production" to imply a class this floor
-  # does not measure.
+  # ITS DENOMINATOR IS THE WHOLE WALK, BOTH CLASSES, and its VALUE is unchanged by
+  # ADR 0112 (see THE NUMBERS). What that denominator can and cannot detect is stated
+  # there and not glossed here: 583 walked against a floor of 250, and EACH class
+  # alone clears 250 (329 production, 254 test), so this floor catches a walk that
+  # read NOTHING and NOT a walk that lost one class. A class that reads nothing is
+  # caught by `print_class_positive_line`'s empty-measurement refusal, and a per-class
+  # floor is the shape that would catch it here — deliberately not done (see THE
+  # NUMBERS; the values are not re-tuned to the new denominator).
+  #
+  # THE FIRST LINE CARRIES THE PRODUCTION COUNT under the production label, and the
+  # combined count in parentheses. It used to carry the COMBINED count under that
+  # label, which was false by the size of the test class: a mixed fixture of 3
+  # production + 2 test files printed `5 production file(s) walked`. The line after
+  # this one spells out the split, but the FIRST line is the one a CI log shows and
+  # the one `check-file-size.test.sh` case 8 greps (`2 production file(s) walked` —
+  # a fixture of two production files and no test files, so the corrected line still
+  # reads exactly that there).
   if ((n_walked < FLOOR_FILES)); then
-    fail "the walk is BLIND: $n_walked production file(s) walked under $root, floor is $FLOOR_FILES" "the count is the WHOLE walk, both classes: production $n_prod_walked + test $n_test_walked = $n_walked. The floor asks whether this metric read any file at all, so it is NOT applied per class (the test class alone is 243 files here, BELOW this floor — a per-class floor would redden a healthy tree)" "a metric that read no file must not read as green (this tree holds ~562 tracked .rs/.ts/.tsx files: 319 production + 243 test)" "check the walk's pathspecs against the tree: \`git ls-files -z -- src-tauri/src src-tauri/tests src\`"
+    fail "the walk is BLIND: $n_prod_walked production file(s) walked under $root, floor is $FLOOR_FILES ($n_walked walked in both classes)" "the floor measures the WHOLE walk, both classes: production $n_prod_walked + test $n_test_walked = $n_walked. It asks whether this metric read any file at all, so it is NOT applied per class — and note that this means it detects a TOTAL blackout only: either class on its own (329 production, 254 test) clears this floor, so a walk that lost one class entirely is caught by the per-class positive-line refusal, not here" "a metric that read no file must not read as green (this tree holds 583 tracked .rs/.ts/.tsx files: 329 production + 254 test)" "check the walk's pathspecs against the tree: \`git ls-files -z -- src-tauri/src src-tauri/tests src\`"
   fi
 
   # Measure every walked file: `<count><TAB><path>`, into its class's file.
@@ -728,7 +873,7 @@ run_guard() {
   n_over_big="$(awk -F'\t' -v bar="$OVER_500_BAR" '$1 > bar { c++ } END { print c + 0 }' \
     "$tmp_dir/measured.production" "$tmp_dir/measured.test")"
   if ((n_over_big < FLOOR_OVER_BIG)); then
-    fail "the walk is BLIND: $n_over_big file(s) over $OVER_500_BAR code lines among $n_walked walked files, floor is $FLOOR_OVER_BIG" "this tree holds 83 such files across both classes (23 production, 60 test), so ZERO means the classifier stopped classifying (or the walk opened nothing) — either way this is not a green"
+    fail "the walk is BLIND: $n_over_big file(s) over $OVER_500_BAR code lines among $n_walked walked files, floor is $FLOOR_OVER_BIG" "this tree holds 86 such files across both classes (22 production, 64 test), so ZERO means the classifier stopped classifying (or the walk opened nothing) — either way this is not a green"
   fi
 
   # --- exemptions: validated, then applied ------------------------------------
@@ -757,11 +902,16 @@ run_guard() {
   # --- the two baselines --------------------------------------------------------
   # One ledger per class, read by the same `read_baseline` with the same two-field
   # shape. A missing ledger is UNCHECKED for EITHER class — see read_class_baseline.
+  # TWO CALLS, not a loop over the two class names, because the two results land in
+  # two named scalars. A loop needs a container to put them in, and a container keyed
+  # by the class names is precisely the associative array this function no longer
+  # uses (see the comment at its top). `read_class_baseline` still sets the same
+  # global it always set; it is simply read once per class here.
   local baseline_present
-  for cls in production test; do
-    read_class_baseline "$root" "$update" "$cls" "$tmp_dir"
-    baseline_presence["$cls"]=$baseline_present
-  done
+  read_class_baseline "$root" "$update" production "$tmp_dir"
+  presence_production="$baseline_present"
+  read_class_baseline "$root" "$update" test "$tmp_dir"
+  presence_test="$baseline_present"
 
   # --- `--update`: regenerate BOTH ledgers and print both diffs -----------------
   if ((update == 1)); then
@@ -771,9 +921,8 @@ run_guard() {
     if [[ ! -d "$root/$(dirname "$BASELINE_REL")" ]]; then
       fail "--update cannot write the baselines: no $(dirname "$BASELINE_REL") directory under $root" "run this from the repo root, or pass the repo root"
     fi
-    for cls in production test; do
-      update_class_ledger "$root" "$cls" "$tmp_dir" "$exempt_file" "${baseline_presence[$cls]}"
-    done
+    update_class_ledger "$root" production "$tmp_dir" "$exempt_file" "$presence_production"
+    update_class_ledger "$root" test "$tmp_dir" "$exempt_file" "$presence_test"
   fi
 
   # --- the verdict, once per class ----------------------------------------------
@@ -800,75 +949,11 @@ run_guard() {
     exit 1
   fi
 
-  # The positive lines — the sibling prints `versions match: X.Y.Z`. A count and the
-  # largest file make the claim checkable by eye: if the walked count falls off a
-  # cliff, or the largest file is one nobody expected, the walk changed and this
-  # green is not the green the guard advertises.
-  #
-  # ONE LINE PER CLASS, production first. The production line is BYTE-IDENTICAL to
-  # the one this script printed before ADR 0112 — the count beside
-  # `production file(s) walked` is the PRODUCTION walked count, which is what the
-  # harness's real-tree agreement pin compares against its own mirrored walk — and
-  # the test line is appended after it, so nothing the existing harness asserts on
-  # moves. A combined `562 file(s) walked` would have been the tidier sentence and
-  # would have broken that pin, which is a feature: the two classes have different
-  # gates and different ledgers, so they report separately.
-  #
-  # THE SORT WRITES A FILE AND THE FIRST LINE IS READ FROM IT, never
-  # `sort … | head -n1`. That was the shape here, and under `set -euo pipefail` it
-  # was a race that killed this very line: `head` exits after one line and closes
-  # the pipe, `sort` is still writing and dies of SIGPIPE (141), `pipefail`
-  # propagates the 141, the command substitution returns non-zero, and `set -e`
-  # aborts BEFORE the positive line prints — a guard whose green was intermittently
-  # a silent 141, measured at ~1 run in 10 on this tree. It is not a `head`
-  # peculiarity, it is any downstream reader that stops early: `sed -n 1q` short
-  # reads the same way. There is no pipe in the construction below, so there is no
-  # reader to close one — `sort`'s only destination is a file it writes to
-  # completion, and `read` takes one line from a FILE whose remaining bytes nobody
-  # has to consume. `head -n1 <"$largest_file"` would be a pipe again (to the
-  # command substitution) and is deliberately not used. THIS SHAPE IS KEPT FOR BOTH
-  # CLASSES; a second `sort | head` for the test class would reintroduce the race.
-  #
-  # Pinned by `check-file-size.test.sh` case 16b, which runs this 25 times in a
-  # row against a fixture sized so the old pipeline failed 24 of 25: one run of a
-  # race proves nothing.
-  print_class_positive_line() {
-    local cls="$1" n_class="$2" tmp_dir="$3"
-    # A class the walk found nothing for prints nothing. This is not a loosened
-    # refusal: the vacuity floors measure the COMBINED walk, so a tree with no test
-    # sources at all is legitimately green for the test class (there is nothing in
-    # that ledger to govern), and every existing fixture in the harness is that
-    # shape. What must never happen is a line with an EMPTY path and figure in it —
-    # that is the confident green built on a measurement that read nothing, and the
-    # refusal below is what stops it for a class that DID walk files.
-    if ((n_class == 0)); then
-      return 0
-    fi
-    local largest_file="$tmp_dir/largest.$cls"
-    LC_ALL=C sort -t"$TABS" -k1,1rn -k2,2 "$tmp_dir/measured.$cls" >"$largest_file"
-    local largest_line="" largest_path="" largest_count=""
-    # `IFS=` (and not a tab IFS) keeps the line intact so the two cuts below still
-    # split at the FIRST tab, exactly as they did before. `|| true` is here because
-    # `read` returns 1 at an EOF that carries no newline — an empty sort output must
-    # reach the refusal below, not abort through `set -e` with 128+0.
-    IFS= read -r largest_line <"$largest_file" || true
-    if [[ -z "$largest_line" ]]; then
-      # Unreachable behind the vacuity floors and the unreadable-file refusal (every
-      # walked file of a class that walked files has a row), so this is not a guard
-      # against a real input, it is the refusal that keeps the positive line TRUE
-      # whenever it does print: a `largest  ` with nothing in either field is a
-      # confident green built on a measurement that read nothing, which is what this
-      # whole script exists to refuse.
-      fail "the $cls class walked $n_class file(s) but measured none to rank under $root" "the positive line would print an empty count and an empty path; a green that cannot name the biggest file it saw is not a green"
-    fi
-    largest_count="${largest_line%%"$TABS"*}"
-    largest_path="${largest_line#*"$TABS"}"
-    printf 'file sizes within baseline: %s %s file(s) walked, largest %s %s\n' \
-      "$n_class" "$cls" "$largest_path" "$largest_count"
-  }
-
-  print_class_positive_line production "$n_prod_walked" "$tmp_dir"
-  print_class_positive_line test "$n_test_walked" "$tmp_dir"
+  # The positive lines, one per class — see `print_class_positive_line` above the
+  # guard for what each line claims, and for the shape its ranking deliberately
+  # avoids. Production first, so nothing the existing harness asserts on moves.
+  print_class_positive_line "$root" production "$n_prod_walked" "$tmp_dir"
+  print_class_positive_line "$root" test "$n_test_walked" "$tmp_dir"
 }
 
 # ---------------------------------------------------------------------------
@@ -1373,11 +1458,78 @@ run_self_test() {
 
   # Case 9: THE REAL TREE, read-only. The premise the CI step depends on, and the
   # only case that would catch a guard that works on fixtures and nowhere else.
+  #
+  # BOTH POSITIVE LINES ARE REQUIRED, not the one substring `file sizes within
+  # baseline`. That needle is satisfied by the PRODUCTION line alone, so a guard
+  # that had lost its `print_class_positive_line test` call entirely — the whole
+  # test class silently unreported, which is the state ADR 0112 exists to end —
+  # passed this case until it was tightened. The two class words are what make the
+  # assertion about both classes; ` test file(s) walked` carries a leading space so
+  # the production line cannot satisfy it.
   self_run "$script" "$real_root"
-  if [[ "$self_status" == "0" && "$self_output" == *"file sizes within baseline"* ]]; then
-    self_ok "the real checkout is green: $self_output"
+  if [[ "$self_status" == "0" &&
+        "$self_output" == *"file sizes within baseline"* &&
+        "$self_output" == *"production file(s) walked"* &&
+        "$self_output" == *" test file(s) walked"* ]]; then
+    self_ok "the real checkout is green on BOTH classes: $self_output"
   else
-    self_fail "the real checkout is green" "expected exit 0 with the positive line, got exit $self_status: $self_output"
+    self_fail "the real checkout is green with a production line AND a test line" "expected exit 0 with the positive line for both classes (production file(s) walked / test file(s) walked), got exit $self_status: $self_output"
+  fi
+
+  # Case 10: THE TEST CLASS'S POSITIVE LINE RANKS THE TEST CLASS. The mirror of the
+  # case above for the production class (harness case 18d pins the production line
+  # against an independently mirrored walk; this is the same claim for the test line,
+  # and the same defect class). Pointing the test class's largest-file sort at the
+  # PRODUCTION measurements — `sort … measured.production` in the test call — prints
+  # a production path under the test label (`254 test file(s) walked, largest
+  # …/naming.rs 2007`) and left BOTH suites green until this case existed, because
+  # every other assertion asks about a count, a gate or a ledger and none of them
+  # asks which FILE the test line names.
+  #
+  # THE FIXTURE MAKES THE TWO CLASSES DISAGREE ABOUT THE WINNER ON PURPOSE: the
+  # biggest production file (900) is bigger than the biggest test file (800), so a
+  # line built from the production rows names `bigprod.rs` and a line built from the
+  # test rows names `big.test.ts`. Asserting the test file's name+figure is therefore
+  # a test of WHICH ROW SET the line was ranked from, and the production line is
+  # asserted in the same run so a guard that swapped the two arguments outright
+  # reddens here too. Both files sit under their class's gate, so the run is green
+  # for the ordinary reason and the only thing under test is the ranking.
+  local rank_root="$self_test_root/rank-per-class"
+  self_mk_fixture_root "$rank_root"
+  local big_prod="$rank_root/src-tauri/src/bigprod.rs"
+  local big_test="$rank_root/src/lib/big.test.ts"
+  self_mkfile "$big_prod"
+  self_emit_code 900 'const p' >"$big_prod"
+  self_mkfile "$big_test"
+  self_emit_code 800 'export const t' >"$big_test"
+  git -C "$rank_root" add -A
+  self_run "$script" "$rank_root"
+  if [[ "$self_status" != "0" ]]; then
+    self_fail "the per-class ranking fixture is green (so the assertions below read a positive line)" "expected exit 0 with the positive lines, got exit $self_status: $self_output"
+  else
+    # The line for a class is the one whose LABEL names that class, selected by
+    # grepping the output rather than by position: a guard that printed the two
+    # lines in the other order would otherwise make a positional read the test.
+    local prod_line test_line
+    prod_line="$(printf '%s\n' "$self_output" | grep -F 'production file(s) walked' || true)"
+    test_line="$(printf '%s\n' "$self_output" | grep -F ' test file(s) walked' || true)"
+    if [[ "$prod_line" == *"largest src-tauri/src/bigprod.rs 900"* ]]; then
+      self_ok "the production line names the largest PRODUCTION file with its figure"
+    else
+      self_fail "the production line names the largest PRODUCTION file with its figure" "expected 'largest src-tauri/src/bigprod.rs 900', got [$prod_line]"
+    fi
+    if [[ "$test_line" == *"largest src/lib/big.test.ts 800"* ]]; then
+      self_ok "and the TEST line names the largest TEST file, not the largest file the walk saw"
+    else
+      self_fail "and the TEST line names the largest TEST file, not the largest file the walk saw" "expected 'largest src/lib/big.test.ts 800' on the test line, got [$test_line]"
+    fi
+    # The blunt half of the same pin: the production file must not appear on the
+    # test line at all, whatever the ranking machinery did to get there.
+    if [[ "$test_line" == *"bigprod.rs"* ]]; then
+      self_fail "and the TEST line names no production file" "the test line carries a production path: [$test_line]"
+    else
+      self_ok "and the TEST line names no production file"
+    fi
   fi
 
   if ((self_test_failures > 0)); then
