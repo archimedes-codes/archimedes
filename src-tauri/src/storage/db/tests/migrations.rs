@@ -588,20 +588,39 @@ fn legacy_db_migration_backfills_both_manage_todo_list_and_manage_checklist() {
 /// pre-rename install loses its Checklist — ADR 0093's whole point.
 #[test]
 fn backfill_predicate_names_both_literals_and_renames_nothing() {
-    // Re-pointed at `db/migrations.rs` by the ADR 0113 split — the function whose
-    // body this reads moved there with its two seed siblings. The `"\nfn "`
-    // terminator still resolves: `backfill_session_todos` is followed IN THIS FILE
-    // by `seed_space_sort_order`, so `.split("\nfn ").next()` still yields the
-    // function body and not the rest of the file (had it become the last item, the
-    // split would yield a superset and the `.nth(1)` on the name would still land).
+    // Reads `db/migrations.rs`, the sibling the ADR 0113 split moved the backfill
+    // into. THE SLICE IS SCOPED BY `"\npub(super) fn "`, MEASURED, not guessed:
+    // this file holds exactly THREE items and all three are `pub(super) fn` at
+    // column 0, so `"\nfn "` — the delimiter this pin used while the code still
+    // lived in the single `db.rs` — occurs ZERO times here and the slice silently
+    // ran to end of file (6,736 of 8,307 chars: the backfill body PLUS both seed
+    // functions PLUS the module doc comment). It graded 81% of the file instead of
+    // the body. It worked at base only because the old `db.rs` held ~20 column-0
+    // `fn` items, and the next one after `backfill_session_todos` happened to
+    // terminate the body there. The boundary is asserted below so the next move
+    // fails LOUDLY instead of silently widening again.
     let source = include_str!("../migrations.rs");
     let fn_body = source
         .split("fn backfill_session_todos")
         .nth(1)
         .expect("the backfill function")
-        .split("\nfn ")
+        .split("\npub(super) fn ")
         .next()
         .expect("the backfill body");
+    // The boundary assertion: the slice stopped AT the next item's declaration.
+    // Without this, a future move that makes the terminator miss (a renamed
+    // visibility, a different sibling order, one function per file) widens the
+    // slice and every assertion below still passes on the neighbouring text.
+    assert!(
+        !fn_body.contains("\npub(super) fn "),
+        "the slice escaped `backfill_session_todos` and ran into the next item — \
+         the body terminator matched nothing, so the pin below would be grading a \
+         whole file instead of a body"
+    );
+    assert!(
+        !fn_body.contains("seed_space_sort_order"),
+        "the slice is the backfill body alone — the seed siblings must not be in it"
+    );
     assert!(
         fn_body.contains("manage_todo_list"),
         "the OLD literal must stay in the predicate — rows already written under it \
@@ -628,9 +647,21 @@ fn backfill_predicate_names_both_literals_and_renames_nothing() {
         "the JSON title comparison must accept the new name too"
     );
     // `todos_json` is the third frozen name (a COLUMN) and this task never touches
-    // a gate or a column name.
+    // a gate or a column name. TWO READ TARGETS, because the two halves of the risk
+    // live in two files: the predicate this pin just scoped lives in `migrations.rs`
+    // and the FROZEN DDL — the one place a rename could actually be written — is the
+    // `SCHEMA` const, which `db/mod.rs` kept when the split moved the data steps
+    // here. The first arm says no migration renames the column; the second is the
+    // arm that carries the ADR 0093 weight. Reading only `migrations.rs` (what the
+    // split left behind) let a rename inside `SCHEMA` pass the whole lib suite: the
+    // behavioural tests stayed green because `db/mod.rs`'s gate re-adds the column
+    // by `ALTER TABLE`, so this source-text arm was the ONLY guard.
     assert!(
         !source.contains("checklist_json"),
+        "no migration step may rename the column (ADR 0093)"
+    );
+    assert!(
+        !SCHEMA.contains("checklist_json"),
         "sessions.todos_json is FROZEN (ADR 0093) — no column rename here"
     );
 }

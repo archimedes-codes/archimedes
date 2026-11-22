@@ -6,10 +6,16 @@
 //! child has a production sibling of the same name. `support` holds the fixtures
 //! several subjects share — the raw-SQL probes and the legacy-schema fixtures.
 
-// `support` is declared FIRST because the legacy-schema macros it defines are
-// textual: a `macro_rules!` reaches the rest of the enclosing module only from its
-// definition onward, and the `SCHEMA_WITHOUT_*` / `SCHEMA_PRE_TASK_BOARD_CONFIG`
-// fixtures below it are built by `legacy_batch!`.
+// `support` is declared FIRST, and the `#[macro_use]` attribute is what makes the
+// order matter. It is NOT needed by anything inside `support.rs`: the
+// `SCHEMA_WITHOUT_*` / `SCHEMA_PRE_TASK_BOARD_CONFIG` fixtures are built by
+// `legacy_batch!` INSIDE that file, below the macro, and a `macro_rules!` is already
+// visible to the rest of the module that declares it without any attribute. What the
+// attribute is load-bearing for is the CHILDREN: it puts `support`'s macros into the
+// textual macro scope of the `mod` list that follows, so a child may spell
+// `legacy_batch!` / `legacy_*!` in its own fixture. Measured: moving the declaration
+// below the `mod` list breaks a child that uses a macro (`E0658: cannot find macro …
+// in this scope`), and no fixture inside `support.rs` itself notices. Keep it first.
 #[macro_use]
 mod support;
 
@@ -19,6 +25,7 @@ mod messages;
 mod migrations;
 mod open;
 mod rows;
+mod seams;
 mod sessions;
 mod spaces;
 mod stages;

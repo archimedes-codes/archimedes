@@ -65,7 +65,8 @@ impl Db {
     /// `EmptyTitle` — the SAME refusal the command layer's pre-flight makes, mapped
     /// variant-to-variant so both doors answer with one sentence. It used to live in
     /// `commands/tasks.rs` alone, which was safe while the IPC command was the only
-    /// door; [`TaskStore::create_task`] below is the second, it delegates straight
+    /// door; the crate seam's `TaskStore::create_task` (impl'd in `db/seams.rs`, which
+    /// the split moved out of this file) is the second, it delegates straight
     /// here, and `tasks.title` is `TEXT NOT NULL` with no `CHECK` — so a model could
     /// write a card with no label that a human could not, and `TaskCard.tsx` renders
     /// `{task.title}` with no fallback. A rule with two doors belongs on the single
@@ -98,9 +99,12 @@ impl Db {
         // ("move T3 to doing"), and a card labelled `#0` reads as a bug. So this
         // bottom join floors at `0` and the first card of a Space is `#1`.
         //
-        // That is a DELIBERATE deviation from this file's own `sort_order` idiom
-        // (`COALESCE((SELECT MAX(sort_order) …), -1) + 1` — see `upsert_space`,
-        // `record_session`, and the space backfill in `Db::open`), which floors
+        // That is a DELIBERATE deviation from the `sort_order` bottom-join idiom the
+        // rest of `db` uses — `COALESCE((SELECT MAX(sort_order) …), -1) + 1`, spelled
+        // in `spaces.rs`'s `upsert_space`, `sessions.rs`'s `record_session` and the
+        // space backfill inside `Db::open` in `db/mod.rs` (the split moved all three
+        // out of this file; this file's own `sort_order` join below keeps the same
+        // idiom). That idiom floors
         // at `-1` so the first row lands at position `0`. `sort_order` is a
         // zero-based POSITION INDEX — the `-1` is precisely what makes "join at
         // the bottom" mean 0 — and the statement below keeps that idiom

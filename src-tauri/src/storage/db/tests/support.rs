@@ -1,6 +1,8 @@
 //! Shared fixtures for the `db` mirror test tree (ADR 0113's one non-mirror
 //! child). The rule this file obeys: an item lives here because MORE THAN ONE
 //! subject child reads it; a fixture with a single caller belongs in that child.
+//! THE RULE COUNTS CONSUMERS, NOT CALL SITES — that distinction is what settles
+//! the only contested case below.
 //!
 //! Two families live here:
 //!
@@ -9,24 +11,43 @@
 //!     so a test that must read the file underneath it opens its own
 //!     `rusqlite::Connection` through these;
 //!   * the legacy-schema fixtures (`legacy_*` macros, the `SCHEMA_WITHOUT_*`
-//!     consts, `preexisting_db`, `create_pre_sort_order_db`,
-//!     `SCHEMA_PRE_TASK_BOARD_CONFIG`) that build a pre-migration database file
-//!     WITHOUT opening `Db`, because `Db::open` is the code under test.
+//!     consts, `preexisting_db`, `create_pre_sort_order_db`) that build a
+//!     pre-migration database file WITHOUT opening `Db`, because `Db::open` is the
+//!     code under test.
 //!
 //! Six fixtures the split's plan listed as shared turned out to have exactly ONE
 //! calling child, so they live in that child instead of here: `session_on` in
 //! `tests/sessions.rs`, `record_linkable_session` in `tests/board.rs`, `task_rows`
-//! in `tests/tasks.rs`, and `has_column` / `stage_order` / `pre_task_board_rows` in
-//! `tests/stages.rs`.
+//! in `tests/tasks.rs`, and `has_column` / `stage_order` /
+//! `pre_task_board_rows` / `SCHEMA_PRE_TASK_BOARD_CONFIG` in `tests/stages.rs`.
 //!
-//! ONE item here has a single caller and stays anyway: `wal_frame_count`, read only
-//! by `tests/messages.rs`. It stays `pub(super)` in this file because
-//! `storage/batching/tests/mod.rs` names it as the ORIGIN of the commit-counter
-//! instrument and keeps its OWN local copy on purpose (that module re-derives the
-//! page size from the SQLite file header rather than reaching through a `Db`), so
-//! the name is documentation of a shared instrument even though no second child in
-//! THIS tree imports it. Moving it into `tests/messages.rs` would break that
-//! cross-file citation for no gain.
+//! THREE groups of single-reader items stay here anyway, for two different reasons,
+//! and both reasons are the rule's own wording rather than an exception to it:
+//!
+//!   * SIX of the eight `SCHEMA_WITHOUT_*` consts (`…_ARCHIVED`, `…_CONTEXT_USAGE`,
+//!     `…_COST_USD`, `…_STAGES_ON_ENTER_SKILL`, `…_STAGES_NEXT_SLUGS`,
+//!     `…_SPACES_BOARD_STRICT`) are read ONLY by `tests/open.rs`, and they stay.
+//!     That child consumes them as a COMPLETE SET —
+//!     `each_cluster_schema_omits_exactly_one_gated_column` walks all eight by name
+//!     and asserts each omits exactly one gated column, so the property lives in the
+//!     SET and not in any one string. One consumer of a set is still the reason the
+//!     set exists: the rule counts CONSUMERS, not call sites, and scattering the
+//!     names into their individual children would split a pin that is only assertable
+//!     over all of them. (The other two, `…_SPACE_SORT_ORDER` and
+//!     `…_SESSION_SORT_ORDER`, have a genuine second reader — `tests/migrations.rs`
+//!     — and need no defence.)
+//!   * `wal_frame_count`, read only by `tests/messages.rs`. It stays `pub(super)`
+//!     in this file because `storage/batching/tests/mod.rs` names it as the ORIGIN
+//!     of the commit-counter instrument and keeps its OWN local copy on purpose (that
+//!     module re-derives the page size from the SQLite file header rather than
+//!     reaching through a `Db`), so the name is documentation of a shared instrument
+//!     even though no second child in THIS tree imports it. Moving it into
+//!     `tests/messages.rs` would break that cross-file citation for no gain.
+//!   * `artifact_rows`, read only by `tests/artifacts.rs`, stays for the identical
+//!     citation reason: `tests/tasks.rs` names it in two comments as the idiom its
+//!     own `task_rows` copies, and `src-tauri/tests/fulcrum_seams.rs` spells a third
+//!     local copy of the same independent-connection probe. It is the named origin of
+//!     a three-file idiom, exactly as `wal_frame_count` is the named origin of one.
 //!
 //! `legacy_batch!` assembles a fixture from the per-table macros, and the
 //! ISOLATION rule those fixtures obey is documented on
@@ -430,22 +451,6 @@ pub(super) const SCHEMA_WITHOUT_STAGES_NEXT_SLUGS: &str =
 /// single-ALTER gate for the Strict-workflow opt-in.
 pub(super) const SCHEMA_WITHOUT_SPACES_BOARD_STRICT: &str =
     legacy_batch!(complete_sessions, spaces_without_board_strict);
-
-/// The schema a pre-#179 database holds: the FIVE-column `stages`, the
-/// `spaces` row with no `board_strict`, complete `sessions`, and the tail with
-/// its FK so `Db::open`'s FK-rewrite batch stays quiet.
-///
-/// This is the string the migration tests hand [`preexisting_db`]. It is spelled
-/// from the cluster's macros so a future column addition cannot quietly leave it
-/// stale in one table while the other fixtures move — but note it is the ONLY
-/// fixture allowed to omit TWO gated columns, because a migration test wants
-/// every #179 gate to fire at once (the cluster fixtures must never use it).
-pub(super) const SCHEMA_PRE_TASK_BOARD_CONFIG: &str = concat!(
-    legacy_sessions_complete!(),
-    legacy_stages_pre_task_board_config!(),
-    legacy_spaces_without_board_strict!(),
-    legacy_tail!()
-);
 
 /// A minimal recorded-session shape for the title tests (the title
 /// itself is never part of the literal — nothing writes it through

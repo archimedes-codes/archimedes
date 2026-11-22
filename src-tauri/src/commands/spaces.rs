@@ -120,7 +120,7 @@ pub async fn set_space_trusted(
     // thread — the SAME `tauri::async_runtime::spawn_blocking` the file rule in
     // `commands/files/mod.rs` prescribes, not `tokio::task::spawn_blocking`.
     // The wrap lives HERE in the command file: the canonicalize is deep inside
-    // `Db`/`space_key`, and `storage/db.rs` is intentionally untouched.
+    // `Db`/`space_key`, and the storage layer is intentionally untouched.
     // `wm.send_config_to_space` stays OUTSIDE the closure (no filesystem, and a
     // `State` must not be moved into it). The `JoinError` arm is UNTESTABLE —
     // the closure is pure against an `Arc<Db>` + owned `path`; it is stated,

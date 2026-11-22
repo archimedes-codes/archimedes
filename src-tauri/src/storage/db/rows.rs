@@ -10,6 +10,14 @@
 //! `MessageRow` and `SessionRow` are NOT here: they live in
 //! `fulcrum_harness::store_rows` (Step B-bis) and are re-exported by
 //! [`super`] so every existing spelling resolves unchanged.
+//!
+//! ONE upward edge, so "everything is built on this" is not the whole picture:
+//! `task_row_from` below calls [`stages::lenient_next_slugs`] to decode a Stage's
+//! `next_slugs` JSON, and `stages.rs` imports this module for its row types — a
+//! two-way edge. It is PRE-EXISTING (both calls lived in the single `db.rs` and were
+//! merely made cross-file by the split), so it is named here rather than restructured
+//! away: moving the decoder would put a row mapper's dependency in front of the row
+//! types it depends on, which is the same knot tied from the other side.
 
 use rusqlite::Row;
 use serde::{Deserialize, Serialize};
@@ -462,7 +470,8 @@ pub struct TaskCardView {
 /// [`TaskCardView`] wrapper exists to prevent.
 ///
 /// `key` is a free-form slug, NOT an enum: `tool_specs()` returns a static `Vec`
-/// and cannot carry one. But the grammar is enforced HERE, by [`Db::write_artifact`]
+/// and cannot carry one. But the grammar is enforced HERE, by
+/// [`super::Db::write_artifact`]
 /// — see "THE ONE OWNER" below it — for every door to `task_artifacts`, not in the
 /// command layer. The command's `require_artifact_key` pre-flight still runs and
 /// still answers first; it is not the guard.

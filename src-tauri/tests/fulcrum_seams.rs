@@ -49,7 +49,7 @@
 //!   `agent/worker/mod.rs` → [`moved_wire_types_keep_every_existing_desktop_path_resolving`]
 //!   fails, because the desktop spells these types at
 //!   `crate::agent::worker::protocol::…` through that module alias.
-//! - Delete the `pub use fulcrum_harness::store_rows::{…}` in `storage/db.rs`, or the
+//! - Delete the `pub use fulcrum_harness::store_rows::{…}` in `storage/db/mod.rs`, or the
 //!   one in `src/types.rs` → the row/DTO pins fail at the `Db::session` /
 //!   `Db::messages_for` / `record_session` sites, and the desktop's `commands/` +
 //!   `tests/storage.rs` readers fail with them.
@@ -1342,9 +1342,14 @@ fn the_task_store_surface_round_trips_through_a_real_db() {
 // Why these live HERE and not in `commands/tasks/tests/artifacts.rs`: the command
 // layer already refused both (three green tests), and those tests are the reason
 // the bug survived — they test the path that was never broken. The seam is the
-// path the tool takes, and the `storage/db/tests/` tree cannot see the crate's
-// error family. `tests/fulcrum_seams.rs` is the only file that reaches the trait object
-// AND the crate's `TaskStoreError`, so it is the only place this could be written.
+// path the tool takes. What puts them here is the FULL DB HARNESS plus the trait
+// object, not the error type: the claim this paragraph used to carry — that
+// `storage/db/tests/` "cannot see the crate's error family" — is FALSE and is
+// retracted. `storage/db/tests/seams.rs` imports `StoreError` and `TaskStoreError`
+// from `fulcrum_harness::seams` and passes, so a unit child can name both. What
+// this file keeps is what a unit child has no business owning: the `Arc<dyn …>`
+// coercion over a seeded database, and the refusals read through an INDEPENDENT
+// connection to the same file.
 //
 // Non-vacuity, per test: delete the key check in `Db::write_artifact` → the first
 // reddens on `matches!` (an `Ok` meta arrives). Delete the size check → the second

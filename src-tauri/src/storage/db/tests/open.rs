@@ -813,27 +813,39 @@ fn no_board_table_has_a_foreign_key_to_spaces() {
              on a tab close loses a workflow; got {ddl}"
         );
     }
-    // READS `SCHEMA`, not a file path — and that is the whole point of this arm.
-    // It used to read `include_str!("../../db.rs")` and ask the question of a whole
-    // source FILE, which made it VACUOUS: `REFERENCES spaces` occurs ZERO times in
-    // that file's text either way, so this arm could not have gone red for a schema
-    // reason even before the split (AGENTS.md / `docs/agents/repo-gotchas.md`:
-    // "check the vacuity floor in that lint"). `SCHEMA` is the one place a reviewer
-    // could actually write `REFERENCES spaces(path)` — the DDL batch — so the
-    // forbidden string is now searched where it would appear, and the read target
-    // travels with the split instead of breaking on it.
+    // TWO READ TARGETS, and both are live.
     //
-    // The arm is also demonstrably NOT vacuous the other way (an empty or wrong
-    // read target passing green): the positive assertion BELOW on this same page
-    // finds `REFERENCES sessions(id) ON DELETE CASCADE` inside the very same
-    // `SCHEMA` text. So `REFERENCES ` is proven present in what was read, and a
-    // `REFERENCES spaces(path)` added to any of the four board DDLs is caught here
-    // rather than in a user's database after a tab close. No assertion is added or
-    // weakened for that proof — it is the pin's own existing positive arm.
+    // `SCHEMA` is the DDL batch — the place a reviewer would most obviously write
+    // `REFERENCES spaces(path)` to "tidy the schema" — so the forbidden string is
+    // searched there. The `include_str!` arm beside it asks the same question of the
+    // WHOLE `db/mod.rs` text, and that is NOT redundant: `Db::open` stays in that
+    // file and its migration path carries DDL of its own outside the `SCHEMA` const
+    // (the `native_messages_migrated` batch spells `REFERENCES sessions(id) ON DELETE
+    // CASCADE` at `db/mod.rs:837`), so a spaces FK added THERE is visible only to the
+    // whole-file arm.
+    //
+    // The claim this comment used to carry — that the pre-split whole-file arm was
+    // VACUOUS and "could not have gone red for a schema reason even before the split"
+    // — was FALSE, and is retracted. Measured: `REFERENCES spaces(path)` added to the
+    // `sessions` DDL inside `SCHEMA` reddened the whole-file arm at the base commit.
+    // The narrower `SCHEMA` arm the split left behind is live too, but it narrowed
+    // coverage: the same FK added to the `native_messages_migrated` DDL survives at
+    // HEAD and was caught at base. Both arms are therefore kept.
+    //
+    // Non-vacuity, other direction (a wrong read target passing green): the positive
+    // assertion BELOW on this same page finds `REFERENCES sessions(id) ON DELETE
+    // CASCADE` inside the very same `SCHEMA` text, so `REFERENCES ` is proven present
+    // in what the DDL arm reads. No assertion is added or weakened for that proof —
+    // it is the pin's own existing positive arm.
     assert!(
         !SCHEMA.contains("REFERENCES spaces"),
         "nothing in the schema may reference `spaces` — `sessions.cwd` carries no \
          FK for the identical reason"
+    );
+    assert!(
+        !include_str!("../mod.rs").contains("REFERENCES spaces"),
+        "and nothing in `db/mod.rs` at all — `Db::open`'s own migration DDL lives \
+         outside `SCHEMA` and is the half the DDL arm above cannot see"
     );
     let links = SCHEMA
         .split("CREATE TABLE IF NOT EXISTS task_sessions")

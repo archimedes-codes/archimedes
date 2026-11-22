@@ -22,8 +22,9 @@
 //! [`rows`], [`migrations`] — and `tests/` mirrors those siblings one for one.
 //!
 //! A sibling reads the parent's private `SCHEMA` / `gate` / `LAST_ACTIVITY` by
-//! full path (a child module may, with no widening). Sibling→sibling calls are the
-//! ONLY thing widened here, and only as far as `pub(super)`.
+//! full path (a child module may, with no widening). Nothing is widened past
+//! `pub(super)`, and never to `pub(crate)` — the three things `pub(super)` IS used
+//! for are enumerated at the `mod` list below.
 
 use std::path::Path;
 use std::sync::Mutex as StdMutex;
@@ -200,7 +201,8 @@ pub enum BoardError {
 
     /// No `tasks` row with this id. Absence is a rejection here (a WRITE was
     /// asked for), where the READ path (`get_task`) answers `Ok(None)` — the
-    /// `find_space`/`set_space_trusted` split in this file, carried over.
+    /// `find_space`/`set_space_trusted` split in `spaces.rs` (the sibling the split
+    /// moved those two verbs to), carried over.
     #[error("no task with id {0}")]
     MissingTask(String),
 
@@ -298,7 +300,7 @@ pub enum BoardError {
     #[error("artifact key `{key}` is not [a-z0-9][a-z0-9-]{{0,39}}")]
     BadArtifactKey { key: String },
 
-    /// `write_artifact` refuses a markdown over [`MAX_ARTIFACT_MARKDOWN_BYTES`].
+    /// `write_artifact` refuses a markdown over [`Db::MAX_ARTIFACT_MARKDOWN_BYTES`].
     ///
     /// Refused, NEVER truncated. Both numbers ride the variant (and the command
     /// layer re-emits them as `size`/`max` envelope keys, ADR 0063) so a caller
@@ -1053,9 +1055,22 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
 // genuinely shared (the error types, `Db`, `open`, `gate`, the pragmas,
 // `LAST_ACTIVITY`, `SCHEMA`) and nothing else. A sibling may read those by full
 // path WITHOUT widening, because Rust privacy is "the defining module and its
-// descendants" and every sibling is a descendant of this one. The `pub(super)`
-// tokens in the children are therefore all sibling→sibling calls, and nothing is
-// widened to `pub(crate)`.
+// descendants" and every sibling is a descendant of this one. Nothing is widened to
+// `pub(crate)`. The 27 `pub(super)` items the children do carry fall into THREE
+// categories, and naming all three is the point — the sentence this block replaced
+// claimed the first category was the only one:
+//
+//   * SIBLING→SIBLING, the majority (19): `rows`' column consts and row mappers,
+//     read by every subject that runs a `SELECT`, plus `stages`' five helpers and
+//     `seams`' `space_key`.
+//   * PARENT→CHILD (3): the three `migrations` data steps, imported by `mod.rs` just
+//     below and called from inside `open`'s `gate` closures. `pub(super)` is what the
+//     PARENT needs here, not a sibling reaching sideways — so none of them can be a
+//     plain `fn`, and `pub(super)` is the honest spelling of a child's API its parent
+//     uses.
+//   * TEST-ONLY (5): `SESSION_` / `MESSAGE_` / `SPACE_` / `STAGE_` / `TASK_ROW_FIELDS`
+//     in `rows`, imported by nothing in `src/` except `db/tests/rows.rs`. They are the
+//     arity side of the drift guards, so their only consumer is the test tree.
 
 mod artifacts;
 mod board;

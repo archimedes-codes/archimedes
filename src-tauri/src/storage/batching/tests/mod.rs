@@ -1564,7 +1564,7 @@ async fn replace_refuses_its_atomic_rewrite_when_the_pre_flush_fails() {
 /// `Err` can only mean "withheld", and that half is pinned by a round-trip above;
 /// `Insert`'s proceed-past-it is not observable at all, and is pinned here.
 ///
-/// This is the same instrument the schema guards in `storage/db.rs`'s tests and
+/// This is the same instrument the schema guards in `storage/db/tests/` and
 /// `commands/update.rs::the_relaunch_path_drains_the_batch_before_it_exits` use, for
 /// the same stated reason: the alternative to a source pin is a comment, and a comment
 /// is exactly what was wrong here — the docs claimed `Insert` and `Replace` behaved

@@ -360,9 +360,11 @@ impl Db {
     /// The SQL, and the four rules it carries:
     ///   - `WHERE ts2.session_id = ts.session_id` with `MAX(ts2.rowid)` picks the
     ///     NEWEST link (D5). It is the CORRELATED form this file already uses in
-    ///     [`LAST_ACTIVITY`], and it stays that form — there is no `GROUP BY`
-    ///     anywhere in this file and this is not where one starts. `rowid` is
-    ///     SQLite's insert-order counter, so "newest" means "linked last", which is
+    ///     `LAST_ACTIVITY` (the parent's private const — de-bracketed, because a
+    ///     link to a private item is its own rustdoc warning), and it stays that
+    ///     form — there is no `GROUP BY` anywhere in this file and this is not where
+    ///     one starts. `rowid` is SQLite's insert-order counter, so "newest" means
+    ///     "linked last", which is
     ///     what a badge should follow when a Session has been handed between cards.
     ///   - The winner is chosen BEFORE the join, which is the whole of D6: a
     ///     Session whose NEWEST link names a Task that does not resolve gets NO
@@ -377,24 +379,28 @@ impl Db {
     ///     rather than inventing a row for it.
     ///   - `ORDER BY ts.session_id` costs a temp b-tree and buys determinism:
     ///     without it the row order is whatever the planner reaches first, and every
-    ///     assertion in this file's tests would be a set-comparison instead of an
-    ///     `assert_eq!` on a `Vec`.
+    ///     assertion in this sibling's tests (`tests/board.rs`) would be a
+    ///     set-comparison instead of an `assert_eq!` on a `Vec`.
     ///
     /// The projection is spelled INLINE, not interpolated from
-    /// [`TASK_NUMBER_COLUMNS`], for the reason documented on that const: every term
+    /// `TASK_NUMBER_COLUMNS`, for the reason documented on that const: every term
     /// is table-qualified by the join. The guard is the behavioural test named
     /// above, which asserts all three fields positionally.
     ///
-    /// The `AS` on the outer alias is load-bearing for a test two files away:
-    /// `the_board_link_statement_selects_the_columns_the_const_owns` counts how
-    /// many times `db.rs` spells `task_sessions` with its bare `ts` alias, and
-    /// requires exactly ONE. Write this alias without `AS` and both this statement
-    /// and its inner `ts2` one match that literal — `ts2` starts with `ts` — the
-    /// count goes 1 → 3, and a pin about the board's link statement reddens with a
+    /// The `AS` on the outer alias is load-bearing for a test two files away.
+    /// `the_board_link_statement_selects_the_columns_the_const_owns` (in
+    /// `tests/board.rs`) reads THIS file's text and requires its anchor — the
+    /// `FROM` clause spelling `task_sessions` followed by the BARE `ts` alias, which
+    /// only `get_board`'s link statement above uses — to occur EXACTLY ONCE, because
+    /// it slices the projection that sits immediately before the first match.
+    /// Measured here: that anchor occurs once today; dropping `AS` from this
+    /// statement's outer alias takes it to 2, and dropping it from the inner `ts2`
+    /// alias too takes it to 3 (`ts2` starts with `ts`, so it matches the same
+    /// literal). Either way a pin about the BOARD's link statement reddens with a
     /// message pointing nowhere near this read. `AS` is plain SQLite and costs
     /// nothing. (The same arithmetic is why this comment does not spell the anchor
     /// out verbatim: that test greps the whole FILE, doc comments included, so
-    /// quoting its own anchor here would be the third occurrence.)
+    /// quoting its own anchor here would itself break the count.)
     ///
     /// PANICS ON A POISONED MUTEX, and this site is no exception to the file's own
     /// rule: this lock guards `Db`'s ONE shared `rusqlite::Connection`, so

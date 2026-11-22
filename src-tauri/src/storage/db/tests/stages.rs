@@ -779,6 +779,28 @@ fn stage_order(db: &Db, space: &str) -> Vec<(String, i64)> {
     .expect("rows")
 }
 
+/// The schema a pre-#179 database holds: the FIVE-column `stages`, the
+/// `spaces` row with no `board_strict`, complete `sessions`, and the tail with
+/// its FK so `Db::open`'s FK-rewrite batch stays quiet.
+///
+/// MOVED OUT OF [`super::support`] by the review round: it has exactly ONE reader
+/// (`the_on_enter_skill_gate_backfills_research_and_inserts_no_discuss_row` below)
+/// and no table use, so the placement rule this tree obeys — an item lives in
+/// `support` because more than one child reads it — puts it HERE, beside the row
+/// fixture it is handed to. It is spelled from `support`'s macros (which reach this
+/// child through `#[macro_use] mod support`) so a future column addition cannot
+/// quietly leave it stale in one table while the other fixtures move. Note it is the
+/// ONLY fixture in the tree allowed to omit TWO gated columns, because a migration
+/// test wants every #179 gate to fire at once — which is also why it belongs to the
+/// one child whose gate owns `stages` and must never be picked up by a cluster
+/// fixture.
+const SCHEMA_PRE_TASK_BOARD_CONFIG: &str = concat!(
+    legacy_sessions_complete!(),
+    legacy_stages_pre_task_board_config!(),
+    legacy_spaces_without_board_strict!(),
+    legacy_tail!()
+);
+
 /// The five Stage rows a pre-#179 install holds for one Space, plus that
 /// Space's `spaces` row (keyed RAW — the migration never re-keys `spaces`).
 fn pre_task_board_rows(space: &str) -> String {

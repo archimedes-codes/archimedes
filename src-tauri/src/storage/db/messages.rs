@@ -223,7 +223,7 @@ impl Db {
     /// rows, then insert the new ones — in a SINGLE transaction (the
     /// `run_compaction` rewrite: a crash mid-rewrite must never leave an
     /// empty / partial transcript). The same `(session_id, seq)` upsert
-    /// semantics as [`insert_native_message`] apply to each row.
+    /// semantics as [`Self::insert_native_message`] apply to each row.
     pub fn replace_native_messages(
         &self,
         session_id: &str,
