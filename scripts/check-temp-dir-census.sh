@@ -145,7 +145,16 @@ mcp-loop-	src-tauri/src/agent/harness/loop/tests/turn_lifecycle.rs
 # src-tauri/tests` for the call form `in_env_temp("mcp-` is empty). `mcp-loop-`
 # above still stands on its own — it never needed `mcp-` beneath it, since the
 # census matches the longest prefix a name actually has.
-db-	src-tauri/src/storage/db.rs
+# `db-` is the ONE directory-valued owner in this table, and ADR 0113 is why: the
+# prefix used to be minted inside `src-tauri/src/storage/db.rs`, and that file no
+# longer exists — the split moved every `db-*` minter into the mirror test tree, so
+# the prefix now has TEN minters (`src-tauri/src/storage/db/tests/{artifacts,board,
+# messages,migrations,open,rows,sessions,spaces,stages,tasks}.rs`, 129 call sites,
+# verified with `grep -rn 'in_env_temp("db-' src-tauri/src src-tauri/tests`).
+# `attribute()` prints the owner for a human hunting a leak and never opens it, so
+# naming the directory is both accurate and the shortest true answer; naming one of
+# the ten siblings would send a reader to a file that mints a third of the prefix.
+db-	src-tauri/src/storage/db/tests/
 archimedes-cmd-agents-	src-tauri/src/commands/agents.rs
 # (T8b/S8b.4-part-3) THREE rows removed here — `archimedes-agents-`,
 # `archimedes-skills-`, `archimedes-sudo-` — their minters moved to

@@ -10,8 +10,10 @@ superseded-by:
 `tests.rs` sibling (`find src-tauri/src -name 'tests.rs'` reports **0** sites) — and
 `docs/agents/test-counts-and-splits.md` prescribes splitting that region **by subject**. Neither says
 what the children are *named*. Splitting `src-tauri/src/storage/db.rs` made that gap consequential:
-its test region is a single flat 6,128-code-line module with zero inner `mod` declarations, and nine
-production subjects are approved to land beside it.
+its test region is a single flat 6,128-code-line module with zero inner `mod` declarations, and **ten**
+production subjects land beside it. (The plan approved nine; implementation added a tenth,
+`db/migrations.rs` — see the Consequences, which record why that is a consequence of this rule rather
+than drift from the plan.)
 
 We decided the test tree **mirrors the source tree**: when a production unit is split into
 `foo/mod.rs` + `foo/<subject>.rs`, its `foo/tests/` holds one child per production child with the
@@ -90,13 +92,31 @@ directories is a rule that gets ignored rather than followed.
 
 ## Consequences
 
-- **Adopting the rule creates named violations.** Measured against every unit with more than one
-  production child, exactly one satisfies the mirror today: `commands/files/` (production children
-  `completion`, `image`, `space_walk`, `token`; test children the same four, plus `support.rs`). The
-  violations are `storage/db/tests/` — one flat 6,128-code-line module beside the nine production
-  subjects this approved split lands — and `agent/session/tests/`, which holds a single flat `mod.rs`
-  (3,178 code lines, zero inner `mod` declarations) against production children `naming.rs`,
-  `router.rs` and `naming/prompt.rs`.
+- **Adopting the rule creates named violations, and this branch has fixed one of the two.** Measured
+  against every unit with more than one production child, `commands/files/` satisfied the mirror at
+  the time this ADR was written (production children `completion`, `image`, `space_walk`, `token`;
+  test children the same four, plus `support.rs`). Two units did not: `storage/db/tests/` and
+  `agent/session/tests/`.
+  **`storage/db/tests/` is now compliant** — child-for-child, measured at this branch: production
+  children `artifacts`, `board`, `messages`, `migrations`, `rows`, `seams`, `sessions`, `spaces`,
+  `stages`, `tasks` beside test children of the same names, plus `open.rs` mirroring the `mod.rs`
+  parent that keeps `Db::open`, `gate` and `SCHEMA`, plus `support.rs`, plus a 12-line `tests/mod.rs`
+  that is nothing but `mod` declarations. `seams.rs` has no test child, which the "binds the naming,
+  not the count" bullet below permits explicitly.
+  **`agent/session/tests/` remains a violation**: one flat `mod.rs`, 3,178 code lines, zero inner
+  `mod` declarations, against production children `naming.rs`, `router.rs` and `naming/prompt.rs`. It
+  has its own card and is not this branch's to close.
+- **The split landed TEN production subjects, not the nine this ADR was written against, and the
+  tenth is a consequence of this rule.** The plan held that the migration free functions had to stay
+  in `db/mod.rs`; that constraint was **false** — all 12 `gate(&mut conn, ` calls are inside `pub fn
+  open`, which is what the gate-count pin reads, so the free functions were never pinned to the parent
+  and were free to move. Without a `db/migrations.rs` sibling the mirror has nowhere to put the
+  migration tests, and they would land in the parent-mirroring child: `db/tests/open.rs`'s 735 code
+  lines plus `db/tests/migrations.rs`'s 490 is **1,225** code lines (1,645 raw) — over the very gate
+  this PR introduces. The
+  mirror is what forced the tenth subject: a test child needs a
+  same-named production child, so the subject that could not be named in the test tree had to be named
+  in the production tree.
 - **`storage/batching.rs` is NOT a mirror violation** and must not be cited as one. It is one
   production file with one `tests/mod.rs`, so the mirror is trivially satisfied; its 1,079 test code
   lines are a *subject-count* problem under the existing rule and, above ADR 0112's gate, a governed

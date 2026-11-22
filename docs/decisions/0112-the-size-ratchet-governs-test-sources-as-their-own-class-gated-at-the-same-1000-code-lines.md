@@ -7,13 +7,17 @@ superseded-by:
 # The size ratchet governs TEST sources as their own class, gated at the same 1,000 code lines as production
 
 `scripts/check-file-size.sh` ratchets PRODUCTION files over 1,000 code lines and deliberately counts
-an inline `#[cfg(test)] mod tests` as part of the file. Its walk RETIRES anything under a `tests/`
-directory and every `*.test.ts(x)` (`scripts/check-file-size.sh`, the `*/tests/*` case in
-`walk_production_files`). Measured consequence at `b2d6ea95`: **241 test sources, 19 over 1,000 code
-lines, 5 over 2,000, and the guard sees none of them** — the largest test file in the repo,
-`src-tauri/src/storage/db/tests/mod.rs` at 6,128 code lines, is invisible to it. Five of the nine
-files the guard DOES flag are over 1,000 only because of an inline test region
-(`agent/session/naming.rs` is 327 production code lines under a 1,680-line `mod tests`).
+an inline `#[cfg(test)] mod tests` as part of the file. Its walk USED TO RETIRE anything under a
+`tests/` directory and every `*.test.ts(x)` — the `*/tests/*` case in the walk function, now called
+`walk_tracked_files`; it carries that name because this decision removed the two `continue`s that
+retired them, and the name that did the retiring became false the moment it stopped applying. That
+retirement is the **superseded** behaviour this ADR reverses; the walk now classifies instead of
+skipping. Measured consequence at
+`b2d6ea95`: **241 test sources, 19 over 1,000 code lines, 5 over 2,000, and the guard saw none of
+them** — the largest test file in the repo, `src-tauri/src/storage/db/tests/mod.rs` at 6,128 code
+lines, was invisible to it. Six of the nine files the guard DID flag at that commit are over 1,000
+only because of an inline test region (`agent/session/naming.rs` is 327 production code lines under a
+1,680-line `mod tests`).
 
 We decided the guard classifies every walked file as **production** or **test** and gives each class
 its own `HARD_GATE`, `SEED_THRESHOLD` and baseline, with the test class gated and seeded at the **same
@@ -32,13 +36,32 @@ gate has to be low enough that relocating is never better than splitting:
 | `agent/session/naming.rs` | 327 | 1,680 | **yes** | **no — invisible** |
 | `src-tauri/src/config.rs` | 259 | 1,030 | **yes** | **no** |
 | `agent/session/router.rs` | 456 | 1,015 | **yes** | **no** |
-| `commands/settings.rs` | 442 | 628 | no | no |
 | `commands/agents.rs` | 140 | 915 | no | no |
+| `agent/errors.rs` | 497 | 638 | **no** | no |
+| `commands/settings.rs` | 442 | 628 | no | no |
 
 At 2,000, moving `naming.rs`'s region out drops that file from 2,007 to 327 **and** puts the region
 below the test gate — a free pass on both sides, and the exact behaviour that produced this work item.
-At 1,000 relocation is a wash: the region stays gated wherever it lives, so the only way down is to
-split it by subject. **`docs/research/production-godfile-census-and-the-size-metric.md` recommended a
+At 1,000 relocation is a wash **for the three files above the line**: the region stays gated wherever
+it lives, so the only way down is to split it by subject.
+
+**And the honest boundary of that claim, measured.** The last three rows are the remainder the number
+does NOT cover, and `agent/errors.rs` is the case that makes it concrete: its inline region is 638
+code lines, so a relocated child of it lands at 638 — **under** the 1,000 test gate — while the file
+it left drops from 1,135 to 497 production code lines, **under** `SEED_THRESHOLD=700`. Such a
+relocation is free on **both** sides of the move at 1,000 exactly as it was at 2,000. **The 1,000 gate
+does not close the dodge for a file whose inline region is smaller than 1,000.** What closes that
+remainder instead is not a number: it is `AGENTS.md`'s **subject-count rule**, which is what actually
+decides whether a region gets split (no `describe` / `#[cfg(test)]` block over ~25 unrelated tests),
+plus the fact that the relocated region is no longer **invisible** — it appears in the walk, in the
+ledger and in the `--update` diff, so the move is a decision a reviewer sees rather than a deletion no
+one is asked about. This ADR does not pretend otherwise, and it does not re-tune the threshold to
+chase the remainder: a gate below 638 would re-open nothing that was not already rejected above, and
+was considered and rejected. The consequence for the record is this — a claim that this ADR closes the
+relocation dodge **entirely** is false, and any later decision that cites it to decline a relocation
+must cite the subject-count rule for the sub-1,000 case, not this gate.
+
+**`docs/research/production-godfile-census-and-the-size-metric.md` recommended a
 2,000-line test threshold; that number does not close the dodge it was offered for, and is superseded
 here.** (That recommendation was never implemented — the shipped script defines only `HARD_GATE=1000`
 and `SEED_THRESHOLD=700`.)
@@ -75,3 +98,18 @@ and `SEED_THRESHOLD=700`.)
 - **Once the script classifies per file, the per-file production/inline-test split is nearly free to
   report**, so a flagged file can name which of its two subjects it is complaining about — the
   question this decision started from.
+- **2026-11-22, re-measured on the integrated tree after the `db` split (ADR 0113).** The split
+  changed *which* files the ledger holds, so both classes were re-baselined over the integrated tree
+  with one `--update`: **329 production files walked** (ledger holds **10** entries, all naming files
+  the walk visits, 8 of them over the 1,000 gate, largest `agent/session/naming.rs` at 2,007; 12
+  production files are over the 700 seed and the 2 the ledger does not carry are the 2 the script
+  EXEMPTS) and **254 test files walked** (**19** over the 1,000 seed,
+  largest `src/store/sessions.test.ts` at 5,543). The production ledger lost the dead
+  `storage/db.rs` row (2,154, the file no longer exists) and the test ledger lost
+  `storage/db/tests/mod.rs` (6,128, now a 12-line `mod`-decl shell) and gained
+  `src-tauri/src/storage/db/tests/sessions.rs` at **1,086** — the one ledgered **over-gate** file this
+  branch produces. It is the largest test subject in the repo's mirror tree (30 tests, session
+  persistence) and it is ledgered rather than exempted on purpose: an exemption buys freedom from the
+  ledger, and a `--update` diff on it keeps a growth reviewable. Splitting it further would separate
+  those tests from the `db/sessions.rs` subject ADR 0113's mirror names. The 19 still divide 12
+  frontend / 4 integration / 3 Rust `foo/tests/`, and the vacuity floors were not touched.

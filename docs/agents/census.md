@@ -35,25 +35,42 @@ happens to give 36 today but would silently drop any real call site carrying a t
 **1**, anchored **29**, production **25**. This branch added **7** anchored lines: **4** production
 (`mod.rs` +1, `router.rs` +3 — the issue #190 truncation flag's lock sites) and **3** test (`router.rs` +1,
 `session/tests/mod.rs` +2). `naming.rs` is unchanged at 6 = 3 + 3.
-`src-tauri/src/storage/db.rs` panics with
-`.expect("db mutex poisoned")` at **51 production sites** (`grep -c 'expect("db mutex poisoned")'
-src-tauri/src/storage/db.rs` → **51**; note the path goes OUTSIDE the quotes — with it inside, the
-pattern is a literal that matches nothing and the command prints **0**) because `Db` holds ONE
+The `storage/db/` unit panics with
+`.expect("db mutex poisoned")` at **52 production sites** because `Db` holds ONE
 `rusqlite::Connection` in a `StdMutex`
-and a panic mid-transaction can leave that single connection unusable. All 51 are production: `db.rs`
-holds no inline test module (its tests live in `storage/db/tests/mod.rs`, a separate file). The figure
-was **28** when this bullet was written and **50** at this issue's base — the 28 is the stale one, and
-this branch added 1 (`record_messages_batch`). **The asymmetry in the evidence has now closed, and it
-closed because this bullet's own obligation was applied.** This bullet used to say `db.rs` carries
-**no rationale anywhere in the file**, evidenced by `grep -n "poison" src-tauri/src/storage/db.rs |
-grep -v 'expect("db mutex poisoned")'` printing nothing. **That grep now prints one line** — the
-rationale comment `record_messages_batch` carries, which names this rule and says why that lock's
-resource is single and shared. So the "no rationale anywhere" evidence is gone, and that is the
-intended outcome, not a regression: the file's other 50 sites still assert without arguing, so a
-new file that opens `db.rs` first still copies a bare panic. **The obligation therefore stands
-unchanged: any NEW panic-on-poison site must carry a one-line rationale for
+and a panic mid-transaction can leave that single connection unusable. **The unit is now a directory
+(ADR 0113), so there is no single file to point the instrument at** — `src-tauri/src/storage/db.rs`
+does not exist and a command naming it errors. Two spellings reproduce, and they differ by the 7
+rationale headers, so name which one you ran:
+
+```sh
+# raw, all siblings: 59
+grep -rh 'expect("db mutex poisoned")' src-tauri/src/storage/db/*.rs | wc -l
+# comment-anchored, the production figure: 52 (drops 7 `//` lines that QUOTE the pattern)
+grep -rn 'expect("db mutex poisoned")' src-tauri/src/storage/db/*.rs | grep -vc '://'
+```
+
+The first is the shape this file exists to warn about: 7 of the 59 are the per-file
+`// WHY THIS FILE PANICS ON A POISONED MUTEX` headers quoting the pattern, so the raw figure
+over-counts by exactly those. Note too the path goes OUTSIDE the quotes — with it inside, the
+pattern is a literal that matches nothing and the command prints **0**. `src-tauri/src/storage/db/tests/`
+holds 52 more, all test-side, and the split is why the two sets are now in different directories
+rather than one file. **Provenance for the figures this paragraph used to carry:** **51** was measured
+against the pre-split `src-tauri/src/storage/db.rs` (and `main`'s copy of it measures **52**, so that
+figure was already one behind when it was written), **28** was the oldest and **50** the base before
+`record_messages_batch` added one. **The asymmetry in the evidence has now closed, and it
+closed because this bullet's own obligation was applied.** This bullet used to say the `db` unit
+carries **no rationale anywhere in the file**, evidenced by `grep -n "poison" <the db file> |
+grep -v 'expect("db mutex poisoned")'` printing nothing. **That grep now prints ten lines** — the
+rationale comment `record_messages_batch` carries (`src-tauri/src/storage/db/messages.rs`), which
+names this rule and says why that lock's resource is single and shared, plus a `WHY THIS FILE PANICS`
+header in each of the seven siblings that inherited sites, plus three doc-comment lines that name the
+rule in passing. So the "no rationale anywhere" evidence is
+gone, and that is the intended outcome, not a regression: the 52 sites still assert without arguing
+individually, so a new file that opens one of these first still copies a bare panic. **The obligation
+therefore stands unchanged: any NEW panic-on-poison site must carry a one-line rationale for
 why its resource is single and shared** — `record_messages_batch` is now the in-repo example of what
-that looks like, and the 50 older sites are what it replaces. (Do not conflate counts: the tree-wide
+that looks like, and the 52 older sites are what it replaces. (Do not conflate counts: the tree-wide
 `grep -rn "into_inner()" src-tauri/src/ | wc -l` → **69** includes test modules and non-lock uses;
 that is the
 figure the review attributed to `agent/session/*`, which is a mis-attribution — `agent/session/`

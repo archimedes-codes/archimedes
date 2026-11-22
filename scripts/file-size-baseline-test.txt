@@ -4,7 +4,6 @@
 # under a `tests/` directory; the production ledger is scripts/file-size-baseline.txt.
 # The test class is gated AND seeded at the same 1000 (ADR 0112), so at this threshold
 # an exemption would be indistinguishable from a grandfathered entry and none applies.
-6128	src-tauri/src/storage/db/tests/mod.rs
 5543	src/store/sessions.test.ts
 3178	src-tauri/src/agent/session/tests/mod.rs
 2128	src/components/settings/SettingsPage.test.tsx
@@ -20,6 +19,7 @@
 1241	src/components/ChatStreamDirectoryCompletion.test.tsx
 1124	src-tauri/tests/fulcrum_seams.rs
 1109	src-tauri/tests/provider_oauth_flow.rs
+1086	src-tauri/src/storage/db/tests/sessions.rs
 1079	src-tauri/src/storage/batching/tests/mod.rs
 1066	src/store/tasks.test.ts
 1051	src/components/SidePane.test.tsx
