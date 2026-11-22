@@ -1,7 +1,7 @@
 //! Tauri commands for the per-Space Task board (spec §2 — ADR 0090).
 //!
 //! NINETEEN commands. Eighteen of them are a `spawn_blocking` delegation to
-//! `impl Db` in `storage/db.rs`, in the shape `commands/spaces.rs` sets:
+//! `impl Db` in `storage/db/`, in the shape `commands/spaces.rs` sets:
 //! `State<'_, Arc<Db>>` first, `state.inner().clone()` into the closure,
 //! `Result<_, TasksError>` out. The nineteenth, [`start_task_session`], returns the
 //! `SessionError` family instead because it is a Session command wearing board

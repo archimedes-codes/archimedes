@@ -15,7 +15,7 @@
 //!
 //! So the desktop implements the crate's trait, exactly as `web/render.rs`
 //! implements the crate's `RenderRequester` (S2), as `harness/trust.rs`
-//! implements `TrustSource` (S5a), and as `storage/db.rs` implements
+//! implements `TrustSource` (S5a), and as `storage/db/seams.rs` implements
 //! `FulcrumPersistence` (S4). Desktop→crate is the allowed direction.
 //!
 //! # The error type is the one thing that changed

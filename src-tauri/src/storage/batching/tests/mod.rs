@@ -3,7 +3,8 @@
 //! The premise every commit-counting test here rests on is that a `Db` opened
 //! over a real file runs in WAL, so a commit appends frames to the `-wal`
 //! sidecar and the sidecar's length is a COMMIT COUNTER. Task 2 established that
-//! instrument (`storage::db::tests::wal_frame_count`) and recorded why the two
+//! instrument (`storage::db::tests::support::wal_frame_count`) and recorded why
+//! the two
 //! `PRAGMA`-level candidates are NOT commit counters (`data_version` moved by 1
 //! for 12 autocommits; `total_changes` does not step back on a rollback). This
 //! module re-derives the counter locally instead of reaching into `db.rs`'s
