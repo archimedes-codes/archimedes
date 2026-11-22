@@ -572,6 +572,46 @@ one (its 2026-10-18 crash-log amendment). `superseded-by:` in front matter is re
 replacement. `0117` is free (verified against the directory *and* `git log --all --diff-filter=A`; the
 sole duplicate is the pre-existing `0086`).
 
+## Docs the change must confront (each VERIFIED at `94af00d1`)
+
+Three pieces of existing prose interact with this change, and two of them are already wrong.
+
+- **`docs/features/subagent-sessions.md` is already false, and the retention ADR will be blamed for it.**
+  Its `status: live`, `last-verified: 2026-10-27` copy still says *"Subagent sessions are **ephemeral**
+  (the driver's `db` is `None` — the child's `native_messages` writes go to a throwaway `Db` discarded on
+  teardown)"* (`:31-32`) and still describes opening a *"throwaway child `Db` … guarded by a
+  `TempFileGuard`"* (`:85-86`, `:90-91`, `:117-118`). **ADR 0025 deleted that machinery on 2026-10-04**
+  (`open_throwaway_db`, `TempFileGuard`, the FK dance) — and `grep -rn "open_throwaway_db\|TempFileGuard"
+  --include='*.rs' src-tauri/src/` is **exit 1** today. The stamp post-dates the deletion. A reader who
+  trusts that section concludes subagent rows never persist at all, and that this retention rule is a
+  no-op. Fix it while touching subagent persistence, not after.
+- **`docs/features/transcript-diff-channel.md` has a self-declared falsifiable claim this change
+  breaks.** Its `verified-by:` states *"`grep -rn "DELETE FROM messages" src-tauri/src/` hits exactly one
+  line — a doc-comment … **not a live statement**"*. Verified exit-1-for-a-live-statement today. The
+  first real `DELETE FROM messages` **makes that sentence false**, and it is in a `verified-by:` stamp
+  that advertises itself as re-runnable. Update it in the same commit that adds the delete.
+- **`docs/features/transcript-render-perf-known-gaps.md` §5.1 sets a precedent the `VACUUM` threshold
+  must answer.** It declines to tune `wal_autocheckpoint` — *"un-tuned, on purpose"*, *"tuning the
+  autocheckpoint blind … would trade one stall"* — i.e. this corpus has an explicit **"no data, no
+  knob"** posture on DB tuning. A `VACUUM` freelist threshold is a **first-ever tuning decision** on this
+  database, so it needs its own argued paragraph (with the measurement that justifies the number) or it
+  inherits that objection. The same file's §5.3 also records that `insert_native_message` is deliberately
+  unbatched because batching reddens `src-tauri/tests/ipc.rs::a_subagent_transcript_persists_as_a_hidden_ephemeral_row`
+  — ADR 0025's pin — which a background deleter could race.
+
+**The question the decision must actually answer.** The kept final-report row has **no reader** (§"The
+gap this proposal exposes", re-verified: `SubagentTranscript.tsx` reads the in-memory `useSubagents`
+store, never the DB). Keeping one row per child while nothing can display it re-commits the exact error
+ADR 0025 is being corrected for, 70× smaller. The decision must either **name the reader** it is shipping
+or planning (the parent's `SubagentDelegatingCard` rendering its child's final report), or **justify the
+row as provenance/audit only** and say out loud that it is not for display.
+
+**And the reviewer question the ADR should pre-empt:** `resume_native_session`
+(`src-tauri/src/agent/session/mod.rs`) has **no `is_subagent` guard** — verified, the function body never
+mentions the flag. The only thing preventing a child resume is that no UI list ever names a child id. So
+deleting settled children's `native_messages` cannot break a *reachable* path, but the ADR should say so
+explicitly, because "what if someone resumes it?" is the first question this change invites.
+
 ## Related
 
 - `docs/research/whole-window-jank-renderer-saturation.md` §4–§5 — the prior census paragraph (§3 above);
