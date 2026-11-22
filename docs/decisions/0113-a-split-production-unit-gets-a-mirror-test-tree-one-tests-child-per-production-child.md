@@ -58,11 +58,16 @@ split. Probed against this repo's edition and toolchain, that cost **does not ex
 - A test **grandchild** doing `use crate::db::*;` reads the ancestor's **private** `SCHEMA` const and
   private `gate` fn — compiles, and `cargo clippy --all-targets -- -D warnings` exits 0. So each new
   test child opens with one glob and gets everything today's `use super::*;` supplies; the ~24
-  ancestor-private names the region references (`gate` ×87, `SCHEMA` ×18, the `*_row_from` mappers,
+  ancestor-private names the region references (`gate` ×93, `SCHEMA` ×18, the `*_row_from` mappers,
   the `*_COLUMNS` consts) cost nothing to re-home.
 - A **sibling** production file may read the parent's private `const`/`fn` by full path.
 - A sibling may **not** read a sibling's private item — `error[E0603]: function is private` — so the
-  shared row mappers and stage helpers need `pub(super)`. **30** tokens, and it fails loudly.
+  shared row mappers and stage helpers need `pub(super)`. **27** `pub(super)` tokens — declarations,
+  not mentions: `rows` 18, `stages` 5, `migrations` 3, `seams` 1 — and it fails loudly. Count them with
+  the comment-anchored filter `grep -rn 'pub(super)' src-tauri/src/storage/db/*.rs | grep -vc '://'`,
+  never the raw grep: that prints **32** because five comment lines (one in `stages.rs`, four in
+  `db/mod.rs`) discuss the token itself — the trap `docs/agents/census.md` exists to catch. 27 is also
+  the figure `db/mod.rs` carries in its own split block, so doc and code agree.
 - Relocating a `#[cfg(test)] mod tests` out of a file creates **no** dead-code lint. A private item
   whose only reader is the test module fails `-D warnings` **identically inline and relocated**
   (dead-code analysis runs per compilation target, so a `cfg(test)` reader never counts in the
