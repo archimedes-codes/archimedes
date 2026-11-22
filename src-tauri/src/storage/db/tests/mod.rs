@@ -14,8 +14,11 @@
 // attribute is load-bearing for is the CHILDREN: it puts `support`'s macros into the
 // textual macro scope of the `mod` list that follows, so a child may spell
 // `legacy_batch!` / `legacy_*!` in its own fixture. Measured: moving the declaration
-// below the `mod` list breaks a child that uses a macro (`E0658: cannot find macro …
-// in this scope`), and no fixture inside `support.rs` itself notices. Keep it first.
+// below the `mod` list breaks a child that uses a macro — the compiler prints
+// `error: cannot find macro `legacy_sessions_complete` in this scope`, with NO error
+// code attached (an earlier version of this comment quoted `E0658`, which this
+// toolchain never emits for it — the message is bare `error:`), and every failure lands
+// in the CHILD (`tests/stages.rs`), never in `support.rs` itself. Keep it first.
 #[macro_use]
 mod support;
 

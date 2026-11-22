@@ -96,9 +96,16 @@
 # lines, under the 1,000 test seed so it correctly does not enter the ledger) and one of
 # its files crossed the 500 bar (`storage/db/tests/migrations.rs`, 490 -> 504). That is
 # one walked file and one over-500 file of drift inside one change, which is exactly why
-# no figure in this file is quoted without its commit any more. READ A MISMATCH BETWEEN
-# A STAMPED FIGURE AND YOUR OWN RE-MEASUREMENT AS "THIS WAS TRUE THEN", NOT AS "THIS IS
-# BROKEN NOW": re-run the walk this guard runs (`git ls-files -z -- src-tauri/src
+# THE WALK FIGURES BELOW ARE STAMPED WITH THEIR COMMIT. The qualification is part of the
+# claim, not a loophole: the stamping covers the counts of the walk — the table, the floor
+# clearances, the ledger head-counts — and NOT the per-file illustrations scattered through
+# this file (`scene.ts` 729, `everforest.ts` 707, `sessions.test.ts` 5,543, the largest
+# `.tsx` at 2,128 and the like), which are single-file examples quoted to make a point about
+# the instrument and are re-measured only when someone notices them. Treat an unstamped
+# per-file figure as the weakest kind of citation here: directionally useful, individually
+# unproven. READ A MISMATCH BETWEEN A STAMPED FIGURE AND YOUR OWN RE-MEASUREMENT AS
+# "THIS WAS TRUE THEN", NOT AS "THIS IS BROKEN NOW": re-run the walk this guard runs
+# (`git ls-files -z -- src-tauri/src
 # src-tauri/tests src`, classified by `classify_file`, counted by `code_lines`) and the
 # difference is drift in the tree, not a defect in the argument. Nothing that runs at
 # check time reads these numbers — the refusals below compare `$n_walked` and
@@ -141,11 +148,32 @@
 # handful of files, the production class by a few dozen. So the combined floor DETECTS A
 # TOTAL BLACKOUT (a walk that read nothing, or a pathspec that matches nothing) AND NOT A
 # SINGLE-CLASS ONE: drop either class from the walk entirely and the other still clears 250
-# by itself, so a half-blind walk is green here. A class that reads nothing is caught
-# downstream by `print_class_positive_line`'s empty-measurement refusal, not by this
-# floor. The only shape that would catch the single-class blackout AT THE FLOOR is a
-# per-class floor set WELL BELOW each class's size, and that was deliberately NOT done
-# here — so a half-blind walk is a KNOWN LIMIT of this tripwire, not a case it covers.
+# by itself, so a half-blind walk is green here. THE SINGLE-CLASS BLACKOUT IS A KNOWN LIMIT
+# OF THESE FLOORS, and it is not covered anywhere else in this script either: the earlier
+# sentence here claimed a class that reads nothing "is caught downstream by
+# `print_class_positive_line`'s empty-measurement refusal", and THAT WAS FALSE. That function
+# early-returns on `if ((n_class == 0)) { return 0; }` — before the refusal is reached — so a
+# class that walked nothing takes the silent path BY DESIGN (several harness fixtures are
+# legitimately that shape). The refusal below that early return is reachable only for a class
+# that DID walk files and produced no row, which the unreadable-file refusal already
+# precludes. Measured: mutating a COPY of this script so the walk drops the test class
+# entirely prints `329 production file(s) walked` and EXITS 0.
+#
+# WHAT ACTUALLY CATCHES IT IS THE TEST SUITE, NOT THIS GUARD: `check-file-size.test.sh`
+# recomputes the walk per class independently of this script (`ledger_walk_paths`, with its
+# own `classify_walked_path`) and asserts its own figure against the guard's output —
+# `"$n_mirrored production file(s) walked"` and `"$n_mirrored_test test file(s) walked"`. A
+# walk that loses a class prints no line for it, so that assertion cannot be satisfied.
+# Verified by running that harness against the mutated copy above: it goes RED on three
+# real-tree cases, including the mirror pin, while the guard itself stayed green.
+#
+# The honest consequence of that division of labour is stated rather than glossed: the
+# protection lives in the harness, so A RUN OF `check-file-size.sh` ALONE, ON A TREE THAT
+# LOOKS HEALTHY, CAN STILL BE BLIND TO A HALF-BLIND WALK. CI runs both, which is what makes
+# the arrangement hold; a workflow that invoked only the guard would not. The only shape
+# that would catch the single-class blackout AT THE FLOOR is a per-class floor set WELL BELOW
+# each class's size, and that was deliberately NOT done here (see THE NUMBERS and THE TWO
+# FLOORS below: ADR 0112 forbids re-tuning the floors to the new denominator).
 #
 # THE MARGIN IS STATED QUALITATIVELY ON PURPOSE, and that is a fix, not a softening: this
 # paragraph is the second time it has had to be re-worded because a number in it rotted.
@@ -214,8 +242,12 @@ fail() {
 # the region stays gated wherever it lives, so the only way down is to split it by
 # subject. The test seed threshold is 1,000 and NOT the production class's 700
 # because ADR 0112 gates the class at 1,000: a ledger that recorded files the gate
-# does not govern would freeze 34 test files nobody is stopped from growing, and
-# every one of them would then need a `--update` diff for an edit the gate permits.
+# does not govern would freeze 36 test files (measured at 2fb9a2a7; the 34 this
+# sentence carried was true at beef4b27, and the split moved the figure by three
+# `db/tests/` children crossing 700 on their own — `board.rs`, `open.rs`,
+# `sessions.rs` — against `db/tests/mod.rs` falling out of the set as its contents
+# moved into them) nobody is stopped from growing, and every one of them would then
+# need a `--update` diff for an edit the gate permits.
 HARD_GATE=1000     # refuse a production file crossing this unless it is baselined
 SEED_THRESHOLD=700 # `--update` records PRODUCTION files ABOVE this. Deliberate consequence,
                    # stated rather than buried: a file at or below 700 is not
@@ -244,8 +276,12 @@ TEST_SEED_THRESHOLD=1000 # `--update` records TEST files above this — the same
 # and neither can stand in for the other. Per-class floors set well below each class's size
 # is the only shape that would catch the single-class regression, and it was deliberately
 # NOT done here (ADR 0112's Consequences forbid re-tuning these values to the new
-# denominator), so treat a half-blind walk as a KNOWN LIMIT of this floor; the per-class
-# positive-line refusal is what sees it.
+# denominator), so treat a half-blind walk as a KNOWN LIMIT of this floor. Nothing in
+# THIS script sees it either — `print_class_positive_line` early-returns on a zero-sized
+# class rather than refusing one — so what sees it is the harness's real-tree walk-mirror
+# pins, which recompute the walk per class and assert their own count against the guard's
+# output. See THE NUMBERS for that, and for the caveat that it is the test suite and not
+# the guard that carries this protection.
 OVER_500_BAR=500
 FLOOR_FILES=250     # COMBINED classes, and read the paragraph above for what that
                     # does and does not detect: BOTH classes clear it on their own, so it
@@ -837,10 +873,17 @@ run_guard() {
   # ADR 0112 (see THE NUMBERS). What that denominator can and cannot detect is stated
   # there and not glossed here: the combined walk clears a floor of 250 comfortably and
   # EACH class clears it alone, so this floor catches a walk that read NOTHING and NOT a
-  # walk that lost one class. A class that reads nothing is
-  # caught by `print_class_positive_line`'s empty-measurement refusal, and a per-class
-  # floor is the shape that would catch it here — deliberately not done (see THE
-  # NUMBERS; the values are not re-tuned to the new denominator).
+  # walk that lost one class. NOTHING IN THIS SCRIPT catches the single-class blackout
+  # either: `print_class_positive_line` early-returns on a class of zero rather than
+  # refusing one (several fixtures are legitimately that shape), so the claim this
+  # comment used to make — that the positive-line refusal sees it — was false. What
+  # catches it is `check-file-size.test.sh`'s real-tree walk-mirror pins, which recompute
+  # the walk per class and assert their own count against the guard's own output; a walk
+  # that lost a class prints no line for it and that assertion fails. That places the
+  # protection in the TEST SUITE and not in the guard, so this guard run alone can stay
+  # green on a half-blind walk. A per-class floor is the shape that would catch it here —
+  # deliberately not done (see THE NUMBERS; the values are not re-tuned to the new
+  # denominator).
   #
   # THE FIRST LINE CARRIES THE PRODUCTION COUNT under the production label, and the
   # combined count in parentheses. It used to carry the COMBINED count under that
@@ -851,7 +894,7 @@ run_guard() {
   # a fixture of two production files and no test files, so the corrected line still
   # reads exactly that there).
   if ((n_walked < FLOOR_FILES)); then
-    fail "the walk is BLIND: $n_prod_walked production file(s) walked under $root, floor is $FLOOR_FILES ($n_walked walked in both classes)" "the floor measures the WHOLE walk, both classes: production $n_prod_walked + test $n_test_walked = $n_walked. It asks whether this metric read any file at all, so it is NOT applied per class — and note that this means it detects a TOTAL blackout only: BOTH classes clear this floor on their own (measured at 2fb9a2a7: 329 production + 255 test against a floor of 250), so a walk that lost one class entirely is caught by the per-class positive-line refusal, not here" "a metric that read no file must not read as green (the tree at 2fb9a2a7 held 584 tracked .rs/.ts/.tsx files: 329 production + 255 test — re-measure it, your tree may differ, and that is drift and not this refusal failing)" "check the walk's pathspecs against the tree: \`git ls-files -z -- src-tauri/src src-tauri/tests src\`"
+    fail "the walk is BLIND: $n_prod_walked production file(s) walked under $root, floor is $FLOOR_FILES ($n_walked walked in both classes)" "the floor measures the WHOLE walk, both classes: production $n_prod_walked + test $n_test_walked = $n_walked. It asks whether this metric read any file at all, so it is NOT applied per class — and note that this means it detects a TOTAL blackout only: BOTH classes clear this floor on their own (measured at 2fb9a2a7: 329 production + 255 test against a floor of 250), so a walk that lost ONE class entirely is a KNOWN LIMIT of this floor and is not caught here, nor by the per-class positive line (which early-returns on an empty class). \`check-file-size.test.sh\`'s real-tree walk-mirror pins are what catch it — run that harness, not just this guard" "a metric that read no file must not read as green (the tree at 2fb9a2a7 held 584 tracked .rs/.ts/.tsx files: 329 production + 255 test — re-measure it, your tree may differ, and that is drift and not this refusal failing)" "check the walk's pathspecs against the tree: \`git ls-files -z -- src-tauri/src src-tauri/tests src\`"
   fi
 
   # Measure every walked file: `<count><TAB><path>`, into its class's file.

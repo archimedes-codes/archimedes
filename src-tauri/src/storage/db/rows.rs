@@ -5,14 +5,15 @@
 //! This is the three-piece shape the whole unit is built on — the struct, the ONE
 //! column list as a const array, the ONE positional mapper — plus the tie that
 //! rejects a half-renumbered pair at compile time and the drift-guard TEST (in
-//! [`super::tests`]) that is the actual guard.
+//! `super::tests`) that is the actual guard. (Not a link, deliberately: that module is
+//! `#[cfg(test)]`, so no `cargo doc` build can resolve a path to it.)
 //!
 //! `MessageRow` and `SessionRow` are NOT here: they live in
 //! `fulcrum_harness::store_rows` (Step B-bis) and are re-exported by
 //! [`super`] so every existing spelling resolves unchanged.
 //!
 //! ONE upward edge, so "everything is built on this" is not the whole picture:
-//! `task_row_from` below calls [`stages::lenient_next_slugs`] to decode a Stage's
+//! `task_row_from` below calls [`super::stages::lenient_next_slugs`] to decode a Stage's
 //! `next_slugs` JSON, and `stages.rs` imports this module for its row types — a
 //! two-way edge. It is PRE-EXISTING (both calls lived in the single `db.rs` and were
 //! merely made cross-file by the split), so it is named here rather than restructured

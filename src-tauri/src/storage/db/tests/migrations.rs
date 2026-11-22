@@ -594,11 +594,14 @@ fn backfill_predicate_names_both_literals_and_renames_nothing() {
     // column 0, so `"\nfn "` — the delimiter this pin used while the code still
     // lived in the single `db.rs` — occurs ZERO times here and the slice silently
     // ran to end of file (6,736 of 8,307 chars: the backfill body PLUS both seed
-    // functions PLUS the module doc comment). It graded 81% of the file instead of
-    // the body. It worked at base only because the old `db.rs` held ~20 column-0
-    // `fn` items, and the next one after `backfill_session_todos` happened to
-    // terminate the body there. The boundary is asserted below so the next move
-    // fails LOUDLY instead of silently widening again.
+    // functions PLUS the `///` doc comments above them — 17 `///` lines in the
+    // slice against the body's own 7). It did NOT include the module doc comment:
+    // `//!` occurs ZERO times in that slice, the module doc sits above the first
+    // item and the slice starts inside `backfill_session_todos`. What it graded was
+    // 81% of the file instead of the body. It worked at base only because the old
+    // `db.rs` held ~20 column-0 `fn` items, and the next one after
+    // `backfill_session_todos` happened to terminate the body there. The boundary is
+    // asserted below so the next move fails LOUDLY instead of silently widening again.
     let source = include_str!("../migrations.rs");
     let fn_body = source
         .split("fn backfill_session_todos")
@@ -607,15 +610,33 @@ fn backfill_predicate_names_both_literals_and_renames_nothing() {
         .split("\npub(super) fn ")
         .next()
         .expect("the backfill body");
-    // The boundary assertion: the slice stopped AT the next item's declaration.
-    // Without this, a future move that makes the terminator miss (a renamed
-    // visibility, a different sibling order, one function per file) widens the
-    // slice and every assertion below still passes on the neighbouring text.
+    // THE BOUNDARY ASSERTION — and it is written so that it CAN fail, which the
+    // version it replaces could not. That one read
+    // `assert!(!fn_body.contains("\npub(super) fn "))`, and `fn_body` is produced BY
+    // `.split("\npub(super) fn ").next()`: the text before the first separator can
+    // not contain that separator, so the assertion held on every possible input,
+    // including the widened 6,736-char slice it was there to catch. A pin that
+    // passes on the broken thing is worse than no pin.
+    //
+    // THIS ONE HAS TEETH, both halves measured at this commit: the correct 4,824-char
+    // body contains NO `"fn "` at all (it is one function's statements — the SQL, the
+    // loop, the two literals), while the widened 6,736-char slice contains it, because
+    // what it swallowed was two further `pub(super) fn` declarations. So reverting the
+    // delimiter to the old `"\nfn "` turns this assertion RED rather than leaving it
+    // quietly true, which is the whole job of a boundary check.
+    //
+    // It is deliberately blunt: a nested `fn` added INSIDE the backfill body would
+    // trip it too. That is the accepted cost, not an oversight — a body that has grown
+    // an item of its own is exactly the moment the delimiter deserves a second look, and
+    // the right response is to re-measure the slice and widen this assertion ON PURPOSE,
+    // never to delete it. (Asserting instead that the slice ENDS on `}` was tried and is
+    // wrong: the body runs to the separator, so it ends on the next item's `///` doc
+    // line, not on a brace.)
     assert!(
-        !fn_body.contains("\npub(super) fn "),
+        !fn_body.contains("fn "),
         "the slice escaped `backfill_session_todos` and ran into the next item — \
          the body terminator matched nothing, so the pin below would be grading a \
-         whole file instead of a body"
+         whole file instead of a body (a body of ONE function contains no `fn `)"
     );
     assert!(
         !fn_body.contains("seed_space_sort_order"),

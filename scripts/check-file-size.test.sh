@@ -190,9 +190,9 @@ fixture() {
     printf 'export const v%s = %s;\n' "$i" "$i" >"$root/src/f$i.ts"
   done
   # 600 code lines: clears the "at least one file over 500" floor (the real tree
-  # has 86 such files, 22 production + 64 test) and stays under the 700 seed
-  # threshold and the 1,000 gate, so it is inert for every case that is not about
-  # the floors.
+  # has 87 such files at 2fb9a2a7, 22 production + 65 test — re-measure it, your
+  # tree may differ) and stays under the 700 seed threshold and the 1,000 gate, so
+  # it is inert for every case that is not about the floors.
   emit_code 600 'export const b' >"$root/src/big.ts"
   printf 'export const scene = 1;\n' >"$root/src/lib/archimedes-film/scene.ts"
   printf 'export const palette = 1;\n' >"$root/src/lib/palettes/everforest.ts"
@@ -389,8 +389,9 @@ assert_contains "and the floor it fell short of" "floor is 250" "$output"
 assert_not_contains "and a blind walk is never reported as green" "file sizes within baseline" "$output"
 
 # 8b. THE SECOND FLOOR ARM: enough files, but nothing over 500 code lines. The
-#     real tree has 86 such files (22 production, 64 test), so a walk that finds
-#     ZERO is a classifier that stopped classifying — or a tree it never read.
+#     real tree has 87 such files at 2fb9a2a7 (22 production, 65 test — re-measure
+#     it, your tree may differ), so a walk that finds ZERO is a classifier that
+#     stopped classifying — or a tree it never read.
 #     Both must redden.
 fixture no_big_files
 rm "$root/src/big.ts"

@@ -66,8 +66,11 @@ split. Probed against this repo's edition and toolchain, that cost **does not ex
   not mentions: `rows` 18, `stages` 5, `migrations` 3, `seams` 1 — and it fails loudly. Count them with
   the comment-anchored filter `grep -rn 'pub(super)' src-tauri/src/storage/db/*.rs | grep -vc '://'`,
   never the raw grep: that prints **32** because five comment lines (one in `stages.rs`, four in
-  `db/mod.rs`) discuss the token itself — the trap `docs/agents/census.md` exists to catch. 27 is also
-  the figure `db/mod.rs` carries in its own split block, so doc and code agree.
+  `db/mod.rs`) discuss the token itself — the trap `docs/agents/census.md` exists to catch. Both
+  32 and 27 are LINE counts, which is what `grep -rn` emits and what the filter subtracts, so do
+  not re-derive them by counting the token instead: it occurs 33 times across those files, because
+  one of the five comment lines (`db/mod.rs:26`) quotes it twice. 27 is also the figure
+  `db/mod.rs` carries in its own split block, so doc and code agree.
 - Relocating a `#[cfg(test)] mod tests` out of a file creates **no** dead-code lint. A private item
   whose only reader is the test module fails `-D warnings` **identically inline and relocated**
   (dead-code analysis runs per compilation target, so a `cfg(test)` reader never counts in the
