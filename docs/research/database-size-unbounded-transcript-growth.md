@@ -1,6 +1,6 @@
 ---
 status: current
-last-verified: 2026-11-14
+last-verified: 2026-11-22
 verified-by: mixed instruments at `312c60e9` on 2026-11-14 — 3 parallel researchers (write path / disk
   census / decision-corpus audit) + main-agent re-verification of every load-bearing claim. **Live
   read-only SQLite measurement** on this machine's 2.17 GiB `~/.local/share/archimedes/archimedes.db`
@@ -10,7 +10,14 @@ verified-by: mixed instruments at `312c60e9` on 2026-11-14 — 3 parallel resear
   `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fulcrum-harness-0.2.0` (checksum `c45f3502…`
   per `Cargo.lock:1665-1668`). **Docs corpus** (81 ADRs, `docs/features/`, `CONTEXT.md`, `AGENTS.md`) +
   `gh` issue searches. **Official docs**: sqlite.org (limits, lang_vacuum, fileformat, wal), webkitgtk
-  reference, wry 0.57.0 source.
+  reference, wry 0.57.0 source. **Second measurement round the same day** (for the "Proposed direction"
+  section): last-row-kind census over 2,597 subagents, parent-link availability checked across the
+  schema / the wire / the frontend store, `task_sessions` linkage, the display+native reclaim ceiling,
+  and the file's growth 2,225 MB → 2,825 MB *during the run*. Same instruments. **Third measurement
+  round 2026-11-22** (see "Corrections and additions, 2026-11-22"): live read-only `PRAGMA` + `dbstat`
+  re-read against `archimedes.db` at 2,968,428,544 B, a 24 h-age-bound reclaim census, and a
+  `WorkerHooks`/`pump.rs`/`persist.rs` read of the crates.io-pinned `fulcrum-harness-0.3.1` to settle
+  whether a parent link is obtainable. Same instruments; the crate version moved 0.2.0 → 0.3.1.
 task: tsk_1e926ed5-474f-42db-b6ba-7e84d3b60391
 ---
 
@@ -355,6 +362,195 @@ observed mean (~55 sessions/day, ~35 MiB/day of file) **the next 2 GiB arrives i
   were checked.
 - **`du` reports block size, not apparent size**, and this filesystem may compress, so `target/` at 29 G
   may be smaller on physical media.
+
+## Corrections and additions, 2026-11-22
+
+Re-measured live (read-only `PRAGMA` + `dbstat` against the running database) and re-read the code at
+`94af00d1`, where `storage/db.rs` **no longer exists** — it was split into `storage/db/` (ADR 0113).
+Four things in this report are now false or sharper than they were. None changes the diagnosis; one
+reverses a design conclusion.
+
+**1. WAL shipped — Contradiction 1 is CLOSED.** `PRAGMA journal_mode` now reads **`wal`** (and the
+on-disk files are `archimedes.db-wal` / `-shm`, no `-journal`). The report's own explanation was
+correct: the installed AppImage predated the WAL commit, which was untagged at measurement time. It has
+since shipped. The consequence the report drew — *"rollback-journal makes the on-disk high-water mark
+permanent"* — no longer applies to new writes.
+
+**2. The freelist is not 41 MB, it is ZERO — and that is worse.** The report found 10,660 free pages
+(41 MB) and concluded the file "only ever grows". Measured now: `freelist_count` = **0**,
+`page_count` = 724,733, `auto_vacuum` = 0, file = 2,968,428,544 B. The freelist did not shrink —
+**subsequent writes consumed it**, exactly the reuse the report predicted. So the file has never once
+returned a page to the filesystem, and with `auto_vacuum = 0` and zero `VACUUM` sites in
+`src-tauri/src/` (re-verified, `grep` exit 1) it never will on its own. The report's
+"DELETE does not shrink the file" is not a caveat on a future fix, it is the **entire** mechanism by
+which a fix succeeds or fails: a prune that ships without a `VACUUM` story reclaims 0 file bytes.
+
+**3. The "not expressible" conclusion is too strong — the parent link is obtainable, just not for free.**
+The report proved correctly that `sessions` has **no** parent column (re-verified against
+`PRAGMA table_info`: id, cwd, created_at, title, capabilities_json, archived, context_usage_json,
+is_subagent, todos_json, sort_order, cost_usd, title_stage) and that `cwd` is a Space-level proxy that
+would over-delete. It then concluded the archive-triggered half *"requires a schema change as its
+prerequisite"*. True of the *column*. But the parent id is **already in the desktop's hands** on every
+child frame: `route_event(session_id, is_subagent, evt)` receives the **parent's** delivery id while the
+payload carries the **child's** `sessionId`, and the router already computes exactly that pair
+(`src-tauri/src/agent/session/router.rs:75-90`). So the desktop could populate a parent link itself.
+Two hard reasons it is not free, both verified:
+  - `SessionInfo` is **the pinned crate's type** (`src-tauri/src/types.rs:21`,
+    `pub use fulcrum_harness::store_rows::{ContextUsage, SessionInfo}`), and the subagent row is created
+    *inside* the crate (`fulcrum-harness-0.3.1/src/persist.rs:279` `ensure_session_row`). Adding a field
+    to what gets persisted is a **cross-repo change to `archimedes-codes/fulcrum`**, not a desktop edit.
+  - The delivery id is **racy by design**: `pump.rs`'s `delivery_id` falls back to the *child's own id*
+    once `drives` has removed the entry — which the crate documents as reachable after teardown. So
+    "parent" derived from `delivery_id` is correct for most frames and **silently wrong for a child's
+    last ones**. A retention rule must not key on a field that can name the wrong session.
+  **Net:** the column is still not worth building for bytes, but the reason is now "cross-repo cost +
+  a racy source", not "inexpressible". See correction 5 for why the trigger itself is unnecessary.
+
+**4. The `db.rs:1628`/`:1635` citations in this report are dead.** The `is_subagent = 0` filter now
+lives in `src-tauri/src/storage/db/sessions.rs:248` and `:255` (both arms of `list_sessions`), plus
+`:295` (`session_recency`). The behaviour is unchanged; only the paths moved.
+
+**5. The archive trigger is unnecessary — which removes the proposal's whole prerequisite.**
+`list_sessions` filters `is_subagent = 0` in **both** arms, so a child's transcript is unreachable
+whether or not its parent is archived. Scoping a prune on `is_subagent` + an age bound therefore gets
+**the identical reclaim with no schema change and no cross-repo dependency.** The parent column buys
+attribution (a future debug view), not bytes. This is why the 2026-11-14 section's "⇒ requires a schema
+change" should not gate a first implementation.
+
+**6. Reclaim measured at a 24 h age bound** (2,583 of 2,639 subagents settled; `sessions` 2,779 rows,
+`messages` 467,934, `native_messages` 423,499):
+
+| Quantity | MB |
+|---|---|
+| Subagent display payload, all rows | 1,354.7 |
+| … kept as the newest row per session | **23.4** |
+| ⇒ display rows deletable | **1,331.3** |
+| Subagent `native_messages` deletable | **710.7** |
+| **Total** | **2,042 of a 2,825 MB file (72%)** |
+
+Reproduces the 2026-11-14 last-row census exactly (2,447 children end on `agent-text`, 77 on
+`tool-call`, 73 on `agent-thought`), so **keep `MAX(id)` per session and do NOT filter on
+`kind = 'agent-text'`** — a kind filter keeps *nothing* for the 6% that end on another kind.
+
+**7. New hazard, found in the write path: the display write is an UPSERT, so a prune can be undone.**
+`record_message` (`db/messages.rs:28`) and `record_messages_batch` (`:85`) both use
+`ON CONFLICT(session_id, kind, message_key) DO UPDATE SET payload_json = excluded.payload_json` — not
+an insert-if-absent. Display rows reach it through `BatchingPersistence`, which **buffers rows and
+flushes on an interval**. A prune that deletes a session's rows while its rows are still in that buffer
+will have them **re-inserted by the next flush**, resurrecting the transcript and silently undoing the
+reclaim. Any prune must therefore be gated on the buffer being empty for the target sessions (or run
+only when nothing is live). Not previously recorded anywhere.
+
+**8. An age bound alone is unsafe as a settle test — ADR 0055 says so.** ADR 0055 removed the absolute
+duration bound precisely because *"a Worker that deadlocks INSIDE a tool keeps an outstanding
+`tool_call_id` forever and is therefore never reaped"* — so a live child can be older than any age
+bound. An age bound is a necessary but **not sufficient** guard; the second guard must be that nothing
+is running when the prune executes (which also satisfies hazard 7). `SessionManager::session_count()`
+(`agent/session/mod.rs:1456`, rows whose `live` slice is set) is the existing accessor.
+
+## Proposed direction (user-proposed 2026-11-14 — measured feasibility, NOT a design)
+
+> **Read "Corrections and additions, 2026-11-22" first.** Two claims below are superseded: *"not
+> expressible against the current schema"* (corrections 3 and 5 — the parent id is obtainable, and the
+> archive trigger turns out to be unnecessary, so no schema change gates a first implementation), and
+> the 2,107 MB ceiling (correction 6 measures **2,042 MB at a 24 h age bound**, which is the figure the
+> owner then approved against). The rest stands.
+
+> *"If a session is archived, and sub-sessions it has — so subagent runs — should be deleted, but only
+> the final message (usually a summary) kept. This should help cut down the DB size."*
+
+Measured against the live DB. The **intent is sound and the reclaim is large**, but as stated the rule
+is **not expressible against the current schema**, and deleting would not shrink the file. Three
+findings, one per clause.
+
+### "usually a summary" — ✅ verified, and the kept payload is tiny
+
+The premise is correct. Of 2,597 subagent sessions, **2,447 end on an `agent-text` row** (77 end on
+`tool-call`, 73 on `agent-thought`), and those rows are genuine closers, not stubs — **2,253 of 2,447
+exceed 2 KB**, and sampling them shows real final reports:
+
+> *"All five steps done. The full triage report is above. To re-state the verdict compactly: **#139 is
+> genuinely open** — created 2026-10-15, zero activity since creation…"*
+
+**Keeping only that one row per subagent reduces 1,384 MB of subagent display payload to 22.9 MB** — a
+98.4% cut of the display side, at a cost of ~23 MB total for the whole history of every subagent ever
+run. That is a very good trade, and it is exactly the shape the idea proposes.
+
+### "sub-sessions it has" — ❌ the schema cannot name them
+
+**There is no parent link in the database.** `parentSessionId` exists only in the **in-memory frontend
+store** (`src/lib/tauri/types.ts:689`, read at `SubagentTranscript.tsx:80`,
+`SubagentDelegatingCard.tsx:127`) and **on the wire** (`fulcrum-harness-0.2.0/src/harness/dispatch.rs:36`,
+`seams.rs:274`) — it is **never persisted**. `PRAGMA table_info(sessions)` has no parent column, and
+`task_sessions` (80 rows, 33 tasks) points at **0 subagents** — it links *board cards* to *main*
+sessions only.
+
+So "the sub-sessions of this archived session" is **not a query that can be written today**. The only
+available proxy is `cwd`, and it is Space-level, not session-level: **9 distinct `cwd` values across
+2,639 subagents** against 8 across 139 mains. A `cwd` join attributes a subagent to a *Space*, never to
+the session that spawned it — so it would over-delete, sweeping up a live session's children because an
+unrelated session in the same Space was archived.
+
+**⇒ This clause requires a schema change (a persisted `parent_session_id` on `sessions`) as its
+prerequisite.** That is the one durable thing this proposal costs, and it is also the thing that would
+finally make the ADR 0025 "hidden ephemeral rows" attributable at all.
+
+### "should be deleted" — ⚠️ two hard mechanics, one of them bigger than the proposal
+
+1. **`DELETE` does not shrink the file.** No `VACUUM` exists anywhere (§3). Deleting rows would leave a
+   2.8 GB file with ~2 GB on the freelist — the size problem survives the delete unless a `VACUUM` (or
+   `auto_vacuum`) ships with it. `VACUUM` rewrites the **whole** file and cannot run inside a
+   transaction; against this file that is a multi-second, whole-file operation on a live DB.
+2. **The `native_messages` half is dead weight that needs no parent link at all.** **723 MB** of
+   subagent `content_json` is *unconditionally* unreachable: `native_messages` is read only by the
+   resume path, and **no surface can resume a closed child** (`src/store/sessions.ts:72-76` — *"nothing
+   can ask for that transcript back … no surface can re-open a closed child"*). So the 723 MB can be
+   reclaimed by scoping on `is_subagent` + settled, **independent of the archive trigger and independent
+   of the missing parent column**. It is the larger and the strictly easier half.
+
+**Reclaim ceiling: ~2,107 MB of a 2,825 MB file** (1,384 − 23 display + 723 native), and note the file
+**grew 2,225 MB → 2,825 MB (+600 MB) during the hour this research ran** — the multi-wave runs are
+writing right now, which is why the ceiling is quoted against the later figure.
+
+### The gap this proposal exposes
+
+Deleting the children but keeping the parent's summary is right — but **nothing can display the kept
+summary today.** The subagent sheet reads the in-memory `useSubagents` store
+(`SubagentTranscript.tsx:68`, `MAX_CLOSED_ENTRIES = 20`), never the DB, and `load_history` can only be
+asked for a session the lists can name. So the 23 MB kept is kept **for a reader that does not exist** —
+the same defect that made the original 1.68 GB pointless, just at 1/70th the size. If this direction is
+taken, the kept row needs a reader (the parent's delegating card showing its child's final report) or
+the right thing is to delete the subagent row **entirely** and keep nothing.
+
+**Sequencing implication:** the parent column is a prerequisite for the archive-triggered half; the
+723 MB `native_messages` half is not gated on it; and neither is worth shipping without a `VACUUM`
+story, or the file stays 2.8 GB with the bytes merely moved to the freelist.
+
+## Approved scope (2026-11-22) — decided, not yet designed
+
+Put to the owner as three questions with measured figures; these are the answers. **This records a
+decision, not a design** — no code was written, and the card is in research to have the design written.
+
+1. **Full prune of settled Subagents.** Delete each settled `is_subagent = 1` session's
+   `native_messages` **entirely**, and its `messages` rows **except the newest one** (`MAX(id)` per
+   session, regardless of `kind`). The `sessions` row survives (0.6 MB for 2,639 rows, and it carries
+   `cost_usd`). Chosen over "native-only" (710 MB) and "delete everything, keep nothing" (2,081 MB):
+   keeping the final report costs 23.4 MB — 0.8% — and preserves ADR 0025's inspectability intent.
+   **The archive trigger was dropped** (correction 5), so there is **no schema change**.
+2. **`VACUUM` runs in the background, after boot, off the main thread, only when idle.** Accepted
+   knowingly with both stated costs: the reclaim lags, and a `VACUUM` can contend with a live run's
+   writes. A second accepted consequence: `Db` holds **one** `Connection` behind a `Mutex`, so a
+   `VACUUM` blocks every other DB verb for its whole (multi-second, on this file) duration. The idle
+   gate is the mitigation, not a cure.
+3. **Autonomy:** run unattended to review/finish.
+
+**Settle test = an age bound AND an idle gate, never an age bound alone** (correction 8, ADR 0055).
+**The prune must respect the batch buffer** (correction 7) or a flush resurrects the rows it deleted.
+
+Out of scope, deliberately: the `parent_session_id` column; a *reader* for the kept final report (the
+2026-11-14 section proved none exists, so the 23.4 MB is kept for a future surface, not a current one);
+`agent-thought` retention in **main** sessions; `codemode`'s unbounded nested-call payload; the
+unbounded `read`-tool image path; the 481 MB WebKitCache; the 219 MB of stale pre-rename dirs.
 
 ## Related
 
