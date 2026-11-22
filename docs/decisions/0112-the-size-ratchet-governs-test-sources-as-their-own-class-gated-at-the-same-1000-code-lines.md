@@ -92,9 +92,14 @@ and `SEED_THRESHOLD=700`.)
 - **The guard's header claim becomes true rather than being softened.** *"A file cannot shed 1,500
   lines of tests to slip under the bar"* now holds because the test gate catches them inside `tests/`,
   not because they are counted inline.
-- **The walk grows from 312 to ~553 files.** Both vacuity floors (`FLOOR_FILES=250`,
-  `FLOOR_OVER_BIG=1`) still pass untouched; they ask about the walk, not about one file, so they are
-  unchanged by this decision and must not be re-tuned to the new denominator.
+- **The walk grows from 312 production files to 553 total — 312 production + 241 test — so the
+  combined denominator `FLOOR_FILES` measures is untouched.** Both vacuity floors
+  (`FLOOR_FILES=250`, `FLOOR_OVER_BIG=1`) still pass untouched; they ask about the walk, not about one
+  file, so they are unchanged by this decision and must not be re-tuned to the new denominator. (The
+  two endpoints are both measured at `b2d6ea95`, and they are not comparable to each other: 312 is the
+  **production** class alone, 553 is **both** classes. Quoting them as a single "312 → 553" growth
+  compares a one-class denominator with a two-class one, which is the conflation
+  `docs/agents/census.md` exists to prevent.)
 - **Once the script classifies per file, the per-file production/inline-test split is nearly free to
   report**, so a flagged file can name which of its two subjects it is complaining about — the
   question this decision started from.

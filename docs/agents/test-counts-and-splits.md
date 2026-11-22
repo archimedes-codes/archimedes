@@ -12,7 +12,10 @@ the time it was next read. Run the instrument; do not trust a number.
 
 **Any test COUNT is compiler-derived or it is wrong, and the two ways a grep
 disagrees point in opposite directions.** Measured on one file
-(`crates/fulcrum-core/src/worker/manager/tests/mod.rs`): a loose grep for
+(**external** — `crates/fulcrum-core/src/worker/manager/tests/mod.rs`, in the in-tree
+`fulcrum-core` crate before it was extracted to its own repo at **`820baf6b`** (2026-11-05); that path
+does not exist in this checkout and cannot be re-run here. The in-repo equivalent to take the three
+instruments to is `src-tauri/src/agent/session/tests/mod.rs`): a loose grep for
 `#[test` over-counted, an anchored `^\s*#\[test\]$` grep under-counted, and
 `cargo test -- --list` agreed with the exact-form attribute count. The loose grep
 over-counted because a doc comment mentioned the attribute in prose; the strict
@@ -186,11 +189,12 @@ they are named separately here — conflating them is how `storage/batching.rs` 
 been mis-cited as a mirror violation.
 
 - **`storage/db/tests/` — compliant, and it is the worked example.** Its
-  `tests/mod.rs` is now 12 code lines of `mod` declarations and nothing else, one
+  `tests/mod.rs` is a shell of `mod` declarations and nothing else, one
   child per production sibling
-  (`db/tests/{artifacts,board,messages,migrations,open,rows,sessions,spaces,
-  stages,tasks}.rs` plus `support.rs`), mirroring the ten-subject production
-  split. Its largest child, `db/tests/sessions.rs`, is 1,086 code lines / 30
+  (`db/tests/{artifacts,board,messages,migrations,open,rows,seams,sessions,spaces,
+  stages,tasks}.rs` plus `support.rs` as the only non-mirror child), mirroring the
+  ten-subject production split plus the `mod.rs` parent through `open.rs`.
+  Its largest child, `db/tests/sessions.rs`, is 1,086 code lines / 30
   tests: **over** ADR 0112's test gate, so it is ledgered in
   `scripts/file-size-baseline-test.txt`, and it is **not** a subject-count
   violation — those 30 tests hold one subject (session persistence), which the
@@ -227,9 +231,10 @@ printed it against the pre-fix tree prints nothing against HEAD.
   a brace counter now print nothing against the current file, and `grep -n
   '^describe(' src/components/ChatStream.test.tsx` finds no
   `describe("ChatStream",` at all. Reproduces only against `6690966d^`.
-- `describe("SpacesList")` in `src/components/SpacesList.test.tsx`: 37 `it(`,
-  now 16 — the Agents-modal cluster left for `SpacesList.agents.test.tsx` in
-  **`650bfe55`**.
+- `describe("SpacesList")` in `src/components/SpacesList.test.tsx`: 37 `it(` before the
+  Agents-modal cluster left for `SpacesList.agents.test.tsx` in **`650bfe55`**. No "now" figure is
+  recorded, because this file records no totals on purpose — the cluster's departure is the claim, the
+  residual count is yours to re-run.
 - `mod session_tests` in `src-tauri/src/agent/session/mod.rs`: 71 test
   attributes. That module **no longer exists anywhere**; **`936dcafe`** moved it
   to `src-tauri/src/agent/session/tests/mod.rs`. Its anchors

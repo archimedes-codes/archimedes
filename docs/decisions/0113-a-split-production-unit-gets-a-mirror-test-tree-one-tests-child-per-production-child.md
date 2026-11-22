@@ -62,7 +62,7 @@ split. Probed against this repo's edition and toolchain, that cost **does not ex
   the `*_COLUMNS` consts) cost nothing to re-home.
 - A **sibling** production file may read the parent's private `const`/`fn` by full path.
 - A sibling may **not** read a sibling's private item — `error[E0603]: function is private` — so the
-  shared row mappers and stage helpers need `pub(super)`. Roughly 26 tokens, and it fails loudly.
+  shared row mappers and stage helpers need `pub(super)`. **30** tokens, and it fails loudly.
 - Relocating a `#[cfg(test)] mod tests` out of a file creates **no** dead-code lint. A private item
   whose only reader is the test module fails `-D warnings` **identically inline and relocated**
   (dead-code analysis runs per compilation target, so a `cfg(test)` reader never counts in the
@@ -86,9 +86,12 @@ split. Probed against this repo's edition and toolchain, that cost **does not ex
 The mirror binds **a `tests/` directory that exists**, and it requires extraction only where a region
 already crosses a trigger — ADR 0112's 1,000-code-line test gate, or `AGENTS.md`'s subject-count rule.
 It does **not** demand that every production child in the tree get an extracted test child. That
-narrowing is deliberate: `src-tauri/src/commands/` holds 14 production children whose tests are inline,
-as do `agent/`, `agent/harness/` and `attention/delivery/`, and a rule read as mandating ~14 new test
-directories is a rule that gets ignored rather than followed.
+narrowing is deliberate: `src-tauri/src/commands/` holds **14** production children and only **11** of
+them carry an inline `mod tests` at all (`key_focus.rs` and `skills.rs` hold no test region;
+`tasks.rs` has its tests **extracted** into `commands/tasks/tests/`). The other multi-child units are
+thinner still — `agent/` 2 inline of 3 children, `agent/harness/` 1 of 2, `attention/delivery/` **0 of
+2**, neither carrying a test region of any kind — and a rule read as mandating ~14 new test directories
+is a rule that gets ignored rather than followed.
 
 ## Consequences
 
@@ -100,9 +103,15 @@ directories is a rule that gets ignored rather than followed.
   **`storage/db/tests/` is now compliant** — child-for-child, measured at this branch: production
   children `artifacts`, `board`, `messages`, `migrations`, `rows`, `seams`, `sessions`, `spaces`,
   `stages`, `tasks` beside test children of the same names, plus `open.rs` mirroring the `mod.rs`
-  parent that keeps `Db::open`, `gate` and `SCHEMA`, plus `support.rs`, plus a 12-line `tests/mod.rs`
-  that is nothing but `mod` declarations. `seams.rs` has no test child, which the "binds the naming,
-  not the count" bullet below permits explicitly.
+  parent that keeps `Db::open`, `gate` and `SCHEMA`, plus `support.rs` as the **only** non-mirror
+  child, plus a `tests/mod.rs` that is nothing but `mod` declarations (12 code lines at the split
+  commit `8ef9d14d`). `seams.rs` was the last gap and it is **closed, not exempted**: it now has
+  `db/tests/seams.rs` holding the unit-level seam tests — trait-bound instantiations of both
+  `FulcrumPersistence` and `TaskStore` on `Db`, plus direct `desktop_row_to_crate_row` field-mapping
+  assertions. It was never an instance of the "pure data table" permission below, and this ADR used to
+  cite it as one: that citation is **withdrawn**. `db/seams.rs` is 221 code lines, 25 functions of
+  which 23 are trait methods, and **zero** SQL — a delegation surface is the opposite of a data table,
+  and its shape is exactly what a test child exists to pin.
   **`agent/session/tests/` remains a violation**: one flat `mod.rs`, 3,178 code lines, zero inner
   `mod` declarations, against production children `naming.rs`, `router.rs` and `naming/prompt.rs`. It
   has its own card and is not this branch's to close.
@@ -122,8 +131,14 @@ directories is a rule that gets ignored rather than followed.
   lines are a *subject-count* problem under the existing rule and, above ADR 0112's gate, a governed
   size. Both are real and neither is about mirroring.
 - **The mirror binds the *naming*, not the count.** A production child may legitimately have no test
-  child (a pure data table), and a test child may exist for a subject the parent holds inline —
-  `support.rs` and a subject that lives in `mod.rs` are both expected.
+  child — the case this is written for is a **pure data table**, a child whose only content is a table
+  of values no test can meaningfully assert over — and a test child may exist for a subject the parent
+  holds inline, so `support.rs` and a subject that lives in `mod.rs` are both expected. **This
+  permission has no instance in `storage/db/` and must not be cited for one.** It used to be cited for
+  `seams.rs`; that citation was wrong (see the Consequences bullet above) and is withdrawn. A child
+  that delegates, maps or transforms is not a data table, and before this bullet is used to excuse a
+  missing test child, read the child: `db/seams.rs` is the worked example of one that looks small and
+  is 23 trait methods deep.
 - **A mirror child is a governed file** under ADR 0112's test class, so the split is self-defending:
   a `db/tests/<subject>.rs` creeping back toward 1,000 code lines reddens the ratchet.
 - **`docs/agents/test-counts-and-splits.md`'s "the shape that works" paragraph should be read with
