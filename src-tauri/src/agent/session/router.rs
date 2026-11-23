@@ -312,7 +312,11 @@ impl SessionManager {
                 // and this arm copies its shape for the same reason — the Worker
                 // asked the SUPERVISOR to run a board verb, and the Supervisor is
                 // the sole SQLite writer (ADR 0025), so the answer is computed HERE
-                // and never in the Worker.
+                // and never in the Worker. "Its shape" is that machine-call /
+                // no-modal / Supervisor-computes-the-answer SHAPE ONLY — explicitly
+                // NOT the render arm's REPLY ADDRESSING, which still falls back to the
+                // delivery id (`unwrap_or(session_id)`) and is exactly what the rule
+                // below forbids.
                 //
                 // A DELIVERY ADDRESS IS NOT A REPLY ADDRESS (ADR 0117). The comment
                 // that used to sit here claimed `handle_for` answers `None` for a
@@ -349,7 +353,7 @@ impl SessionManager {
                     match task_reply_target(session_id, is_subagent, origin_id.as_deref()) {
                         Some(target) => target,
                         None => {
-                            crate::agent::diagnostics::record(&format!(
+                            diagnostics::record(&format!(
                                 "task-request: a Subagent frame for delivery {session_id} \
                                  carried no origin id, request {request_id} - the answer \
                                  was dropped"
@@ -2577,9 +2581,15 @@ mod tests {
             "`Io`, naming the VERB and the expiry — the model reads this sentence \
              verbatim and must be able to tell which call died — got {err:?}"
         );
+        // The duration is a LITERAL on purpose. The other spelling —
+        // `contains(&format!("{TASK_BOARD_CALL_TIMEOUT:?}"))` — rebuilds the expected
+        // substring from the SAME const the production sentence interpolates, so the
+        // two can never disagree and the assertion is tautological; only a literal can
+        // fail here (and `30s` is what `{TASK_BOARD_CALL_TIMEOUT:?}` renders for
+        // `Duration::from_secs(30)`).
         assert!(
             matches!(&err, TaskStoreError::Io { message }
-                if message.contains(&format!("{TASK_BOARD_CALL_TIMEOUT:?}"))),
+                if message.contains("30s")),
             "the sentence names the DURATION too, so a supporter can tell a wedged \
              `Db` from a misrouted frame without a stopwatch — got {err:?}"
         );
@@ -2629,9 +2639,10 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn an_unanswerable_task_request_records_a_diagnostic_naming_the_request_id() {
-        // The lock is declared FIRST so it outlives both, and `_disable` BEFORE
-        // the dir so it drops AFTER it (locals drop in reverse) — the global target
-        // is cleared before the dir it names is removed.
+        // The lock is declared FIRST so it outlives both, and `_disable` LAST so it
+        // drops FIRST (locals drop in reverse) — which is the order wanted: the
+        // process-global target is cleared to UNARMED before the dir it names is
+        // removed, so no sibling can resolve a target onto a deleted path.
         let _lock = crate::test_support::env_lock();
         let log_dir = crate::test_support::ScratchDir::in_env_temp("router-log-", "log");
         let _disable = DisableDiagnosticsOnExit;
@@ -2757,9 +2768,9 @@ mod tests {
     #[tokio::test]
     async fn an_unroutable_task_request_records_a_diagnostic_naming_the_request_id() {
         // Declaration order is load-bearing (same reasoning as the `an_unanswerable_…`
-        // test): `_lock` FIRST so it outlives both, `_disable` BEFORE the dir so it
-        // drops AFTER it and the global target is cleared before the dir it names
-        // is removed.
+        // test): `_lock` FIRST so it outlives both, `_disable` LAST so it drops FIRST
+        // (locals drop in reverse) and the process-global target is cleared to
+        // UNARMED before the dir it names is removed.
         let _lock = crate::test_support::env_lock();
         let log_dir = crate::test_support::ScratchDir::in_env_temp("router-log-", "log");
         let _disable = DisableDiagnosticsOnExit;
