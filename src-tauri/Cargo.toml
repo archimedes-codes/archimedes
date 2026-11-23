@@ -116,13 +116,18 @@ tauri-build = { version = "2", features = [] }
 # differently — investigate before committing.
 # 0.5.1 removes the engine's per-prompt round bound — see ADR 0116.
 #
+# 0.6.0 puts the frame's ORIGIN id on `Outbound::TaskRequest` — see ADR 0117.
+# The desktop must answer a board call at that origin, not at the pump's
+# delivery id (which for a Subagent is the PARENT's id); answering at the
+# delivery id is the 255m55s `get_artifact` hang.
+#
 # Working on the crate alongside the desktop? Do NOT edit this line to a path
 # (that would commit a dep that cannot resolve for anyone else). Copy
 # `.cargo/config.toml.example` to `.cargo/config.toml` — the `[patch.crates-io]`
 # there redirects the CRATES.IO source to a sibling checkout and is gitignored, so
 # it can never leak into a commit. `.cargo/config.toml.example` is inert (cargo
 # reads only `config.toml`), which is what makes it safe to ship.
-fulcrum-harness = "0.5.0"
+fulcrum-harness = "0.6.0"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

@@ -17,6 +17,7 @@ keeps this file small enough to actually be read on every turn.
 | `docs/agents/flake-registry.md` | a test went red and the diff does not plausibly reach it |
 | `docs/agents/test-counts-and-splits.md` | you are proving "no test was lost", or splitting a test region |
 | `docs/agents/census.md` | you are about to quote a `grep -c` count of code |
+| `docs/agents/file-size.md` | you are splitting a file, or about to change a size threshold |
 | `docs/agents/repo-gotchas.md` | you are trusting `gh api`, `git check-ignore`, a cross-package move, or a `docs/roadmap/` deletion |
 | `docs/agents/releasing.md` | you are cutting a release |
 
@@ -142,42 +143,41 @@ builds, and the Linux DMABUF variables — is `README.md`'s `## Releasing`.
   carry a one-line rationale for why its resource is single and shared** —
   `record_messages_batch` is the in-repo example. The census, the per-file
   split, and the way each grep disagrees are in `docs/agents/census.md`.
-- **File size is a LOOK-AT tripwire; subject count is the SPLIT trigger.** Those
-  are two different instruments and neither replaces the other. **Subject count
-  decides whether a split is DONE** — unchanged, and still the only rule of that
-  kind: no `describe` / `#[cfg(test)]` block may hold more than ~25 unrelated
-  tests, a 40-test block over one subject is fine and a 20-test block spanning two
-  subjects is already wrong (`docs/agents/test-counts-and-splits.md`). **Raw code
-  line size is a look-at signal at 1,000 code lines**, enforced as a *ratchet* by
-  `scripts/check-file-size.sh`, which walks **two classes**, each with its own gate,
-  seed threshold and ledger: **production** (gate 1,000, seed 700,
-  `scripts/file-size-baseline.txt`) and **test** (gate *and* seed 1,000,
-  `scripts/file-size-baseline-test.txt`). No test source is excluded any more, so a
-  test region is governed **wherever it lives** — inline, moved into `foo/tests/`,
-  or a `*.test.ts(x)` sibling. A baselined file may not grow by even
-  one code line — a rise is a `--update` diff a reviewer sees, never a threshold
-  someone edits. **The test-class gate is what closes the relocation dodge, not the
-  inline count.** The inline `#[cfg(test)] mod tests` is still counted for a
-  different reason — a file cannot shed lines into its own test module to shrink —
-  and it does *not* catch relocating a region **smaller** than 1,000, which is where
-  `errors.rs` sits. Two ADRs in `docs/decisions/`, by filename:
-  `0112-the-size-ratchet-governs-test-sources-as-their-own-class-gated-at-the-same-1000-code-lines.md`
-  records that boundary, and
-  `0113-a-split-production-unit-gets-a-mirror-test-tree-one-tests-child-per-production-child.md`
-  supplies the MIRROR naming rule a split follows. The instrument is **code lines**
-  (comments and blanks stripped, an inline test module **counted**) and
-  `bash scripts/check-file-size.sh` re-measures any file — it reads **both** ledgers
-  and prints one positive line per class, so check both. **Size is
-  NOT a defect predictor here, and this bullet must not be read as "big files are
-  buggy".** Measured in this repo: fix density by size band is **non-monotonic**
-  (600–1000 is the worst band at 2.61 fixes/kLOC, 1000+ is *better* at 1.79), the
-  correlation between size and relative churn is **r = 0.057**, and **0** defects
-  in the `docs/features/*-known-gaps.md` set and **0** audit findings attribute a
-  defect to file length. So a large file is a reason to go LOOK for a subject
-  boundary before adding to it, and never on its own a reason to split: splitting
-  `errors.rs` (1,135 code lines whole-file, of which 497 are production and the
-  rest its inline test module) because it is long would cost a coordinated move
-  and buy nothing measurable.
+- **Keep files small: 600–800 code lines is the breakpoint, and the preference is
+  to split, not to keep.** A file past that band is a **context tax paid on every
+  read** — it swallows the window and gets `grep`'d instead of read, which is the
+  failure this rule exists to prevent. **The default move is to extract, not to
+  add:** put the seam in a small file (a trait / interface / types module that
+  reads in one screen) and push the per-subject bodies into siblings named after
+  their subject — `storage/db/` is the in-repo worked example (`seams.rs` 221
+  holds the trait wiring, `board.rs` / `tasks.rs` / `stages.rs` / `messages.rs`
+  hold the SQL, all 155–254), shipped as PR #215. In TypeScript the twin is
+  `types.ts` plus one module per subject. **Split on a subject boundary** — that
+  is still what makes a split *correct*, and size alone with no subject to
+  separate is the one case not to split (`errors.rs` was deliberately left alone
+  for exactly that reason). **Subject count still decides whether a split is
+  DONE**: no `describe` / `#[cfg(test)]` block may hold more than ~25 unrelated
+  tests (`docs/agents/test-counts-and-splits.md`). **The instrument is code
+  lines** (comments/blanks stripped, inline `#[cfg(test)]` **counted**) — NOT raw
+  LOC, which runs **40–60 % larger** on these files (code lines are 62–71 % of
+  raw), so an editor showing 800 lines is ~520 code lines. `scripts/check-file-size.sh` enforces it as a **ratchet**:
+  **production gate 800** (seed 700, `scripts/file-size-baseline.txt`), **test gate
+  1,000** (seed 1,000, `scripts/file-size-baseline-test.txt`) — the test class keeps
+  its own higher number because ADR 0112 chose it to close a *relocation* dodge, not
+  as a size opinion. A baselined file may not grow by even **one** code line; a rise
+  is a `--update` diff a reviewer sees, never a threshold someone edits. **So CI
+  refuses at exactly the top of the band.** A red here is one of two things: a
+  production file **over 800 code lines with no ledger entry** — split it by subject,
+  do not add the entry — or a **baselined file that gained code lines**, which is a
+  decision you justify in the PR body or undo. No test source is excluded,
+  so a test region is governed **wherever it lives** — inline, in `foo/tests/`, or a
+  `*.test.ts(x)` sibling — and the test-class gate is what closes the relocation
+  dodge. Mirror naming per ADR 0113, test-class boundary per ADR 0112 (both in
+  `docs/decisions/`, by filename). **Size is NOT a defect predictor** — fix density
+  is non-monotonic (600–1000 worst at 2.61 fixes/kLOC, 1000+ better at 1.79),
+  size↔churn is r = 0.057, and 0 audit findings attribute a defect to length.
+  **Split for navigability and read cost, never because you think long means buggy.**
+  Bands, the raw-vs-code conversion, and the threshold history: `docs/agents/file-size.md`.
 - **Docs**: durable design decisions live in `docs/decisions/NNNN-slug.md`
   (ADR format); in-flight plans live in `docs/roadmap/<feature>.md` and are
   deleted on ship. Anything a roadmap records that must survive that deletion
