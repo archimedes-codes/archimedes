@@ -1050,8 +1050,17 @@ where
 /// How long one Supervisor-side board call may run before the Worker is answered
 /// with an error. Every layer below this is already bounded or already fast:
 /// `busy_timeout` is 5 s, a healthy board read is sub-millisecond, and the verbs
-/// take one mutex. So this is the backstop for a wedged `Db` and for a frame that
-/// never reaches its Worker — not a policy about how long a board read should take.
+/// take one mutex. So this is the backstop for a WEDGED `Db` — the one thing under
+/// this bound that can run forever — and NOT a policy about how long a board read
+/// should take. Nor is it how a DELIVERY failure is seen. This future is awaited
+/// INSIDE the arm's `tokio::spawn` (via `run_task_call` → `spawn_board`), so it
+/// covers exactly two shapes and nothing else: the verb is still running, or the verb
+/// finished and something downstream failed. A frame that never reaches its Worker is
+/// the second shape — the verb ran fine and fast, so this bound never fires for it and
+/// the failure is made VISIBLE by the arm's `diagnostics::record` sites instead. And a
+/// task that PANICS, or that never runs at all (a spawn on a shutting-down runtime),
+/// never reaches this line either — those two are covered by NEITHER this bound nor a
+/// `record` site, and are the residual the docs name.
 const TASK_BOARD_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Run one board future under `TASK_BOARD_CALL_TIMEOUT`, mapping expiry to the `Io`
@@ -2586,10 +2595,13 @@ mod tests {
         // substring from the SAME const the production sentence interpolates, so the
         // two can never disagree and the assertion is tautological; only a literal can
         // fail here (and `30s` is what `{TASK_BOARD_CALL_TIMEOUT:?}` renders for
-        // `Duration::from_secs(30)`).
+        // `Duration::from_secs(30)`). And the literal is the WHOLE PHRASE and not bare
+        // `"30s"`: a bare `30s` is a substring of `130s` and `230s`, so it would still
+        // pass if the const were lengthened past the value this doc argues for. Pinning
+        // `"timed out after 30s"` pins the sentence AND the number in one assertion.
         assert!(
             matches!(&err, TaskStoreError::Io { message }
-                if message.contains("30s")),
+                if message.contains("timed out after 30s")),
             "the sentence names the DURATION too, so a supporter can tell a wedged \
              `Db` from a misrouted frame without a stopwatch — got {err:?}"
         );

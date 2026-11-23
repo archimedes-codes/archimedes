@@ -3170,10 +3170,26 @@ async fn the_first_prompt_titles_the_session_before_the_turn_finishes() {
 /// artifact poll the load-bearing assertion would have produced a test that passes
 /// both before and after the fix — worthless. The artifact row is still asserted
 /// (it is the criterion ADR 0117 names, and it reddens if the arm is dropped or
-/// answers a wrong DTO shape), but the addressing is pinned by the child's own
-/// transcript, plus the parent's (`call_child_write` appears NOWHERE in it), plus
+/// answers a wrong DTO shape), but the addressing is pinned by exactly TWO things:
+/// the child's own `role: tool` row for `call_child_write`, and the child closing
 /// `subagent-closed: completed` — a child parked on an unanswered frame is reaped
-/// by the 30-minute Dead bound and reports a different status.
+/// by the 30-minute Dead bound (`DEFAULT_SUBAGENT_DEAD_BOUND`) and reports a
+/// different status.
+///
+/// The parent-side negative (`call_child_write` appears NOWHERE in the parent's
+/// transcript) is asserted below but is **NON-DISCRIMINATING**: it passes on the
+/// broken code too, and it is NOT one of the teeth. Measured, not reasoned — with
+/// `task_reply_target` forced to hand back the delivery id, a probe placed before
+/// the child's tool-row poll read the parent's persisted rows and the predicate
+/// still held (`parent-row-count=3`, `parent-negative-predicate-holds=true`). Two
+/// independent reasons make it unable to fail: under the misroute the frame went to
+/// the parent's STDIN, where `WorkerCore`'s `Inbound::TaskResponse` handler drops an
+/// unmatched `request_id` and persists NOTHING, and separately the
+/// `TranscriptPersister` keys every write off the FRAME's own `session_id` and never
+/// off the delivery id, so a child frame could not land a row in the parent's
+/// transcript even if it were handled. It stays because it is a cheap invariant
+/// against a future change that starts keying persistence off the delivery id — and
+/// it is labelled here so the next reader does not count it as coverage.
 ///
 /// # Two fixture notes
 ///
@@ -3406,6 +3422,22 @@ async fn a_subagents_task_request_is_answered_in_the_child_and_not_the_parent() 
 
     // No crash during the dispatch, asserted BEFORE the close (the expected-exit
     // path drops the session and a post-close `None` would say nothing).
+    //
+    // WHY THIS IS NOT VACUOUS, since the key IS absent from `sm.sessions` on the
+    // passing path and `stalled_info` is `with_session(..).flatten()`: the ONLY
+    // writer of that row's `stalled` slice is `handle_crash`, and it writes through
+    // `with_session_entry` — the `entry(..).or_default()` helper that CREATES the row
+    // for an id that was never started (`router.rs`, in the comment above that write;
+    // pinned by `the_stalled_registry_and_the_stalled_event_agree_on_the_pid_named_log`,
+    // which crashes a never-started id and then reads `stalled_info(..).is_some()`).
+    // This test never calls `establish_worker_session`, so "row absent" and "no crash
+    // recorded" are the SAME fact here, not two different explanations — which is what
+    // makes a negative assertion over an absent-by-default key bite. Measured, not
+    // argued: `sm.on_worker_crash("e2e-sub-board", Some(1), None)` placed immediately
+    // before this assertion reddens it with this exact message. The other
+    // `with_session_entry` sites cannot confound it — `establish_worker_session` is not
+    // on this path, naming is OFF in this fixture, and a `config_state`-only row still
+    // reads `None` through the `.flatten()`.
     assert!(
         sm.stalled_info("e2e-sub-board").is_none(),
         "no `on_crash` fired during the dispatch (a crash marks the session STALLED)"
@@ -3438,12 +3470,22 @@ async fn a_subagents_task_request_is_answered_in_the_child_and_not_the_parent() 
     );
 
     // ── AND NOT THE PARENT — the literal second half of this test's name. ──
-    // The parent settled (its `subagent` tool resolved with the child's answer and
-    // its own final text landed), and its transcript carries NO trace of the
-    // child's `tool_call_id`. Under the misroute the answer was written into THIS
-    // process's stdin — so this is where "the answer went to the wrong Worker" is
-    // visible from the parent's side, and why the parent's own pending map silently
-    // dropped it instead of answering.
+    // The parent settled: its `subagent` tool resolved with the child's answer and
+    // its own final text landed. THAT is the parent-side claim with teeth (the
+    // `assert_eq!` below on `"done"`).
+    //
+    // The NEGATIVE below does NOT have teeth — it is NON-DISCRIMINATING and passes
+    // on the broken code. Measured: with `task_reply_target` forced back to the
+    // delivery id, the predicate still held over the parent's persisted rows
+    // (`parent-row-count=3`, `parent-negative-predicate-holds=true`). Under the
+    // misroute the answer was written into the parent's STDIN, where `WorkerCore`
+    // drops an unmatched `request_id` and persists NOTHING — so there is no row here
+    // to find either way — and `TranscriptPersister` keys every write off the FRAME's
+    // own `session_id`, never the delivery id, so a child frame could not have landed
+    // a row in the parent's transcript regardless. Keep it as a cheap invariant
+    // against a future change that starts keying persistence off the delivery id; do
+    // NOT count it as a pin on the addressing (the doc comment above this test names
+    // the two that are).
     let parent_rows = wait_for_rows(&db, "e2e-sub-board", 5).await;
     let parent: Vec<Value> = parent_rows
         .iter()
