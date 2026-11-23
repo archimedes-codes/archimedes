@@ -2,7 +2,7 @@
 # do not hand-edit. One <code-line-count><TAB><path> line per PRODUCTION file over
 # 700 code lines, largest first. Exempt files (see the EXEMPTIONS table in
 # scripts/check-file-size.sh) are deliberately absent: an exemption means "not
-# ratcheted", and the hard 1000-line gate still applies to them. Inline Rust
+# ratcheted", and the hard 800-line gate still applies to them. Inline Rust
 # `#[cfg(test)] mod tests` ARE counted — that is what makes this ratchet undodgeable.
 2007	src-tauri/src/agent/session/naming.rs
 1583	src-tauri/src/agent/session/mod.rs

@@ -191,7 +191,7 @@ fixture() {
   done
   # 600 code lines: clears the "at least one file over 500" floor (the real tree
   # has 87 such files at 2fb9a2a7, 22 production + 65 test — re-measure it, your
-  # tree may differ) and stays under the 700 seed threshold and the 1,000 gate, so
+  # tree may differ) and stays under the 700 seed threshold and the 800 gate, so
   # it is inert for every case that is not about the floors.
   emit_code 600 'export const b' >"$root/src/big.ts"
   printf 'export const scene = 1;\n' >"$root/src/lib/archimedes-film/scene.ts"
@@ -234,42 +234,42 @@ fixture_long_paths() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. THE TEETH: a production file over the hard 1,000 code-line gate with no
+# 1. THE TEETH: a production file over the hard 800 code-line gate with no
 #    baseline entry is a red, and the message names the file, its count, and how
 #    to re-measure it. A failure that does not say which file is a failure nobody
 #    can act on.
 fixture over_hard_gate
-emit_code 1001 'const p' >"$root/src-tauri/src/huge.rs"   # 1001 code lines
+emit_code 801 'const p' >"$root/src-tauri/src/huge.rs"   # 801 code lines
 git -C "$root" add -A
 run_check "$root"
-assert_eq "a file over 1,000 code lines with no baseline entry exits 1" "1" "$status"
+assert_eq "a file over 800 code lines with no baseline entry exits 1" "1" "$status"
 assert_contains "the refusal names the file" "src-tauri/src/huge.rs" "$output"
-assert_contains "and its measured code-line count" "1001" "$output"
-assert_contains "and the gate it crossed" "1000" "$output"
+assert_contains "and its measured code-line count" "801" "$output"
+assert_contains "and the gate it crossed" "800" "$output"
 assert_contains "and the command to re-measure the file" "grep -vcE" "$output"
 
-# 1b. The same file at exactly 1,000 code lines is NOT over the bar. The bar is
-#     "over 1,000", and a bar that bites at its own value makes the number the
+# 1b. The same file at exactly 800 code lines is NOT over the bar. The bar is
+#     "over 800", and a bar that bites at its own value makes the number the
 #     AGENTS.md bullet publishes a lie.
 fixture at_hard_gate
-emit_code 1000 'const p' >"$root/src-tauri/src/edge.rs"
+emit_code 800 'const p' >"$root/src-tauri/src/edge.rs"
 git -C "$root" add -A
 run_check "$root"
-assert_eq "a file at exactly 1,000 code lines is not over the bar" "0" "$status"
+assert_eq "a file at exactly 800 code lines is not over the bar" "0" "$status"
 assert_contains "and the run prints the positive line" "production file(s) walked" "$output"
 
-# 1c. A file over 1,000 that IS in the baseline is grandfathered. That is what a
-#     ratchet is: `db.rs` at 2,154 is allowed to EXIST, it is not allowed to
-#     grow. Without this case the 1,000 gate would be a hard limit and the
+# 1c. A file over 800 that IS in the baseline is grandfathered. That is what a
+#     ratchet is: `naming.rs` at 2,007 is allowed to EXIST, it is not allowed to
+#     grow. Without this case the 800 gate would be a hard limit and the
 #     baseline would be dead weight.
 fixture baselined_above_gate
-emit_code 1050 'const p' >"$root/src-tauri/src/old.rs"
+emit_code 850 'const p' >"$root/src-tauri/src/old.rs"
 git -C "$root" add -A
 run_check "$root" --update
 assert_eq "--update seeds a file over the 700 seed threshold" "0" "$status"
 run_check "$root"
-assert_eq "a baselined file above 1,000 code lines is grandfathered" "0" "$status"
-assert_not_contains "and it is not reported as a gate violation" "1000-line hard gate" "$output"
+assert_eq "a baselined file above 800 code lines is grandfathered" "0" "$status"
+assert_not_contains "and it is not reported as a gate violation" "800-line hard gate" "$output"
 
 # 2. THE RATCHET: one CODE line past the recorded baseline is a red, and BOTH
 #    numbers print — "which side do I fix" is the only question a red can answer
@@ -587,27 +587,35 @@ assert_eq "a file at exactly 700 code lines is not seeded" "" "$(baseline_count 
 #     inline `#[cfg(test)] mod tests` of M more must measure N + M.
 #
 #     Both candidate instruments pass every case above. A census instrument that
-#     cuts at `#[cfg(test)]` reads this file as 1,000 and reports GREEN; this
-#     ratchet reads 1,011 and refuses. That difference is the whole of the
+#     cuts at `#[cfg(test)]` reads this file as 800 and reports GREEN; this ratchet
+#     reads 811 and refuses. That difference is the whole of the
 #     dodge-proofness argument — a cut-at-cfg ratchet is satisfied by MOVING code
 #     into the test module, which shrinks the number and changes nothing real.
 #     Asserted by EXACT number: "greater than N" would let a mis-chosen N pass the
 #     cut instrument too.
+#
+#     WHY N IS 800 AND NOT THE 1,000 THIS CASE USED TO PLANT. The fixture only
+#     discriminates if the CUT figure sits at or below the gate while the WHOLE-FILE
+#     figure sits above it. When the production gate moved to 800, a fixture at
+#     1,000 + 11 stopped separating the two instruments: a cut-at-cfg instrument
+#     reading 1,000 would be refused all the same, so the case would go on printing
+#     "ok" while the ratchet was dodgeable again. N is therefore pinned to the gate
+#     value, and if HARD_GATE ever moves this fixture moves with it.
 fixture inline_test_module
 {
   emit_doc 5 '/// doc above the production code'
-  emit_code 1000 'const p'
+  emit_code 800 'const p'
   printf '#[cfg(test)]\n'
   printf 'mod tests {\n'
   emit_code 8 '    const t'
   printf '}\n'
-} >"$root/src-tauri/src/dodged.rs"   # 1000 code + 11 more (attribute, mod open, 8, brace) = 1011
+} >"$root/src-tauri/src/dodged.rs"   # 800 code + 11 more (attribute, mod open, 8, brace) = 811
 git -C "$root" add -A
 run_check "$root"
 assert_eq "an inline #[cfg(test)] mod tests counts toward the file" "1" "$status"
 assert_contains "the refusal names the file" "src-tauri/src/dodged.rs" "$output"
-assert_contains "and the figure is exactly 1000 + 11 = 1011" "1011" "$output"
-assert_not_contains "and the cfg(test)-cut figure (1000 code lines) is not what was measured" "1000 code lines" "$output"
+assert_contains "and the figure is exactly 800 + 11 = 811" "811" "$output"
+assert_not_contains "and the cfg(test)-cut figure (800 code lines) is not what was measured" "800 code lines" "$output"
 
 # 13b. THE SAME PIN AT SMALL SCALE, read out of the baseline where a reader can
 #      check the arithmetic: 700 production code lines + a 4-line inline test
@@ -691,12 +699,12 @@ assert_eq "and the run is still red on the whole-file figure (the split does not
 # ... AND NO SPLIT FOR A FILE WITH NO INLINE REGION: the sentence is the one every
 # pre-ADR-0112 case pins, unchanged.
 fixture inline_split_absent
-emit_code 1001 'const p' >"$root/src-tauri/src/plainsplit.rs"
+emit_code 801 'const p' >"$root/src-tauri/src/plainsplit.rs"
 git -C "$root" add -A
 run_check "$root"
 assert_eq "a production file with no inline #[cfg(test)] region is refused" "1" "$status"
 assert_contains "and its message is the original sentence, unchanged" \
-  "src-tauri/src/plainsplit.rs: 1001 code lines — over the 1000-line hard gate with no baseline entry" "$output"
+  "src-tauri/src/plainsplit.rs: 801 code lines — over the 800-line hard gate with no baseline entry" "$output"
 # A TEST file's own violation carries no split either: its whole body IS its subject.
 mkdir -p "$root/src/lib/tests"
 emit_code 1001 '    const t' >"$root/src/lib/tests/splitless.rs"
@@ -708,21 +716,25 @@ assert_contains "with no production/inline split on it" \
 
 # 14. THE EXEMPTIONS HAVE TEETH, IN BOTH DIRECTIONS. An exempt file is not seeded
 #     and may grow freely — that is ALL an exemption buys, since none of the
-#     exempt files is anywhere near the gate — but the hard 1,000 gate still
-#     applies to it.
+#     exempt files is anywhere near the gate — but the hard 800 gate still
+#     applies to it. THE GATE IS THE ONLY CEILING AN EXEMPT FILE HAS, so tightening
+#     it shrinks the room an exemption buys: an exempt file used to be able to reach
+#     1,000 unchecked and can now reach 800. That is the intended consequence, and it
+#     is why the 950 this case used to plant is now 750 — 950 is legal only while the
+#     gate is 1,000.
 fixture exempt_grows_freely
 emit_code 800 'export const x' >"$root/src/lib/palettes/everforest.ts"
 git -C "$root" add -A
 run_check "$root" --update
 assert_eq "an exempt file over 700 is not seeded into the baseline" "" "$(baseline_count "$root/scripts/file-size-baseline.txt" 'src/lib/palettes/everforest.ts')"
-emit_code 950 'export const x' >"$root/src/lib/palettes/everforest.ts"
+emit_code 750 'export const x' >"$root/src/lib/palettes/everforest.ts"
 git -C "$root" add -A
 run_check "$root"
 assert_eq "an exempt file may grow past the seed threshold with no re-baseline" "0" "$status"
-emit_code 1001 'export const x' >"$root/src/lib/palettes/everforest.ts"
+emit_code 801 'export const x' >"$root/src/lib/palettes/everforest.ts"
 git -C "$root" add -A
 run_check "$root"
-assert_eq "an exempt file still cannot cross the hard 1,000 gate" "1" "$status"
+assert_eq "an exempt file still cannot cross the hard 800 gate" "1" "$status"
 assert_contains "and the refusal names it" "everforest.ts" "$output"
 
 # 14b. A STALE EXEMPTION is refused: an exemption naming a file the walk did not
@@ -1408,7 +1420,7 @@ ledger_missing_entries() {
 #   - A FILE OVER THE 700-LINE SEED THRESHOLD WITH NO ENTRY: deleting one line is
 #     otherwise all it takes to dodge the ratchet on a 2,000-line file. The guard
 #     does NOT refuse this itself — it refuses an un-ledged file only above the
-#     1,000 HARD_GATE, so a 700-to-1,000 file can be dropped from the ledger and
+#     800 HARD_GATE, so a 700-to-800 file can be dropped from the ledger and
 #     then grow freely. Measured against the guard as it stands: an 800-code-line
 #     file with its ledger entry deleted exits 0, and exits 0 again after growing
 #     to 999 lines. Same for a dead entry — a ledger naming a file that no longer

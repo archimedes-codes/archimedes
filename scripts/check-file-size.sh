@@ -22,8 +22,9 @@
 #
 # Drops blank lines, whole-line `//`, block-comment continuation lines starting
 # `*`, and lines starting `/*`. KNOWN LIMIT, pinned by a test: a JSX comment's
-# braces are NOT stripped, so `{/* … */}` counts as code. The bar is 1,000 code
-# lines and the largest PRODUCTION `.tsx` file here is `MessageList.tsx` in
+# braces are NOT stripped, so `{/* … */}` counts as code. The production bar is
+# 800 code lines (TEST_HARD_GATE is 1,000, see THE NUMBERS) and the largest
+# PRODUCTION `.tsx` file here is `MessageList.tsx` in
 # `src/components/chat/` at 583, re-measured at 2fb9a2a7 — a per-file figure, not one
 # of the walk counts, so it is stamped once here rather than tracked everywhere it is
 # quoted. Since ADR 0112 the walk also reads `.tsx`
@@ -34,7 +35,7 @@
 # 66-line `{/* … */}` block in `SubagentModals.tsx` is counted whole, and stripping
 # every JSX comment would take 139 lines off `SpacesList.tsx` — but it changes no
 # verdict, because no `.tsx` file of either class sits within its own over-count of a
-# threshold: the production class's largest is that same 583 against a 700 seed and a 1,000
+# threshold: the production class's largest is that same 583 against a 700 seed and an 800
 # gate, and all EIGHT ledgered test `.tsx` entries measure 0 JSX lines, so their
 # recorded figures are exact. Stated because an unlisted inaccuracy in a metric
 # becomes an argument later.
@@ -248,7 +249,16 @@ fail() {
 # `sessions.rs` — against `db/tests/mod.rs` falling out of the set as its contents
 # moved into them) nobody is stopped from growing, and every one of them would then
 # need a `--update` diff for an edit the gate permits.
-HARD_GATE=1000     # refuse a production file crossing this unless it is baselined
+HARD_GATE=800      # refuse a production file crossing this unless it is baselined.
+                   # Moved from 1,000 when AGENTS.md made 600-800 the band: the gate
+                   # is where CI refuses and the band is where you should already
+                   # have split, and a gate set above the band makes the band a
+                   # number nobody is gated on (the objection ADR 0112 raises against
+                   # report-only). MEASURED blast radius at the commit this moved:
+                   # ZERO un-ledgered production files sit at or above 800, so the
+                   # tightening reddens nothing that exists — it only stops what is
+                   # not yet written. TEST_HARD_GATE stays 1,000 on purpose: see the
+                   # dodge argument below, which is about relocation, not taste.
 SEED_THRESHOLD=700 # `--update` records PRODUCTION files ABOVE this. Deliberate consequence,
                    # stated rather than buried: a file at or below 700 is not
                    # recorded, so it can grow unwatched until it crosses the gate.
@@ -311,13 +321,18 @@ TABS="$(printf '\t')"
 # line (an unexplained exemption is how a permanent free pass arrives, and a
 # reasonless line is itself a refusal). An exemption buys exactly ONE thing:
 # freedom to grow past a recorded baseline WITHOUT an `--update` diff. The hard
-# 1,000 gate still applies to an exempt file, so this list is not a licence.
+# 800 gate still applies to an exempt file, so this list is not a licence — and
+# because the gate is the ONLY ceiling an exempt file has, tightening it shrinks
+# what an exemption buys, from 1,000 unchecked to 800.
 #
 # Measured with this instrument, FOUR production files sit in the 700-1,000 band:
 # `provider_auth/refresh.rs` 866, `commands/update.rs` 734, `scene.ts` 729,
-# `palettes/everforest.ts` 707. NONE crosses the 1,000 gate, so an exemption buys
-# nothing at all for the first two — they are ordinary logic, and ordinary logic is
-# what a ratchet is for. They are NOT exempt. (The census's inherited exemption
+# `palettes/everforest.ts` 707. Under the 1,000 gate NONE of them crossed it, so an
+# exemption bought nothing for the first two and they are NOT exempt — they are
+# ordinary logic, and ordinary logic is what a ratchet is for. NOTE the asymmetry
+# the 800 gate creates: `refresh.rs` at 866 now DOES cross, and it is carried by its
+# LEDGER ENTRY (grandfathered, may not grow), not by an exemption. The other three
+# stay under 800. (The census's inherited exemption
 # named "scene.ts and the four palettes"; six of the seven `palettes/*.ts` files are
 # 227-557, nowhere near the bar, so a blanket palette exemption guards nothing and
 # hides the one palette file that is here. `paletteTestKit.ts`, which the census
@@ -1022,7 +1037,7 @@ run_guard() {
       printf 'error: %s file(s) broke the size ratchet\n' "$n_violations"
       cat "$violations"
       printf '  the instrument is CODE lines, not raw lines: comments and blanks are stripped, an inline #[cfg(test)] mod tests is NOT\n'
-      printf '  production and test are separate classes with separate ledgers and their own 1000-line gate (ADR 0112)\n'
+      printf '  production and test are separate classes with separate ledgers and their own gate (production 800, test 1000 per ADR 0112)\n'
       printf '  this is a look-at tripwire; subject count is still what decides whether a split is DONE (AGENTS.md, and size is not a defect predictor here)\n'
     } >&2
     exit 1
@@ -1191,17 +1206,19 @@ run_self_test() {
     self_fail "a clean fixture root is green" "expected exit 0 with the positive line, got exit $self_status: $self_output"
   fi
 
-  # Case 1: THE HARD GATE. A new file over 1,000 code lines with no baseline entry
-  # is refused, by name and by number.
+  # Case 1: THE HARD GATE. A new PRODUCTION file over 800 code lines with no
+  # baseline entry is refused, by name and by number. The fixture deliberately sits
+  # at 801 and NOT above the test class's 1,000, so this case cannot pass by
+  # tripping the wrong class's gate.
   local huge="$root/src-tauri/src/huge.rs"
   self_mkfile "$huge"
-  self_emit_code 1001 'const p' >"$huge"
+  self_emit_code 801 'const p' >"$huge"
   git -C "$root" add -A
   self_run "$script" "$root"
-  if [[ "$self_status" == "1" && "$self_output" == *"src-tauri/src/huge.rs"* && "$self_output" == *"1001"* ]]; then
-    self_ok "a file over the 1,000-line hard gate is refused (exit 1, named, with its count)"
+  if [[ "$self_status" == "1" && "$self_output" == *"src-tauri/src/huge.rs"* && "$self_output" == *"801"* ]]; then
+    self_ok "a file over the 800-line hard gate is refused (exit 1, named, with its count)"
   else
-    self_fail "a file over the 1,000-line hard gate is refused" "expected exit 1 naming the file and 1001, got exit $self_status: $self_output"
+    self_fail "a file over the 800-line hard gate is refused" "expected exit 1 naming the file and 801, got exit $self_status: $self_output"
   fi
   rm "$huge"
   git -C "$root" add -A
@@ -1474,16 +1491,19 @@ run_self_test() {
   rm "$docs"
   git -C "$root" add -A
 
-  # Case 5: THE DISCRIMINATING CASE. 1,000 production code lines + an inline
-  # `#[cfg(test)] mod tests` of 11 more must measure 1011. The census instrument
-  # that cuts at `#[cfg(test)]` reads 1000 here and reports GREEN — this is the only
+  # Case 5: THE DISCRIMINATING CASE. 800 production code lines + an inline
+  # `#[cfg(test)] mod tests` of 11 more must measure 811. The census instrument
+  # that cuts at `#[cfg(test)]` reads 800 here and reports GREEN — this is the only
   # case in either harness that tells the two instruments apart, and it is the case
   # that pins the dodge-proofness the header argues for. Asserted by EXACT number.
+  # N IS PINNED TO HARD_GATE: the fixture discriminates only while the CUT figure is
+  # at or below the gate and the WHOLE-FILE figure is above it, so a 1,000-line plant
+  # under an 800 gate would refuse BOTH instruments and print a false ok.
   local dodged="$root/src-tauri/src/dodged.rs"
   self_mkfile "$dodged"
   {
     self_emit_doc 5 '/// doc above the production code'
-    self_emit_code 1000 'const p'
+    self_emit_code 800 'const p'
     printf '#[cfg(test)]\n'
     printf 'mod tests {\n'
     self_emit_code 8 '    const t'
@@ -1491,8 +1511,8 @@ run_self_test() {
   } >"$dodged"
   git -C "$root" add -A
   self_run "$script" "$root"
-  if [[ "$self_status" == "1" && "$self_output" == *"1011"* && "$self_output" == *"src-tauri/src/dodged.rs"* ]]; then
-    self_ok "an inline #[cfg(test)] mod tests counts toward the file (1000 + 11 = 1011, by exact number)"
+  if [[ "$self_status" == "1" && "$self_output" == *"811"* && "$self_output" == *"src-tauri/src/dodged.rs"* ]]; then
+    self_ok "an inline #[cfg(test)] mod tests counts toward the file (800 + 11 = 811, by exact number)"
   else
     self_fail "an inline #[cfg(test)] mod tests counts toward the file" "expected exit 1 naming dodged.rs with 1011, got exit $self_status: $self_output"
   fi
