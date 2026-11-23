@@ -1586,21 +1586,30 @@ run_self_test() {
   # asks which FILE the test line names.
   #
   # THE FIXTURE MAKES THE TWO CLASSES DISAGREE ABOUT THE WINNER ON PURPOSE: the
-  # biggest production file (900) is bigger than the biggest test file (800), so a
+  # biggest production file (790) is bigger than the biggest test file (700), so a
   # line built from the production rows names `bigprod.rs` and a line built from the
   # test rows names `big.test.ts`. Asserting the test file's name+figure is therefore
   # a test of WHICH ROW SET the line was ranked from, and the production line is
   # asserted in the same run so a guard that swapped the two arguments outright
   # reddens here too. Both files sit under their class's gate, so the run is green
   # for the ordinary reason and the only thing under test is the ranking.
+  #
+  # PRODUCTION MUST STAY THE OVERALL LARGEST, and that is a load-bearing property
+  # rather than a taste: the blunt half of this case asserts the test line names no
+  # production path, which is the documented bug (`largest …/naming.rs 2007` printed
+  # under the TEST label). If the test file were the bigger of the two, a guard that
+  # ranked the test line from ALL rows would name the test file anyway and that
+  # assertion would pass by accident. Both figures are pinned below HARD_GATE (800)
+  # because neither fixture is seeded with `--update`, so an over-gate production
+  # file here is a refusal and the case never reaches its assertions.
   local rank_root="$self_test_root/rank-per-class"
   self_mk_fixture_root "$rank_root"
   local big_prod="$rank_root/src-tauri/src/bigprod.rs"
   local big_test="$rank_root/src/lib/big.test.ts"
   self_mkfile "$big_prod"
-  self_emit_code 900 'const p' >"$big_prod"
+  self_emit_code 790 'const p' >"$big_prod"
   self_mkfile "$big_test"
-  self_emit_code 800 'export const t' >"$big_test"
+  self_emit_code 700 'export const t' >"$big_test"
   git -C "$rank_root" add -A
   self_run "$script" "$rank_root"
   if [[ "$self_status" != "0" ]]; then
@@ -1612,12 +1621,12 @@ run_self_test() {
     local prod_line test_line
     prod_line="$(printf '%s\n' "$self_output" | grep -F 'production file(s) walked' || true)"
     test_line="$(printf '%s\n' "$self_output" | grep -F ' test file(s) walked' || true)"
-    if [[ "$prod_line" == *"largest src-tauri/src/bigprod.rs 900"* ]]; then
+    if [[ "$prod_line" == *"largest src-tauri/src/bigprod.rs 790"* ]]; then
       self_ok "the production line names the largest PRODUCTION file with its figure"
     else
-      self_fail "the production line names the largest PRODUCTION file with its figure" "expected 'largest src-tauri/src/bigprod.rs 900', got [$prod_line]"
+      self_fail "the production line names the largest PRODUCTION file with its figure" "expected 'largest src-tauri/src/bigprod.rs 790', got [$prod_line]"
     fi
-    if [[ "$test_line" == *"largest src/lib/big.test.ts 800"* ]]; then
+    if [[ "$test_line" == *"largest src/lib/big.test.ts 700"* ]]; then
       self_ok "and the TEST line names the largest TEST file, not the largest file the walk saw"
     else
       self_fail "and the TEST line names the largest TEST file, not the largest file the walk saw" "expected 'largest src/lib/big.test.ts 800' on the test line, got [$test_line]"
