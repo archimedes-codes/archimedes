@@ -3149,8 +3149,12 @@ async fn the_first_prompt_titles_the_session_before_the_turn_finishes() {
 /// `subagent_dispatch_end_to_end_real_workers` dispatches a real child through the
 /// `E2e` harness, whose `WorkerManager` collects events on a channel and NOTHING
 /// else — `SessionManager::route_event` never runs there, so no `TaskRequest` is
-/// EVER answered and a board verb in that harness would hang for the full 30-minute
-/// Dead bound. This case therefore builds on `SessionManagerBuilder` (the `lib.rs`
+/// EVER answered and a board verb in that harness hangs UNBOUNDED rather than for
+/// 30 minutes: the parked call holds its `tool_call_id` open, and an outstanding
+/// `tool_call_id` is exactly what DISABLES the drive's Dead bound (the crate's
+/// `subagent_flow.rs` arms it `if !in_flight`), leaving that drive endable only on
+/// settle, process exit or cancel — never on a bound.
+/// This case therefore builds on `SessionManagerBuilder` (the `lib.rs`
 /// production wiring, real router) and adds the dispatch mechanics from that test:
 /// a scratch `HOME` holding the definition, `subagent_enabled: true`, and the
 /// `subagent` tool in the parent's enabled set.
@@ -3172,9 +3176,12 @@ async fn the_first_prompt_titles_the_session_before_the_turn_finishes() {
 /// (it is the criterion ADR 0117 names, and it reddens if the arm is dropped or
 /// answers a wrong DTO shape), but the addressing is pinned by exactly TWO things:
 /// the child's own `role: tool` row for `call_child_write`, and the child closing
-/// `subagent-closed: completed` — a child parked on an unanswered frame is reaped
-/// by the 30-minute Dead bound (`DEFAULT_SUBAGENT_DEAD_BOUND`) and reports a
-/// different status.
+/// `subagent-closed: completed` rather than NEVER closing at all. Under the
+/// misroute the child is not reaped and reports no different status — the drive's
+/// Dead bound is DISABLED while a `tool_call_id` is outstanding (the crate's
+/// `subagent_flow.rs` arms it `if !in_flight`), and a call parked on an unanswered
+/// frame is exactly that state, so the drive never ends and `subagent-closed` never
+/// arrives. That absence — not a different status — is what this assertion sees.
 ///
 /// The parent-side negative (`call_child_write` appears NOWHERE in the parent's
 /// transcript) is asserted below but is **NON-DISCRIMINATING**: it passes on the
@@ -3444,9 +3451,15 @@ async fn a_subagents_task_request_is_answered_in_the_child_and_not_the_parent() 
     );
 
     // The drive COMPLETED. This is the second half of the non-vacuity: a child that
-    // parks on an unanswered frame is reaped by the Dead bound instead, and reports
-    // a different status — so "wired, dispatched, never answered" reddens HERE even
-    // if the artifact assertion were somehow satisfied another way.
+    // parks on an unanswered frame never closes at all — the Dead bound cannot fire
+    // for it, because an outstanding `tool_call_id` DISABLES that arm (the crate's
+    // `subagent_flow.rs` gates it `if !in_flight`) and a parked board call holds
+    // precisely that. So "wired, dispatched, never answered" reddens HERE too, on
+    // this loop's own 90s bound, even if the artifact assertion were somehow
+    // satisfied another way — though on the addressing mutation the CHILD'S TOOL ROW
+    // poll above is what is measured to fail FIRST (in ~60s, its own two 30s bounds),
+    // and this await is the later of the two teeth: it is the one that sees the DRIVE
+    // never ending, not the tool call never resolving.
     let closed = {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         loop {
@@ -3465,8 +3478,8 @@ async fn a_subagents_task_request_is_answered_in_the_child_and_not_the_parent() 
     assert_eq!(closed["sessionId"], child_id.as_str());
     assert_eq!(
         closed["status"], "completed",
-        "the child completed its turn rather than being reaped by the Dead bound, \
-         got {closed:?}"
+        "the child completed its turn rather than never closing at all \
+         (a parked child is NOT reaped — see the note above), got {closed:?}"
     );
 
     // ── AND NOT THE PARENT — the literal second half of this test's name. ──

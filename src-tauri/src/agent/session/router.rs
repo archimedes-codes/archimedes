@@ -338,9 +338,14 @@ impl SessionManager {
                 // shadow `route_event`'s `session_id` (the delivery id, which stays
                 // the UI-scope key it is). Meanwhile a miss is never silently
                 // discardable: every path below that fails to answer records an
-                // always-on `diagnostics` line, and `spawn_board` bounds the call
-                // itself, so the paths that still cannot answer are bounded and
-                // visible instead of a hang nobody can explain.
+                // always-on `diagnostics` line. Note what the bound does and does
+                // NOT cover: `spawn_board` bounds the board CALL, so a verb that is
+                // stuck is answered, but a verb that ran fine and fast and then
+                // failed to reach its Worker is a DELIVERY failure this bound never
+                // fires for — that is made VISIBLE by the `record` sites below, not
+                // by the deadline (the same scope `TASK_BOARD_CALL_TIMEOUT`'s own doc
+                // now states). So a miss is visible, and a wedged verb is bounded —
+                // two different mechanisms, not one.
                 let db = self.driver.db.clone();
                 let wm = self.worker_manager.get().cloned();
                 // Decided BEFORE the spawn, so the early `return` below exits
