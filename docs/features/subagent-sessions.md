@@ -1,7 +1,7 @@
 ---
 status: live
-last-verified: 2026-10-27
-verified-by: feature/harness-cost-close-out — the six-command gate at wave end (measured at implement time)
+last-verified: 2026-11-23
+verified-by: 2026-11-23 pass over the addressing rule and two dead paths — the **delivery address** / **origin address** generalisation in "Metrics are real" (ADR 0117) and the corrected `worker/manager/pump.rs` and `worker/manager/mod.rs` paths are prose, so nothing here was RE-RUN and no test reads `docs/`. What was RE-READ at this HEAD — `docs/decisions/0117-*.md` in full, both `CONTEXT.md` entries, `src-tauri/Cargo.toml` pinning `fulcrum-harness` 0.6.0, and the crate extract's `worker/manager/pump.rs` (where `delivery_id` is computed) and `worker/manager/mod.rs` (where `DEFAULT_SUBAGENT_DEAD_BOUND` lives), which is what the two path fixes cite now that `src-tauri/src/agent/worker/` is a pure re-export shell with no `manager.rs`; `grep -c "src-tauri/src/agent/worker/manager.rs"` over THIS file gives **0**. The one test the new prose names, `a_subagents_task_request_is_answered_in_the_child_and_not_the_parent`, was READ in `src-tauri/tests/worker_e2e.rs` and NOT executed here, and its failing-message quote is carried from that test's own mutation note. The liveness rule (ADR 0055 — the drive's race, the `SubagentLiveness` signal, the gate-close and failure-`reason` wiring) and the client half carry their earlier stamp and were not re-measured, and the pre-ADR 0025 driver prose below stays HISTORY except for the one dead path corrected in it — the earlier stamp on that half was the `feature/harness-cost-close-out` wave-end six-command gate, measured at implement time.
 ---
 
 # Subagent sessions
@@ -102,7 +102,9 @@ oneshot is the observation point; the `JoinHandle` is detached). The task:
    prompt (a `SendError` preflight failure = the child died before the turn
    started → `Failed`),
 6. Races: the child's **settle** vs the **Dead bound** (`dead_bound` /
-   `DEFAULT_SUBAGENT_DEAD_BOUND`, `src-tauri/src/agent/worker/manager.rs`) vs
+   `DEFAULT_SUBAGENT_DEAD_BOUND`, the crate's `worker/manager/mod.rs` — re-exported
+   desktop-side by `src-tauri/src/agent/worker/mod.rs`, which is a pure re-export
+   shell) vs
    the **`SubagentCancel`** handle vs the child Worker process **exiting**
    unexpectedly (→ `Failed { reason: Crashed }`; a `settle_tx` drop → `Failed`,
    NOT `Completed`). The bound is a **self-rearming silence clock**, not a
@@ -170,7 +172,35 @@ frame it already routes into `sessions.cost_usd`, a nullable `REAL` with no
 own frames land on the CHILD's row: the pump re-targets them to the parent's
 delivery id, so the router keys the write off the payload's `sessionId` instead
 — writing them to the delivery id would put a child's per-call deltas on the
-parent's row and the roll-up would add the child's SUM again. The roll-up itself
+parent's row and the roll-up would add the child's SUM again. **That is not a
+`cost_update` quirk — it is the general rule, and ADR 0117 is what settled it.**
+The id the pump hands a frame to the Client under is that frame's **delivery
+address** (`CONTEXT.md`), and it names the SCOPE THE FRAME RENDERS IN and nothing
+else: for a **Subagent session** that is the PARENT's id, because the child's UI
+belongs to the parent's scope, and reading a frame's other identity off it is
+therefore correct for transcripts, gates and money. It is **never** the address of
+a process that must be answered. The address of a reply is the frame's **origin
+address** (`CONTEXT.md`) — the id the emitting loop stamps on its OWN frame, the
+child's own id — and the reason `Outbound::FetchRenderRequest` re-extracts
+`payload["sessionId"]` and the `cost_update` arm keys off the payload for the same
+reason is that both frames carry their originator inside themselves.
+`Outbound::TaskRequest` carried none, and so could not be answered in a child at
+all: the desktop's board arm had only the delivery address available and used it as
+the reply address, which is why a Subagent's board verb hung for 255m55s while the
+answer was written into the parent's Worker. The wire field that fixes it ships in
+`fulcrum-harness` **0.6.0** (tag **`v0.6.0`**; fulcrum PR #36 adds the field, PR #37
+releases it) and the desktop's arm reads it; the proof is
+`a_subagents_task_request_is_answered_in_the_child_and_not_the_parent` in
+`src-tauri/tests/worker_e2e.rs`, and the seam's own record is
+`docs/features/task-board-known-gaps.md` §2 (with
+`docs/research/board-tool-hang-subagent-task-response-misroute.md` behind it). Two
+consequences bind here as much as there: a reply-bearing frame must **never** fall
+back to the delivery address when its originator field is absent (the `cost_update`
+arm's own comment says of its fallback — *"Do not read it as a safe default."*), and
+the reason this file's two idioms — "the pump re-targets them to the parent's
+delivery id" and "the router keys the write off the payload's `sessionId`" — are
+load-bearing phrasing rather than loose description is that the two ids are
+different ids and only one of them is legal for any given job. The roll-up itself
 no longer bypasses persistence: it goes through `route_event`, which persists it
 and re-emits it verbatim, so the parent's stored figure equals the number under
 its own title. The frontend reads map-first-then-row (`lib/sessionCost.ts`) and
@@ -591,8 +621,10 @@ named):
   `toolCallId` so it can anchor), or delete that branch and its seeds.
 - **A child's `interactive-request-close` frames are mis-keyed.** **RESOLVED by
   ADR 0055.** The defect was real: the pump relays a Subagent's frames under the
-  PARENT's delivery id (`delivery_id` in
-  `src-tauri/src/agent/worker/manager.rs`, routed into `route_event`, which is
+  PARENT's delivery id (`delivery_id` in the crate's `worker/manager/pump.rs` —
+  the pump moved out of the desktop with S8.3 and `src-tauri/src/agent/worker/`
+  is now a pure re-export shell with no `manager.rs` in it; routed
+  into `route_event`, which is
   what `track_modal` records), so any close frame emitted that way carried
   `sessionId = parent` and reached `App`'s `interactive-request-close`
   listener as `removeRequest(parent, <the child's request id>)` — a no-op on the
@@ -616,6 +648,18 @@ named):
   the MCP call does not. The fix belongs where the hang is — re-arming any
   ceiling in the drive would recreate the defect ADR 0055 removed. Stop on the
   parent (`SubagentCancel` → `cancel_drive` → reap) is the escape hatch today.
+  **Amended 2026-11-23 — the board seam now has its OWN bound, and this non-goal
+  still stands for every other tool.** The one internal seam the Supervisor answers
+  itself is the board: `TASK_BOARD_CALL_TIMEOUT` (30 s) bounds each board verb via
+  `with_board_deadline`, and every path that fails to answer records an always-on
+  `diagnostics` line (ADR 0117). That is not a ceiling over the delegation and does
+  not re-arm what ADR 0055 removed — it bounds ONE Supervisor-side call whose own
+  contract is request/answer, and the child stays an **Active Subagent** throughout;
+  the deadline answers the model, the drive still never reaps. MCP and every other
+  tool the Worker runs OUTSIDE that seam remain exactly where this entry put them:
+  unbounded, Active forever, needing a bound in the tool layer. A board call that
+  hits the 30 s is a **wedged `Db`**, not a misroute — the misroute is fixed by the
+  addressing rule above, and the deadline is the backstop beside it, never the cure.
 - 2026-09-15 hang (two concurrent sessions on one tokio runtime):
   **no longer reproduces** on current versions (resolved 2026-09-22 — root
   cause never confirmed, likely version/environment-specific); the one-live
