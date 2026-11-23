@@ -3180,8 +3180,10 @@ async fn the_first_prompt_titles_the_session_before_the_turn_finishes() {
 /// misroute the child is not reaped and reports no different status — the drive's
 /// Dead bound is DISABLED while a `tool_call_id` is outstanding (the crate's
 /// `subagent_flow.rs` arms it `if !in_flight`), and a call parked on an unanswered
-/// frame is exactly that state, so the drive never ends and `subagent-closed` never
-/// arrives. That absence — not a different status — is what this assertion sees.
+/// frame is exactly that state, so NO BOUND ever ends the drive and `subagent-closed`
+/// never arrives on its own — the drive stays endable only on settle, process exit or
+/// cancel, the same scope stated ten lines above. That absence — not a different
+/// status — is what this assertion sees.
 ///
 /// The parent-side negative (`call_child_write` appears NOWHERE in the parent's
 /// transcript) is asserted below but is **NON-DISCRIMINATING**: it passes on the
