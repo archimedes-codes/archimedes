@@ -5,8 +5,8 @@
 # ratcheted", and the hard 800-line gate still applies to them. Inline Rust
 # `#[cfg(test)] mod tests` ARE counted — that is what makes this ratchet undodgeable.
 2007	src-tauri/src/agent/session/naming.rs
+1712	src-tauri/src/agent/session/router.rs
 1583	src-tauri/src/agent/session/mod.rs
-1471	src-tauri/src/agent/session/router.rs
 1370	src/store/sessions.ts
 1289	src-tauri/src/config.rs
 1135	src-tauri/src/agent/errors.rs

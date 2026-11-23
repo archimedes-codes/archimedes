@@ -6,8 +6,8 @@
 # an exemption would be indistinguishable from a grandfathered entry and none applies.
 5543	src/store/sessions.test.ts
 3178	src-tauri/src/agent/session/tests/mod.rs
+2315	src-tauri/tests/worker_e2e.rs
 2128	src/components/settings/SettingsPage.test.tsx
-2099	src-tauri/tests/worker_e2e.rs
 1848	src/App.test.tsx
 1760	src/components/ChatStream.test.tsx
 1559	src/lib/paletteCompleteness.test.ts
