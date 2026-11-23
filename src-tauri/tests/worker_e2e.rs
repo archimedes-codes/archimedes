@@ -3119,3 +3119,363 @@ async fn the_first_prompt_titles_the_session_before_the_turn_finishes() {
         .expect("the prompt task completes")
         .expect("the delayed turn completes");
 }
+
+// ── (9) ADR 0117: a Subagent's board call is answered in the CHILD ───────────
+
+/// A REAL child Worker's `write_artifact` round-trips through the REAL router and
+/// the artifact row lands — which is only interesting because of WHERE the answer
+/// has to be delivered.
+///
+/// # Why this test has to exist (ADR 0117 — it is the pin that was missing)
+///
+/// `task_artifact_round_trips_through_a_real_worker` above is the only other
+/// end-to-end proof of this seam and it attaches a MAIN session, where the pump's
+/// delivery id and the frame's origin id are the SAME id — so answering at either
+/// one is correct and the case honestly passes either way. That is precisely why
+/// the 255m55s `get_artifact` hang shipped green: a Subagent's frames are re-keyed
+/// to the PARENT's session id (`pump.rs`'s `delivery_id`, correct, because the
+/// child's UI renders in the parent's scope), and the router arm used that
+/// DELIVERY id as its REPLY address. `handle_for(parent)` HITS and hands back the
+/// parent's handle; the parent's per-Worker pending map has no such `request_id`
+/// and ignores the frame exactly as its contract requires; the child stays parked
+/// on a oneshot with no timeout.
+///
+/// This case routes a `TaskRequest` with `is_subagent: true` — the one shape no
+/// test in either repository exercised — and asserts the answer landed in the
+/// CHILD and nowhere else.
+///
+/// # The harness choice is load-bearing
+///
+/// `subagent_dispatch_end_to_end_real_workers` dispatches a real child through the
+/// `E2e` harness, whose `WorkerManager` collects events on a channel and NOTHING
+/// else — `SessionManager::route_event` never runs there, so no `TaskRequest` is
+/// EVER answered and a board verb in that harness would hang for the full 30-minute
+/// Dead bound. This case therefore builds on `SessionManagerBuilder` (the `lib.rs`
+/// production wiring, real router) and adds the dispatch mechanics from that test:
+/// a scratch `HOME` holding the definition, `subagent_enabled: true`, and the
+/// `subagent` tool in the parent's enabled set.
+///
+/// # Non-vacuity — mutation-proven, and the mutation names the assertion
+///
+/// Reverting the addressing (answering at the pump's delivery id for a child — the
+/// pre-ADR-0117 behaviour, a one-line change to `task_reply_target`) reddens this
+/// test in 60s on the CHILD'S TOOL ROW:
+///
+/// > no `role: tool` row for `call_child_write` — the tool call never resolved.
+///
+/// That is the honest location of the teeth, and it is worth stating plainly
+/// because it is NOT where the plan predicted they would be: the router arm runs
+/// the verb on the `Db` BEFORE it decides where the answer goes, so a misroute
+/// still writes the `spec` artifact row and `wait_for_artifact` passes. Making the
+/// artifact poll the load-bearing assertion would have produced a test that passes
+/// both before and after the fix — worthless. The artifact row is still asserted
+/// (it is the criterion ADR 0117 names, and it reddens if the arm is dropped or
+/// answers a wrong DTO shape), but the addressing is pinned by the child's own
+/// transcript, plus the parent's (`call_child_write` appears NOWHERE in it), plus
+/// `subagent-closed: completed` — a child parked on an unanswered frame is reaped
+/// by the 30-minute Dead bound and reports a different status.
+///
+/// # Two fixture notes
+///
+/// - The definition's `tools:` list names a REAL tool. `agents.rs::parse_tools`
+///   comma-splits with no known-tool check, but `resolve_agent_launch`'s `narrow()`
+///   then drops every name that is not in `tool_specs()` — a typo'd name would
+///   silently leave the child with NO tools and the canned call would never reach
+///   the task seam.
+/// - `sessionNamingEnabled: false` is written into `settings.json` BEFORE the first
+///   read: `mount_request_script` is `up_to_n_times(1)`, so a naming request would
+///   STEAL a mounted body and starve the turn that needs it.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_subagents_task_request_is_answered_in_the_child_and_not_the_parent() {
+    // The `HOME` isolation, verbatim from `subagent_dispatch_end_to_end_real_workers`:
+    // the Worker CHILD discovers agent definitions under `~/.pi/agent/agents` and
+    // the ONLY one this dispatch can find lives in the scratch home.
+    let _lock = archimedes_lib::test_support::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let home = temp_dir();
+    let original_home = std::env::var_os("HOME");
+    struct RestoreHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            match self.0.take() {
+                // SAFETY: the `ENV_LOCK` is still held — declared first, drops last.
+                Some(v) => unsafe { std::env::set_var("HOME", v) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+    let _restore = RestoreHome(original_home);
+    std::fs::create_dir_all(home.join(".pi/agent/agents")).expect("the agents dir is created");
+    // The frontmatter's `model` resolves against the PARENT's catalog (the shared
+    // one below), its `tools` become the child's enabled set, its body the child's
+    // system message.
+    std::fs::write(
+        home.join(".pi/agent/agents/scout.md"),
+        "---\nname: scout\nmodel: fake/sub-model\ntools: [write_artifact]\n---\nYou are a scout. Write the spec.\n",
+    )
+    .expect("the agent definition is written");
+    // SAFETY: the `ENV_LOCK` is held for the whole set→assert→restore span.
+    unsafe { std::env::set_var("HOME", home.path()) };
+
+    // Two providers, two scripts: the parent's is a `subagent` call then a settle,
+    // the child's is a `write_artifact` call then a settle.
+    let main_server = MockServer::start().await;
+    let sub_server = MockServer::start().await;
+
+    // The card the child's artifact attaches to, seeded in the DESKTOP's `Db`
+    // BEFORE anything runs: `write_artifact` refuses a dangling `task_id`, and
+    // `task_artifacts` carries no foreign key to catch one (ADR 0100).
+    let dir = temp_dir();
+    let db: Arc<Db> = Arc::new(Db::open(&dir.join("e2e.db")).expect("db opens"));
+    let space = dir.path().to_str().expect("utf-8 path").to_string();
+    db.get_board(&space)
+        .expect("get_board seeds the five stages");
+    let card = db
+        .create_task(&space, "e2e sub card", Some("the body"), None)
+        .expect("create_task");
+
+    // Naming OFF, and BEFORE the first read (`load_settings` WRITES defaults when
+    // the file is absent, so the file has to exist first — see the fixture note).
+    std::fs::write(
+        dir.path().join("settings.json"),
+        r#"{ "sessionNamingEnabled": false }"#,
+    )
+    .expect("the settings file is written");
+
+    mount_request_script(
+        &main_server,
+        &[
+            sse_tool_call(
+                "call_sub",
+                "subagent",
+                &serde_json::json!({ "agentName": "scout", "task": "write the spec" }),
+            ),
+            sse_final("done"),
+        ],
+    )
+    .await;
+    let markdown = "CHILD-SENTINEL";
+    mount_request_script(
+        &sub_server,
+        &[
+            sse_tool_call(
+                "call_child_write",
+                "write_artifact",
+                &serde_json::json!({ "task_id": card.id, "key": "spec", "markdown": markdown }),
+            ),
+            sse_final("written"),
+        ],
+    )
+    .await;
+
+    // THE production wiring — the router arm under test, not a channel.
+    let (sink_tx, mut sink_rx) = mpsc::unbounded_channel::<(String, Value)>();
+    let sink: Arc<dyn EventSink> = Arc::new(RecSink { tx: sink_tx });
+    let persister = Arc::new(TranscriptPersister::new(db.clone()));
+    let (sm, wm) = SessionManagerBuilder::new(
+        dir.path().to_path_buf(),
+        db.clone(),
+        sink,
+        persister.clone(),
+    )
+    .with_worker_factory(Arc::new(RealWorkerFactory))
+    .build();
+
+    // Keep the `attach_worker_manager` call — it is what `lib.rs` does — but know
+    // what it does NOT do on this path: `SessionWorkerHooks` does not override
+    // `attach_cwd_registrar`, so `set_cwd_registrar` is a silent no-op here, and
+    // `build()` has already set the `worker_manager` `OnceLock`. The child's cwd
+    // arrives by the OTHER route: `SessionWorkerHooks::register_child_cwd` →
+    // `sm.register_child_cwd` → `persister.set_cwd`.
+    sm.attach_worker_manager(wm.clone());
+
+    let cwd = temp_dir();
+    let main_model = wire_model(&main_server, "e2e-sub-main-model");
+    let (env, _config_dir) = start_env(
+        "e2e-sub-board",
+        cwd.path(),
+        main_model.clone(),
+        // ONE catalog holds both wiremock models: the child's frontmatter
+        // `model: fake/sub-model` resolves against the PARENT's effective catalog.
+        ModelCatalog {
+            models: vec![main_model, wire_model(&sub_server, "sub-model")],
+            ..Default::default()
+        },
+        // Trusted, so the child (which inherits the posture) needs no gate for its
+        // board call — this test is about the ADDRESSING, not the permission gate.
+        true,
+        // The parent needs the `subagent` tool and nothing else.
+        Some(vec!["subagent".to_string()]),
+        true, // `subagent_enabled: true` (the recursion guard is OFF for the parent)
+    );
+    persister.set_cwd(&env.session_id, &env.cwd);
+    wm.attach("e2e-sub-board", &env)
+        .await
+        .expect("the real parent Worker attaches (ready handshake + start)");
+
+    wm.handle_for("e2e-sub-board")
+        .expect("the session is attached")
+        .send_prompt("dispatch the scout", &[])
+        .expect("the prompt is sent");
+
+    // The child's id, read off the PARENT's sink (the `subagent-session-started`
+    // lifecycle event). Every other emission on this channel is skipped — the
+    // router re-emits the whole UI contract here and none of it is what we want.
+    let started = {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                panic!(
+                    "no `subagent-session-started` on the parent's sink within 60s — the \
+                     `subagent` tool call never dispatched, so there is no CHILD to route to"
+                );
+            }
+            match tokio::time::timeout(remaining, sink_rx.recv()).await {
+                Ok(Some((event, payload))) if event == "subagent-session-started" => break payload,
+                Ok(Some(_)) => continue,
+                Ok(None) => panic!("the parent's sink closed before `subagent-session-started`"),
+                Err(_) => panic!("the sink stalled without ever emitting a frame"),
+            }
+        }
+    };
+    let child_id = started["sessionId"]
+        .as_str()
+        .expect("the child session id")
+        .to_string();
+    assert_ne!(
+        child_id, "e2e-sub-board",
+        "the child is a SEPARATE session from the delivery id the pump will re-key its \
+         frames to, or this test proves nothing about addressing"
+    );
+    assert_eq!(started["parentSessionId"], "e2e-sub-board");
+    assert_eq!(started["agentName"], "scout");
+    assert_eq!(
+        started["model"], "fake/sub-model",
+        "the frontmatter's model override resolved against the parent's catalog"
+    );
+    let enabled: Vec<String> = started["enabledTools"]
+        .as_array()
+        .expect("the enabledTools list")
+        .iter()
+        .map(|v| v.as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        enabled,
+        vec!["write_artifact".to_string()],
+        "the definition's `tools:` list reached the CHILD's enabled set (a name that is \
+         not in `tool_specs()` would be dropped by `narrow()` and leave the child with \
+         no tools, which is a fixture bug this assertion turns into a red)"
+    );
+
+    // ── THE ANSWER REACHED THE CHILD. This is the discriminating assertion, and
+    // it is the one the mutation reddens. ──
+    //
+    // WHY the artifact row below is NOT the discriminator, and why swapping the
+    // two would silently gut this test: the router arm runs the verb on the `Db`
+    // FIRST and only THEN decides where the answer goes (`router.rs`: `run_task_call`
+    // before `handle_for(&reply_target)`). So a MISROUTED answer still writes the
+    // `spec` row and the artifact poll passes — the bug is invisible to it. What a
+    // misroute DOES break is the child's parked oneshot: no `TaskResponse` ever
+    // arrives, the tool call never resolves, and the child's transcript has no
+    // `role: "tool"` row for its own `tool_call_id`. That is what is asserted here,
+    // and reverting the addressing is measured to fail on exactly this line.
+    let write_row = wait_for_tool_row(&db, &child_id, 4, "call_child_write").await;
+    let write_text = write_row["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(
+        write_text.contains("spec"),
+        "the write result names the key it wrote — got {write_text}"
+    );
+    assert!(
+        !write_text.contains(markdown),
+        "the write answer echoes NO document (the caller just sent it) — got {write_text}"
+    );
+
+    // ── THE ROW: the verb ran on the DESKTOP's `Db`, through the real router. ──
+    // Not the discriminator (see above) — this is the OTHER half of "the seam
+    // works": the frame was decoded, the verb executed against the real board and
+    // the answer's DTO shape round-tripped. It is the acceptance criterion ADR 0117
+    // names, and it is what reddens if the arm is dropped or answers a wrong shape.
+    let stored = wait_for_artifact(&db, &card.id, "spec").await;
+    assert_eq!(
+        stored, markdown,
+        "the artifact a CHILD Worker wrote over the wire is the row the DESKTOP stored"
+    );
+
+    // No crash during the dispatch, asserted BEFORE the close (the expected-exit
+    // path drops the session and a post-close `None` would say nothing).
+    assert!(
+        sm.stalled_info("e2e-sub-board").is_none(),
+        "no `on_crash` fired during the dispatch (a crash marks the session STALLED)"
+    );
+
+    // The drive COMPLETED. This is the second half of the non-vacuity: a child that
+    // parks on an unanswered frame is reaped by the Dead bound instead, and reports
+    // a different status — so "wired, dispatched, never answered" reddens HERE even
+    // if the artifact assertion were somehow satisfied another way.
+    let closed = {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                panic!("no `subagent-closed` on the parent's sink within 90s");
+            }
+            match tokio::time::timeout(remaining, sink_rx.recv()).await {
+                Ok(Some((event, payload))) if event == "subagent-closed" => break payload,
+                Ok(Some(_)) => continue,
+                Ok(None) => panic!("the parent's sink closed before `subagent-closed`"),
+                Err(_) => panic!("the sink stalled without ever emitting `subagent-closed`"),
+            }
+        }
+    };
+    assert_eq!(closed["sessionId"], child_id.as_str());
+    assert_eq!(
+        closed["status"], "completed",
+        "the child completed its turn rather than being reaped by the Dead bound, \
+         got {closed:?}"
+    );
+
+    // ── AND NOT THE PARENT — the literal second half of this test's name. ──
+    // The parent settled (its `subagent` tool resolved with the child's answer and
+    // its own final text landed), and its transcript carries NO trace of the
+    // child's `tool_call_id`. Under the misroute the answer was written into THIS
+    // process's stdin — so this is where "the answer went to the wrong Worker" is
+    // visible from the parent's side, and why the parent's own pending map silently
+    // dropped it instead of answering.
+    let parent_rows = wait_for_rows(&db, "e2e-sub-board", 5).await;
+    let parent: Vec<Value> = parent_rows
+        .iter()
+        .map(|r| serde_json::from_str(r).expect("the row is JSON"))
+        .collect();
+    assert_eq!(
+        parent.last().expect("the parent's final assistant row")["content"],
+        "done",
+        "the parent's turn settled after its `subagent` tool resolved, got {parent:?}"
+    );
+    assert!(
+        parent
+            .iter()
+            .all(|r| r["tool_call_id"] != "call_child_write"),
+        "the CHILD's board answer never appears in the PARENT's transcript — it is \
+         addressed to the child and only the child, got {parent:?}"
+    );
+
+    // ── The clean-exit trio. ──
+    let handle = wm
+        .detach("e2e-sub-board")
+        .expect("the session is attached for the close");
+    let code = tokio::time::timeout(Duration::from_secs(15), handle.exited())
+        .await
+        .expect("the Worker exits after the close");
+    assert_eq!(code, Some(0), "a clean close exits 0, got {code:?}");
+    // The task pair is machine-to-machine and never re-emitted on the UI sink
+    // (the mirror of the `FetchRenderRequest` arm's contract).
+    while let Ok((event, _)) = sink_rx.try_recv() {
+        assert_ne!(
+            event, "task-request",
+            "a task frame is never re-emitted to the UI"
+        );
+    }
+}
