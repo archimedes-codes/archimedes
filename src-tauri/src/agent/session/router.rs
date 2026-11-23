@@ -302,7 +302,11 @@ impl SessionManager {
                     }
                 });
             }
-            WorkerInboundEvent::TaskRequest { request_id, call } => {
+            WorkerInboundEvent::TaskRequest {
+                request_id,
+                session_id: origin_id,
+                call,
+            } => {
                 // Internal machine call (ADR 0092, issue #180 D2): do NOT call
                 // track_modal! The `FetchRenderRequest` arm above is the template
                 // and this arm copies its shape for the same reason — the Worker
@@ -324,20 +328,35 @@ impl SessionManager {
                 // is outstanding — which is the 255m55s `get_artifact` hang
                 // (ADR 0117, and
                 // `docs/research/board-tool-hang-subagent-task-response-misroute.md`).
-                // The REPLY address must therefore be the frame's ORIGIN id, never the
-                // pump's delivery id; `Outbound::TaskRequest` carries no origin field
-                // yet, which is exactly what Task 4 of this plan adds on the wire (and
-                // this arm does NOT read it here — Task 4 does). Meanwhile a miss is
-                // never silently discardable: every path below that fails to answer
-                // records an always-on `diagnostics` line, and `spawn_board` bounds the
-                // call itself, so the paths that still cannot answer are bounded and
+                // The REPLY address is therefore the frame's ORIGIN id — the
+                // `session_id` field `Outbound::TaskRequest` has carried since
+                // `fulcrum-harness` 0.6.0, bound here as `origin_id` so it does NOT
+                // shadow `route_event`'s `session_id` (the delivery id, which stays
+                // the UI-scope key it is). Meanwhile a miss is never silently
+                // discardable: every path below that fails to answer records an
+                // always-on `diagnostics` line, and `spawn_board` bounds the call
+                // itself, so the paths that still cannot answer are bounded and
                 // visible instead of a hang nobody can explain.
                 let db = self.driver.db.clone();
                 let wm = self.worker_manager.get().cloned();
-                // Owned, because the spawned future outlives this borrow of the
-                // router's argument (the same reason the `FetchRenderRequest` arm
-                // `to_string()`s the session id it extracts).
-                let session_id = session_id.to_string();
+                // Decided BEFORE the spawn, so the early `return` below exits
+                // `route_event` with nothing spawned and nothing left parked on the
+                // Supervisor side (`route_event` returns `()` and this `match evt` is
+                // its entire body, so `return` skips nothing). `is_subagent` is
+                // `route_event`'s second parameter and needs no capture, because the
+                // decision is made here and not in the spawned future.
+                let reply_target =
+                    match task_reply_target(session_id, is_subagent, origin_id.as_deref()) {
+                        Some(target) => target,
+                        None => {
+                            crate::agent::diagnostics::record(&format!(
+                                "task-request: a Subagent frame for delivery {session_id} \
+                                 carried no origin id, request {request_id} - the answer \
+                                 was dropped"
+                            ));
+                            return;
+                        }
+                    };
                 tokio::spawn(async move {
                     let result: Result<serde_json::Value, TaskStoreError> = match db {
                         Some(db) => run_task_call(&db, call).await,
@@ -353,9 +372,9 @@ impl SessionManager {
                         ));
                         return;
                     };
-                    let Some(handle) = wm.handle_for(&session_id) else {
+                    let Some(handle) = wm.handle_for(&reply_target) else {
                         diagnostics::record(&format!(
-                            "task-response: no Worker for session {session_id}, request \
+                            "task-response: no Worker for session {reply_target}, request \
                              {request_id} — the answer was dropped"
                         ));
                         return;
@@ -1048,6 +1067,29 @@ where
             ),
         })?
         .map_err(Into::into)
+}
+
+/// Where a board answer must be delivered: the ORIGIN (the Worker that emitted the
+/// frame), never the pump's delivery id. For a Subagent the delivery id is the
+/// PARENT's, and answering it writes a correct `TaskResponse` into the parent's
+/// stdin, where the parent's per-Worker pending map has no such `request_id` and
+/// ignores it exactly as its contract requires — the child then parks with no
+/// bound. `None` means UNROUTABLE: a child frame with no origin must NOT fall back
+/// (ADR 0117). A main session's delivery id IS its own id, so for a main frame the
+/// delivery id is an identity, not a fallback.
+///
+/// A free function and not an inline `match` precisely so all three branches are
+/// unit-testable: the positive "the answer reaches the child" case needs a real
+/// `drives` entry, which only exists in the end-to-end (a child's `WorkerHandle`
+/// is unreachable from a desktop unit test — `dispatch_subagent` is `pub(crate)`
+/// in the crate and `WorkerHandle` exposes no accessor for frames written into a
+/// Worker). What is testable here is the DECISION, and that is what this owns.
+fn task_reply_target(delivery_id: &str, is_subagent: bool, origin: Option<&str>) -> Option<String> {
+    match origin {
+        Some(origin) => Some(origin.to_string()),
+        None if is_subagent => None,
+        None => Some(delivery_id.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -2605,6 +2647,10 @@ mod tests {
             false,
             WorkerInboundEvent::TaskRequest {
                 request_id: "task-req-42".to_string(),
+                // A MAIN frame with no origin (a stale/foreign Worker binary): it
+                // routes to its delivery id — an identity, not a fallback — and so
+                // reaches the `wm`-missing path this test pins.
+                session_id: None,
                 call: TaskCall::GetTask {
                     task_id: "tsk_absent".to_string(),
                 },
@@ -2629,6 +2675,131 @@ mod tests {
         // The CONTENT rule (`diagnostics`'s module doc: ids and our own error
         // sentences only, never user content). The `task_id` here is an argument
         // the MODEL sent, so it must not ride along.
+        assert!(
+            !lines.iter().any(|line| line.contains("tsk_absent")),
+            "no task id, no key, no prompt text at a `record` call site — got \
+             {lines:?}"
+        );
+    }
+
+    // ── The reply address (ADR 0117) ─────────────────────────────────────────
+    //
+    // ADR 0117's rule in one line: **a frame's delivery address is a UI-scope key
+    // and is NEVER a reply address.** The pump re-keys a child's frames to the
+    // PARENT's session id (`pump.rs:91-102`) so the child's UI renders in the
+    // parent's scope; the arm that used that delivery id as the reply address
+    // answered the PARENT's process, the parent's pending map had no such
+    // `request_id` and ignored the frame exactly as its contract requires, and the
+    // child stayed parked on a `oneshot` with no bound — the 255m55s
+    // `get_artifact` hang.
+    //
+    // What these cases own is the DECISION, all three of its branches. They are
+    // deliberately NOT a "the answer reaches the child" proof: a child's
+    // `WorkerHandle` lives only in the crate's private `drives` map (sole writer
+    // `dispatch_subagent`, `pub(crate)`, no desktop-reachable setter) and
+    // `WorkerHandle` exposes no accessor for frames written INTO a Worker
+    // (`send_inbound_frame` pushes to a private `stdin_tx`; `round_trip_count`
+    // counts fetches, not writes), so that positive proof is only writable where a
+    // real `drives` entry exists — Task 5's end-to-end.
+
+    /// The misroute, pinned at the level the bug lived at: the answer goes to the
+    /// ORIGIN (`child-1`), and the value the arm used to use (`parent-1`, the
+    /// pump's delivery id) is not what comes back.
+    #[test]
+    fn a_subagents_task_request_is_answered_at_its_origin_and_not_its_delivery_id() {
+        assert_eq!(
+            task_reply_target("parent-1", true, Some("child-1")),
+            Some("child-1".to_string()),
+            "a Subagent's board answer must be addressed to the Worker that ASKED \
+             for it; `parent-1` is the pump's UI-scope key and answering it is the \
+             hang ADR 0117 records"
+        );
+    }
+
+    /// THE ADR 0117 PIN. A child frame whose origin is absent is UNROUTABLE and
+    /// must NOT fall back to the delivery id — a fallback here is precisely the
+    /// misroute, wearing the costume of a defensive default. This test reddens the
+    /// instant anyone writes one.
+    #[test]
+    fn a_subagent_frame_with_no_origin_is_never_routed_to_the_delivery_id() {
+        assert!(
+            task_reply_target("parent-1", true, None).is_none(),
+            "`None` means UNROUTABLE, not \"use the delivery id\": for a Subagent \
+             the delivery id is the PARENT's, so falling back re-creates the \
+             255m55s hang this whole change exists to kill"
+        );
+    }
+
+    /// The third branch, and the reason the arm is not simply `origin.unwrap()`:
+    /// a MAIN session's delivery id IS its own id, so routing a main frame with no
+    /// origin field to the delivery id is an IDENTITY, not a fallback. (In
+    /// production `None` only happens for a foreign or stale Worker binary — the
+    /// Worker is this same binary re-entered with `--worker`, so the two cannot
+    /// version-skew. The branch is kept because it is what makes the no-fallback
+    /// rule above testable.)
+    #[test]
+    fn a_main_frame_with_no_origin_routes_to_its_delivery_id_because_they_are_the_same_id() {
+        assert_eq!(
+            task_reply_target("main-1", false, None),
+            Some("main-1".to_string()),
+            "for a main frame delivery id == origin id, so this is an identity"
+        );
+    }
+
+    /// The unroutable child is VISIBLE, and the line names the `request_id` so a
+    /// supporter can tie it to the parked tool call. Distinct from
+    /// `an_unanswerable_task_request_records_a_diagnostic_naming_the_request_id`,
+    /// which pins the `worker_manager`-missing path: the `reply_target` decision
+    /// and its `return` happen BEFORE `tokio::spawn`, so this case writes its line
+    /// and never reaches the `wm` / `handle_for` paths at all — nothing is spawned
+    /// and nothing is left parked on the Supervisor side.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn an_unroutable_task_request_records_a_diagnostic_naming_the_request_id() {
+        // Declaration order is load-bearing (same reasoning as the `an_unanswerable_…`
+        // test): `_lock` FIRST so it outlives both, `_disable` BEFORE the dir so it
+        // drops AFTER it and the global target is cleared before the dir it names
+        // is removed.
+        let _lock = crate::test_support::env_lock();
+        let log_dir = crate::test_support::ScratchDir::in_env_temp("router-log-", "log");
+        let _disable = DisableDiagnosticsOnExit;
+        crate::agent::diagnostics::init(Some(log_dir.to_path_buf()));
+
+        // `is_subagent: true` + `session_id: None` — a child frame with no origin.
+        let (_dir, manager, _db, _emitted) = manager_seeded("router-task-request-unroutable-", &[]);
+        manager.route_event(
+            "parent-of-orphan",
+            true,
+            WorkerInboundEvent::TaskRequest {
+                request_id: "task-req-77".to_string(),
+                session_id: None,
+                call: TaskCall::GetTask {
+                    task_id: "tsk_absent".to_string(),
+                },
+            },
+        );
+
+        let content = diagnostics_log(log_dir.path(), "task-req-77").await;
+        // Scoped to THIS arm's lines: `diagnostics`'s target is one process-global
+        // dir and a sibling test's orphaned spawn can write its own lines into the
+        // armed dir after `env_lock` is released.
+        let lines: Vec<&str> = content
+            .lines()
+            .filter(|line| line.contains("task-request:"))
+            .collect();
+        assert!(
+            lines.iter().any(|line| line.contains("task-req-77")),
+            "an UNROUTABLE board answer is recorded in the always-on log, and the \
+             `request_id` is what ties it back to the parked tool call — got \
+             {content:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("no origin id") && line.contains("was dropped")),
+            "the line names WHICH path fired (no origin id ⇒ the answer was \
+             dropped), not just that something went wrong — got {lines:?}"
+        );
         assert!(
             !lines.iter().any(|line| line.contains("tsk_absent")),
             "no task id, no key, no prompt text at a `record` call site — got \
