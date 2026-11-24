@@ -137,6 +137,35 @@ describe("WebSearchSection", () => {
     });
   });
 
+  it("renders a stored keenable default in the Default provider trigger", () => {
+    // The Default-provider `Select` goes through `closedSelectValue`, whose
+    // closed array is a SECOND copy of the provider vocabulary (the `SelectItem`
+    // list above it is a separate copy). Drop a provider from that array and the
+    // row still renders, its option still renders, and `getByText("Keenable")`
+    // still finds it — but a user who has `defaultProvider: "keenable"` saved
+    // silently reads "Auto (fallback order)" instead of what is actually active,
+    // and because `closedSelectValue` never writes back, the file keeps the
+    // value the UI denies. So the trigger itself is the only observable.
+    render(
+      <WebSearchSection
+        settings={{
+          ...mockSettings,
+          web: {
+            ...mockSettings.web,
+            keenableApiKey: "keenable-secret",
+            defaultProvider: "keenable",
+          },
+        }}
+        onSave={vi.fn()}
+      />,
+    );
+
+    const trigger = screen.getByRole("combobox", { name: "Default provider" });
+    expect(
+      trigger.querySelector("[data-slot=select-value]")?.textContent,
+    ).toBe("Keenable");
+  });
+
   it("supports testing DuckDuckGo (keyless)", async () => {
     vi.mocked(testSearchProvider).mockResolvedValueOnce(8);
     render(<WebSearchSection settings={mockSettings} onSave={vi.fn()} />);

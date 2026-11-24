@@ -1,11 +1,74 @@
 ---
-status: current
+status: retired
 last-verified: 2026-11-22
 verified-by: web + local research — 4 angles (2 web, 2 local-code), 2026-11-22; API claims from Keenable docs + its published OpenAPI 3.0.3 + live keyless probes, NO authenticated call was made
 task: tsk_d740a5e2-5bc7-4af5-a893-1f9be4f3be8e
 ---
 
 # Keenable as a first-class Search provider in Archimedes
+
+> ## What changed since this reading (2026-11-24)
+>
+> **This report is a dated reading, kept as dated evidence — the text below is untouched.** It is
+> stamped `status: retired` rather than `current`, because its central recommendation was not taken
+> and several of its locally-verified facts have since moved. A plan author who trusts the headline
+> claim below will cost the next feature wrongly.
+>
+> *Vocabulary note:* `status: superseded` was asked for and **is not a value any file in this repo
+> uses** — `grep -rn '^status: superseded' docs/` → zero hits. The `docs/research/` vocabulary is
+> `current` (23), `retired` (1, `pi-rpc-replaces-acp.md`), `accepted` (1), so `retired` is the chosen
+> least-wrong fit: that precedent is also a research report kept on disk after the thing it studied was
+> replaced. Worth recording, though, that the word is the repo's *stated* intention — the only other
+> mention of it anywhere is `docs/features/anthropic-output-ceiling-known-gaps.md:85`, which prescribes
+> exactly this treatment for a stale reading: "The fix is a **`status: superseded` flip** (or an
+> amendment) in each, not a rewrite." If that flip is ever swept through, this file should take it.
+>
+> **What actually shipped.** Keenable shipped **as the provider itself**, not as a seam — the crate-side
+> registration-site edits this report enumerated (§F2) were made as it predicted, and landed across crate
+> `fulcrum-harness` **0.7.0** plus the desktop. Desktop `src-tauri/Cargo.toml:130` now pins
+> `fulcrum-harness = "0.7.0"`.
+>
+> **The seam recommendation (§F4, "Recommended answer" #3) was deliberately NOT taken.**
+> `grep -rn search_providers` over the 0.7.0 source returns **zero hits**: there is no
+> `ToolCtx.search_providers` and no `AgentLoop::set_search_providers`. The refutation, already in the
+> implementation plan's Decisions, is that the shape cannot pay for itself here: `Settings` and
+> `WebSettings` are **crate types** (desktop `src-tauri/src/config.rs:42` re-exports
+> `fulcrum_harness::web::config::WebSettings` rather than defining its own), so a desktop-supplied
+> provider has no settings field it could be *named* in; and the `AgentLoop` is built inside the
+> self-exec `--worker` **child** process (`src-tauri/src/agent/worker/mod.rs`), which receives a
+> serialised `StartEnv`/`config-update` envelope over stdio — so nothing there could hold a
+> desktop-constructed `Arc<dyn SearchProvider>` in the first place. An injected list would have to be
+> *named* on the wire and *constructed* in the child, which is the same crate release either way.
+> **Therefore the report's headline claim — "after that single additive release, every subsequent
+> provider is a desktop-only change" — is false at this HEAD: provider #7 still needs a crate release.**
+>
+> **Six stale values, corrected against `~/.cargo/registry/src/*/fulcrum-harness-0.7.0/`:**
+>
+> | Where below | As written (0.5.1) | Now (0.7.0) |
+> |---|---|---|
+> | §"Hardcoded counts and lists (compile or test failures)" | `SEARCH_PROVIDERS: [&str; 5]` | `[&str; 6]` — `web/config.rs:19`, `"keenable"` fifth |
+> | same section, the `registry.rs:270` bullet | `assert_eq!(providers.len(), 5)` | `providers.len(), 6` — now `web/providers/registry.rs:279` |
+> | §F6 item 2 ("Two policy decisions the plan must make") | `AVAILABILITY_ORDER` is five names | six — `web/providers/registry.rs:16`, `["brave","tavily","perplexity","searxng","keenable","duckduckgo"]`, Keenable at **index 4** |
+> | §"The release gate" | `Cargo.toml:125` pins `fulcrum-harness = "0.5.0"` | `src-tauri/Cargo.toml:130` pins `"0.7.0"` |
+> | Exec summary #3 and §F3 (the `net.rs:117-121` finding) | strip list is `authorization`, `cookie`, `x-subscription-token` | now **also strips `x-api-key`** — `web/net.rs:120-123`; the leak this report flagged is closed |
+> | the `**Verified locally.**` stamps on those rows | measured at crate 0.5.1 / desktop `07ccb4f3` | the stamps no longer hold; the corrected values in this table supersede them |
+>
+> **And one claim that must not be read as failover-neutral.** §F6 item 2 ("Two policy decisions the
+> plan must make") argues for position 5 partly because it keeps failover "keyed-before-keyless so a
+> Keenable `429`/`402` degrades to DDG rather than to another **paid** provider". That argument is
+> sound about Keenable's
+> **own** forward edge — Keenable sits immediately before `duckduckgo`, so a Keenable failure does fall
+> through to the keyless rung. What it does not establish, and what the sentence implies, is that the
+> position is **failover-neutral for everyone else**. It is not: the auto-failover loop takes
+> `AVAILABILITY_ORDER[current_idx + 1..]` and picks the first `is_available` provider
+> (`web/providers/registry.rs:162-172`), and Keenable now sits directly **after** `brave`, `tavily`,
+> `perplexity` and `searxng`. For a user holding brave + keenable, an ordinary brave `429` now fails
+> over **into** Keenable — a metered, per-credit paid API — where before it dropped straight to free
+> DuckDuckGo. Recorded as an accepted gap in
+> `docs/features/honest-turn-outcome-surfaces-known-gaps.md` §5 item 9; see that item for the full
+> account, including the fact that failover fires only on the `auto` path.
+
+---
 
 Research question: *Can Keenable be added as a first-class Search provider in Archimedes (a Rust
 provider plus a Settings row), where should that code live, and is the vendor worth depending on?*

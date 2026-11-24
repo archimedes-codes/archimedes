@@ -306,7 +306,7 @@ export default function WebSearchSection({
       <KeyedProviderRow
         provider="keenable"
         label="Keenable"
-        description="API key for Keenable Search API"
+        description="API key for Keenable Search API — Keenable logs queries with no fixed retention and may use them to train models."
         apiKey={settings.web.keenableApiKey}
         inputLabel="Keenable API key"
         placeholder="Keenable API key"
