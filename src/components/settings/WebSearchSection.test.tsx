@@ -36,6 +36,7 @@ const mockSettings: AppSettings = {
     braveApiKey: "brave-secret",
     tavilyApiKey: "tavily-secret",
     perplexityApiKey: "perplexity-secret",
+    keenableApiKey: "",
     searxngUrl: "http://localhost:8080",
     defaultProvider: "auto",
     proxy: "http://proxy.test:8080",
@@ -70,6 +71,7 @@ describe("WebSearchSection", () => {
     expect(screen.getByText("Tavily")).toBeTruthy();
     expect(screen.getByText("Perplexity")).toBeTruthy();
     expect(screen.getByText("SearXNG")).toBeTruthy();
+    expect(screen.getByText("Keenable")).toBeTruthy();
     expect(screen.getByText("DuckDuckGo")).toBeTruthy();
     expect(screen.getByText("Default provider")).toBeTruthy();
     expect(screen.getByText("Proxy")).toBeTruthy();
@@ -118,6 +120,20 @@ describe("WebSearchSection", () => {
       const errorBadge = screen.getByText("error");
       expect(errorBadge).toBeTruthy();
       expect(errorBadge.getAttribute("title")).toBe("Invalid API key 401");
+    });
+  });
+
+  it("supports testing Keenable", async () => {
+    vi.mocked(testSearchProvider).mockResolvedValueOnce(7);
+    render(<WebSearchSection settings={mockSettings} onSave={vi.fn()} />);
+
+    const testKeenableBtn = screen.getByLabelText("Test Keenable");
+    fireEvent.click(testKeenableBtn);
+
+    expect(testSearchProvider).toHaveBeenCalledWith("keenable", mockSettings);
+
+    await waitFor(() => {
+      expect(screen.getByText("7 results")).toBeTruthy();
     });
   });
 

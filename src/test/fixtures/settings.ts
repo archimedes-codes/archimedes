@@ -90,6 +90,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     braveApiKey: "",
     tavilyApiKey: "",
     perplexityApiKey: "",
+    keenableApiKey: "",
     searxngUrl: "",
     defaultProvider: "auto",
     proxy: "",

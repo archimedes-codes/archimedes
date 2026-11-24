@@ -303,6 +303,17 @@ export default function WebSearchSection({
         onCommit={(val) => updateField("searxngUrl", val)}
       />
 
+      <KeyedProviderRow
+        provider="keenable"
+        label="Keenable"
+        description="API key for Keenable Search API"
+        apiKey={settings.web.keenableApiKey}
+        inputLabel="Keenable API key"
+        placeholder="Keenable API key"
+        settings={settings}
+        onCommit={(val) => updateField("keenableApiKey", val)}
+      />
+
       <DuckDuckGoRow settings={settings} />
 
       <SettingsRow
@@ -314,7 +325,7 @@ export default function WebSearchSection({
             <Select
               value={closedSelectValue(
                 settings.web.defaultProvider,
-                ["auto", "brave", "tavily", "perplexity", "searxng", "duckduckgo"],
+                ["auto", "brave", "tavily", "perplexity", "searxng", "keenable", "duckduckgo"],
                 "auto",
               )}
               onValueChange={(val) => updateField("defaultProvider", val)}
@@ -335,6 +346,9 @@ export default function WebSearchSection({
                 </SelectItem>
                 <SelectItem value="searxng">
                   SearXNG{!settings.web.searxngUrl && " (not configured)"}
+                </SelectItem>
+                <SelectItem value="keenable">
+                  Keenable{!settings.web.keenableApiKey && " (not configured)"}
                 </SelectItem>
                 <SelectItem value="duckduckgo">DuckDuckGo</SelectItem>
               </SelectContent>
