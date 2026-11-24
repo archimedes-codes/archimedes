@@ -19,20 +19,21 @@ task: tsk_d740a5e2-5bc7-4af5-a893-1f9be4f3be8e
 > `current` (23), `retired` (1, `pi-rpc-replaces-acp.md`), `accepted` (1), so `retired` is the chosen
 > least-wrong fit: that precedent is also a research report kept on disk after the thing it studied was
 > replaced. Worth recording, though, that the word is the repo's *stated* intention — the only other
-> mention of it anywhere is `docs/features/anthropic-output-ceiling-known-gaps.md:85`, which prescribes
-> exactly this treatment for a stale reading: "The fix is a **`status: superseded` flip** (or an
-> amendment) in each, not a rewrite." If that flip is ever swept through, this file should take it.
+> mention of it anywhere is `docs/features/anthropic-output-ceiling-known-gaps.md`, whose `verified-by`
+> stamp prescribes exactly this treatment for a stale reading: "The fix is a **`status: superseded`
+> flip** (or an amendment) in each, not a rewrite." If that flip is ever swept through, this file should
+> take it.
 >
 > **What actually shipped.** Keenable shipped **as the provider itself**, not as a seam — the crate-side
 > registration-site edits this report enumerated (§F2) were made as it predicted, and landed across crate
-> `fulcrum-harness` **0.7.0** plus the desktop. Desktop `src-tauri/Cargo.toml:130` now pins
-> `fulcrum-harness = "0.7.0"`.
+> `fulcrum-harness` **0.7.0** plus the desktop. The desktop's `src-tauri/Cargo.toml` `[dependencies]` now
+> pins `fulcrum-harness = "0.7.0"`.
 >
 > **The seam recommendation (§F4, "Recommended answer" #3) was deliberately NOT taken.**
 > `grep -rn search_providers` over the 0.7.0 source returns **zero hits**: there is no
 > `ToolCtx.search_providers` and no `AgentLoop::set_search_providers`. The refutation, already in the
 > implementation plan's Decisions, is that the shape cannot pay for itself here: `Settings` and
-> `WebSettings` are **crate types** (desktop `src-tauri/src/config.rs:42` re-exports
+> `WebSettings` are **crate types** (the desktop's `src-tauri/src/config.rs` re-exports
 > `fulcrum_harness::web::config::WebSettings` rather than defining its own), so a desktop-supplied
 > provider has no settings field it could be *named* in; and the `AgentLoop` is built inside the
 > self-exec `--worker` **child** process (`src-tauri/src/agent/worker/mod.rs`), which receives a
@@ -49,7 +50,7 @@ task: tsk_d740a5e2-5bc7-4af5-a893-1f9be4f3be8e
 > | §"Hardcoded counts and lists (compile or test failures)" | `SEARCH_PROVIDERS: [&str; 5]` | `[&str; 6]` — `web/config.rs:19`, `"keenable"` fifth |
 > | same section, the `registry.rs:270` bullet | `assert_eq!(providers.len(), 5)` | `providers.len(), 6` — now `web/providers/registry.rs:279` |
 > | §F6 item 2 ("Two policy decisions the plan must make") | `AVAILABILITY_ORDER` is five names | six — `web/providers/registry.rs:16`, `["brave","tavily","perplexity","searxng","keenable","duckduckgo"]`, Keenable at **index 4** |
-> | §"The release gate" | `Cargo.toml:125` pins `fulcrum-harness = "0.5.0"` | `src-tauri/Cargo.toml:130` pins `"0.7.0"` |
+> | §"The release gate" | `Cargo.toml:125` pins `fulcrum-harness = "0.5.0"` | the desktop `src-tauri/Cargo.toml` `[dependencies]` pin reads `fulcrum-harness = "0.7.0"` |
 > | Exec summary #3 and §F3 (the `net.rs:117-121` finding) | strip list is `authorization`, `cookie`, `x-subscription-token` | now **also strips `x-api-key`** — `web/net.rs:120-123`; the leak this report flagged is closed |
 > | the `**Verified locally.**` stamps on those rows | measured at crate 0.5.1 / desktop `07ccb4f3` | the stamps no longer hold; the corrected values in this table supersede them |
 >

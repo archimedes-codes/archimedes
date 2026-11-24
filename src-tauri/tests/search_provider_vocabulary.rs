@@ -49,28 +49,103 @@
 //! identically, and a `<SelectItem>` re-wrapped across lines with a second
 //! attribute parses identically).
 //!
+//! Both parses read a COMMENT-STRIPPED copy of the source (`strip_block_comments`
+//! below), because a `{/* … */}` block is invisible to the renderer while staying
+//! byte-present for a text scan — see that function for the measured false
+//! negative it removes.
+//!
+//! ## What is actually load-bearing here
+//!
+//! Not a length check. `select_item_values` iterates `match_indices` over the
+//! `<SelectItem` tag, so the number of values it returns EQUALS the raw occurrence
+//! count of that tag by construction — an assert joining the two can only fire
+//! from an inner `panic!`, never from a dropped element, so it was removed. What
+//! does keep the parses honest: the `unwrap_or_else` panics that NAME the offending
+//! tag (an unclosed opening tag, a `value`-less `<SelectItem>`, an unterminated
+//! `value="`), the two non-emptiness asserts that stop a vacuous set comparison,
+//! the exactly-one-`<SelectContent>` assert, and the comment strip.
+//!
 //! # What this file does NOT pin
 //!
 //! `docs/features/keenable-search-known-gaps.md` §4 is the durable record of this
 //! surface — the gap it recorded (the unpinned `<SelectItem>` menu) is CLOSED by
 //! this file, and the same §4 lists the residue below, so the two agree.
 //!
-//! - **Whether a configuration ROW exists** for each provider. `WebSearchSection.tsx`
-//!   renders `KeyedProviderRow provider="brave" | "tavily" | "perplexity" |
-//!   "keenable"` plus `SearxngRow` and `DuckDuckGoRow`; the only assertion touching
-//!   that is the cheap whole-file containment one below, which a `SelectItem` alone
-//!   already satisfies. Delete the Keenable row and the user loses the API-key
-//!   field while this file stays green.
+//! - **The configuration ROWS — this file is blind to them.**
+//!   `WebSearchSection.tsx` renders `KeyedProviderRow provider="brave" | "tavily" |
+//!   "perplexity" | "keenable"` plus `SearxngRow` and `DuckDuckGoRow`; no assertion
+//!   here compares that set to `SEARCH_PROVIDERS`, and the only assertion touching
+//!   it is the cheap whole-file containment one below, which a `SelectItem` alone
+//!   already satisfies. Measured: deleting the whole `provider="keenable"` row, or
+//!   pointing one row's `apiKey` at another provider's field, leaves THIS file
+//!   green. That hole is closed on the TypeScript side, not here —
+//!   `WebSearchSection.test.tsx`'s "renders exactly one configuration row per
+//!   Search provider, each wired to its own field" case compares the rendered row
+//!   set to the provider set and checks each row's id, its read binding and its
+//!   write binding. §4 carries the four mutations that prove it bites.
 //! - **The menu's labels and its `(not configured)` predicates** — a `<SelectItem
-//!   value="keenable">` whose guard reads the wrong settings field is unpinned.
+//!   value="keenable">` whose guard reads the wrong settings field is unpinned, by
+//!   either side (measured: repointing that guard at `tavilyApiKey` leaves this pin
+//!   `ok` and the frontend suite green).
 //! - **Order within the menu** (the parse is a set comparison; display order is
 //!   cosmetic). `AVAILABILITY_ORDER` vs `SEARCH_PROVIDERS` IS order-pinned, since
 //!   there order is behaviour.
+//! - **Anything the source text cannot show, even with comments stripped.**
+//!   Stripping `{/* … */}` closes the false negative a commented-out element is to
+//!   a text scan, and it is the whole of what this file can see through. It does
+//!   not make this a renderer: a `value="keenable"` rewritten to
+//!   `value={providerId}` is a parse panic (loud), but a `value={someExpr}` that
+//!   evaluates to a real id, a `{cond && <SelectItem …>}` that renders only
+//!   sometimes, or a `<SelectItem>` built by a map over a hoisted array all read
+//!   here as what they textually are, not as what they render. A conditional
+//!   render is out of reach and always was.
 //! - Anything in the sibling TypeScript implementation — a different repo, reached
 //!   by no `include_str!` here.
 
 use fulcrum_harness::web::config::SEARCH_PROVIDERS;
 use fulcrum_harness::web::providers::registry::AVAILABILITY_ORDER;
+
+/// Remove every `/* … */` block comment from the source text BEFORE either parse
+/// runs — including the `{/* … */}` form JSX uses for a commented-out element.
+///
+/// This is not cosmetic. A comment is invisible to the renderer and fully present
+/// to a text scan, so a parse over the raw text reads a disabled element as an
+/// enabled one — and "disable it but leave it here" is the realistic shape, with
+/// `{/* … */}` in use across 54 `.tsx` files under `src/`. Measured before this
+/// function existed: wrapping the `brave` `<SelectItem>` in `{/* … */}` left the
+/// raw `<SelectItem` count at 7, the parse at the full seven-value set, this pin
+/// `ok` and the frontend suite at 8 passed; `["auto", /* "brave", */ "tavily", …]`
+/// did the same to the array parse. Both now fail, naming `["brave"]`.
+///
+/// Each span becomes ONE space, so stripping can never join two tokens and can
+/// never change how a re-wrapped literal reads — both parses stay wrap-agnostic.
+///
+/// Three known edges, all loud rather than silent. An unterminated `/*` panics
+/// here. A `/*` inside a string literal strips through to the next `*/` — measured
+/// against this file, a `/*` injected into the SearXNG `placeholder` reaches the
+/// end of the source without a `*/` and panics here, so it cannot quietly hand a
+/// parse a shortened list. And a `/*` … `*/` pair that straddles the array or the
+/// menu would remove real elements, which is exactly what the set comparisons and
+/// the non-emptiness asserts are there to catch. Line comments are deliberately
+/// NOT stripped: this file's `placeholder="http://…"` values contain `//`, and
+/// stripping them would eat real string content.
+fn strip_block_comments(source: &str) -> String {
+    const OPEN: &str = "/*";
+    const CLOSE: &str = "*/";
+
+    let mut out = String::with_capacity(source.len());
+    let mut rest = source;
+    while let Some(at) = rest.find(OPEN) {
+        let closed_at = rest[at..].find(CLOSE).unwrap_or_else(|| {
+            panic!("a `{OPEN}` block comment in the parsed source is never closed by `{CLOSE}`")
+        });
+        out.push_str(&rest[..at]);
+        out.push(' ');
+        rest = &rest[at + closed_at + CLOSE.len()..];
+    }
+    out.push_str(rest);
+    out
+}
 
 /// Extract the string literal elements of the closed-select array — the `[ … ]`
 /// that follows the single `closedSelectValue(` CALL in the frontend source.
@@ -159,19 +234,24 @@ fn the_search_provider_vocabulary_agrees_across_the_crate_and_the_frontend() {
     // compile time rather than silently guarding nothing.
     const FRONTEND: &str = include_str!("../../src/components/settings/WebSearchSection.tsx");
 
+    // Both parses — and the cheap containment check — read the COMMENT-STRIPPED
+    // text, so a `{/* … */}`-disabled element is as invisible to this pin as it is
+    // to the renderer. See `strip_block_comments`.
+    let source = strip_block_comments(FRONTEND);
+
     // Direction 1a, the cheap one: every crate id is named SOMEWHERE in the file.
     // Deliberately NOT load-bearing — see the non-vacuity note above and the
     // missing-row hole below it.
     for id in SEARCH_PROVIDERS {
         assert!(
-            FRONTEND.contains(&format!("\"{id}\"")),
+            source.contains(&format!("\"{id}\"")),
             "the crate offers Search provider `{id}` but \
              `WebSearchSection.tsx` never names it — the Settings UI cannot select \
              or configure it"
         );
     }
 
-    let options = closed_select_options(FRONTEND);
+    let options = closed_select_options(&source);
 
     // The parse itself, pinned before it is trusted: a non-empty array whose
     // first element is the fallback. (An empty parse would make BOTH set
@@ -241,29 +321,25 @@ fn the_search_provider_vocabulary_agrees_across_the_crate_and_the_frontend() {
     // gap and measured both live mutations passing every test in the repo; this
     // block is that §4 closed.
     assert_eq!(
-        FRONTEND.matches("<SelectContent").count(),
+        source.matches("<SelectContent").count(),
         1,
         "this file's `<SelectItem>` values are pinned as the provider menu, which \
          is sound only while it holds exactly ONE `<SelectContent>` — a second \
          `Select` here would feed unrelated values into the comparison below."
     );
 
-    let menu = select_item_values(FRONTEND);
+    let menu = select_item_values(&source);
 
-    // The parse pinned before it is trusted, same as the array's: measured 7
-    // `<SelectItem>` elements (including one for `auto`) and 7 array elements at
-    // the time of writing. `menu.len()` is compared to the raw occurrence count
-    // so a parse that dropped an element cannot pass the set comparisons below on
-    // a short list.
-    assert_eq!(
-        menu.len(),
-        FRONTEND.matches("<SelectItem").count(),
-        "the `<SelectItem>` parse returned {} values but the file has {} \
-         `<SelectItem` occurrences — the parse is dropping elements, which would \
-         make the two comparisons below pass on an incomplete menu.",
-        menu.len(),
-        FRONTEND.matches("<SelectItem").count()
-    );
+    // The parse pinned before it is trusted, same as the array's. There is
+    // deliberately NO assert here comparing `menu.len()` to the raw `<SelectItem`
+    // occurrence count: `select_item_values` iterates `match_indices("<SelectItem")`,
+    // so the two are equal BY CONSTRUCTION and the assert could only ever fire from
+    // one of that function's own `panic!`s — measured, a `<SelectItem` → `<MenuItem`
+    // rename failed at `!menu.is_empty()` below, not there. A tautology billed as a
+    // guard is worse than no guard, so the honesty of this parse rests on things
+    // that can actually fail: the panics inside the parse, which NAME the offending
+    // tag, and the non-emptiness assert immediately below (measured 7 `<SelectItem>`
+    // elements including one for `auto`, and 7 array elements).
     assert!(
         !menu.is_empty(),
         "the parsed `<SelectItem>` menu is empty — the parse read nothing, so the \

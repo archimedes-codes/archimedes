@@ -2,7 +2,8 @@
 status: live
 last-verified: 2026-11-24
 verified-by: >-
-  Written in one sitting at branch HEAD `0960940b` on `feature/keenable-search-desktop`. Read in
+  Written in one sitting at this branch's HEAD on 2026-11-24 (pre-squash, so no hash is quoted: a
+  branch-only hash resolves nowhere after the squash-merge). Read in
   full: the crate at `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fulcrum-harness-0.7.0/`
   (`web/config.rs`, `web/providers/keenable.rs`, `web/providers/registry.rs`, `web/providers/types.rs`,
   `web/net.rs`, `web/tools.rs`, `mcp/callback.rs`, `provider_auth/litellm_oauth.rs`,
@@ -25,24 +26,25 @@ verified-by: >-
   `unknown_parameter`, `/v1/search/public` and device login. CARRIED, not re-measured: every pricing,
   retention, ToS, benchmark and Stripe-auto-top-up number comes from the research doc's dated reading; the
   moved failover gap's account of WHO is affected is re-derived from source here, its reasoning is the
-  previous fixer's. **What was and was not executed.** No claim in this file rests on a test run. As the
+  previous fixer's. **What was and was not executed.** No *gap* below rests on a test run; the two scoped
+  runs recorded at the end of this stamp corroborate the §4 pins and nothing else. As the
   gate for a `docs/`-only change, `TMPDIR=/home/daniel/tmp npx vitest run` over the four suites that read
   or quote `docs/` (67 passed) and `TMPDIR=/home/daniel/tmp pnpm build` (clean) were run in that sitting
   and both passed; they corroborate nothing written below. No authenticated Keenable call was made — the
   vendor claims were re-read from its published docs, which is the same instrument the research doc used.
-  **Corrected at `cbb3690e` + this change — the reason given there was false.** This file previously
-  explained the absence of any `cargo` run by saying there is no `src-tauri/target/`, so even a scoped
-  `cargo test --test fulcrum_seams` would be a cold full build. `src-tauri` is a **workspace member**
-  (`Cargo.toml`: `members = ["src-tauri"]`), so its artifacts land in the **root** `target/`, which is
-  warm; the scoped runs below cost about a second each once built. They have now been run here:
+  **Corrected in the follow-up to the commit that added this file:** the reason given there for the absence
+  of any `cargo` run was false. `src-tauri` is a **workspace member** (`Cargo.toml`:
+  `members = ["src-tauri"]`), so its artifacts land in the **root** `target/`, which is warm — a scoped
+  `cargo test --test <name>` costs about a second once built, and the scoped runs recorded below are cheap
+  rather than a cold full build. Both have been run at this sitting, and §4's two live `SelectItem`
+  mutations were re-applied to the real `.tsx` and re-measured rather than read: each reddens
+  `the_search_provider_vocabulary_agrees_across_the_crate_and_the_frontend` and leaves
+  `npx vitest run src/components/settings/WebSearchSection.test.tsx` at 9 passed; the `.tsx` was restored
+  byte-identically (sha256, `git diff -- src/` empty). The runs:
   `cargo test --test fulcrum_seams` → **22 passed / 0 failed / 0 ignored** (~1.1 s warm), and
   `cargo test --test search_provider_vocabulary` → **1 passed / 0 failed** (~0.8 s warm), the latter with
   its `include_str!` of `WebSearchSection.tsx` compiling and its four set comparisons green against the
-  real frontend file. §4's account of the two live `SelectItem` mutations is no longer a reading: both
-  mutations were re-applied to the real `.tsx` and re-measured — each reddens
-  `the_search_provider_vocabulary_agrees_across_the_crate_and_the_frontend` and leaves
-  `npx vitest run src/components/settings/WebSearchSection.test.tsx` at 8 passed — and the file was
-  restored byte-identically. **Crate citations re-verified at this sitting:** every `file:line` citation
+  real frontend file. **Crate citations re-verified at this sitting:** every `file:line` citation
   above and every crate test name in this file was re-checked against the published 0.7.0 source. One test
   name was wrong and is fixed here — `parse_keenable_reads_snippet_not_description` does not exist; the
   real name is `parse_keenable_fixture_reads_snippet_not_description` (`web/providers/keenable.rs:351`).
@@ -80,7 +82,8 @@ its central recommendation was not taken and six of its values moved.
 ## 1. What shipped, so the gaps below have a floor
 
 All of the crate-side lines below are the **published** `fulcrum-harness` 0.7.0, which is an immutable
-line-numbered artifact (the one place AGENTS.md's no-`file:line` rule has an exception).
+line-numbered artifact (the one place the repo's no-`file:line` rule has an exception; the rule is in
+`docs/agents/test-counts-and-splits.md` §"Citing and measuring", not AGENTS.md).
 
 - **Keenable is the sixth Search provider.** `SEARCH_PROVIDERS: [&str; 6]` (`web/config.rs:19`) with
   `keenable` fifth; `WebSettings` carries `keenable_api_key` (`web/config.rs:44`), serialized as
@@ -220,7 +223,7 @@ result content:**
 Measured at 0.7.0: neither `disable_cards` nor `cards.keenable` appears anywhere in the crate's `src/`,
 and no `keenable.rs` test names either — the handling does not exist in any form.
 
-## 4. The `SelectItem` list was unpinned — CLOSED in-tree, and what the closure still does not pin
+## 4. The `SelectItem` list was unpinned — CLOSED in-tree, plus the row set now pinned TS-side, and what neither closes
 
 **CLOSED by `test(settings): extract the vocabulary pin, pin the SelectItem list, and clear the size
 ratchet`.** Kept here as the record of the gap, of the shape of the fix, and of the residue the fix
@@ -241,8 +244,9 @@ for any value the array lacks, so the menu shows a provider as selectable, the c
 row re-renders as "auto" — with `SEARCH_PROVIDERS` still accepting it on the wire, so it is a valid
 stored value that the UI cannot display. **Every test stayed green in both cases** — measured, not
 asserted: adding `<SelectItem value="exafunction">` and deleting the `brave` one each left
-`npx vitest run src/components/settings/WebSearchSection.test.tsx` at 8 passed and left the then-current
-Rust pin passing too, because the direction-1a whole-file containment assert
+`npx vitest run src/components/settings/WebSearchSection.test.tsx` at 9 passed (re-measured at this
+sitting; 8 before the row-set case was added) and left the then-current Rust pin passing too, because the
+direction-1a whole-file containment assert
 (`FRONTEND.contains("\"keenable\"")`) is satisfied by the `SelectItem` line itself naming the id. That
 is exactly the hole the "parse, don't grep" reasoning left.
 
@@ -256,25 +260,52 @@ naming `["exafunction"]`; deleting the `brave` `SelectItem` fails direction 3 na
 **What the closure still does NOT pin** — the residue, so a reader does not conclude the vocabulary is
 fully guarded (the file's own header comment carries the same list):
 
-- **Whether a configuration ROW exists** for each provider. `WebSearchSection.tsx` renders
+- **In the Rust pin: the configuration ROWS, entirely.** `WebSearchSection.tsx` renders
   `KeyedProviderRow provider="brave" | "tavily" | "perplexity" | "keenable"` plus `SearxngRow` and
-  `DuckDuckGoRow`. Nothing compares that set to `SEARCH_PROVIDERS`; the only assertion touching it is
-  the cheap whole-file containment one, which a `SelectItem` alone already satisfies. Delete the Keenable
-  row and the user loses the API-key field with every test green.
-- **The menu's labels and its `(not configured)` predicates** — a `<SelectItem value="keenable">` whose
-  guard reads the wrong `settings.web` field is unpinned.
-- **Order within the menu** — the new comparison is a set comparison, since display order is cosmetic.
+  `DuckDuckGoRow`, and nothing in `search_provider_vocabulary.rs` compares that set to
+  `SEARCH_PROVIDERS`; the only assertion touching it is the cheap whole-file containment one, which a
+  `SelectItem` alone already satisfies. Measured: with the whole `provider="keenable"` row deleted from
+  the real file the Rust pin stays `ok`. That hole is closed on the TypeScript side, not here — see the
+  next bullet.
+- **The configuration row SET — now pinned, on the TS side.** `WebSearchSection.test.tsx`'s
+  "renders exactly one configuration row per Search provider, each wired to its own field" case reads the
+  row set off the rendered DOM (every row carries exactly one `Test <label>` button), asserts it equals
+  the provider set, asserts each row's Test button calls `testSearchProvider` with its own id, and asserts
+  each row both READS and WRITES its own `settings.web` field. `KeyedProviderRow`'s `provider` prop never
+  reaches the DOM, so the IPC call is what observes it, and every provider gets a distinct secret so a
+  cross-wired field shows up as a wrong input value. Proven to bite against the real file, four ways:
+  pointing the Keenable row's `apiKey` at `tavilyApiKey` fails on the input value; pointing its
+  `onCommit` at `"tavilyApiKey"` fails on the `onSave` patch; pointing its `provider` prop at
+  `"perplexity"` fails on the Test-button call; deleting the row fails the row-set comparison. All four
+  were re-measured at this sitting and the `.tsx` restored byte-identically each time. The set of fields
+  the rows must surface is derived from the `web` object rather than re-listed, so a provider added to
+  `WebSettings` and given no row fails this test instead of joining the residue below unnoticed.
+- **The menu's labels and its `(not configured)` predicates** — still unpinned, by either side. Measured:
+  changing the `keenable` `SelectItem`'s guard to read `settings.web.tavilyApiKey` leaves the Rust pin
+  `ok` and the frontend suite at 9 passed. The row test pins which field a ROW reads; nothing pins which
+  field a MENU ENTRY reads.
+- **Order within the menu** — the comparison is a set comparison, since display order is cosmetic.
   (`AVAILABILITY_ORDER` vs `SEARCH_PROVIDERS` IS order-pinned, because there order is behaviour.)
+- **Anything the Rust parse cannot see in source text.** `{/* … */}` spans are now stripped before both
+  parses, which closes the false negative a commented-out element is to a text scan (measured: wrapping
+  the `brave` `SelectItem` in `{/* … */}` used to leave the raw `<SelectItem` count at 7, the parse at the
+  full set, the pin `ok` and the suite green; it now fails naming `["brave"]`, and so does
+  `["auto", /* "brave", */ …]` in the array). Stripping comments is the boundary: a `value={expr}` that
+  evaluates to a real id, a conditional `{cond && <SelectItem …>}`, or a menu built by mapping a hoisted
+  array all read as what they textually are, not as what they render.
 - **The sibling TypeScript implementation** — a different repo, reached by no `include_str!` here.
 
-**Two guards keep the new parse honest** (the failure mode of any source-text parse is reading nothing
-and passing): the parse's length is asserted equal to the raw `<SelectItem` occurrence count in the file
-and non-empty, so a parse that silently yields an empty set fails loudly, and the file is asserted to
-hold exactly one `<SelectContent>` so a second `Select` cannot feed unrelated values into the comparison.
-Both parses are wrap-agnostic — measured: a one-element-per-line reformat of the array parses
-identically, a `SelectItem` re-wrapped across lines with a second attribute parses identically, renaming
-`<SelectItem` → `<MenuItem` fails with "the parse read nothing", a `value`-less `<SelectItem` panics
-naming its own tag rather than stealing its neighbour's, and a second `<SelectContent>` trips its guard.
+**What keeps the parse honest** (the failure mode of any source-text parse is reading nothing and
+passing): the `unwrap_or_else` panics inside `select_item_values`, which NAME the offending tag — an
+unclosed opening tag, a `value`-less `<SelectItem>`, an unterminated `value="` — the two non-emptiness
+asserts that stop a vacuous set comparison, the exactly-one-`<SelectContent>` assert that stops a second
+`Select` feeding unrelated values into the comparison, and the comment strip. There is deliberately NO
+length-vs-occurrence-count assert: `select_item_values` iterates `match_indices("<SelectItem")`, so its
+result length EQUALS that count by construction and such an assert could only ever fire from one of those
+panics — measured, a `<SelectItem` → `<MenuItem` rename failed at the non-emptiness assert, not there. It
+was billed as a guard, kept nothing honest, and is gone. Both parses stay wrap-agnostic — re-measured at
+this sitting: a one-element-per-line reformat of the array plus a `SelectItem` re-wrapped across lines
+with a second attribute parses identically and the pin stays green.
 
 ## 5. Keys live in plaintext `settings.json`, deliberately, and that is the highest-value structural follow-up
 
@@ -285,7 +316,8 @@ naming its own tag rather than stealing its neighbour's, and a second `<SelectCo
 being in-memory-only, in `interactive/mod.rs`). `WebSettings` (`web/config.rs:40-51`) is a flat struct of
 plain `String`s and every credential-shaped one of them sits in the settings document as plaintext:
 `braveApiKey`, `tavilyApiKey`, `perplexityApiKey`, `keenableApiKey`, plus `searxngUrl` and `proxy` — the
-five-key-plus-proxy surface the Settings → **Web search** section renders.
+four-key-plus-URL-plus-proxy surface the Settings → **Web search** section renders (`WebSettings` is
+those four keys, `searxng_url`, `default_provider` and `proxy`).
 
 The mode is **preserved by decision**: `write_settings_atomic` (`src-tauri/src/config.rs`) writes
 through a `NamedTempFile` — which on unix is created `0600` — and copies the **existing file's mode**

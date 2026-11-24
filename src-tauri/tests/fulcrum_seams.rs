@@ -749,21 +749,10 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
         web_json.contains("\"braveApiKey\":\"k\""),
         "`brave_api_key` crosses as `braveApiKey` — got {web_json}"
     );
-    // The key NAME is pinned twice, by two DIFFERENT claims — and the disk half
-    // catches a rename too, so do not mistake this for the only one.
-    // `config.rs`'s `web_block_round_trips` writes a real `settings.json` with
-    // `write_settings`, asserts the raw bytes carry `"keenableApiKey"`, and
-    // round-trips the value back through `load_settings`; `Settings.web` is
-    // `pub use fulcrum_harness::web::config::WebSettings`, the same type and the
-    // same `rename_all = "camelCase"` impl, so a renamed field reddens THAT test.
-    // What this seam adds is the boundary half: the value is built at the
-    // desktop spelling and encoded only after passing through
-    // `web_settings_move_across`, whose signature names the crate spelling. One
-    // type today (S2 moved the struct, both paths re-export it) — but if
-    // `agent/web.rs`'s `config` alias were ever repointed at a desktop twin of
-    // the struct, that `return w` is `E0308` while the disk test, reading the
-    // type through `config.rs`'s own re-export, stays green. Asserted WITH the
-    // value, so it cannot pass vacuously on a key that is merely present empty.
+    // NOT the only pin on this spelling: `config.rs`'s `web_block_round_trips` writes a real
+    // `settings.json` and asserts the raw bytes carry `"keenableApiKey"`, so it pins the NAME. What
+    // this seam adds is the VALUE crossing the boundary — encoded only after `web_settings_move_across`,
+    // whose signature names the crate spelling, and asserted with `"k2"` so it cannot pass vacuously.
     assert!(
         web_json.contains("\"keenableApiKey\":\"k2\""),
         "`keenable_api_key` crosses as `keenableApiKey` — got {web_json}"
