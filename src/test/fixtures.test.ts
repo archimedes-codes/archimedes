@@ -133,6 +133,7 @@ describe("makeSettings — the one place AppSettings is spelled", () => {
       braveApiKey: "",
       tavilyApiKey: "",
       perplexityApiKey: "",
+      keenableApiKey: "",
       searxngUrl: "",
       defaultProvider: "auto",
       proxy: "",

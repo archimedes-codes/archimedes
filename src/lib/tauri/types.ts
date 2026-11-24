@@ -977,9 +977,11 @@ export interface WebSettings {
   braveApiKey: string;
   tavilyApiKey: string;
   perplexityApiKey: string;
+  /** API key for the Keenable Search API. */
+  keenableApiKey: string;
   /** The self-hosted SearXNG instance base URL. */
   searxngUrl: string;
-  /** "auto" (default) or one of brave|tavily|perplexity|searxng|duckduckgo. */
+  /** "auto" (default) or one of brave|tavily|perplexity|searxng|keenable|duckduckgo. */
   defaultProvider: string;
   /** An explicit proxy URL. Empty = fall back to HTTPS_PROXY/HTTP_PROXY. */
   proxy: string;
