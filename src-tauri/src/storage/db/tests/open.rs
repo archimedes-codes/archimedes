@@ -1,11 +1,11 @@
-//! Tests for what `db/mod.rs` keeps: `Db::open` and its thirteen migration gates,
+//! Tests for what `db/mod.rs` keeps: `Db::open` and its seventeen migration gates,
 //! `SCHEMA`, `LAST_ACTIVITY`, `set_journal_pragmas`.
 //!
 //! The mirror (ADR 0113) gives every production sibling a test child of the same
 //! name; this child is the one that mirrors the PARENT, because `open`, `gate`,
 //! `SCHEMA` and `LAST_ACTIVITY` stay in `mod.rs` — the gate-count pin
 //! (`the_three_task_tables_are_in_schema_and_have_no_gate_entry`) reads this
-//! parent's source text and counts the thirteen gates inside `open`, so moving them
+//! parent's source text and counts the seventeen gates inside `open`, so moving them
 //! would move the pin's premise.
 
 use crate::storage::db::*;
@@ -794,7 +794,7 @@ fn parent_session_id_column_migration_on_a_preexisting_db() {
 #[test]
 fn each_cluster_schema_omits_exactly_one_gated_column() {
     // (table, column) for every gate `Db::open` probes, in probe order.
-    const GATED: [(&str, &str); 13] = [
+    const GATED: [(&str, &str); 17] = [
         ("spaces", "trusted"),
         ("sessions", "archived"),
         ("sessions", "context_usage_json"),
@@ -806,10 +806,14 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
         ("sessions", "title_stage"),
         ("stages", "on_enter_skill"),
         ("stages", "next_slugs"),
+        ("stages", "auto"),
+        ("stages", "prompt_prefix"),
         ("spaces", "board_strict"),
         ("sessions", "parent_session_id"),
+        ("spaces", "auto_max_steps"),
+        ("spaces", "auto_ceiling_usd"),
     ];
-    let fixtures: [(&str, &str); 9] = [
+    let fixtures: [(&str, &str); 13] = [
         ("SCHEMA_WITHOUT_ARCHIVED", SCHEMA_WITHOUT_ARCHIVED),
         ("SCHEMA_WITHOUT_CONTEXT_USAGE", SCHEMA_WITHOUT_CONTEXT_USAGE),
         ("SCHEMA_WITHOUT_COST_USD", SCHEMA_WITHOUT_COST_USD),
@@ -833,9 +837,22 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
             "SCHEMA_WITHOUT_STAGES_NEXT_SLUGS",
             SCHEMA_WITHOUT_STAGES_NEXT_SLUGS,
         ),
+        ("SCHEMA_WITHOUT_STAGES_AUTO", SCHEMA_WITHOUT_STAGES_AUTO),
+        (
+            "SCHEMA_WITHOUT_STAGES_PROMPT_PREFIX",
+            SCHEMA_WITHOUT_STAGES_PROMPT_PREFIX,
+        ),
         (
             "SCHEMA_WITHOUT_SPACES_BOARD_STRICT",
             SCHEMA_WITHOUT_SPACES_BOARD_STRICT,
+        ),
+        (
+            "SCHEMA_WITHOUT_SPACES_AUTO_MAX_STEPS",
+            SCHEMA_WITHOUT_SPACES_AUTO_MAX_STEPS,
+        ),
+        (
+            "SCHEMA_WITHOUT_SPACES_AUTO_CEILING_USD",
+            SCHEMA_WITHOUT_SPACES_AUTO_CEILING_USD,
         ),
     ];
     for (name, schema) in fixtures {
@@ -869,20 +886,22 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
 /// idempotent `CREATE TABLE IF NOT EXISTS` batch in `SCHEMA` and get NO
 /// migration entry — `gate` is a TRANSACTION FACTORY for new COLUMNS on
 /// existing tables, so a new TABLE must never appear in one. The name says
-/// "three" from the #176 original; the list is FOUR since `task_artifacts`
-/// (#180) arrived, and the count in the last assertion is whatever the tree
-/// measures — this change adds a TABLE, so it moves nothing.
+/// "three" from the #176 original; the list is FIVE since `task_artifacts`
+/// (#180) and `workflow_runs` (the auto-chain run record) arrived, and the count
+/// in the last assertion is whatever the tree measures — this change adds a
+/// TABLE and two gated COLUMNS, so the list grows by one and the count by two.
 ///
-/// The second loop names `tasks`, `task_sessions` and `task_artifacts`, and
-/// that narrowing is a decision rather than an oversight. `stages` and `spaces`
-/// are the two tables that pre-date the #179 Stage-config work with an OLDER
-/// shape, so gating a new COLUMN onto each of them is exactly what the migration
-/// factory is for — `stages.on_enter_skill`, `stages.next_slugs` and
-/// `spaces.board_strict` are gated on purpose, and a reader who "restores" the
-/// old board-table ban would be banning the migration itself. What stays
-/// forbidden is a gate naming a table that has NO pre-existing shape to repair:
-/// `tasks`, `task_sessions` and `task_artifacts` arrive whole from `SCHEMA`, so
-/// a gate on any of them would be a lie.
+/// The second loop names `tasks`, `task_sessions`, `task_artifacts` and
+/// `workflow_runs`, and that narrowing is a decision rather than an oversight.
+/// `stages` and `spaces` are the two tables that pre-date the #179 Stage-config
+/// work with an OLDER shape, so gating a new COLUMN onto each of them is exactly
+/// what the migration factory is for — `stages.on_enter_skill`,
+/// `stages.next_slugs`, `spaces.board_strict` and the two `spaces` auto-guard
+/// columns are gated on purpose, and a reader who "restores" the old board-table
+/// ban would be banning the migration itself. What stays forbidden is a gate
+/// naming a table that has NO pre-existing shape to repair: `tasks`,
+/// `task_sessions`, `task_artifacts` and `workflow_runs` arrive whole from
+/// `SCHEMA`, so a gate on any of them would be a lie.
 #[test]
 fn the_three_task_tables_are_in_schema_and_have_no_gate_entry() {
     for statement in [
@@ -890,6 +909,7 @@ fn the_three_task_tables_are_in_schema_and_have_no_gate_entry() {
         "CREATE TABLE IF NOT EXISTS tasks",
         "CREATE TABLE IF NOT EXISTS task_sessions",
         "CREATE TABLE IF NOT EXISTS task_artifacts",
+        "CREATE TABLE IF NOT EXISTS workflow_runs",
     ] {
         assert_eq!(
             SCHEMA.matches(statement).count(),
@@ -902,12 +922,12 @@ fn the_three_task_tables_are_in_schema_and_have_no_gate_entry() {
     // table of some other shape, which it never did — and it would make
     // `each_cluster_schema_omits_exactly_one_gated_column`'s fixtures lie, so
     // this is the guard that keeps that test honest.
-    // Re-pointed at the PARENT's own text by the ADR 0113 split: all thirteen
+    // Re-pointed at the PARENT's own text by the ADR 0113 split: all seventeen
     // `gate(&mut conn, …)` calls live inside `Db::open`, and `open` is what
     // `db/mod.rs` kept, so the parent is still the file whose gate surface this
     // counts. `migrations.rs` holds the three gate DATA STEPS and calls no gate.
     let source = include_str!("../mod.rs");
-    for table in ["tasks", "task_sessions", "task_artifacts"] {
+    for table in ["tasks", "task_sessions", "task_artifacts", "workflow_runs"] {
         let gated = format!("gate(&mut conn, \"{table}\"");
         assert_eq!(
             source.matches(&gated).count(),
@@ -916,15 +936,17 @@ fn the_three_task_tables_are_in_schema_and_have_no_gate_entry() {
              `gate(` call ({gated})"
         );
     }
-    // And the gate surface is still exactly the thirteen additive columns: the 9
+    // And the gate surface is still exactly the seventeen additive columns: the 9
     // pre-#179 gates plus `stages.on_enter_skill`, `stages.next_slugs`,
-    // `spaces.board_strict` and `sessions.parent_session_id`.
+    // `spaces.board_strict`, `sessions.parent_session_id`, the two workflow
+    // columns `stages.auto` and `stages.prompt_prefix`, and the two per-Space
+    // auto-chain guards `spaces.auto_max_steps` and `spaces.auto_ceiling_usd`.
     assert_eq!(
         source.matches("gate(&mut conn, ").count(),
-        13,
-        "the 13 gates are the whole migration surface; a NEW TABLE (as opposed to a
-         new column on an existing one) must not add a 14th, and no gate may ever \
-         name `tasks`, `task_sessions` or `task_artifacts`"
+        17,
+        "the 17 gates are the whole migration surface; a NEW TABLE (as opposed to a
+         new column on an existing one) must not add an 18th, and no gate may ever \
+         name `tasks`, `task_sessions`, `task_artifacts` or `workflow_runs`"
     );
 }
 

@@ -12,6 +12,11 @@ import { describeIpcError } from "../lib/ipcError";
 import type { AgentDefinitionDto, SkillInfo, TaskRow } from "../lib/tauri";
 import { useSessions } from "./sessions";
 import { useTasks } from "./tasks";
+// The auto-advance chain's settle edge, and the money figure it needs from before the
+// turn. TYPE-ONLY cycle by construction: `workflowChain` takes its next launch as an
+// ARGUMENT of the settle rather than importing `launchTaskSession`, so the runtime edge
+// here is one-way and there is no initialisation order to get wrong.
+import { advanceWorkflowChainOnSettle, sessionCostFigure } from "./workflowChain";
 
 /**
  * The ONE orchestration behind "open this **Task** as a **Session**", shared by the
@@ -142,6 +147,12 @@ const NOTHING: TaskLaunchOutcome = { sessionId: null, note: null };
  *  `NewTaskDialog.test.tsx` as "files it in the backlog column, not the board's first
  *  column"). `onEnterSkill: null` is what makes `missingSkill` never refuse it.
  *
+ *  `promptPrefix: null` for the same reason and a different mechanism: this constant
+ *  is a literal, not a row, so there is no `stages.prompt_prefix` cell to read and no
+ *  column-specific framing to carry. A save-only create starts no Session at all, so
+ *  the field could not reach a message even if it held text — `null` says so rather
+ *  than inventing prose for a button whose whole job is to start nothing.
+ *
  *  NOTE the deliberate divergence from the plan this task was written against, which
  *  specified `slug: ""` with the save-only arm keyed on that empty string. An empty
  *  slug falls through to the board's FIRST column, which silently changes that pinned
@@ -152,6 +163,7 @@ export const SAVE_ONLY: TaskLaunchDestination = {
   slug: "backlog",
   label: "Backlog",
   onEnterSkill: null,
+  promptPrefix: null,
   launches: false,
 };
 
@@ -313,9 +325,10 @@ function shouldInlineSkill(
  *
  * `toStageSlug` is the DESTINATION column, and it replaced a mode for the reason
  * ADR 0098 gives: the destination Stage IS the mode. Its row supplies the label the
- * instruction sentence names and the Skill the message loads, read from the SAME
- * `boardsBySpace` slice the board is rendering — so the button a person clicked and
- * the prompt that goes out cannot disagree about what that column means.
+ * instruction sentence names, the Skill the message loads, and the extra prompt the
+ * message opens with, all read from the SAME `boardsBySpace` slice the board is
+ * rendering — so the button a person clicked and the prompt that goes out cannot
+ * disagree about what that column means.
  */
 export async function launchTaskSession(
   spacePath: string,
@@ -332,11 +345,21 @@ export async function launchTaskSession(
   // name it" is a different claim from "it has no column"), and `onEnterSkill: null`
   // means we never invent a Skill for a row we cannot read. `resolveStage` then
   // answers `absent` for the same slice, so the caller sees the skipped-column note
-  // rather than a Session launched on an invented Skill.
+  // rather than a Session launched on an invented Skill. `promptPrefix` follows the
+  // same rule for the same reason: no row, no text — the field is the COLUMN's prose,
+  // and a message cannot be framed by a cell we could not read.
+  //
+  // This is the read that makes the Stage editor's "extra prompt" field mean
+  // something: it is the same `boardsBySpace` slice the board renders, so the text a
+  // person typed into a column's row reaches the Session that column starts, with no
+  // second owner and no fetch. What it deliberately does NOT do here is decide
+  // anything about auto-advance — that is the next task's runtime, and this one's job
+  // ends at "the prefix reaches the message".
   const destination: TaskLaunchDestination = {
     slug: toStageSlug,
     label: stage?.label ?? toStageSlug,
     onEnterSkill: stage?.onEnterSkill ?? null,
+    promptPrefix: stage?.promptPrefix ?? null,
   };
   const refusal = missingSkill(destination, catalogs);
   if (refusal !== null) throw refusal;
@@ -344,27 +367,77 @@ export async function launchTaskSession(
   // card at once is the same double-Session outcome the guard exists for.
   if (inFlight.has(task.id)) return NOTHING;
   inFlight.add(task.id);
+  // ONE-SHOT, and the one-shot is the point. The guard is released at the dispatch (the
+  // callback below) and this `finally` is the safety net for every arm that returns before
+  // it. Without the flag, the net would delete the key a SECOND launch had legitimately
+  // taken in the meantime — which is exactly what happens on a chain: the parent releases
+  // at the dispatch, the chain's launch of the same card takes the key, and the parent's
+  // `finally` then fires once the badge refetch lands and clears a guard it no longer owns.
+  // Deleting a key you do not hold is how a guard becomes a hole.
+  let guardHeld = true;
+  const releaseGuard = (): void => {
+    if (!guardHeld) return;
+    guardHeld = false;
+    inFlight.delete(task.id);
+  };
   try {
     const { slug, absent } = resolveStage(spacePath, task, destination);
     let note: string | null = null;
     if (slug !== null) {
-      await useTasks.getState().moveTask(spacePath, task.id, slug);
+      // THE MOVE IS CHECKED, not assumed. `useTasks.moveTask` never rejects — a refusal
+      // reverts the optimistic paint, lands the sentence in `error` and RESOLVES, because
+      // that is what a drop handler needs. It now also ANSWERS with the column the card is
+      // in, and that is the half this call site needs: a backend refusal (`StrictMoveRefused`
+      // under `board_strict`, or a destination that vanished from the slice) used to fall
+      // straight through to a Session whose `<task stage="…">` block named the column the
+      // card had just been told it could not enter — and the `error` line that would have
+      // surfaced it renders only if a board or a canvas happens to be mounted, which an
+      // unattended auto-advance chain is precisely not. Throwing is the honest arm:
+      // `workflowChain.finishLink` maps a throw to `launch_refused`, so the chain closes
+      // with a sentence instead of launching a lie. For a human click the cost is an error
+      // line on a click that would otherwise have started a Session on a stale stage.
+      const landed = await useTasks.getState().moveTask(spacePath, task.id, slug);
+      if (landed !== slug) {
+        throw new Error(
+          `This Space would not move the card into \`${slug}\` — it is in ` +
+            `\`${landed ?? "(a column this window cannot read)"}\`.`,
+        );
+      }
     } else if (absent) {
       note = missingColumnNote(task, destination.slug);
     }
     // The block must carry the stage the card is ACTUALLY in at the moment the
     // Session starts, not the one the modal read when it painted. After a launch into
     // a new column those differ, and a `<task stage="backlog">` on a card the user can
-    // see sitting in Research is a small lie on the wire.
+    // see sitting in Research is a small lie on the wire. That is now guaranteed rather
+    // than hoped: the arm above refuses to start anything unless the card really landed.
     const launched = await startAndSendLinked(
       spacePath,
       slug !== null ? { ...task, stageSlug: slug } : task,
       destination,
       catalogs,
+      // THE GUARD IS RELEASED AT THE DISPATCH AND NOT AT THE RETURN, and the choice is
+      // the chain's. The guard's stated job is stopping a double click from starting TWO
+      // Sessions, and start + dispatch is the whole of that job — the badge refetch
+      // `startAndSendLinked` still awaits afterwards is cosmetic and has nothing a second
+      // click could corrupt. Holding it across that refetch instead (the old `finally`)
+      // meant a turn that settled first found the chain's OWN PARENT still holding the
+      // card's key, so the chain's next launch was refused by the launch that spawned it
+      // and the run closed `launch_refused` with "it was already being launched" — a false
+      // statement about a benign ordering, indistinguishable from a real double-click
+      // refusal. The alternative fix was to move `refreshTaskNumbers()` out of the guarded
+      // block; that was rejected because it would move the ordering rule (`sendLaunchMessage`
+      // is dispatched BEFORE the badge fetch is awaited, which its own test pins) into two
+      // call sites, and the ordering is the part that must not drift.
+      () => releaseGuard(),
     );
     return { sessionId: launched.sessionId, note };
   } finally {
-    inFlight.delete(task.id);
+    // Idempotent, and it still has a job: every arm that returns before the dispatch
+    // (a refused move, a rejected `startTaskSession`) leaves here without having run the
+    // callback above, and a guard that survived a failure would make the card permanently
+    // un-launchable.
+    releaseGuard();
   }
 }
 
@@ -384,6 +457,12 @@ async function startAndSendLinked(
   task: TaskRow,
   destination: TaskLaunchDestination,
   catalogs: TaskLaunchCatalogs,
+  // Called the instant the first message has been DISPATCHED — i.e. as soon as there is
+  // nothing left for a re-entrant call to duplicate. The caller's re-entrancy guard is
+  // released from here and not from the caller's `finally`, for the reason its call site
+  // spells out: this helper still awaits a cosmetic badge refetch afterwards, and a turn
+  // can settle inside it.
+  onDispatched: () => void,
 ): Promise<TaskLaunchOutcome> {
   // `stageSlug: null` and not `task.stageSlug`: the Rust command resolves a null to
   // the card's CURRENT stage, so "which stage was it in when linked" has ONE answer
@@ -397,6 +476,11 @@ async function startAndSendLinked(
   // deadlocks. The Session exists and the prompt is committed, so this half's job is
   // done; the turn's outcome belongs to the transcript, not to the click.
   void sendLaunchMessage(info, task, destination, catalogs, artifactKeysFor(spacePath, task.id));
+  // The re-entrancy guard's job ENDS HERE: the Session exists, it is selected, and the
+  // prompt is on its way, so there is nothing a second click could duplicate. Everything
+  // this helper still awaits is the cosmetic badge refetch below — and a turn can settle
+  // inside it, which is why the guard may not. See the call site in `launchTaskSession`.
+  onDispatched();
   // The **Task badge** map is boot-fetched, so the link `startTaskSession` just wrote is
   // not in it yet (spec D10). REFETCHED, not patched from here: which of a Session's
   // links is newest is `MAX(rowid)`'s answer in Rust, and an optimistic write would give
@@ -512,9 +596,60 @@ async function sendLaunchMessage(
   const sessions = useSessions.getState();
   sessions.addUserMessage(info.sessionId, text);
   sessions.beginTurn(info.sessionId);
+  // The money figure as it stands BEFORE this turn runs. Read here and not at settle,
+  // because `workflowRunStep` ADDS what it is handed and the session figure is a running
+  // TOTAL: the delta needs both ends of the turn, and this is the only place standing at
+  // the front of one. `null` is a real answer ("no figure yet") and is kept as `null` —
+  // see `lib/sessionCost.ts` and ADR 0082.
+  const costBeforeTurn = sessionCostFigure(info.sessionId);
   try {
     const reason = await sendPrompt(info.sessionId, text);
     useSessions.getState().turnCompleted(info.sessionId, reason);
+    // ── THE AUTO-ADVANCE CHAIN'S SETTLE EDGE.
+    //
+    // This is the exact moment the feature needs: the turn has settled, the reason is in
+    // hand, and the arguments already name the Space, the card and the COLUMN that was
+    // launched (`destination.slug`) — so the runtime never has to guess which column's
+    // `auto` flag it is answering for, and never has to read the card's stage back out of
+    // a board slice that is only populated while the board is mounted.
+    //
+    // `void`, and the reason is the same DEADLOCK that made the call above a `void` — see
+    // the header. Awaiting the chain would hold this settle on the chain's own next turn,
+    // which is the `ask`-gate deadlock one level deeper. `advanceWorkflowChainOnSettle`
+    // dispatches that next launch the same way and for the same reason; the whole point of
+    // its header is that neither half waits.
+    //
+    // It cannot reject into anything: nothing upstream awaits this, so a rejection would
+    // be reported NOWHERE — the silent-green shape the `catch` below exists to prevent,
+    // arriving through the chain instead of the send. The runtime reports the stops IT
+    // can name (see its header) and deliberately does NOT catch a failed step verb: it
+    // cannot know whether the step landed, so it will not invent a `stop_reason` for a
+    // write it did not read. This belt is therefore the ONE owner of that case, and it
+    // reports it the way this file reports everything else it cannot rethrow — a line in
+    // the Session it failed in — and moves nothing, because a verdict this side could not
+    // read is a verdict it must not guess.
+    void advanceWorkflowChainOnSettle({
+      spacePath: task.spacePath,
+      task,
+      sessionId: info.sessionId,
+      reason,
+      launchedSlug: destination.slug,
+      costBeforeTurnUsd: costBeforeTurn,
+      // The FULL verb, so the chain's move is the human's drag: `launchTaskSession`
+      // moves through `useTasks.moveTask` (optimistic paint, whole-slice re-derivation,
+      // revert-into-`error`) before it starts anything, and it is the thing that reads the
+      // NEXT column's Skill and extra prompt out of the same slice.
+      launch: (next) => launchTaskSession(task.spacePath, task, next.slug, catalogs),
+    }).catch((err: unknown) => {
+      console.error(`Auto-advance chain failed for task ${task.id}:`, err);
+      useSessions
+        .getState()
+        .addSystemLine(
+          info.sessionId,
+          "The auto-advance chain could not be checked, so the card was left where it " +
+            `is — ${describeIpcError(err)}`,
+        );
+    });
   } catch (err) {
     // Settle FIRST: `turnCompleted` is the only thing that clears `inTurn`, and a
     // turn that never settles locks this composer for the life of the Session. The
@@ -613,6 +748,13 @@ export async function createTaskFromDraft(
       task,
       destination,
       catalogs,
+      // NO EARLY RELEASE here, and that is a difference and not an oversight: this path's
+      // guard is keyed on the DRAFT TITLE and its job is to stop a second click filing a
+      // SECOND card. The create is the guarded half and it is not finished until the
+      // promise returns, so releasing at the dispatch would let a double click create two
+      // cards. The card's own key is not held at all on this path, so the auto-advance
+      // chain's launch of the card this create just wrote cannot be refused by it.
+      () => {},
     );
     return { task, sessionId: launched.sessionId, note };
   } finally {

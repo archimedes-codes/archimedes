@@ -5,19 +5,33 @@ import {
 } from "../lib/tauri";
 import { useSessions } from "../store/sessions";
 import { raiseAttentionFocus } from "../lib/attentionFocusSignal";
+import type { AppView } from "../lib/appView";
 
-/** `App`'s content-area view union — the same three arms its `view` `useState`
- *  declares, restated here because the hook takes the SETTER and must accept
- *  every value the setter can be handed. Widening `App`'s union without widening
- *  this one is a compile error at the call site, not a silent narrowing. */
-type AppView = "workspace" | "settings" | "board";
+// `App`'s content-area view union, imported from `lib/appView.ts` — the ONE
+// declaration. The hook takes the SETTER, so it must accept every value the setter
+// can be handed, and widening the union without widening this signature is a compile
+// error at the call site rather than a silent narrowing.
+//
+// This used to be a local `type AppView = …` restatement, justified by a claim that
+// does not hold: "the union is restated rather than imported because the direction of
+// the edge is the other way (`App` imports this hook), so a shared type would have to
+// live in a third module that only these two read." `App.tsx` already imports THIS
+// module, so an `import type` of a union that lives in a fourth adds no edge to
+// `App`'s graph at all, and `verbatimModuleSyntax` compiles the type-only import to
+// nothing — it cannot add a runtime edge to anyone's. The shared module is
+// `lib/appView.ts`, and it holds nothing but the union, so `layerBoundary.test.ts` is
+// satisfied by construction.
+//
+// WHAT THE HOOK DOES WITH ANY GIVEN VALUE is nothing beyond step 2, and that is
+// correct: step 2 leaves whatever non-workspace view is up for the workspace, so a new
+// arm needs no case here. A `switch` would be the shape that silently forgot.
 
 /**
  * The APP-SCOPED attention-alert click listener (ADR 0038/0039's client half).
  * Mounted with `App` beside `useAttentionAlert()` — NOT with the workspace,
- * which the Settings and Board views UNMOUNT: an alert legitimately fires while
- * either is open, and a listener mounted inside the ternary would not exist at
- * the moment the click arrives.
+ * which every non-workspace view UNMOUNTS: an alert legitimately fires while
+ * any of them is open, and a listener mounted inside the ternary would not exist
+ * at the moment the click arrives.
  *
  * The five steps, IN ORDER (the spec's; do not re-order):
  *
@@ -28,7 +42,7 @@ type AppView = "workspace" | "settings" | "board";
  *      Session. A token may legitimately sit in TWO lists (a resumed archived
  *      Session stays in `archivedSessions` while live, ADR 0016), so the test is
  *      membership-in-ANY, never "exactly one list".
- *   2. `setView("workspace")` — the Settings/Board arms unmount the workspace,
+ *   2. `setView("workspace")` — the non-workspace arms unmount the workspace,
  *      so without this the click selects a Session and paints the Settings page.
  *      The FUNCTIONAL-updater form reads live state (this callback runs in a
  *      Tauri event handler, outside React, so a captured `view` would be a stale
@@ -92,7 +106,8 @@ export function useAttentionAlertClick(
         return;
       }
 
-      // 2. Leave Settings/Board for the workspace (no-op when already there).
+      // 2. Leave whatever non-workspace view is up (no-op when already there).
+      //     Functional form, so it holds for an arm added later without a case here.
       setView((current) => (current === "workspace" ? current : "workspace"));
 
       // 3. Select the Session (and its Space) and load its transcript.

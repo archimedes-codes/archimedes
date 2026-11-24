@@ -10,6 +10,7 @@ import {
   createStage,
   deleteStage,
   getArtifact,
+  getAutoGuards,
   getBoard,
   getBoardStrict,
   listAgentDefinitionsForSpace,
@@ -20,8 +21,11 @@ import {
   moveTask,
   renameStage,
   reorderStages,
+  setAutoGuards,
   setBoardStrict,
+  setStageAuto,
   setStageNext,
+  setStagePromptPrefix,
   setStageSkill,
   writeArtifact,
   type SkillInfo,
@@ -83,6 +87,16 @@ vi.mock("../lib/tauri", async () => {
     getBoardStrict: vi.fn(),
     writeArtifact: vi.fn(),
     getArtifact: vi.fn(),
+    // The four workflow-graph wrappers, for the reason the ten above are here: the
+    // dialog's footer now mounts `AutoChainGuards`, which READS the guards on mount,
+    // and a name this factory does not list resolves to the REAL wrapper — which calls
+    // `invoke`, rejects in jsdom, and lands the failure in the store's `error` cell
+    // that this file's own error-line assertions read. That is the exact
+    // asserting-on-a-rejection case the header above refuses.
+    setStageAuto: vi.fn(),
+    setStagePromptPrefix: vi.fn(),
+    getAutoGuards: vi.fn(),
+    setAutoGuards: vi.fn(),
     // The four mention catalogs `useMentionCatalogs` mounts. Un-mocked they reach
     // the real `invoke` and reject in jsdom — the noisy-green case the header
     // above is about, and the reason the "no second fetch" pin below can be
@@ -121,6 +135,14 @@ const stage = (slug: string, over: Partial<StageDto> = {}): StageDto => ({
   onEnter: "none",
   onEnterSkill: null,
   nextSlugs: null,
+  // Both REQUIRED on the wire type since the workflow-graph columns landed
+  // (`stages.auto` is `NOT NULL DEFAULT 0`; `promptPrefix` has no SQL DEFAULT and
+  // NULL is its only "no extra prompt" state), so a fixture that omits either is a
+  // board the database cannot answer with. Defaults sit BEFORE the spread like the
+  // two above, so a case that means an auto-advancing column passes `auto: true`
+  // through `over`.
+  auto: false,
+  promptPrefix: null,
   ...over,
 });
 
@@ -274,6 +296,10 @@ beforeEach(() => {
     getArtifact,
     moveTask,
     listSkills,
+    setStageAuto,
+    setStagePromptPrefix,
+    getAutoGuards,
+    setAutoGuards,
   ]) {
     vi.mocked(fn).mockReset();
   }
@@ -289,6 +315,20 @@ beforeEach(() => {
     truncated: false,
   });
   vi.mocked(getBoardStrict).mockResolvedValue(false);
+  // The footer's guard fields need a RESOLVED pair, not a bare `vi.fn()`: the
+  // component chains `.then` on the store action, and an `undefined` return would
+  // throw inside the mount effect rather than leaving the fields inert. An unconfigured
+  // pair is the honest default — it is what a Space that never opened this editor
+  // answers, and it is what every case below that says nothing about the guards means.
+  vi.mocked(getAutoGuards).mockResolvedValue({ maxSteps: null, ceilingUsd: null });
+  vi.mocked(setAutoGuards).mockResolvedValue(undefined);
+  vi.mocked(setStageAuto).mockImplementation(async (_space, slug, auto) => ({
+    ...stage(slug),
+    auto,
+  }));
+  vi.mocked(setStagePromptPrefix).mockImplementation(
+    async (_space, slug, promptPrefix) => ({ ...stage(slug), promptPrefix }),
+  );
   vi.mocked(setBoardStrict).mockResolvedValue(undefined);
   // The Stage verbs answer the STORED row and the store merges that row back over
   // its optimistic guess, so these defaults ECHO their arguments the way the Rust
@@ -356,7 +396,14 @@ describe("StageEditor — the dialog's shape", () => {
     // The slug is FROZEN after `createStage` derives it (spec §5), so the editor
     // shows the mismatch instead of hiding it. `data-slot="input"` is how the
     // `Input` primitive marks its own `<input>`; the caption must NOT be one.
-    expect(within(row("doing")).getAllByRole("textbox")).toHaveLength(1);
+    // TWO textboxes per row now, not one: the label and the extra-prompt field the
+    // workflow-graph work added beside it. Named rather than counted at large, so the
+    // assertion says WHICH two and a third field cannot slip in unremarked — the
+    // intent is "the slug caption is not a field", and it survives the row growing.
+    expect(within(row("doing")).getAllByRole("textbox").map((el) => el.getAttribute("aria-label"))).toEqual([
+      "Label for doing",
+      "Extra prompt for doing",
+    ]);
     expect(valueOf(labelField("doing"))).toBe("Doing");
     expect(row("doing").textContent).toContain("doing");
     expect(within(row("doing")).getByTestId("stage-slug-doing").textContent).toBe(

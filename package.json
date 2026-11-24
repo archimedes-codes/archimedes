@@ -14,10 +14,13 @@
     "icon": "tauri icon && node -e \"require('fs').copyFileSync('app-icon.png','public/app-icon.png')\"",
     "test": "vitest run"
   },
+  "//deps": "`@xyflow/react` + `@dagrejs/dagre` are in `dependencies` and NOT `devDependencies`, because the Workflows canvas RUNTIME-imports both (`<ReactFlow>` renders, `dagre` lays it out) — they ship in the bundle. `shiki` sits in `devDependencies` while `AgentMarkdown.tsx` and `CodemodeCard.tsx` runtime-import it, which is a MISCLASSIFICATION already in this repo and is deliberately NOT the precedent to copy. Both are MIT; xyflow's peer is `react >=18` (this repo is on 19) and it needs `zustand@5`, already present.",
   "dependencies": {
+    "@dagrejs/dagre": "^3.1.3",
     "@radix-ui/react-use-controllable-state": "^1.2.6",
     "@tauri-apps/api": "^2.12.3",
     "@tauri-apps/plugin-dialog": "^2",
+    "@xyflow/react": "^13.0.3",
     "@types/three": "0.186.0",
     "three": "0.186.1",
     "class-variance-authority": "^0.7.1",

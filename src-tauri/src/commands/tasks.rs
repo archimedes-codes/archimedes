@@ -1,35 +1,50 @@
 //! Tauri commands for the per-Space Task board (spec §2 — ADR 0090).
 //!
-//! NINETEEN commands. Eighteen of them are a `spawn_blocking` delegation to
+//! TWENTY-SIX commands. Twenty-five of them are a `spawn_blocking` delegation to
 //! `impl Db` in `storage/db/`, in the shape `commands/spaces.rs` sets:
 //! `State<'_, Arc<Db>>` first, `state.inner().clone()` into the closure,
-//! `Result<_, TasksError>` out. The nineteenth, [`start_task_session`], returns the
+//! `Result<_, TasksError>` out. The twenty-fifth, [`start_task_session`], returns the
 //! `SessionError` family instead because it is a Session command wearing board
 //! clothing — see its own doc.
 //!
-//! The eighteen delegations are the seven the board shipped with
+//! The twenty-five delegations are the seven the board shipped with
 //! ([`get_board`], [`create_task`], [`get_task`], [`edit_task`], [`move_task`],
 //! [`reorder_tasks`], [`link_session`]) plus the eight issue #179 added: the six
 //! Stage verbs ([`create_stage`], [`rename_stage`], [`set_stage_skill`],
 //! [`set_stage_next`], [`reorder_stages`], [`delete_stage`]) and the
 //! Strict-workflow pair ([`set_board_strict`], [`get_board_strict`]) — plus the
+//! workflow pair the Stage editor grew ([`set_stage_auto`],
+//! [`set_stage_prompt_prefix`]), which delegate in the same shape and refuse
+//! nothing above the hop — plus the
 //! two issue #180 artifact commands ([`write_artifact`], [`get_artifact`]), which
 //! delegate too but refuse three things BEFORE the storage layer is reached (see
 //! the artifact section for why each refusal lives here) — plus [`task_numbers`],
-//! the app-wide Session→Task badge read, the plainest of the eighteen: one
-//! `State<'_, Arc<Db>>` argument, nothing refused above the hop.
+//! the app-wide Session→Task badge read — plus the per-Space auto-chain guard pair
+//! ([`get_auto_guards`], [`set_auto_guards`]), the two the auto-advance runtime
+//! reads its bound through — plus the two
+//! `workflow_runs` commands ([`workflow_run_step`],
+//! [`workflow_run_close`]), the record that same runtime counts its steps and its
+//! spend against. The plainest of the twenty-five are the badge read, the guard
+//! pair and those two: one `State<'_, Arc<Db>>` argument apiece (two for the
+//! setter, three for the step verb), nothing
+//! refused above the hop.
 //!
-//! FOUR of the eighteen do NOT go through [`board_call`], and it is not an
-//! oversight: [`set_board_strict`] and [`get_board_strict`] write and read the
-//! `spaces` table, so their storage layer answers `DbError` rather than
-//! `BoardError`, and `board_call` is typed to `BoardError`. They go through
-//! [`db_call`], its twin for that family — the same two-layer flattening, mapping
+//! NINE of the twenty-five do NOT go through [`board_call`], and it is not an
+//! oversight: [`set_board_strict`], [`get_board_strict`], [`get_auto_guards`] and
+//! [`set_auto_guards`] write and read the `spaces` table and the two
+//! `workflow_runs` commands write and read their own table, so those six storage layers
+//! answer `DbError` rather than `BoardError`, and `board_call` is typed to
+//! `BoardError`. They go through [`db_call`], its twin for that family — the same
+//! two-layer flattening, mapping
 //! every failure to `Other` because `DbError` has no absence cases to preserve.
 //! `commands/spaces.rs` maps the same `DbError` by hand for the same reason, and no
-//! `From<DbError> for TasksError` is added here. The other two are [`write_artifact`]
+//! `From<DbError> for TasksError` is added here. Two more are [`write_artifact`]
 //! and [`edit_task`]: each composes command-layer refusals that only exist in the
 //! wire family, so each goes through [`wire_call`] and maps its own `BoardError`
 //! inside the core the closure calls — which is where `not_found` keeps its identity.
+//! The ninth is [`start_task_session`], which goes through NONE of the three: it
+//! speaks `SessionError`, not `TasksError`, because starting a Session can fail in
+//! ways no board read can.
 //!
 //! The blocking rule is the file rule from `commands/files/mod.rs`, restated in
 //! `spaces.rs`: SQLite work goes on a worker thread, and it is
@@ -57,8 +72,8 @@ use tauri::State;
 
 use crate::agent::{debuglog, EventSink, SessionError, SessionInfo, SessionManager, TasksError};
 use crate::storage::{
-    Artifact, ArtifactMeta, Db, FieldPatch, StageRow, StageWithTasks, TaskNumberRow, TaskRow,
-    TaskSessionRow,
+    AdvanceVerdict, Artifact, ArtifactMeta, AutoGuards, Db, FieldPatch, StageRow, StageWithTasks,
+    TaskNumberRow, TaskRow, TaskSessionRow,
 };
 
 /// What a `move_task` reports: the destination stage's `on_enter`, plus — only
@@ -333,7 +348,13 @@ fn board_call<T, E: std::fmt::Display>(
     }
 }
 
-/// [`board_call`]'s twin for the two commands that speak to the `spaces` table.
+/// [`board_call`]'s twin for the commands whose storage layer speaks `DbError`.
+///
+/// It was written for the two that speak to the `spaces` table and it now serves
+/// six: those two, the two guard commands beside them, and the two
+/// `workflow_runs` commands, which have a table of
+/// their own and the same error family for the same reason (it served seven until
+/// `workflow_run_open` was deleted as dead IPC).
 ///
 /// The board's storage layer answers `BoardError`, whose two absence cases must
 /// stay distinguishable from a database failure — hence the `From` impl
@@ -869,6 +890,60 @@ pub async fn set_stage_next(
     )
 }
 
+/// Turn one column's auto-advance flag on or off (the workflow-graph work).
+///
+/// ON means a card launched on this column advances itself when its Session
+/// settles; the editor's per-node switch writes it and nothing else does. The
+/// flag is stored and read back — the runtime that acts on it is
+/// `advanceWorkflowChainOnSettle` in `src/store/workflowChain.ts`, which reads the
+/// flag off the board slice and drives the hop, so
+/// this command is deliberately the only side effect.
+///
+/// A `bool` and not an `Option`: the column is `NOT NULL DEFAULT 0`, so the wire
+/// has exactly two states and `false` is one of them. Compare
+/// [`set_stage_prompt_prefix`] below, which is optional precisely because absence
+/// is a distinct state there.
+#[tauri::command]
+pub async fn set_stage_auto(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+    slug: String,
+    auto: bool,
+) -> Result<StageRow, TasksError> {
+    let db = state.inner().clone();
+    board_call(
+        tauri::async_runtime::spawn_blocking(move || db.set_stage_auto(&space_path, &slug, auto))
+            .await,
+    )
+}
+
+/// Set or clear one column's extra prompt, prepended before its Skill launch.
+///
+/// `prompt_prefix: None` clears it to NULL, and that is why the parameter is
+/// optional rather than a plain `String`: a prefix a person typed by mistake has
+/// to be removable, which is `set_stage_skill`'s reason for the same shape and
+/// the gap `set_stage_next`'s plain `Vec` left behind (a configured graph cannot
+/// be un-configured). An EMPTY string is a stored value, not a clear — it
+/// round-trips as `""` while NULL stays the only "no extra prompt" state.
+///
+/// The text goes to storage verbatim; this layer does not trim, template or
+/// interpret it.
+#[tauri::command]
+pub async fn set_stage_prompt_prefix(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+    slug: String,
+    prompt_prefix: Option<String>,
+) -> Result<StageRow, TasksError> {
+    let db = state.inner().clone();
+    board_call(
+        tauri::async_runtime::spawn_blocking(move || {
+            db.set_stage_prompt_prefix(&space_path, &slug, prompt_prefix.as_deref())
+        })
+        .await,
+    )
+}
+
 /// Rewrite the board's column order in one pass.
 ///
 /// `slugs` is the board's whole visible slice in its new order and the index
@@ -927,7 +1002,7 @@ pub async fn delete_stage(
 ///
 /// Lands in THIS file rather than `commands/spaces.rs` even though it writes the
 /// `spaces` table, because it is the board's toggle: it gates `move_task`, it
-/// co-terminates with the six Stage commands it configures, and spec §4 spells its
+/// co-terminates with the eight Stage commands it configures, and spec §4 spells its
 /// signature in the board's command list. Which table a command writes is not what
 /// groups commands — what the caller is doing with them is.
 ///
@@ -975,6 +1050,247 @@ pub async fn get_board_strict(
 ) -> Result<bool, TasksError> {
     let db = state.inner().clone();
     db_call(tauri::async_runtime::spawn_blocking(move || db.board_strict(&space_path)).await)
+}
+
+// ── The per-Space auto-chain guards ─────────────────────────────────────────
+//
+// TWO commands, and they are the wire half of `Db::auto_guards` /
+// `Db::set_auto_guards` — the same `db_call` family as the Strict pair above,
+// because the storage calls answer `DbError` (they read and write `spaces`) and
+// `board_call` is typed to `BoardError`.
+//
+// They exist BEFORE the runtime that acts on them, and that ordering is the point:
+// a column flagged `auto` advances its own card when its Session settles, which is
+// an unattended chain of LLM Sessions, which is an unbounded spend risk. The guards
+// ship first so the runtime has a bound to read the day it is written. Neither
+// command here interprets a guard — the numbers store and read back, and the
+// auto-advance task compares them against its own chain.
+//
+// THE RUN RECORD IS A COMMAND NOW, and the two below are why this paragraph used
+// to say the opposite. `Db::workflow_run_step` / `_close` shipped as
+// `Db` verbs with NO command layer, on the argument that the auto-advance runtime
+// would reach them in-process through `Arc<Db>` like every other verb. That
+// argument had one false premise: the runtime is TypeScript, so it reaches the
+// table over IPC or not at all — and a step bound and a USD ceiling written
+// through a table nothing can write are a guard that cannot be enforced. See the
+// section under [`workflow_run_step`] for what that reversal costs.
+
+/// Read one Space's auto-chain guards (the step bound and the cost ceiling).
+///
+/// The guard editor's mount fetch, and it has to be a fetch and not a board field
+/// for the same reason `get_board_strict` is one: the editor must be SEEDED from the
+/// value the enforcement will read, or a Space can display a bound the runtime never
+/// sees. Both go through `Db`'s one key rule (`space_key`, raw fallback), so the two
+/// cannot disagree.
+///
+/// THREE states arrive and all three are meaningful, which is why the return is a
+/// struct of two `Option`s and not two plain numbers: `None` is "not configured", so
+/// the shipped fallback governs; `Some(0)` / `Some(0.0)` is "configured, and the
+/// answer is no chaining / no spend"; and a Space with no `spaces` row answers the
+/// first, not an error (the `board_strict` shape — absence is an answer in this
+/// family). Collapsing the first into the second would render every Space in the app
+/// as having auto-chaining switched off.
+#[tauri::command]
+pub async fn get_auto_guards(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+) -> Result<AutoGuards, TasksError> {
+    let db = state.inner().clone();
+    db_call(tauri::async_runtime::spawn_blocking(move || db.auto_guards(&space_path)).await)
+}
+
+/// Set or clear one Space's auto-chain guards.
+///
+/// Both parameters are optional so each guard is CLEARABLE as well as settable, and
+/// that is the deliberate difference from [`set_stage_next`], whose plain `Vec` is
+/// the recorded known gap (a configured value can never be un-configured, because
+/// `[]` and NULL are unrecoverable from each other). `None` writes NULL, i.e. "fall
+/// back to the shipped default" — which is NOT the same as `Some(0)`, i.e. "this
+/// Space's bound is zero". An editor's Clear button reaches the first and its
+/// "switch it off" reaches the second, and the two must not meet in this layer.
+///
+/// Not `board_call`: the storage call answers `DbError`, not `BoardError`, exactly as
+/// [`set_board_strict`] above, and for the identical stated reason — the guards ride
+/// the `spaces` table. `DbError` has no absence cases to preserve, so `db_call`'s
+/// two-layer flattening to `Other` is the whole mapping; no `From<DbError> for
+/// TasksError` is added here.
+///
+/// The `Ok(())` return drops nothing worth dropping: a Space with no `spaces` row is
+/// a silent no-op at the verb (a settings edit must not fabricate a bookkeeping row),
+/// and the read answers the only follow-up question for either case.
+#[tauri::command]
+pub async fn set_auto_guards(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+    max_steps: Option<i64>,
+    ceiling_usd: Option<f64>,
+) -> Result<(), TasksError> {
+    let db = state.inner().clone();
+    db_call(
+        tauri::async_runtime::spawn_blocking(move || {
+            db.set_auto_guards(&space_path, max_steps, ceiling_usd)
+        })
+        .await,
+    )
+}
+
+// ── The `workflow_runs` record: what a chain counts itself against ──────────
+//
+// TWO commands, the wire half of `Db::workflow_run_step` / `_close`, and the third
+// `db_call` family in this file for the same stated reason: the
+// storage verbs answer `DbError` (a table of their own, no `BoardError` anywhere)
+// and `board_call` is typed to the latter.
+//
+// WHY THEY ARE COMMANDS AND WHY THAT REVERSES A DECISION. This section did not
+// exist one commit ago — the verbs shipped with no command layer and a test pinned
+// the absence, on the argument that the auto-advance runtime would reach them
+// in-process. The runtime is TypeScript. It reaches the database through this file
+// or not at all, so the guard the earlier task built (a step bound, a USD ceiling)
+// was a number in a table no caller could reach. A guard nothing can write is not a
+// guard, so the wire exists now and the absence pin is gone.
+//
+// WHAT THAT COSTS, stated rather than glossed: two more commands to keep honest,
+// and one of them (`workflow_run_step`) is called once per auto-advance. They are
+// also the ONLY commands here whose caller is not a person. The board's other
+// commands answer a click; these answer a
+// settle-handler, which is why none of them refuses anything on the record's own
+// account — a bookkeeping
+// failure must never fail a Session, and every absence in this family is an `Ok`
+// with a `None` or a silent no-op inside it. That leniency is `Db`'s, inherited
+// verbatim, and it is the reason a caller must not read `Ok(())` from the close as
+// "a chain was closed". (`workflow_run_step` now DOES refuse — a `space_path` that
+// is not the card's, and a card that does not exist. Those are not absences, they
+// are arguments that lied; see the command.)
+//
+// WHY THERE IS NO `workflow_run_open` ANY MORE. The family used to have a third
+// command and a `Db` verb behind it, both DEAD: the runtime asks no "is this card
+// mid-chain" question, because `workflow_run_step` IS the upsert — opening a chain
+// when none is open is what the step verb does — so the read had nothing to decide.
+// It survived the consumer gate because that gate counts a wrapper's own
+// `invoke("workflow_run_open")` literal as the consumer, i.e. a command could pay
+// for its own registration by exporting a function nobody called. That is the gate's
+// own failure mode one layer up, and the fix here is the deletion, not an allowlist
+// entry. `scripts/check-commands.sh` is green with BOTH counts down, and the `Db`
+// verb went with it rather than staying as an unread read.
+//
+// NO UI READS EITHER OF THESE and that is deliberate in the other direction: the
+// wrappers
+// in `src/lib/tauri/commands/tasks.ts` are the runtime's, and
+// `scripts/check-commands.sh` — which refuses a registered command with no
+// consumer — is green because those wrappers are literal `invoke` call sites. There
+// is no store action for either of them, and the wrapper module's section header says
+// why: this is per-run bookkeeping, not board-slice state.
+
+/// Record ONE auto-advance, opening a chain if none is open (the upsert), and
+/// answer with the VERDICT: the row after the write, plus whether the chain may
+/// take another step.
+///
+/// The return type is [`AdvanceVerdict`] and not the bare row, and that is a
+/// deliberate correction rather than an enrichment. The verdict's two bounds come
+/// from `spaces.auto_max_steps` / `spaces.auto_ceiling_usd` and from two shipped
+/// fallbacks, and the fallbacks are Rust-only ON PURPOSE — they are deliberately not
+/// copied into the TypeScript mirror, because a policy number duplicated across the
+/// wire is a policy number that drifts. So the caller cannot answer "is this chain
+/// over budget?" for itself, and a command that returned only the row asked it to.
+/// The decision is made in `storage/db/workflow_runs.rs`, beside the constants it
+/// reads, and this layer forwards it. `Db::workflow_run_step`'s own doc gives the
+/// rules (`NULL` ≠ `0`, `>` on the post-increment step count, `>=` on
+/// `cost_usd` with `NULL` never tripping); none is restated here, because a second
+/// copy of a guard rule is the thing this change exists to stop producing.
+///
+/// What the caller gets, in one sentence: `advance` is the only field it must
+/// obey, and `stop` / `maxSteps` / `ceilingUsd` are what let it say WHY in words a
+/// person can act on — the settle-handler has no other way to know that the bound
+/// it hit was 20 rather than the 1 the Space configured, or that the ceiling it is
+/// citing is one the chain's own cost reports cannot reach.
+///
+/// `cost_delta_usd` is optional and the two arms are NOT interchangeable — this is
+/// ADR 0082's `NULL` ≠ `0.0` discipline on the column a spend ceiling is compared
+/// against:
+///   - `None` → `cost_usd` is not mentioned at all. A step whose Session reported
+///     no figure neither sets nor erases the stored figure;
+///   - `Some(x)` → `COALESCE(cost_usd, 0.0) + x`, which SETS the column on the
+///     first figure and ADDS to every later one.
+///
+/// A plain `f64` here would have been the bug: the runtime would have to send
+/// `0.0` for "unknown", the column would never be NULL, and a chain that never
+/// reported a cost would read as a genuinely free one — under the ceiling forever.
+///
+/// Takes `space_path` where [`workflow_run_close`] does not, on two counts. The
+/// INSERT arm needs a Space to mint a row (the table stores the Space so a run is
+/// readable without joining through a `tasks` row), and since the verdict landed it
+/// is ALSO the key the guard read looks the Space's bounds up by — so a caller that
+/// passed something other than the card's real Space would get a verdict computed
+/// from another Space's budget, or from the fallbacks.
+///
+/// WHICH IS WHY THIS LAYER NO LONGER DECIDES WHAT TO DO WITH IT. The verb refuses a
+/// `space_path` that is not the card's own (both sides canonicalised through
+/// `space_key`, so two spellings of one folder are not a mismatch) and stores the
+/// canonicalised form, so the audit column and the bound the verdict cites cannot
+/// disagree about which Space the run belongs to. `Db::workflow_run_step` gives the
+/// reasoning and the three tests that pin it; the point for this layer is that the
+/// argument is CHECKED rather than believed, so the wire cannot be used to shop for
+/// a cheaper budget. A refusal arrives as an `other` — `DbError`'s `Io` arm maps
+/// there, and the settle-handler already survives a rejected step (it records no
+/// step and stops).
+#[tauri::command]
+pub async fn workflow_run_step(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+    task_id: String,
+    cost_delta_usd: Option<f64>,
+) -> Result<AdvanceVerdict, TasksError> {
+    let db = state.inner().clone();
+    db_call(
+        tauri::async_runtime::spawn_blocking(move || {
+            db.workflow_run_step(&space_path, &task_id, cost_delta_usd)
+        })
+        .await,
+    )
+}
+
+/// Close one card's open chain, recording WHY it stopped.
+///
+/// `stop_reason` is the caller's word, stored verbatim and never rewritten by a
+/// later close (the verb's
+/// `WHERE finished_at IS NULL` arm is what makes a repeated close a no-op rather
+/// than an edit to the record's only narrative field).
+///
+/// THE VOCABULARY, CITED RATHER THAN RETYPED. Everything the column legitimately
+/// holds comes from four places: [`ChainStop::as_str`] (the four bound/edge
+/// spellings — `max_steps`, `cost_ceiling`, `no_next_stage`, `launch_refused`), the
+/// literal `"manual"` (a person's column took the card over), the literal
+/// `"interrupted"` (a chain a process restart orphaned, written by `Db::open` and by
+/// nothing on the wire), and a verbatim `StopReason` from the settle edge
+/// (`"cancelled"`, `"max_tokens"`, …) for a turn that never finished. The
+/// enumeration that used to sit here named `"steps"` and `"ceiling"`, and NOTHING has
+/// ever emitted either — which is exactly why ADR 0119 §3 insists this is ONE
+/// vocabulary: a list retyped into prose is a list that drifts, and this one had.
+/// `the_chain_stop_spellings_are_frozen` owns the spellings; cite it, do not re-spell
+/// it.
+///
+/// Returns `()` and means it. NOTHING about the outcome is reported, because a
+/// chain with nothing to open is ordinary: a card that never auto-advanced and a
+/// chain already closed both answer `Ok(())` (the `record_session_cost` shape, and
+/// its documented trap — it is the CALLER's job to have opened the run it means to
+/// close). That silence is a feature for the settle-handler, which must not fail a
+/// Session because the bookkeeping had nothing to do. A caller that needs to know
+/// whether its close landed cannot ask this family — the read that used to answer
+/// that (`workflow_run_open`, and the `Db` verb behind it) was deleted as dead IPC,
+/// because the runtime that would have asked it never does: `workflow_run_step` is
+/// the upsert, so a chain either steps or it does not. The record is still readable,
+/// just not through a command — read `workflow_runs` where an audit needs it.
+#[tauri::command]
+pub async fn workflow_run_close(
+    state: State<'_, Arc<Db>>,
+    task_id: String,
+    stop_reason: String,
+) -> Result<(), TasksError> {
+    let db = state.inner().clone();
+    db_call(
+        tauri::async_runtime::spawn_blocking(move || db.workflow_run_close(&task_id, &stop_reason))
+            .await,
+    )
 }
 
 // ── Task artifacts (issue #180 D1, spec §1/§2, ADR 0100) ────────────────────

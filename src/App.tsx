@@ -31,6 +31,7 @@ import SubagentDetailHost from "./components/SubagentDetailHost";
 import { SubagentModals } from "./components/SubagentModals";
 import SettingsPage from "./components/settings/SettingsPage";
 import TasksBoard from "./components/TasksBoard";
+import WorkflowsCanvas from "./components/workflows/WorkflowsCanvas";
 import { SpaceCwdProvider } from "./components/SpaceCwd";
 import { cn } from "./components/lib/utils";
 import { useAttentionAlert } from "./hooks/useAttentionAlert";
@@ -46,6 +47,7 @@ import NewSessionErrorBanner from "./components/NewSessionErrorBanner";
 import { useActiveSpaceCwd } from "./hooks/useActiveSpaceCwd";
 import { useSessionTitleRecovery } from "./hooks/useSessionTitleRecovery";
 import { useWindowMaximized } from "./hooks/useWindowMaximized";
+import type { AppView } from "./lib/appView";
 
 function App() {
   // Attention alerts (ADR 0038/0039): arm the OS notification when a Session
@@ -315,11 +317,12 @@ function App() {
   // written BEFORE `setSpaces` for exactly that reason; see the effect below.
   //
   // The content-area view: the workspace (the default), the settings
-  // page (opened from the `SpacesList`'s `Settings` door), or the Task BOARD (opened
-  // from the `SpacesList`'s `Tasks` command). Both non-workspace views
-  // UNMOUNT the workspace — which is now exactly `ChatStream` / `SidePane` /
+  // page (opened from the `SpacesList`'s `Settings` door), the Task BOARD (opened
+  // from the `SpacesList`'s `Tasks` command), or the WORKFLOWS canvas (opened from
+  // the `SpacesList`'s `Workflows` command). Every non-workspace view
+  // UNMOUNTS the workspace — which is now exactly `ChatStream` / `SidePane` /
   // `SubagentDetailHost`; the `SpacesList` is hoisted ABOVE the ternary and
-  // mounts on all three views (spec D2), so it is no longer one of the
+  // mounts on every view (spec D2), so it is no longer one of the
   // unmounted surfaces. (The ZCode `opacity-0` + `inert` pattern is for
   // keeping the workspace MOUNTED — the stores are the source of truth and
   // re-hydrate on remount, so the simpler unmount is used): a session
@@ -327,19 +330,37 @@ function App() {
   // `useEffect`s above are view-independent), and `ChatStream` / `SidePane`
   // re-read them on remount while the Session list never stopped reading them.
   //
-  // THREE ARMS, AND THE THIRD NEEDS AN EXPLICIT ONE. The workspace is the
-  // implicit `else` of the ternary below, so a value the ternary does not name
-  // renders the WORKSPACE. Widen the union without adding the arm and `board`
+  // FOUR ARMS, AND EVERY NON-WORKSPACE ONE NEEDS TO BE EXPLICIT. The workspace is
+  // the implicit `else` of the ternary below, so a value the ternary does not name
+  // renders the WORKSPACE. Widen the union without adding the arm and the new value
   // would paint the chat column and the Side pane — a green build, a passing
-  // smoke test, and no board. The `"board"` arm is therefore spelled out, not
-  // fallen into.
-  const [view, setView] = useState<"workspace" | "settings" | "board">("workspace");
+  // smoke test, and no new view. This is not a hypothetical: it is the shape the
+  // `"board"` arm was spelled out to avoid, and the `"workflows"` arm is spelled
+  // out for the identical reason. Each arm therefore has a test that asserts BOTH
+  // halves — its own surface IS on screen and `ChatStream`'s composer is NOT
+  // (`App.test.tsx`'s board case, `App.workflows.test.tsx`'s canvas case). Asserting
+  // only "my surface is missing" would also be true of a click that never changed the
+  // view, which is how a routing pin goes vacuous while still reading green.
+  //
+  // WHY THE WORKSPACE STAYS THE `else` rather than becoming a fifth explicit arm,
+  // since the paragraph above has just argued for explicitness: naming it would make
+  // the union exhaustive-checkable, which is the only gain, and it would cost the one
+  // property that makes the trap survivable at all — with an explicit workspace arm,
+  // an unknown value renders NOTHING instead of the workspace, so a widened union
+  // becomes a blank window rather than a familiar-looking screen. The pins are what
+  // actually catch it, and they are per-arm.
+  //
+  // THE UNION IS IMPORTED, not declared here (`lib/appView.ts`) — the three production
+  // spellings of it are now one, so a widening happens in a single place. That removes the
+  // restatements and NONE of the pins above: a shared union cannot make an unnamed arm an
+  // error, because the workspace is the `else`.
+  const [view, setView] = useState<AppView>("workspace");
   // The Attention-alert CLICK listener (ADR 0038/0039's client half): click an
   // alert → land on the Session that raised it. APP-SCOPED for the same reason
-  // as the three hooks at the top of this component — the Settings and Board
-  // arms of the ternary below UNMOUNT the workspace, and an alert legitimately
-  // fires while either is open, so a listener mounted with the workspace would
-  // not exist at the moment of the click.
+  // as the three hooks at the top of this component — every non-workspace
+  // arm of the ternary below UNMOUNTS the workspace, and an alert legitimately
+  // fires while any of them is open, so a listener mounted with the workspace
+  // would not exist at the moment of the click.
   //
   // Mounted HERE rather than beside `useAttentionAlert()` above because it needs
   // ONE thing that is App-local and not store state: `setView`. The call is
@@ -558,11 +579,12 @@ function App() {
                  implications on Windows/Linux.
 
               THE STRIP IS THE VIEW SWITCHER: the pane is told which view is up, so
-              its **Settings** and **Tasks** doors render pressed and toggle off, and
-              it is handed the exit a **Session** row click takes. All three callbacks
-              are the same `setView` the rest of this file already calls. */}
+              its **Settings**, **Tasks** and **Workflows** doors render pressed and
+              toggle off, and it is handed the exit a **Session** row click takes. All
+              four callbacks are the same `setView` the rest of this file already calls. */}
           <SpacesList
             onOpenBoard={() => setView("board")}
+            onOpenWorkflows={() => setView("workflows")}
             onOpenSettings={() => setView("settings")}
             onReturnToWorkspace={() => setView("workspace")}
             currentView={view}
@@ -592,6 +614,25 @@ function App() {
             // `setView("workspace")` a Session row and the `Tasks` door already use; it
             // owns no view of its own (ADR 0095), so it is told rather than wired.
             <TasksBoard onReturnToWorkspace={() => setView("workspace")} />
+          ) : view === "workflows" ? (
+            // The **Workflows** canvas — the graph the same per-Space column set
+            // forms — in place of the chat column AND the Side pane, exactly as the
+            // board arm above does. It takes NO Space prop for the identical reason
+            // the board takes none (issue #185): a workflow is per-**Space**, and a
+            // per-Session projection cannot key a per-Space view; the canvas reads
+            // `activeSpacePath` and loads `store/tasks` itself, because that store's
+            // `load` had one call site before it (the board) and a canvas that only
+            // read the slice would draw an empty graph on a Space whose board was
+            // never mounted.
+            //
+            // NO `onReturnToWorkspace` here, and that is not an oversight. The board
+            // needs that callback because a card's Session chip is a route TO a
+            // transcript this arm is hiding; the canvas has no such control — it is
+            // READ-ONLY, and a node click opens the Stage editor rather than a
+            // Session. Its two exits are the pane's, which the pane already owns for
+            // every view (ADR 0094/0095), so handing this arm a view callback would be
+            // an optional prop no call site inside it passes.
+            <WorkflowsCanvas />
           ) : (
             <>
               {/* The center column: the chat (the Spaces are the chrome
@@ -634,7 +675,14 @@ function App() {
               stop. Measured, not reasoned: with `view !== "settings"` the rendered
               panel carries `right-[480px]` over the board, and
               `App.test.tsx`'s "the gate panel does NOT dodge a sheet the board view
-              unmounted" case goes red on it. */}
+              unmounted" case goes red on it.
+
+              THE `"workflows"` ARM SITS ON THE SAME SIDE, and `=== "workspace"` is what
+              keeps it there for free. The new arm is a fourth one that renders neither
+              `ChatStream` nor `SubagentDetailHost`, so any spelling of this prop that
+              reads as "not Settings" would be wrong for the canvas exactly as it is
+              wrong for the board — the equality form needs no edit when a fifth view
+              arrives, which is the property worth keeping. */}
           <SubagentModals sheetMounted={view === "workspace"} />
           {/* The Open Space dialog — the ONE render site in the app (the
               sidebar's copy is gone, and the tab strip never had one). A SIBLING

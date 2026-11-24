@@ -4,7 +4,7 @@
 //! THE RULE COUNTS CONSUMERS, NOT CALL SITES — that distinction is what settles
 //! the only contested case below.
 //!
-//! Two families live here:
+//! Three families live here:
 //!
 //!   * the raw-SQL probes (`raw_column`, `raw_i64s`, `raw_scalar`, `sort_order_of`,
 //!     `artifact_rows`, `wal_frame_count`) — a `Db` owns ONE private `Connection`,
@@ -13,7 +13,11 @@
 //!   * the legacy-schema fixtures (`legacy_*` macros, the `SCHEMA_WITHOUT_*`
 //!     consts, `preexisting_db`, `create_pre_sort_order_db`) that build a
 //!     pre-migration database file WITHOUT opening `Db`, because `Db::open` is the
-//!     code under test.
+//!     code under test;
+//!   * the open-a-database fixture `seeded`, which the two workflow children share
+//!     (`auto_guards` and `workflow_runs` are 19 call sites between them) — so it
+//!     obeys this file's own rule and is here for having TWO consumer children, not
+//!     for the number of call sites.
 //!
 //! Six fixtures the split's plan listed as shared turned out to have exactly ONE
 //! calling child, so they live in that child instead of here: `session_on` in
@@ -24,12 +28,15 @@
 //! THREE groups of single-reader items stay here anyway, for two different reasons,
 //! and both reasons are the rule's own wording rather than an exception to it:
 //!
-//!   * SEVEN of the nine `SCHEMA_WITHOUT_*` consts (`…_ARCHIVED`, `…_CONTEXT_USAGE`,
-//!     `…_COST_USD`, `…_PARENT_SESSION_ID`, `…_STAGES_ON_ENTER_SKILL`,
-//!     `…_STAGES_NEXT_SLUGS`, `…_SPACES_BOARD_STRICT`) are read ONLY by
+//!   * ELEVEN of the thirteen `SCHEMA_WITHOUT_*` consts (`…_ARCHIVED`,
+//!     `…_CONTEXT_USAGE`, `…_COST_USD`, `…_PARENT_SESSION_ID`,
+//!     `…_STAGES_ON_ENTER_SKILL`,
+//!     `…_STAGES_NEXT_SLUGS`, `…_STAGES_AUTO`, `…_STAGES_PROMPT_PREFIX`,
+//!     `…_SPACES_BOARD_STRICT`, `…_SPACES_AUTO_MAX_STEPS`,
+//!     `…_SPACES_AUTO_CEILING_USD`) are read ONLY by
 //!     `tests/open.rs`, and they stay.
 //!     That child consumes them as a COMPLETE SET —
-//!     `each_cluster_schema_omits_exactly_one_gated_column` walks all nine by name
+//!     `each_cluster_schema_omits_exactly_one_gated_column` walks all thirteen by name
 //!     and asserts each omits exactly one gated column, so the property lives in the
 //!     SET and not in any one string. One consumer of a set is still the reason the
 //!     set exists: the rule counts CONSUMERS, not call sites, and scattering the
@@ -72,7 +79,7 @@ use crate::types::SessionInfo;
 // 5-table `CREATE` batch (sessions + stages + spaces + messages +
 // native_messages) with EXACTLY ONE gate's column absent and every OTHER
 // gated column present, so `Db::open`'s other gates find their column and stay
-// SILENT: the test observes its own gate, not thirteen gates at once. Two of the
+// SILENT: the test observes its own gate, not seventeen gates at once. Two of the
 // five fixtures were NOT isolated before this consolidation (the `archived` one
 // also omitted `trusted`, both `sort_order`s, `context_usage_json`,
 // `is_subagent`, `todos_json` and `cost_usd`, and carried `agent_id` — so it
@@ -87,10 +94,16 @@ use crate::types::SessionInfo;
 // five pre-0075 fixtures that genuinely want both columns absent.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The `spaces` table as a post-trust, post-sort_order database has it — the
-/// half every cluster fixture uses EXCEPT the one whose gate owns this table.
-/// (A macro rather than a `const`, because [`legacy_batch!`] concatenates
-/// literals.)
+/// The `spaces` table as a post-trust, post-sort_order, post-workflow-guards
+/// database has it — the half every cluster fixture uses EXCEPT the one whose
+/// gate owns this table. (A macro rather than a `const`, because
+/// [`legacy_batch!`] concatenates literals.)
+///
+/// BOTH auto-guard columns are here, and that is not decoration: `Db::open` now
+/// probes `spaces` for FOUR gated columns, so a fixture that carried neither
+/// would count as omitting TWO and run two gates — the isolation collapse
+/// [`super::open`]'s pin exists to catch. Every `spaces` spelling in this file
+/// therefore carries all four except the one its own gate owns.
 macro_rules! legacy_spaces_with_sort_order {
     () => {
         "
@@ -100,14 +113,16 @@ CREATE TABLE spaces (
     last_opened_at INTEGER NOT NULL,
     trusted INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    board_strict INTEGER NOT NULL DEFAULT 0
+    board_strict INTEGER NOT NULL DEFAULT 0,
+    auto_max_steps INTEGER,
+    auto_ceiling_usd REAL
 );
 "
     };
 }
 
-/// The `spaces` table WITHOUT `sort_order` (`trusted` and `board_strict`
-/// present, so the trust and strict-workflow gates stay quiet) — only the space
+/// The `spaces` table WITHOUT `sort_order` (`trusted`, `board_strict` and BOTH
+/// auto-guard columns present, so those gates stay quiet) — only the space
 /// sort-order gate can fire on it. `board_strict` MUST be here: a fixture that
 /// dropped it too would omit TWO gated columns and run two gates.
 macro_rules! legacy_spaces_without_sort_order {
@@ -118,14 +133,16 @@ CREATE TABLE spaces (
     created_at INTEGER NOT NULL,
     last_opened_at INTEGER NOT NULL,
     trusted INTEGER NOT NULL DEFAULT 0,
-    board_strict INTEGER NOT NULL DEFAULT 0
+    board_strict INTEGER NOT NULL DEFAULT 0,
+    auto_max_steps INTEGER,
+    auto_ceiling_usd REAL
 );
 "
     };
 }
 
-/// The `spaces` table WITHOUT `board_strict` (`trusted` and `sort_order`
-/// present) — only the strict-workflow gate can fire on it.
+/// The `spaces` table WITHOUT `board_strict` (`trusted`, `sort_order` and BOTH
+/// auto-guard columns present) — only the strict-workflow gate can fire on it.
 macro_rules! legacy_spaces_without_board_strict {
     () => {
         "
@@ -134,7 +151,50 @@ CREATE TABLE spaces (
     created_at INTEGER NOT NULL,
     last_opened_at INTEGER NOT NULL,
     trusted INTEGER NOT NULL DEFAULT 0,
-    sort_order INTEGER NOT NULL DEFAULT 0
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    auto_max_steps INTEGER,
+    auto_ceiling_usd REAL
+);
+"
+    };
+}
+
+/// The `spaces` table WITHOUT `auto_max_steps` (every OTHER `spaces` column
+/// present, including the ceiling) — only the step-bound gate can fire on it.
+///
+/// Neither auto-guard column carries a `DEFAULT`, so this spelling and the
+/// complete one differ by a COLUMN and nothing else; the gate under test is the
+/// only thing `Db::open` can find missing.
+macro_rules! legacy_spaces_without_auto_max_steps {
+    () => {
+        "
+CREATE TABLE spaces (
+    path TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL,
+    last_opened_at INTEGER NOT NULL,
+    trusted INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    board_strict INTEGER NOT NULL DEFAULT 0,
+    auto_ceiling_usd REAL
+);
+"
+    };
+}
+
+/// The `spaces` table WITHOUT `auto_ceiling_usd` (every OTHER `spaces` column
+/// present, including the step bound) — only the cost-ceiling gate can fire on
+/// it.
+macro_rules! legacy_spaces_without_auto_ceiling_usd {
+    () => {
+        "
+CREATE TABLE spaces (
+    path TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL,
+    last_opened_at INTEGER NOT NULL,
+    trusted INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    board_strict INTEGER NOT NULL DEFAULT 0,
+    auto_max_steps INTEGER
 );
 "
     };
@@ -164,11 +224,12 @@ CREATE TABLE sessions (
     };
 }
 
-/// The `stages` table as a post-#179 database has it — BOTH new columns present,
-/// so neither `stages` gate fires. EVERY cluster fixture carries this spelling
-/// except the two whose gate owns this table: `Db::open` probes `stages` too
-/// now, so a fixture with NO `stages` table at all would count as omitting both
-/// columns and break the isolation assert on all nine fixtures at once.
+/// The `stages` table as a post-#179, post-workflow-columns database has it — ALL
+/// FOUR gated columns present, so no `stages` gate fires. EVERY cluster fixture
+/// carries this spelling except the four whose gate owns this table: `Db::open`
+/// probes `stages` too now, so a fixture with NO `stages` table at all would count
+/// as omitting all four columns and break the isolation assert on every fixture at
+/// once.
 macro_rules! legacy_stages_complete {
     () => {
         "
@@ -180,14 +241,56 @@ CREATE TABLE stages (
     on_enter TEXT NOT NULL DEFAULT 'none',
     on_enter_skill TEXT,
     next_slugs TEXT,
+    auto INTEGER NOT NULL DEFAULT 0,
+    prompt_prefix TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
     };
 }
 
-/// The `stages` table WITHOUT `on_enter_skill` (`next_slugs` present) — only the
-/// Stage-Skill gate can fire on it.
+/// The `stages` table WITHOUT `auto` (every OTHER `stages` column present) — only
+/// the auto-advance-flag gate can fire on it.
+macro_rules! legacy_stages_without_auto {
+    () => {
+        "
+CREATE TABLE stages (
+    space_path TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    label TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    on_enter TEXT NOT NULL DEFAULT 'none',
+    on_enter_skill TEXT,
+    next_slugs TEXT,
+    prompt_prefix TEXT,
+    PRIMARY KEY (space_path, slug)
+);
+"
+    };
+}
+
+/// The `stages` table WITHOUT `prompt_prefix` (every OTHER `stages` column
+/// present) — only the prompt-prefix gate can fire on it.
+macro_rules! legacy_stages_without_prompt_prefix {
+    () => {
+        "
+CREATE TABLE stages (
+    space_path TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    label TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    on_enter TEXT NOT NULL DEFAULT 'none',
+    on_enter_skill TEXT,
+    next_slugs TEXT,
+    auto INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (space_path, slug)
+);
+"
+    };
+}
+
+/// The `stages` table WITHOUT `on_enter_skill` (`next_slugs` and BOTH workflow
+/// columns present) — only the Stage-Skill gate can fire on it.
 macro_rules! legacy_stages_without_on_enter_skill {
     () => {
         "
@@ -198,14 +301,16 @@ CREATE TABLE stages (
     sort_order INTEGER NOT NULL DEFAULT 0,
     on_enter TEXT NOT NULL DEFAULT 'none',
     next_slugs TEXT,
+    auto INTEGER NOT NULL DEFAULT 0,
+    prompt_prefix TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
     };
 }
 
-/// The `stages` table WITHOUT `next_slugs` (`on_enter_skill` present) — only the
-/// transition-graph gate can fire on it.
+/// The `stages` table WITHOUT `next_slugs` (`on_enter_skill` and BOTH workflow
+/// columns present) — only the transition-graph gate can fire on it.
 macro_rules! legacy_stages_without_next_slugs {
     () => {
         "
@@ -216,15 +321,17 @@ CREATE TABLE stages (
     sort_order INTEGER NOT NULL DEFAULT 0,
     on_enter TEXT NOT NULL DEFAULT 'none',
     on_enter_skill TEXT,
+    auto INTEGER NOT NULL DEFAULT 0,
+    prompt_prefix TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
     };
 }
 
-/// The `stages` table as pre-#179 code wrote it — NEITHER new column. For the
-/// migration tests ONLY (a cluster fixture must never use it: it omits two
-/// gated columns at once, which is the isolation collapse the cluster pin
+/// The `stages` table as pre-#179 code wrote it — NONE of the four gated columns.
+/// For the migration tests ONLY (a cluster fixture must never use it: it omits
+/// FOUR gated columns at once, which is the isolation collapse the cluster pin
 /// forbids).
 macro_rules! legacy_stages_pre_task_board_config {
     () => {
@@ -281,10 +388,10 @@ CREATE TABLE native_messages (
 /// spellings plus the tail living here once each so no fixture can invent its own.
 ///
 /// `stages` defaults to [`legacy_stages_complete!`]: `Db::open` probes `stages`
-/// for two gated columns now, so a fixture that omitted the table entirely would
-/// count as omitting BOTH and run two gates — the isolation collapse the cluster
-/// pin below exists to catch. A fixture whose gate owns `stages` (or `spaces`)
-/// picks that arm instead.
+/// for FOUR gated columns now, so a fixture that omitted the table entirely would
+/// count as omitting ALL FOUR and run four gates — the isolation collapse the
+/// cluster pin below exists to catch. A fixture whose gate owns `stages` (or
+/// `spaces`) picks that arm instead.
 macro_rules! legacy_batch {
     ($sessions:expr, spaces_with_sort_order) => {
         concat!(
@@ -318,11 +425,43 @@ macro_rules! legacy_batch {
             legacy_tail!()
         )
     };
+    (complete_sessions, stages_without_auto) => {
+        concat!(
+            legacy_sessions_complete!(),
+            legacy_stages_without_auto!(),
+            legacy_spaces_with_sort_order!(),
+            legacy_tail!()
+        )
+    };
+    (complete_sessions, stages_without_prompt_prefix) => {
+        concat!(
+            legacy_sessions_complete!(),
+            legacy_stages_without_prompt_prefix!(),
+            legacy_spaces_with_sort_order!(),
+            legacy_tail!()
+        )
+    };
     (complete_sessions, spaces_without_board_strict) => {
         concat!(
             legacy_sessions_complete!(),
             legacy_stages_complete!(),
             legacy_spaces_without_board_strict!(),
+            legacy_tail!()
+        )
+    };
+    (complete_sessions, spaces_without_auto_max_steps) => {
+        concat!(
+            legacy_sessions_complete!(),
+            legacy_stages_complete!(),
+            legacy_spaces_without_auto_max_steps!(),
+            legacy_tail!()
+        )
+    };
+    (complete_sessions, spaces_without_auto_ceiling_usd) => {
+        concat!(
+            legacy_sessions_complete!(),
+            legacy_stages_complete!(),
+            legacy_spaces_without_auto_ceiling_usd!(),
             legacy_tail!()
         )
     };
@@ -477,10 +616,39 @@ pub(super) const SCHEMA_WITHOUT_STAGES_ON_ENTER_SKILL: &str =
 pub(super) const SCHEMA_WITHOUT_STAGES_NEXT_SLUGS: &str =
     legacy_batch!(complete_sessions, stages_without_next_slugs);
 
+/// The full 5-table batch with ONLY `stages.auto` missing — the plain
+/// single-ALTER gate for the per-column auto-advance flag. The `DEFAULT 0` rides
+/// the `ALTER` itself, so an existing column arrives OFF: upgrading cannot make a
+/// board advance a card on its own that never did before.
+pub(super) const SCHEMA_WITHOUT_STAGES_AUTO: &str =
+    legacy_batch!(complete_sessions, stages_without_auto);
+
+/// The full 5-table batch with ONLY `stages.prompt_prefix` missing — the plain
+/// single-ALTER gate for the per-column extra prompt. NO `DEFAULT` and NO
+/// backfill: NULL means "no extra prompt", and there is no honest string to
+/// invent for a column that never existed.
+pub(super) const SCHEMA_WITHOUT_STAGES_PROMPT_PREFIX: &str =
+    legacy_batch!(complete_sessions, stages_without_prompt_prefix);
+
 /// The full 5-table batch with ONLY `spaces.board_strict` missing — the plain
 /// single-ALTER gate for the Strict-workflow opt-in.
 pub(super) const SCHEMA_WITHOUT_SPACES_BOARD_STRICT: &str =
     legacy_batch!(complete_sessions, spaces_without_board_strict);
+
+/// The full 5-table batch with ONLY `spaces.auto_max_steps` missing — the plain
+/// single-ALTER gate for the per-Space auto-chain STEP bound. NO `DEFAULT` and NO
+/// backfill: NULL means "not configured, the shipped default governs", and a
+/// `DEFAULT 0` would migrate every existing Space to "auto-chaining is switched
+/// off" — a configured value nobody configured (ADR 0082's NULL ≠ 0 discipline).
+pub(super) const SCHEMA_WITHOUT_SPACES_AUTO_MAX_STEPS: &str =
+    legacy_batch!(complete_sessions, spaces_without_auto_max_steps);
+
+/// The full 5-table batch with ONLY `spaces.auto_ceiling_usd` missing — the plain
+/// single-ALTER gate for the per-Space auto-chain COST ceiling. Same no-`DEFAULT`
+/// argument as its sibling above: `NULL` is "not configured", `0.0` is
+/// "configured, and the answer is no spend".
+pub(super) const SCHEMA_WITHOUT_SPACES_AUTO_CEILING_USD: &str =
+    legacy_batch!(complete_sessions, spaces_without_auto_ceiling_usd);
 
 /// A minimal recorded-session shape for the title tests (the title
 /// itself is never part of the literal — nothing writes it through
@@ -634,6 +802,36 @@ pub(super) fn board_space(tag: &str) -> String {
     format!("/board-space/{tag}")
 }
 
+/// A fresh `Db` in its own scratch dir, with ONE Space path seeded — the fixture
+/// the workflow children open with, measured at 22 of their 31 tests spelling the
+/// same three lines (`ScratchDir::in_env_temp` + `Db::open(&dir.join("t.db"))` +
+/// `board_space`) and 12 of those adding an `upsert_space`.
+///
+/// THE RETURNED `ScratchDir` IS THE FIRST FIELD ON PURPOSE. It has a `Drop` that
+/// removes the directory, so a fixture that returned only the `Db` would leak the
+/// dir and trip `scripts/check-temp-dir-census.sh` — the lock on #96. A caller
+/// binds it as `_dir` when nothing in the test reads a path from it, and the binding
+/// still lives to the end of the test body, so the cleanup still happens.
+///
+/// `tag` does DOUBLE DUTY, and that is the de-duplication: it becomes BOTH the
+/// scratch prefix (`db-{tag}-`) and the [`board_space`] path, which is what removes
+/// the second line. It is therefore the value that already appears in the assertions
+/// that interpolate the Space path into raw SQL, so a test that moves through this
+/// helper asserts about the same path it always did.
+///
+/// `upsert_space` is deliberately NOT folded in even though 14 of those tests call
+/// it: the OTHER half of the workflow tests pin the no-`spaces`-row answer, and a
+/// fixture that always inserted a row would make the rowless case something a test
+/// had to opt OUT of — the one shape that turns a pin into a silent no-op. So the
+/// 14 write the one line themselves and it stays visible in the test that depends
+/// on it.
+pub(super) fn seeded(tag: &str) -> (crate::test_support::ScratchDir, Db, String) {
+    let dir = crate::test_support::ScratchDir::in_env_temp(&format!("db-{tag}-"), "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space(tag);
+    (dir, db, space)
+}
+
 /// The board's cards as ONE flat list in column order — the shape the tests
 /// below read, so each one says "the card" rather than re-spelling the find.
 pub(super) fn board_cards(db: &Db, space: &str) -> Vec<TaskCardView> {
@@ -707,5 +905,47 @@ pub(super) fn wal_frame_count(db: &Db, wal: &std::path::Path) -> u64 {
         // open and nothing has been committed into it yet).
         Ok(meta) if meta.len() > 32 => (meta.len() - 32) / (24 + page_size),
         _ => 0,
+    }
+}
+
+/// The OPEN `workflow_runs` row for one Task, read through raw SQL.
+///
+/// WHY THIS EXISTS IN THE TEST TREE AT ALL. `Db::workflow_run_open` used to be
+/// this question, and it was deleted as dead IPC: the auto-advance runtime asks no
+/// "is this card mid-chain" question, because `workflow_run_step` IS the upsert —
+/// opening a chain when none is open is what the step verb does. The tests still
+/// need to ask it, because "is the row open?" is exactly what several of them pin
+/// (a close closes, a step opens, a scoped step does not touch a neighbour). So the
+/// question is asked here, through the same raw-SQL route the other read-back
+/// helpers in this file use (`raw_column`, `raw_scalar`, `artifact_rows`): the
+/// assertions ask what the DATABASE holds, and a helper that reads the projection
+/// positionally keeps the shape the deleted verb read.
+///
+/// Returns `(id, steps, cost_usd)` for the open row, or `None` when the Task has
+/// none. `finished_at IS NULL` is the whole predicate — the same one the UNIQUE
+/// partial index `idx_workflow_runs_open` enforces, so more than one match would be
+/// the schema failing and not this helper papering over it.
+///
+/// `QueryReturnedNoRows` is matched EXPLICITLY and any other error PANICS rather
+/// than becoming `None` — the deleted verb's own reasoning, kept: several callers
+/// below assert `open_run_row(..).is_none()` to mean "the close closed it", and a
+/// helper that turned a broken projection into `None` would answer that assertion
+/// `true` for the wrong reason.
+pub(super) fn open_run_row(db: &Db, task_id: &str) -> Option<(String, i64, Option<f64>)> {
+    match db.conn.lock().expect("db mutex poisoned").query_row(
+        "SELECT id, steps, cost_usd FROM workflow_runs \
+         WHERE task_id = ?1 AND finished_at IS NULL",
+        rusqlite::params![task_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<f64>>(2)?,
+            ))
+        },
+    ) {
+        Ok(row) => Some(row),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => panic!("reading the open run for `{task_id}`: {e}"),
     }
 }

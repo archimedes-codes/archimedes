@@ -213,11 +213,15 @@ const domainModules = (): string[] =>
  * expectation from the file under test makes the guard green on any change. A
  * name may only enter or leave this list on purpose, in a commit that says so.
  *
- * It measures 133 names as of issue #126/#127/#132 (the provider-auth suite: 6
- * runtime wrappers + 6 type-only wire names). The header used to claim "107
- * names: 58 types + 49 functions" — prose describing a long-past commit that no
- * assertion reads; the ARRAY is the expectation, so the prose is gone rather
- * than perpetually stale.
+ * It measures 176 names, re-measured at T6a (the auto-advance guard verdict:
+ * `AdvanceVerdict` + `ChainStop`, both TYPE-ONLY, so `TAURI_RUNTIME_API` — which
+ * measures 86 on the same tree — gains neither). An earlier version of this
+ * sentence said "133 names as of issue #126/#127/#132" and an earlier one before
+ * that said "107 names: 58 types + 49 functions"; both were prose no assertion
+ * reads and both went stale. THE ARRAY IS THE EXPECTATION. The two figures above
+ * are stamped once, at this commit, for the reader who wants to know how big the
+ * surface is without running the file — they are not maintained, and the next
+ * commit that moves either list should re-measure rather than increment.
  * -------------------------------------------------------------------------- */
 const TAURI_PUBLIC_API = [
   "AccessPolicy",
@@ -269,6 +273,34 @@ const TAURI_PUBLIC_API = [
   // (`writeArtifact`, `getArtifact`) are runtime values and enter BOTH lists, below.
   "Artifact",
   "ArtifactMeta",
+  // (the workflow graph) The per-Space auto-chain guard ROW — the shape
+  // `getAutoGuards` answers and `setAutoGuards` writes. TYPE-ONLY: it vanishes at
+  // runtime, so `TAURI_RUNTIME_API` does NOT gain it (the
+  // `AccessRule`/`AccessDirection` precedent, `Artifact`/`ArtifactMeta` immediately
+  // above), while its two wrappers enter BOTH lists. Named for the Rust `Serialize`
+  // type it mirrors rather than `AutoGuardsDto`, on the `SpaceRow` rule the board
+  // block below states.
+  "AutoGuards",
+  // (T6a — the auto-advance chain's GUARD VERDICT) The two names
+  // `workflowRunStep` trades in beyond the row it already carried: `AdvanceVerdict`
+  // is what the command answers now (the row, plus whether the chain may take
+  // another step and the EFFECTIVE bounds that decision was measured against), and
+  // `ChainStop` is the reason-vocabulary it carries. BOTH are TYPE-ONLY — they
+  // vanish at runtime, so `TAURI_RUNTIME_API` does NOT gain them (the
+  // `AccessRule`/`AccessDirection` precedent, `AutoGuards` immediately above) while
+  // the wrapper that returns them, `workflowRunStep`, is already in BOTH lists
+  // below. Both are named for the Rust types they mirror rather than as
+  // `AdvanceVerdictDto` / `ChainStopDto`, on the `SpaceRow` / `AutoGuards` rule.
+  //
+  // WHY THEY ENTER AT ALL rather than living inside `types.ts` unexported: the
+  // runtime that consumes the verdict is a settle-handler in `src/`, and this
+  // barrel is the only sanctioned path to a wire shape (the header of this file is
+  // about exactly that). A type the runtime needs that is not reachable through the
+  // barrel is a type the runtime will re-declare by hand — and a hand-copied
+  // `maxSteps`/`ceilingUsd` pair is the duplicated guard policy the verdict exists
+  // to remove.
+  "AdvanceVerdict",
+  "ChainStop",
   "attentionArm",
   "attentionDisarm",
   "authMcpServer",
@@ -315,6 +347,12 @@ const TAURI_PUBLIC_API = [
   // missing Task both answer `null` (absence is an answer, not an error).
   "getArtifact",
   "getBoard",
+  // (the workflow graph) The auto-chain guard READ — the seed for the editor's two
+  // numeric fields, and the only thing that can tell "unset" from "set to the same
+  // number". A RUNTIME value; its row type `AutoGuards` is TYPE-ONLY and lives above,
+  // so this name enters `TAURI_PUBLIC_API` AND `TAURI_RUNTIME_API` while the type
+  // enters this list alone (the `writeArtifact`/`Artifact` precedent two entries up).
+  "getAutoGuards",
   // (issue #179) The Strict-workflow READ — the Switch seed that must agree with
   // the flag `move_task` enforces. Returns a primitive `boolean`, so no type name.
   "getBoardStrict",
@@ -427,6 +465,16 @@ const TAURI_PUBLIC_API = [
   // outgoing transition graph (ADR 0099). Both return the pinned `StageDto`.
   "setStageNext",
   "setStageSkill",
+  // (the workflow graph) The two per-COLUMN auto-advance writes. Both return the
+  // already-pinned `StageDto`, which GAINS `auto`/`promptPrefix` in the same commit —
+  // widening an existing interface moves neither list, but leaving it narrow would
+  // make the wired type a lie about columns the database already answers for.
+  "setStageAuto",
+  "setStagePromptPrefix",
+  // (the workflow graph) The auto-chain guard WRITE — the `setBoardStrict` twin, one
+  // call for the PAIR, `void` back. `null` clears a guard to the shipped fallback and
+  // `0` binds it to zero; the wrapper passes both through and never collapses them.
+  "setAutoGuards",
   "setSpaceTrusted",
   "ShadowedAgent",
   "ShadowedSkill",
@@ -465,10 +513,31 @@ const TAURI_PUBLIC_API = [
   // value (the two TYPE names it traffics in, `Artifact`/`ArtifactMeta`, are
   // declared above and stay out of the runtime list).
   "writeArtifact",
+  // The auto-advance chain's RUN RECORD — the TWO wrappers the runtime counts a
+  // chain's steps and spend against. Both are runtime values, so both are here AND
+  // in `TAURI_RUNTIME_API`; the one TYPE name they traffic in,
+  // `WorkflowRunRow`, is declared above and stays out of the runtime list (the
+  // `writeArtifact`/`Artifact` precedent). They enter in the commit that registers
+  // the two commands in `src-tauri/src/lib.rs` — a command and its consumer are
+  // one change here, because `scripts/check-commands.sh` reddens either half alone.
+  // A THIRD name, `workflowRunOpen`, was DELETED from both lists along with its
+  // wrapper, its command and its `Db` verb: nothing called it, and the consumer
+  // gate could not see that because the wrapper's own `invoke("workflow_run_open")`
+  // literal counted as its consumer.
+  "workflowRunClose",
+  "workflowRunStep",
   "ToolCallContent",
   "WebSettings",
   "WindowFrameState",
   "WireApi",
+  // The auto-advance chain's record — the shape nested inside the `AdvanceVerdict`
+  // that `workflowRunStep` returns, so the runtime can
+  // compare a chain against the two per-Space guards. TYPE-ONLY: it vanishes at runtime, so `TAURI_RUNTIME_API`
+  // does NOT gain it (the `AccessRule`/`AccessDirection` precedent, and `AutoGuards`
+  // earlier in this list) while its TWO wrappers enter BOTH lists. Named for the
+  // Rust `Serialize` type it mirrors rather than as `WorkflowRunRowDto`, on the
+  // `SpaceRow` rule the board block states.
+  "WorkflowRunRow",
 ];
 
 /** The RUNTIME values of the surface above (the rest are type-only and vanish
@@ -504,6 +573,7 @@ const TAURI_RUNTIME_API = [
   "externalOpen",
   // (issue #180 D1, spec §1) The artifact READ wrapper (see `TAURI_PUBLIC_API`).
   "getArtifact",
+  "getAutoGuards",
   "getBoard",
   "getBoardStrict",
   "getSettings",
@@ -573,9 +643,19 @@ const TAURI_RUNTIME_API = [
   "sendPrompt",
   "sessionRecency",
   "setBoardStrict",
+  // (the workflow graph) The FOUR workflow wrappers — the two per-Column writes
+  // (`setStageAuto`, `setStagePromptPrefix`, both answering the already-pinned
+  // `StageDto`) and the per-Space guard pair (`getAutoGuards` above, `setAutoGuards`
+  // here). All FOUR are runtime values, so all four entered this list in the same
+  // commit as their `src/lib/tauri.ts` re-export lines; exactly ONE TYPE name entered
+  // with them (`AutoGuards`, `TAURI_PUBLIC_API` only). No count stated here — this
+  // file's own header: the ARRAY is the expectation.
+  "setAutoGuards",
   "setSessionArchived",
   "setSessionConfigOption",
+  "setStageAuto",
   "setStageNext",
+  "setStagePromptPrefix",
   "setStageSkill",
   "setSpaceTrusted",
   "shellSandboxAvailable",
@@ -586,6 +666,20 @@ const TAURI_RUNTIME_API = [
   "startTaskSession",
   "testMcpServer",
   "testSearchProvider",
+  // The auto-advance chain's RUN RECORD — the TWO wrappers the runtime counts a
+  // chain against. Both are runtime values (the `WorkflowRunRow` `workflowRunStep`
+  // answers inside its verdict is TYPE-ONLY and lives in
+  // `TAURI_PUBLIC_API` alone — the `Artifact`/`writeArtifact` precedent). They enter
+  // in this commit, the same commit that adds their `src/lib/tauri.ts` re-export
+  // lines, which is this file's own rule for entering a name. `check-commands.sh`
+  // counts their literal `invoke("…")` call sites as the two commands' consumers,
+  // so an entry here and a registration in `lib.rs` are one change and not two.
+  // `workflowRunOpen` is DELETED from this list along with its wrapper, its command
+  // and its `Db` verb — all dead IPC, and the consumer gate could not see that
+  // because the wrapper's own `invoke("workflow_run_open")` literal counted as the
+  // command's only consumer.
+  "workflowRunClose",
+  "workflowRunStep",
   // (spec D3/D9/D12) The app-wide **Task badge** read — a RUNTIME wrapper. It is
   // the ONLY name this commit adds to this list: the two TYPE names it traffics in
   // (`TaskNumberRow`, `TaskBadge`) are in `TAURI_PUBLIC_API` ONLY, the
@@ -766,8 +860,76 @@ describe("the scanner actually reads the tree", () => {
     // holds no IPC, so that file imports it directly, which is the shape the seam
     // prefers. T2's paragraph above stays as written: it describes the commit that
     // left this number alone, and it was correct then.
-    expect(mockers).toHaveLength(56);
-    // 55 of the 56 SPREAD `vi.importActual`, which is the shape that makes the
+    // And 56 -> 58 for the workflow-graph surface (T3's TypeScript half), which is the
+    // addition this pin exists to record: TWO new test files, each mocking the barrel
+    // the documented way because each asserts on something only a spy can show.
+    //  - `src/store/tasks.workflows.test.ts` — the four new store actions, which assert
+    //    WHICH arguments reached the wire and what the slice looks like before the
+    //    command resolves (the optimistic half is only observable against a promise the
+    //    case controls). It is a NEW FILE rather than more cases in
+    //    `src/store/tasks.test.ts` because that file is BASELINED at its exact
+    //    code-line count and the size ratchet refuses a baselined file growing by one
+    //    line — the sibling file is the honest route, not a dodge.
+    //  - `src/components/StageEditor.workflows.test.tsx` — the row's Auto switch and
+    //    extra-prompt field and the footer's guard fields, which drive the same four
+    //    wrappers through the store from a real mount. `getAutoGuards` un-mocked would
+    //    reject in jsdom and land its sentence in the store's `error` cell that the
+    //    file's own error-line assertions read — the noisy-green case this file's
+    //    premise is about, and the reason `StageEditor.test.tsx`'s own factory had to
+    //    gain the same four names in this commit.
+    // Neither re-spells an existing mock: `StageEditor.test.tsx` pins the dialog's
+    // SHAPE and the Strict/add-field footers, and `tasks.test.ts` pins the board and
+    // the #179/#180 actions. Both new files spread `vi.importActual` too, so the spread
+    // half moved 55 -> 57 and the one wholesale replacement is STILL
+    // `hooks/useWindowMaximized.test.ts`. The barrel's OWN surface moved in the same
+    // commit (four runtime names + one type), which is a separate fact from this census
+    // and is pinned by the two API lists below.
+    // And 58 -> 59 for the auto-advance chain's runtime (T6b), which is the addition
+    // this pin exists to record: ONE new test file,
+    // `src/store/workflowChain.test.ts`, mocking the barrel the documented way because
+    // the runtime's whole contract is WHICH arguments reach the three run-record
+    // wrappers and what it does with the verdict — a `costDeltaUsd: null` versus `0`
+    // assertion and a "the step that trips a bound does not move the card" assertion
+    // both need a spy, not a real `invoke`. It spreads `vi.importActual` too, so the
+    // spread half moved 57 -> 58 and the one wholesale replacement is STILL
+    // `hooks/useWindowMaximized.test.ts`.
+    // The feature's other new test file, `src/lib/workflowGraph.test.ts`, is NOT a
+    // mocker: the extracted next-step derivation is a pure function over columns the
+    // caller hands it and touches no IPC, so that file imports it directly — the shape
+    // the seam prefers. The barrel's OWN surface is UNCHANGED by this commit: T6b adds
+    // no wrapper and no type, it consumes the three `workflowRun*` verbs and the
+    // `AdvanceVerdict` / `ChainStop` pair that T6a landed, so both pinned API lists
+    // below are untouched.
+    //
+    // And 59 -> 62 for the Workflows canvas (the read-only graph view), which is the
+    // addition this pin exists to record: THREE new test files, each mocking the barrel
+    // the documented way because each mounts a surface that reaches the wire.
+    //  - `src/components/workflows/WorkflowsCanvas.test.tsx` — the canvas itself, which
+    //    LOADS `store/tasks` on mount (that store's `load` had exactly one call site
+    //    before this view) and whose node click mounts the real `StageEditor`. An
+    //    un-mocked `getAutoGuards` rejects in jsdom and writes its sentence into the
+    //    store's `error` cell that this file's own error-line case reads — the exact
+    //    noisy-green shape the seam exists to refuse.
+    //  - `src/App.workflows.test.tsx` — `App`'s fourth view arm. It renders the whole
+    //    `App` tree, so it needs the boot mocks, and it is a NEW FILE rather than cases
+    //    in `App.test.tsx` because that file is BASELINED at its exact code-line count
+    //    and the size ratchet refuses a baselined file growing by one line. The route
+    //    `tasks.workflows.test.ts` took, for the reason stated there.
+    //  - `src/components/SpacesList.workflows.test.tsx` — the third view door, for the
+    //    same baselined-file reason (`SpacesList.test.tsx` is at its own recorded figure;
+    //    the one assertion that change made STALE was rewritten in place there).
+    // The feature's FOURTH new test file,
+    // `src/components/workflows/workflowGraphLayout.test.ts`, is NOT a mocker: the
+    // dagre layout is a pure function over the columns it is handed and imports
+    // `StageDto` as a TYPE only, so it touches no IPC — the shape the seam prefers, and
+    // the same reading `workflowGraph.test.ts` carries above. All THREE mockers spread
+    // `vi.importActual` too, so the spread half moved 58 -> 61 and the one wholesale
+    // replacement is STILL `hooks/useWindowMaximized.test.ts`. The barrel's OWN surface
+    // is UNCHANGED by this commit: the canvas adds no IPC wrapper and no wire type, it
+    // consumes the board read and the Stage verbs T1/T3/T4 landed, so both pinned API
+    // lists below are untouched.
+    expect(mockers).toHaveLength(62);
+    // 61 of the 62 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. The new mocker spreads
     // too (it lists the arms its own tests drive and leaves every other barrel
     // export — `invoke` included — to the real module), so the remaining one
@@ -778,7 +940,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(sweep.listed(f) ?? ""),
       ).length,
-).toBe(55);
+).toBe(61);
   });
 });
 

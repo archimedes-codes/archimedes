@@ -23,6 +23,7 @@
 mod support;
 
 mod artifacts;
+mod auto_guards;
 mod board;
 mod messages;
 mod migrations;
@@ -35,3 +36,4 @@ mod sessions;
 mod spaces;
 mod stages;
 mod tasks;
+mod workflow_runs;

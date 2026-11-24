@@ -89,10 +89,13 @@ is split, the test tree **MIRRORS** it: one `tests/` child per production child,
 (`docs/decisions/0113-a-split-production-unit-gets-a-mirror-test-tree-one-tests-child-per-production-child.md`).
 Locate the existing directory-shaped ones with `find src-tauri/src -type d -name
 tests`, which
-currently prints `commands/files/tests`, `commands/tasks/tests`,
-`storage/db/tests`, `storage/batching/tests`, `agent/session/tests`. Do not trust
+currently prints SEVEN: `agent/retention/tests`, `agent/session/tests`,
+`commands/files/tests`, `commands/history/tests`, `commands/tasks/tests`,
+`storage/batching/tests`, `storage/db/tests`. Do not trust
 that list over the command: it has been under-counted before (three were named
-while four existed, because `commands/tasks/tests` was never listed), so re-run
+while four existed, because `commands/tasks/tests` was never listed), and it has
+since gained two more children (`agent/retention/tests` and
+`commands/history/tests`) that the sentence above had not yet learned, so re-run
 the find rather than quoting this.
 
 Do **not** use the old trigger "split when the test body exceeds the production
@@ -167,6 +170,29 @@ whether a candidate crosses subjects.
 - ~~`src-tauri/src/storage/db/tests/mod.rs` — one flat module, no inner
   grouping, over at least the sessions, tasks, spaces, board, artifacts and
   message-record subjects.~~ **FIXED — see the section below the list.**
+- ~~`src-tauri/src/storage/db/tests/workflows.rs` — 25 test attributes in one
+  flat block over two subjects (the per-Space guard pair, and the `workflow_runs`
+  record), 968 code lines, zero inner `mod` declarations.~~ **FIXED, and it was
+  never on this list to be fixed** — the split that dissolved it is the commit
+  that named it, so it existed as a file for one commit's span and this ledger
+  never carried it. Its 25 attributes sat exactly ON the ~25 tripwire, so the
+  instrument in `## Citing and measuring` did flag it. What resolved it is a
+  split **by subject**, not a relocation, which is the distinction the rule above
+  insists on: `db/tests/auto_guards.rs` (the two guard columns' gates, their
+  round-trip and clearing, `0` versus `NULL`, the canonical-space-key read, the
+  shipped fallback constants) and `db/tests/workflow_runs.rs` (the table and its
+  open index, the step verb's UPSERT and cost counter, the close verb's
+  `finished_at IS NULL` scoping, the verdict's two bounds and the frozen
+  `ChainStop` spellings). Both children sit under the tripwire and each holds ONE
+  subject, and each now has a same-named production sibling, so ADR 0113's mirror
+  holds for them too. **No per-child attribute count is quoted here on purpose**:
+  `workflow_runs.rs` in particular is the busiest test file on the branch and its
+  attribute count moved twice inside a single working session while the boot-time
+  run-record sweep was being written, so a number here would be false by the next
+  commit. Re-run the file's own instrument instead —
+  `grep -cE '#\[(tokio::)?test\]' src-tauri/src/storage/db/tests/workflow_runs.rs`
+  and the same on `auto_guards.rs` — and read the result against ~25, which is the
+  only figure in this bullet that is a rule rather than a measurement.
 - `src-tauri/src/agent/session/naming.rs`'s `#[cfg(test)] mod tests` — excerpt
   construction, quote/whitespace trimming, title capping (incl. multi-byte),
   reasoning-level forwarding, and composed-key resolution.
@@ -180,7 +206,14 @@ whether a candidate crosses subjects.
 Candidates to inspect rather than assume (each reads as plausibly one subject or
 several — read the titles): `SidePane (the status panel)`,
 `MessageList scroll behavior`, `chatAttachments`. In Rust, `config.rs` is a
-Rust-side candidate by the same instrument.
+Rust-side candidate by the same instrument. `db/tests/stages.rs` was inspected on
+this branch and is **not** a violation: 22 attributes over 890 code lines with
+zero inner `mod` declarations, so it is under the ~25 tripwire and under ADR
+0112's 1,000-line test gate, and its titles are one subject (the Stage-config
+verbs — seeding, the gated columns, `create`/`rename`/`reorder`/`delete` and the
+`set_stage_*` setters). It is named here rather than in the list above because it
+is the closest non-ledgered child to both thresholds, and a reader who adds a
+`set_stage_*` verb is the one who will cross them.
 
 ### Mirror status (ADR 0113) and the size class (ADR 0112), separated
 
@@ -191,9 +224,17 @@ been mis-cited as a mirror violation.
 - **`storage/db/tests/` — compliant, and it is the worked example.** Its
   `tests/mod.rs` is a shell of `mod` declarations and nothing else, one
   child per production sibling
-  (`db/tests/{artifacts,board,messages,migrations,open,rows,seams,sessions,spaces,
-  stages,tasks}.rs` plus `support.rs` as the only non-mirror child), mirroring the
-  ten-subject production split plus the `mod.rs` parent through `open.rs`.
+  (`db/tests/{artifacts,auto_guards,board,messages,migrations,open,parent_link,
+  retention,rows,seams,sessions,spaces,stages,tasks,workflow_runs}.rs` plus
+  `support.rs` as the only non-mirror child), mirroring the **fourteen**
+  production siblings plus the `mod.rs` parent through `open.rs`. Run
+  `ls src-tauri/src/storage/db/*.rs src-tauri/src/storage/db/tests/*.rs` and
+  compare the two name-sets rather than trusting this enumeration — it is the
+  list that decays, and it has already been under-counted once in this file's
+  history. `parent_link.rs` and `retention.rs` arrived with the transcript-bound
+  work and `auto_guards.rs` / `workflow_runs.rs` with the workflow split; all four
+  landed with their mirror child, which is what makes this bullet's claim
+  self-defending rather than merely asserted at one moment.
   Its largest child, `db/tests/sessions.rs`, is 1,086 code lines / 30
   tests: **over** ADR 0112's test gate, so it is ledgered in
   `scripts/file-size-baseline-test.txt`, and it is **not** a subject-count

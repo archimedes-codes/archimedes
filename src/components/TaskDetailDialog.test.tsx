@@ -138,6 +138,12 @@ function column(
       onEnter: "none",
       onEnterSkill: over.onEnterSkill ?? null,
       nextSlugs: over.nextSlugs ?? null,
+      // Both REQUIRED on the wire type since the workflow-graph columns landed
+      // (`stages.auto` is `NOT NULL DEFAULT 0`; `promptPrefix` has no SQL DEFAULT and
+      // NULL is its only "no extra prompt" state). OFF + `null` is what every
+      // existing column carries.
+      auto: false,
+      promptPrefix: null,
     },
     // `artifactKeys: []` is the "card has no artifacts" answer, and it is REQUIRED
     // on the wire type (issue #180) — an optional field would compile against every

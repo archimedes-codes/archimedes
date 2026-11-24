@@ -342,7 +342,7 @@ fn stage_row_from_maps_the_select_const_columns_in_order() {
         STAGE_ROW_FIELDS,
         "the SELECT built from STAGE_COLUMNS must have exactly STAGE_ROW_FIELDS columns"
     );
-    const EXPECTED_STAGE_COLUMNS: [&str; 7] = [
+    const EXPECTED_STAGE_COLUMNS: [&str; 9] = [
         "space_path",
         "slug",
         "label",
@@ -350,6 +350,8 @@ fn stage_row_from_maps_the_select_const_columns_in_order() {
         "on_enter",
         "on_enter_skill",
         "next_slugs",
+        "auto",
+        "prompt_prefix",
     ];
     assert_eq!(
         STAGE_COLUMNS.as_slice(),
@@ -384,4 +386,26 @@ fn stage_row_from_maps_the_select_const_columns_in_order() {
         "the two new fields map for a row that actually CARRIES a value — a mapper \
          that read index 5 as `None` for every row would pass the NULL case above"
     );
+    // The two workflow columns, index 7 and 8. Both are asserted on a SEEDED row,
+    // where they hold the DDL's answers: `auto` is the `NOT NULL DEFAULT 0` and
+    // `prompt_prefix` is NULL. A mapper that swapped the two indices cannot
+    // survive this: index 7 read as `Option<String>` on an INTEGER cell is a
+    // type error rusqlite reports, and index 8 read as `i64` on a NULL cell is
+    // the same.
+    assert!(
+        !got.auto,
+        "index 7 maps to the `auto` flag, and a seeded column is OFF — a fresh \
+         board must not auto-advance anything"
+    );
+    assert_eq!(
+        got.prompt_prefix, None,
+        "index 8 maps to `prompt_prefix`, NULL on a seeded row — NULL is \
+         \"no extra prompt\", not the empty string"
+    );
+    assert!(
+        !research.auto,
+        "the launch column starts OFF too — the flag is per-column user data, \
+         never derived from the column carrying a Skill"
+    );
+    assert_eq!(research.prompt_prefix, None, "and no column ships a prefix");
 }

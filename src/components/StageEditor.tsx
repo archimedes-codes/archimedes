@@ -3,6 +3,7 @@ import type { ReactElement } from "react";
 import { CatalogSearchDialog } from "./CatalogSearchDialog";
 import { IpcErrorLine } from "./IpcErrorLine";
 import { AddStageField } from "./stages/AddStageField";
+import { AutoChainGuards } from "./stages/AutoChainGuards";
 import { StageRow } from "./stages/StageRow";
 import { StrictWorkflowToggle } from "./stages/StrictWorkflowToggle";
 import { useMentionCatalogs } from "../hooks/useMentionCatalogs";
@@ -14,9 +15,10 @@ import type { StageDto } from "../lib/tauri";
  * (issue #179 §8). What is left here once the rows are components is the SHELL and
  * the two pieces of state the shell owns: the filter `query`, and which row (if
  * any) is asking its delete question. Everything a row does — its label, Skill,
- * destinations, order, deletion — lives in `stages/StageRow.tsx` and
- * `stages/StageDestinations.tsx`, and the footer's two subjects live in
- * `stages/AddStageField.tsx` and `stages/StrictWorkflowToggle.tsx`.
+ * extra prompt, auto flag, destinations, order, deletion — lives in
+ * `stages/StageRow.tsx` and `stages/StageDestinations.tsx`, and the footer's three
+ * subjects live in `stages/AddStageField.tsx`,
+ * `stages/StrictWorkflowToggle.tsx` and `stages/AutoChainGuards.tsx`.
  *
  * ---------------------------------------------------------------------------
  * WHY A DIALOG AND NOT A SETTINGS SECTION, AND NOT INLINE ON THE COLUMN
@@ -171,8 +173,9 @@ export default function StageEditor({
       )}
     >
       {/* Everything below the rows is SIBLING content the shell inserts after the
-          scroller: the error line, the add-a-Stage field, and the Space-level
-          Strict-workflow Switch. The last two are components, and that is a DOM
+          scroller: the error line, the add-a-Stage field, the Space-level
+          Strict-workflow Switch, and the Space-level auto-chain guards. The last
+          THREE are components, and that is a DOM
           fact, not a style preference — a component boundary adds no element, so
           each still renders exactly ONE `<div>` as a sibling of the scroller. A
           shared footer `<div>` around them would be the extra level
@@ -182,6 +185,13 @@ export default function StageEditor({
       <AddStageField spacePath={spacePath} />
 
       <StrictWorkflowToggle spacePath={spacePath} />
+
+      {/* The auto-chain guards sit with the Switch rather than with the rows for the
+          reason the two share: both are PER-SPACE, both live on the `spaces` row, and
+          neither changes a column — so neither belongs in the column list above. And
+          they read together: the Switch decides whether the graph BINDS a drag, the
+          guards decide how far an auto-advancing chain runs once it starts. */}
+      <AutoChainGuards spacePath={spacePath} />
     </CatalogSearchDialog>
   );
 }

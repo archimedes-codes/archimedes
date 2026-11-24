@@ -165,6 +165,239 @@ export interface StageDto {
    * Only `setStageNext` writes this, and it validates every slug first.
    */
   nextSlugs: string[] | null;
+  /** The per-column **auto-advance** flag (the workflow-graph work): ON means a card
+   *  LAUNCHED on this column advances itself when its Session settles, instead of
+   *  waiting for a person to drag it.
+   *
+   *  REQUIRED and not optional, and the column says so: `stages.auto` is
+   *  `INTEGER NOT NULL DEFAULT 0`, so the Rust `StageRow` maps it to a plain `bool`
+   *  and EVERY row carries it — there is no third state for absence to mean, and an
+   *  optional `auto?:` would compile against a fixture that never sets it and then
+   *  render a Switch whose state the wire never agreed to.
+   *
+   *  The stored default is OFF, and that is the compatibility story rather than a
+   *  preference (the `spaces.board_strict` precedent one table over): adding the
+   *  capability must not make an existing board advance anything. Nothing acts on it
+   *  yet — the runtime that auto-advances is the task after the editor that sets it. */
+  auto: boolean;
+  /** Extra prompt text prepended **before** this column's Skill launch — the
+   *  per-column half of "what this column says when it starts a Session", beside
+   *  `onEnterSkill`'s "which Skill it loads" (ADR 0098 makes that column the sole
+   *  authority for the Skill; this one says what surrounds it).
+   *
+   *  `null` means NO extra prompt, and it is the ONLY spelling of that: the column
+   *  carries no SQL `DEFAULT`, so an upgraded database gains NULL rather than a
+   *  second, equivalent empty-string state. The launcher prepends the text verbatim,
+   *  so `null` and `""` both contribute nothing to a launch — but they are NOT the
+   *  same stored state, since `set_stage_prompt_prefix` answers `""` back as a VALUE
+   *  a person typed and keeps NULL as the only clear. This UI therefore writes
+   *  **`null`** on clear, exactly as `onEnterSkill` does (one rule for both nullable
+   *  text fields on this row, so a clear is never spelled two ways).
+   *
+   *  Stored RAW: nothing trims, templates or interprets it. */
+  promptPrefix: string | null;
+}
+
+
+/**
+ * One Space's **auto-chain guards** (camelCase over IPC) — the bound a chain of
+ * auto-advancing columns may run to, and spend, before it stops.
+ *
+ * `null` on either field means NOT CONFIGURED, and not-configured is NOT unlimited:
+ * it falls back to a SHIPPED DEFAULT, `DEFAULT_AUTO_MAX_STEPS` and
+ * `DEFAULT_AUTO_CEILING_USD` (`src-tauri/src/storage/db/auto_guards.rs`). Their VALUES
+ * are deliberately not restated here — a number copied into the mirror is a number
+ * that can drift from the one the runtime applies, and the caption that shows the
+ * fallback points at the constants instead. A Space whose owner never opened the
+ * guard editor is therefore still BOUNDED, which is the whole reason the fallback
+ * lives in code rather than as a SQL `DEFAULT`: the column's `NULL` has to stay
+ * meaningful, so "unset" and "set to the same number" remain different answers.
+ *
+ * Which makes `0` a third answer, not a clear: `maxSteps: 0` / `ceilingUsd: 0` mean
+ * "this Space's bound is zero" (no auto-chaining / no spend), a value a person chose.
+ * `setAutoGuards` takes `null` to clear and `0` to bind, and the two never meet —
+ * ADR 0082's `NULL` ≠ `0.0` discipline applied to the thing it exists to bound.
+ */
+export interface AutoGuards {
+  /** How many auto-advances ONE chain may take. `null` = not configured →
+   *  `DEFAULT_AUTO_MAX_STEPS`. */
+  maxSteps: number | null;
+  /** How much ONE chain may spend, in USD. `null` = not configured →
+   *  `DEFAULT_AUTO_CEILING_USD`. Counts `sessions.cost_usd`, whose `NULL` means
+   *  "no Session ever reported a figure" and not "it was free" (ADR 0082), so a
+   *  chain of unreported costs cannot be seen by this bound. */
+  ceilingUsd: number | null;
+}
+
+
+/**
+ * One auto-advance chain's record (camelCase over IPC) — when it opened, when it
+ * stopped, how many steps it took and what it cost. The mirror of the Rust
+ * `WorkflowRunRow` (`src-tauri/src/storage/db/workflow_runs.rs`), which serialises
+ * EXACTLY these eight keys; the shape is pinned from the Rust side by
+ * `commands::tasks::tests::workflows::
+ * the_run_row_serialises_with_the_camel_case_keys_the_ts_mirror_declares`.
+ *
+ * This is RUN BOOKKEEPING, not board state: no store slice holds it and no
+ * component renders it today. Its only caller is the auto-advance runtime, which
+ * counts a chain against the two guards `AutoGuards` reads by asking this table how
+ * far the chain has already gone and what it has already spent.
+ *
+ * `finishedAt` is the open/closed discriminator and `null` means OPEN — at most ONE
+ * row per Task may be in that state, which is what makes "the open run" a definite
+ * description rather than a hopeful one.
+ *
+ * `costUsd` is `number | null` and that `null` is LOAD-BEARING, not a nullable
+ * column wearing a type. `null` means NO model call in this chain ever reported a
+ * figure. `0.0` means a figure WAS reported and it was zero. The two are not
+ * interchangeable and the difference is the whole reason the ceiling can be trusted
+ * or must not be: a USD ceiling summed over `null` costs reads as FREE, because
+ * there is nothing to add and nothing to compare — so a chain whose Sessions never
+ * reported can run to its STEP bound believing it has spent nothing. The Rust side
+ * defends the distinction in the write, not just in the type: a naive
+ * `cost_usd = cost_usd + x` would freeze the column at `NULL` forever the moment a
+ * chain's FIRST step reported nothing (`NULL + x` is `NULL` in SQL), which is why
+ * `workflowRunStep`'s `null` delta does not mention the column at all and its
+ * numeric delta goes through `COALESCE(cost_usd, 0.0) + x`. That behaviour is pinned
+ * by `storage/db/tests/workflow_runs.rs::
+ * workflow_run_step_keeps_cost_null_until_the_first_figure_and_adds_after`; what
+ * lives here is the consequence for a reader — **a `null` `costUsd` is not evidence
+ * a chain was cheap, and a bound that treats it as such is a guard that fails
+ * open.** The step bound is what actually stops such a chain, which is the same
+ * weakness `AutoChainGuards`' caption states to a person.
+ *
+ * A missing key would be worse than either value: `undefined > ceilingUsd` is
+ * `false` in JavaScript, so a serialisation that dropped `costUsd` instead of
+ * writing `null` would read as "under the ceiling" for every chain. That is why the
+ * Rust test above asserts the key is PRESENT and `null`, not merely that it is
+ * falsy.
+ */
+export interface WorkflowRunRow {
+  /** The minted id (`wfr_…`), the primary key. */
+  id: string;
+  /** The Space the card lives in — stored so a run is readable without joining
+   *  through a `tasks` row a `delete_space` could take with it. */
+  spacePath: string;
+  /** The card the chain advanced. The GLOBAL key, and the only one the open read
+   *  and the close both need. */
+  taskId: string;
+  /** Unix ms, stamped when the chain opened. */
+  startedAt: number;
+  /** Unix ms, stamped when it stopped. `null` = the chain is OPEN. */
+  finishedAt: number | null;
+  /** How many auto-advances this chain has taken. A plain counter, never `null` —
+   *  the step bound compares against this figure. */
+  steps: number;
+  /** The running figure in USD. See the header: `null` is "nothing was ever
+   *  reported" and is NOT `0`. */
+  costUsd: number | null;
+  /** Why the chain stopped, as its writer spelled it — stored verbatim, never
+   *  normalised, and never rewritten by a later close. `null` while the run is open.
+   *
+   *  THE SPELLINGS ARE CITED, NOT ENUMERATED, and that is deliberate: the list that
+   *  used to sit here named `"steps"` and `"ceiling"`, and NOTHING emits either one.
+   *  A list retyped into prose is a list that drifts, so what the column legitimately
+   *  holds is cited to its owning symbol instead: a `ChainStop` spelling (the
+   *  `ChainStop` union below mirrors the Rust `ChainStop::as_str()` that owns those
+   *  four), the literal `"manual"` (a person's column took the card over), the
+   *  literal `"interrupted"` (a chain a process restart orphaned — stamped by Rust's
+   *  `Db::open`, never from this side), or a verbatim `StopReason` (`"cancelled"`, …)
+   *  for a turn that never finished. `workflowRunClose`'s doc states the same
+   *  vocabulary from the call side; cite it, do not re-spell it. */
+  stopReason: string | null;
+}
+
+
+/**
+ * Why an auto-chain stopped — the mirror of the Rust `ChainStop`
+ * (`src-tauri/src/storage/db/workflow_runs.rs`), whose `#[serde(rename_all =
+ * "snake_case")]` is what makes these four strings the wire spelling.
+ *
+ * THE VOCABULARY IS SHARED with `workflowRunClose`'s `stopReason` argument: a run's
+ * narrative and the verdict that produced it are spelled from ONE list, so a person
+ * reading a closed chain's reason can match it to the bound that produced it. That
+ * is the reason this union covers four values while `workflowRunStep` only ever
+ * answers two of them:
+ *
+ *   - `"max_steps"` and `"cost_ceiling"` come FROM the verdict — Rust computed them,
+ *     because they are measured against bounds whose fallbacks live in Rust.
+ *   - `"no_next_stage"` and `"launch_refused"` are ones the settle-handler PASSES to
+ *     `workflowRunClose`. The database cannot see the board slice, so it cannot know
+ *     a column had no next column; and it cannot know a launch was refused, because
+ *     the launch happens on this side. They are named here so the second half of the
+ *     vocabulary is not invented at the call site — a hand-typed `"no_next"` in one
+ *     file and `"no_next_stage"` in another is two reasons for one event, and the
+ *     board's chain history would read as though chains stopped for more reasons than
+ *     they did.
+ *
+ * The four spellings are frozen on the Rust side by
+ * `storage::db::tests::workflow_runs::the_chain_stop_spellings_are_frozen`, and the
+ * verdict's wire form (the string, not the Rust variant name) by
+ * `commands::tasks::tests::workflows::
+ * the_verdict_serialises_with_the_camel_case_keys_the_ts_mirror_declares`.
+ */
+export type ChainStop =
+  | "no_next_stage"
+  | "max_steps"
+  | "cost_ceiling"
+  | "launch_refused";
+
+/**
+ * The answer `workflowRunStep` gives: the run after the write, and whether the
+ * chain may take another step. The mirror of the Rust `AdvanceVerdict`
+ * (`src-tauri/src/storage/db/workflow_runs.rs`), which serialises EXACTLY these five
+ * keys — pinned by `commands::tasks::tests::workflows::
+ * the_verdict_serialises_with_the_camel_case_keys_the_ts_mirror_declares`.
+ *
+ * WHY A VERDICT CROSSES THE WIRE INSTEAD OF A ROW. `workflowRunStep` used to answer
+ * the `WorkflowRunRow` and leave "is this chain over budget?" to the caller. That
+ * question needs four numbers: the Space's configured step bound and ceiling, and the
+ * SHIPPED FALLBACKS that apply when the Space configured neither. The fallbacks are
+ * Rust-only ON PURPOSE — `AutoGuards`' own doc explains why their values are not
+ * restated in this file — so a TypeScript caller could not answer the question
+ * without copying a policy number across the wire, and a copied number is one that
+ * drifts. The decision is therefore made in Rust, beside the constants it reads, and
+ * the settle-handler OBEYS it. `advance` is the only field it must obey.
+ *
+ * `maxSteps` and `ceilingUsd` are the EFFECTIVE values the decision was measured
+ * against, and they are not redundant with `advance`: they are what lets the handler
+ * write a true sentence — "this chain hit its 20-step bound", not "this chain hit its
+ * bound" — about numbers it does not hold. A caller given only `advance: false` can
+ * say a chain stopped and nothing about why, which is the difference between a board
+ * that explains itself and one that stalls silently.
+ *
+ * THE ONE LIMITATION TO STATE RATHER THAN DISCOVER, and the reason `ceilingUsd` is on
+ * the verdict at all: the ceiling is compared against the run's `costUsd`, and
+ * `WorkflowRunRow`'s doc above explains why a `null` cost cannot be treated as a zero.
+ * It cannot be treated as a zero HERE either, so **a chain whose Sessions never
+ * reported a figure cannot trip its ceiling — not even a $0.00 one.** That is a real
+ * limitation (ADR 0082's caveat, applied at the place it bites), it is pinned by
+ * `storage::db::tests::workflow_runs::a_chain_that_never_reports_a_cost_cannot_trip_the_ceiling`,
+ * and this field is how the handler can say "the ceiling is $10, but a chain that
+ * never reports a cost is only bounded by its steps" instead of implying the money
+ * guard did work it cannot do. `ceilingUsd: null` would mean "no ceiling configured",
+ * which under the shipped fallback no existing Space means — so treat `null` here as
+ * the absence of a bound, and NOT as a zero.
+ */
+export interface AdvanceVerdict {
+  /** The run as it is AFTER this step — the row `workflowRunStep` used to be its
+   *  whole answer. The step that trips a bound is still WRITTEN, so `run.steps` is
+   *  the chain's real length and not its length minus one. */
+  run: WorkflowRunRow;
+  /** May the chain take another step? `false` is not a failure: it means close the
+   *  run (with `stop` as the reason) and stop launching. */
+  advance: boolean;
+  /** Why not, when `advance` is `false`; `null` when it is `true`. PRESENT and
+   *  `null` on the advancing arm — the handler branches on this key, so an absent
+   *  one and a `null` one must not be two different states. */
+  stop: ChainStop | null;
+  /** The EFFECTIVE step bound: the Space's `maxSteps`, or the shipped fallback.
+   *  Never `null` — an unset Space is BOUNDED, not unlimited. */
+  maxSteps: number;
+  /** The EFFECTIVE ceiling in USD: the Space's `ceilingUsd`, or the shipped
+   *  fallback. See the header for what this field is for and for the `null` cost
+   *  case it exists to announce. */
+  ceilingUsd: number | null;
 }
 
 

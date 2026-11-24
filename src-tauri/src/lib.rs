@@ -507,16 +507,28 @@ pub fn run() {
             commands::spaces::space_for_path,
             commands::spaces::set_space_trusted,
             commands::spaces::reorder_spaces,
-            // The per-Space Task board (spec §2, ADR 0090). Sixteen entries, no
-            // capability change: `default.json` lists plugin permissions only and
+            // The per-Space Task board (spec §2, ADR 0090). Twenty-five entries —
+            // the count is what this list measures NOW, not the figure it
+            // inherited (it read "Sixteen" while nineteen names sat under it; the
+            // 21 it carried was verified, and this change re-measures it against
+            // the `#[tauri::command]` count in `commands/tasks.rs` rather than
+            // adding two to a figure and hoping). Re-measured again here: the two
+            // `workflow_runs` entries below bring the block to twenty-five, which is
+            // what `grep -c '#\[tauri::command\]' commands/tasks.rs` answers today
+            // (it read twenty-six until `workflow_run_open` was deleted as dead IPC —
+            // a registered command whose only "consumer" was the TS wrapper that
+            // wrapped it, which is the rot this file's gate exists to refuse). The
+            // claim the count carries has not changed: no capability change,
+            // `default.json` lists plugin permissions only and
             // never enumerates `#[tauri::command]`s (the `get_provider_budget`
             // comment above states the rule), so the webview reaches these through
             // this list alone. `move_task` and `start_task_session` are the two
             // entries that need a second managed type — `Arc<SessionManager>`,
             // managed above for the session commands already — because a
             // `compact` stage's boost is delivered through it and a Task's Session
-            // is started through it. The eight issue #179 entries below it are the
-            // six Stage verbs plus the Strict-workflow pair, and every one of them
+            // is started through it. The ten Stage/flag entries below are the
+            // eight #179 ones (six Stage verbs plus the Strict-workflow pair) and
+            // the two workflow fields the graph editor adds, and every one of them
             // takes `Arc<Db>` alone: none starts or compacts a Session.
             commands::tasks::get_board,
             commands::tasks::create_task,
@@ -528,20 +540,60 @@ pub fn run() {
             // issue #179 (spec §4, ADRs 0098 + 0099): the Stage row becomes
             // editable data. Six verbs edit one column, and the flag pair decides
             // whether the graph those columns describe binds a drag or merely
-            // describes one.
+            // describes one. The two workflow entries below extend the same row.
             commands::tasks::create_stage,
             commands::tasks::rename_stage,
             commands::tasks::set_stage_skill,
             commands::tasks::set_stage_next,
+            // The two per-Stage workflow fields the graph editor writes: the
+            // auto-advance flag and the extra prompt. Both delegate in the shape
+            // the six above set — `Arc<Db>` alone, `BoardError` out, the refreshed
+            // `StageRow` back — and neither acts on the value here.
+            commands::tasks::set_stage_auto,
+            commands::tasks::set_stage_prompt_prefix,
             commands::tasks::reorder_stages,
             commands::tasks::delete_stage,
             // The Strict-workflow toggle and its read twin. Both write/read the
             // `spaces` table but live here because they gate `move_task` and
-            // co-terminate with the six Stage commands (spec §4 spells the
+            // co-terminate with the eight Stage commands (spec §4 spells the
             // signature in the board's list); the read exists so the editor's
             // Switch can be SEEDED from the flag the gate actually enforces.
             commands::tasks::set_board_strict,
             commands::tasks::get_board_strict,
+            // The two per-Space auto-chain guards. Both write/read the `spaces`
+            // table and both take `Arc<Db>` alone — no SessionManager, no sink:
+            // one UPDATE and one SELECT. They land here rather than in
+            // `commands/spaces.rs` for the reason `set_board_strict` two entries
+            // above gives for the same choice: which table a command writes is not
+            // what groups commands, and these bound the board's auto-advancing
+            // columns. Neither acts on a value: the runtime that acts is
+            // `src/store/workflowChain.ts` (`advanceWorkflowChainOnSettle`), which
+            // reads the bound through `workflow_run_step`'s verdict, and the storage
+            // layer owns both the guard and the record it is measured against.
+            commands::tasks::get_auto_guards,
+            commands::tasks::set_auto_guards,
+            // The `workflow_runs` record: the TWO commands the auto-advance
+            // runtime counts its chain against. Both take `Arc<Db>` alone and
+            // both ride `db_call` — `workflow_runs` is its own table and
+            // answers `DbError`, not `BoardError`. They are registered because the
+            // runtime is TypeScript: the verbs shipped in the commit before last
+            // with no command layer on the theory that an in-process caller would
+            // reach them through `Arc<Db>`, and the caller turned out to be on the
+            // other side of the wire. A step bound and a USD ceiling on a table no
+            // caller can reach are a guard that cannot be enforced. Neither starts
+            // or compacts a Session, and the record's own absences stay lenient —
+            // a `None` or a silent `Ok(())` — because a bookkeeping failure must
+            // never fail a Session. `workflow_run_step` DOES refuse, and only at
+            // arguments rather than absences: a `space_path` that is not the card's
+            // own, and a `task_id` that names no card. A THIRD entry,
+            // `workflow_run_open`, was deleted here as dead IPC: the runtime asks no
+            // "is this card mid-chain" question (`workflow_run_step` is the upsert,
+            // so opening is what the step does) and the command's only consumer was
+            // the TS wrapper that wrapped it — a command paying for its own
+            // registration, which is what this block's gate cannot see. The `Db`
+            // verb went with it.
+            commands::tasks::workflow_run_step,
+            commands::tasks::workflow_run_close,
             // issue #180 D1 (spec §1/§2, ADR 0100): a Task's named markdown
             // artifacts. Both take `Arc<Db>` alone — pure database writes, no
             // Session, no sink. D1 ships these as the HUMAN surface only; the

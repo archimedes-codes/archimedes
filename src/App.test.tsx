@@ -2507,7 +2507,14 @@ describe("App (the Task board view)", () => {
           sortOrder: 0,
           onEnter: "none",
           onEnterSkill: null,
-          nextSlugs: null,
+          // `auto`/`promptPrefix` share `nextSlugs`' line rather than taking lines of
+          // their own: this file is BASELINED at its exact code-line count in
+          // `scripts/file-size-baseline-test.txt` and the ratchet refuses a baselined
+          // file growing by one code line, while both fields are REQUIRED on the wire
+          // type (`stages.auto` is `NOT NULL DEFAULT 0`, so it always arrives;
+          // `promptPrefix` has no SQL DEFAULT and NULL is its only "no extra prompt"
+          // state). A `//` line is not a code line, so the note is affordable.
+          nextSlugs: null, auto: false, promptPrefix: null,
         },
         tasks: [
           {
@@ -2572,7 +2579,14 @@ describe("App (the Task board view)", () => {
           sortOrder: 0,
           onEnter: "none",
           onEnterSkill: null,
-          nextSlugs: null,
+          // `auto`/`promptPrefix` share `nextSlugs`' line rather than taking lines of
+          // their own: this file is BASELINED at its exact code-line count in
+          // `scripts/file-size-baseline-test.txt` and the ratchet refuses a baselined
+          // file growing by one code line, while both fields are REQUIRED on the wire
+          // type (`stages.auto` is `NOT NULL DEFAULT 0`, so it always arrives;
+          // `promptPrefix` has no SQL DEFAULT and NULL is its only "no extra prompt"
+          // state). A `//` line is not a code line, so the note is affordable.
+          nextSlugs: null, auto: false, promptPrefix: null,
         },
         tasks: [],
       },

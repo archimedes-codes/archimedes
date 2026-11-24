@@ -136,13 +136,28 @@ builds, and the Linux DMABUF variables — is `README.md`'s `## Releasing`.
   panic may have left genuinely unusable. **Both existing behaviours are
   correct and must not change.** The session registry recovers (see the comment
   block above its per-session state accessors in
-  `src-tauri/src/agent/session/mod.rs`); the `storage/db/` unit panics — at 52
-  sites across the seven subject siblings that hold a `Db` verb — because `Db`
-  holds ONE `rusqlite::Connection` and a panic mid-transaction can
-  leave that single connection unusable. **Any NEW panic-on-poison site must
-  carry a one-line rationale for why its resource is single and shared** —
-  `record_messages_batch` is the in-repo example. The census, the per-file
-  split, and the way each grep disagrees are in `docs/agents/census.md`.
+  `src-tauri/src/agent/session/mod.rs`); the `storage/db/` unit panics because
+  `Db` holds ONE `rusqlite::Connection` in a `StdMutex` and a panic
+  mid-transaction can leave that single connection unusable. **No site count and
+  no sibling count is quoted here, on purpose** — this file is loaded on every
+  task, and the count moves whenever a verb is added — this branch's own
+  guard/run-record commits added sites to it, and `docs/agents/census.md` keeps
+  the dated provenance for the figures it has carried. Measure it when you need
+  it, with the
+  comment-anchored command `docs/agents/census.md` gives:
+  `grep -rn 'expect("db mutex poisoned")' src-tauri/src/storage/db/*.rs | grep -vc '://'`.
+  Name which spelling you ran. The two-stage grep prints a different number from
+  the bare one (`… | wc -l`), because `grep -n` prefixes each line with
+  `path:NN:` and a comment line that begins with `//` at column 0 therefore
+  contains the substring `://` — so `grep -v '://'` drops exactly the per-file
+  `WHY THIS FILE PANICS` headers that QUOTE the pattern, and keeps every real
+  call site. That is also its limit: a quoted occurrence sitting in an INDENTED
+  comment survives the filter and inflates the "production" figure, so the number
+  is anchored, not proven production. **Any NEW
+  panic-on-poison site must carry a one-line rationale for why its resource is
+  single and shared** — `record_messages_batch` is the in-repo example. The
+  arithmetic, the per-file split, and the way each grep disagrees are in
+  `docs/agents/census.md`.
 - **Keep files small: 600–800 code lines is the breakpoint, and the preference is
   to split, not to keep.** A file past that band is a **context tax paid on every
   read** — it swallows the window and gets `grep`'d instead of read, which is the

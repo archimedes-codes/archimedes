@@ -17,9 +17,13 @@ import {
   sendPrompt,
   startTaskSession,
   taskNumbers,
+  workflowRunClose,
+  workflowRunStep,
+  type AdvanceVerdict,
   type SessionInfo,
   type SkillInfo,
   type StageWithTasks,
+  type StopReason,
   type TaskNumberRow,
   type TaskRow,
 } from "../lib/tauri";
@@ -68,6 +72,14 @@ vi.mock("../lib/tauri", async () => {
     getTask: vi.fn(),
     editTask: vi.fn(),
     loadHistory: vi.fn(),
+    // The auto-advance chain's RUN RECORD. Mocked for the same boot-mock reason as
+    // every name in this factory, and the DEFAULTS below are what keep the 39 cases
+    // above untouched: no fixture in this file sets `auto: true`, so the runtime
+    // returns at its "not automatic" gate and never reaches either. That is the
+    // compatibility story of `stages.auto` (the stored default is OFF) observed at the
+    // seam that would otherwise change every launch's behaviour.
+    workflowRunStep: vi.fn(),
+    workflowRunClose: vi.fn().mockResolvedValue(undefined),
     // The **Task badge** map's boot fetch, which `startAndSendLinked` re-calls after
     // a launch (D10). It MUST be mocked here for the reason this file's header
     // records and AGENTS.md records for `App.test.tsx`: the factory spreads
@@ -144,6 +156,11 @@ function column(
     skill?: string | null;
     nextSlugs?: string[] | null;
     artifactKeys?: string[];
+    prefix?: string | null;
+    /** The column's **auto-advance** flag. Defaults to `false`, which is the stored
+     *  default and what every fixture above uses — the ones that do not pass it are
+     *  asserting the compatibility story (`auto` OFF means the chain never starts). */
+    auto?: boolean;
   } = {},
 ): StageWithTasks {
   return {
@@ -155,6 +172,17 @@ function column(
       onEnter: "none",
       onEnterSkill: over.skill ?? null,
       nextSlugs: over.nextSlugs ?? null,
+      // Both REQUIRED on the wire type since the workflow-graph columns landed
+      // (`stages.auto` is `NOT NULL DEFAULT 0`; `promptPrefix` has no SQL DEFAULT and
+      // NULL is its only "no extra prompt" state), so a fixture that omits either is
+      // a board the database cannot answer with. OFF + `null` is what every existing
+      // column carries, which is also the compatibility story: adding the capability
+      // must not make an existing board advance anything.
+      auto: over.auto ?? false,
+      // `over.prefix` exists for the extra-prompt cases below: the column's
+      // `prompt_prefix` is what has to REACH the message, so a fixture that could
+      // only ever say `null` could not test the feature at all.
+      promptPrefix: over.prefix ?? null,
     },
     // `artifactKeys: []` is the "card has no artifacts" answer, and it is REQUIRED
     // on the wire type (issue #180) — an optional field would compile against every
@@ -179,8 +207,39 @@ function column(
 function destination(
   over: Partial<TaskLaunchDestination> = {},
 ): TaskLaunchDestination {
-  return { slug: "discuss", label: "Discuss", onEnterSkill: "discuss", ...over };
+  // `promptPrefix: null` because the field is REQUIRED (the `StageDto.auto` argument:
+  // an optional field compiles against a fixture and then renders nothing on real
+  // data). `null` is the state every existing column holds, so a case that means a
+  // prefix-bearing column passes `promptPrefix` the way it passes `onEnterSkill`.
+  return {
+    slug: "discuss",
+    label: "Discuss",
+    onEnterSkill: "discuss",
+    promptPrefix: null,
+    ...over,
+  };
 }
+
+/** The step verb's "advance" verdict, with the EFFECTIVE bounds spelled the way the
+ *  wire spells them. `workflowChain.test.ts` owns what the runtime does with each arm;
+ *  this file only needs the advancing one, because what it pins is that the settle edge
+ *  CALLS the runtime at all. */
+const ADVANCING: AdvanceVerdict = {
+  run: {
+    id: "wfr_1",
+    spacePath: SPACE,
+    taskId: "tsk_1",
+    startedAt: 1,
+    finishedAt: null,
+    steps: 1,
+    costUsd: null,
+    stopReason: null,
+  },
+  advance: true,
+  stop: null,
+  maxSteps: 20,
+  ceilingUsd: 10,
+};
 
 const CATALOGS = (): TaskLaunchCatalogs => ({
   skills: [skill("discuss"), skill("research")],
@@ -207,6 +266,10 @@ beforeEach(() => {
   // restated in `SessionsSection.test.tsx`: a case that installed a one-shot
   // rejection below must not be able to decide what THIS case's refetch answers.
   vi.mocked(taskNumbers).mockResolvedValue([]);
+  // The chain's step verb answers "keep going" against the shipped fallbacks, spelled
+  // out because this side of the wire holds NO copy of those numbers (T6a's whole
+  // point). Restated after `clearAllMocks` like the two above it.
+  vi.mocked(workflowRunStep).mockResolvedValue(ADVANCING);
 });
 
 describe("taskLaunch — the discuss launch", () => {
@@ -268,6 +331,58 @@ describe("taskLaunch — the discuss launch", () => {
     await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
     const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
     expect(sent).not.toContain("<artifacts");
+  });
+
+  it("sends the destination column's extra prompt FIRST in the message", async () => {
+    // The whole point of `stages.prompt_prefix`: T3 put an editable field on every
+    // Stage row and NOTHING read it, so the control wrote into the void. This is the
+    // seam where the column's text becomes the Session's first message — the board
+    // slice read `launchTaskSession` already does for the label and the Skill now
+    // carries one more field of the SAME row into the prompt.
+    //
+    // Position matters as much as presence: the design is "1 Skill per column, PLUS a
+    // per-column extra-prompt field prepended **before the Skill launch**", so the
+    // prefix precedes the instruction, which precedes the token.
+    seedBoard(
+      column("backlog", [taskRow()]),
+      column("discuss", [], {
+        label: "Discuss",
+        skill: "discuss",
+        prefix: "Weigh the trade-offs out loud before proposing anything.",
+      }),
+    );
+    await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
+    const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
+    expect(sent.indexOf("Weigh the trade-offs out loud")).toBe(0);
+    expect(sent.indexOf("Weigh the trade-offs out loud")).toBeLessThan(
+      sent.indexOf("Let's work on Discuss."),
+    );
+    expect(sent.indexOf("Let's work on Discuss.")).toBeLessThan(
+      sent.indexOf("$discuss"),
+    );
+    expect(sent.indexOf("$discuss")).toBeLessThan(sent.indexOf("<task "));
+    // The bubble and the wire are still ONE string (ADR 0031's content-based dedupe
+    // key): the prefix is part of the recorded message, not of something before it.
+    expect(useSessions.getState().messages["sess_new"]?.[0]).toMatchObject({
+      kind: "user",
+      text: sent,
+    });
+  });
+
+  it("sends no extra prompt for a column that has none", async () => {
+    // The other half, and the common one: `prompt_prefix` carries no SQL `DEFAULT`,
+    // so every column an existing install already has reads back NULL. A launch from
+    // such a column must produce the message this feature did not exist for, byte for
+    // byte — the describe's `seedBoard` gives `discuss` no prefix, so this asserts the
+    // leading bytes against a literal rather than against another call.
+    await launchTaskSession(SPACE, taskRow(), "discuss", CATALOGS());
+    const sent = vi.mocked(sendPrompt).mock.calls[0]![1];
+    expect(sent.startsWith("Let's work on Discuss.\n\n$discuss\n\n<task ")).toBe(
+      true,
+    );
+    // And the absent prefix contributed NOTHING — not the word, not the value.
+    expect(sent).not.toContain("undefined");
+    expect(sent).not.toContain("null");
   });
 
   it("starts a linked Session, selects it, and sends ONE first message", async () => {
@@ -779,6 +894,167 @@ describe("taskLaunch — re-entrancy", () => {
     expect(a.sessionId).toBe("sess_new");
   });
 
+  it("a settle landing BEFORE the badge refetch returns does not refuse the chain", async () => {
+    // THE GUARD OUTLIVED ITS JOB. `inFlight.delete(task.id)` sat in `launchTaskSession`'s
+    // `finally`, i.e. AFTER `startAndSendLinked` resolved — and that helper awaits
+    // `refreshTaskNumbers()` after `void sendLaunchMessage(…)`. The chain's next launch is
+    // dispatched from the `void`ed call's settle edge, so a turn that settled before the
+    // badge refetch came back found the chain's OWN PARENT still holding the key, and
+    // `launchTaskSession` answered `{ sessionId: null }`. `finishLink` then closed the run
+    // `launch_refused` with "it was already being launched" — a false statement about a
+    // benign ordering, and indistinguishable from a real double-click refusal.
+    //
+    // Both halves are manufactured here by hand, because every mock in this repo resolves
+    // synchronously and a synchronous `sendPrompt` manufactures the very ordering the guard
+    // must survive: `sendPrompt` is deferred (so the settle is dispatched while the parent
+    // is still inside `startAndSendLinked`) and `taskNumbers` is held open (so the parent
+    // has NOT returned when that settle runs).
+    seedBoard(
+      column("backlog", [taskRow()]),
+      column("research", [], {
+        label: "Research",
+        sortOrder: 1,
+        skill: "research",
+        auto: true,
+      }),
+      column("implement", [], {
+        label: "Implement",
+        sortOrder: 2,
+        skill: "implement",
+      }),
+    );
+    const slots: {
+      settle?: (reason: StopReason) => void;
+      badges?: (rows: TaskNumberRow[]) => void;
+    } = {};
+    vi.mocked(sendPrompt).mockImplementation(
+      () => new Promise<StopReason>((resolve) => (slots.settle = resolve)),
+    );
+    vi.mocked(taskNumbers).mockReturnValue(
+      new Promise<TaskNumberRow[]>((resolve) => (slots.badges = resolve)),
+    );
+
+    const launched = launchTaskSession(SPACE, taskRow(), "research", {
+      // The chain's NEXT column asks for `implement`, so this case names both Skills
+      // itself rather than leaning on the shared `CATALOGS()` (which deliberately has only
+      // `discuss` and `research`, because several of its cases pin a missing-Skill refusal).
+      skills: [skill("research"), skill("implement")],
+      agents: [],
+    });
+    // The parent is now parked on the badge refetch: the prompt is dispatched, the Session
+    // exists, the guard is (still, at this instant) held.
+    await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
+    // The turn settles while the parent has not returned.
+    slots.settle?.("end_turn");
+    // The chain reaches its own next launch — moved by the CHAIN, not by this call, so
+    // flush rather than await.
+    await vi.waitFor(() =>
+      expect(moveTask).toHaveBeenCalledWith(SPACE, "tsk_1", "implement"),
+    );
+    // THE FACT UNDER TEST: the chain's launch was not refused by its own parent, so the
+    // run is not closed `launch_refused` and the chain's prompt goes out.
+    await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(sendPrompt).mock.calls[1]![1]).toContain("$implement");
+    expect(workflowRunClose).not.toHaveBeenCalledWith("tsk_1", "launch_refused");
+    expect(
+      (useSessions.getState().messages["sess_new"] ?? []).some((m) =>
+        /launch_refused/.test((m as { text: string }).text ?? ""),
+      ),
+    ).toBe(false);
+
+    slots.badges?.([]);
+    expect((await launched).sessionId).toBe("sess_new");
+  });
+
+  it("does not let the PARENT's cleanup clear the guard the CHAIN'S launch holds", async () => {
+    // The other half of releasing the guard early. The parent releases at the dispatch
+    // and its `finally` still runs afterwards (once the badge refetch lands), so the
+    // release is ONE-SHOT: without the flag the parent's `finally` would delete a key a
+    // SECOND launch had legitimately taken in the meantime — and that is exactly the
+    // chain's ordering, since the chain's launch of the SAME card starts the instant the
+    // parent releases. Deleting a key you no longer hold turns the guard back into a
+    // hole, and the hole is a double Session for one intent: the thing the `Set` exists
+    // for. The case above pins the opposite error (holding too LONG); this pins the
+    // guard surviving the parent's cleanup while a legitimate owner holds it.
+    //
+    // THE WINDOW IS THE CHAIN'S OWN `startTaskSession`, and BOTH halves have to be held
+    // open by hand: the parent parked on its badge refetch (call 1), the chain parked
+    // inside its Session start (call 2). That is the only stretch where the chain owns
+    // the key AND the parent's `finally` still has an await left to run — release the
+    // refetch there and the parent's cleanup fires while the chain is the owner.
+    // (Holding only one of the two does not work, and the first draft of this case got
+    // that wrong: if the parent's refetch resolves on its own, its `finally` runs BEFORE
+    // the chain ever acquires the key, so the one-shot flag changes nothing and the
+    // mutant stays green.)
+    //
+    // This case also seeds its OWN board: the describe it sits in (`re-entrancy`) has no
+    // board `beforeEach`, and an unseeded slice would make `resolveStage` answer
+    // `absent`, skip the move, and leave the chain with nothing to launch.
+    seedBoard(
+      column("backlog", [taskRow()]),
+      column("research", [], {
+        label: "Research",
+        sortOrder: 1,
+        skill: "research",
+        auto: true,
+      }),
+      column("implement", [], {
+        label: "Implement",
+        sortOrder: 2,
+        skill: "implement",
+      }),
+    );
+    const slots: { settle?: (reason: StopReason) => void; badges?: () => void } = {};
+    let starts = 0;
+    vi.mocked(sendPrompt).mockImplementation(
+      () => new Promise<StopReason>((resolve) => (slots.settle = resolve)),
+    );
+    vi.mocked(startTaskSession).mockImplementation(() => {
+      starts += 1;
+      // The PARENT's start (1) resolves; the CHAIN's (2) never does, which is what keeps
+      // the chain inside the guarded half. A THIRD start — which only the mutant reaches
+      // — resolves with its own id, so the mutant fails the assertion below instead of
+      // hanging on a promise nobody resolves.
+      if (starts === 2) return new Promise<SessionInfo>(() => {});
+      return Promise.resolve(info(starts === 1 ? "sess_new" : "sess_third"));
+    });
+    let refetches = 0;
+    vi.mocked(taskNumbers).mockImplementation(() => {
+      refetches += 1;
+      // The PARENT's badge refetch (call 1) is releasable, so its `finally` can be made
+      // to land inside the window; the CHAIN's (call 2) is never reached and never needs
+      // to be.
+      if (refetches === 1) {
+        return new Promise<TaskNumberRow[]>((resolve) => {
+          slots.badges = () => resolve([]);
+        });
+      }
+      return Promise.resolve<TaskNumberRow[]>([]);
+    });
+
+    const chainCatalogs = (): TaskLaunchCatalogs => ({
+      skills: [skill("research"), skill("implement")],
+      agents: [],
+    });
+    const parent = launchTaskSession(SPACE, taskRow(), "research", chainCatalogs());
+    await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
+    slots.settle?.("end_turn");
+    // The chain has taken the card's key and is parked inside its own Session start.
+    await vi.waitFor(() =>
+      expect(moveTask).toHaveBeenCalledWith(SPACE, "tsk_1", "implement"),
+    );
+    await vi.waitFor(() => expect(startTaskSession).toHaveBeenCalledTimes(2));
+    // NOW the parent's badge refetch lands, so its `finally` runs while the CHAIN is the
+    // guard's owner — and must not clear a key it no longer holds.
+    slots.badges?.();
+    await parent;
+    // A launch of the same card while the chain still owns the guard is refused rather
+    // than starting a SECOND Session for one intent.
+    const third = await launchTaskSession(SPACE, taskRow(), "implement", chainCatalogs());
+    expect(third.sessionId).toBeNull();
+    expect(startTaskSession).toHaveBeenCalledTimes(2);
+  });
+
   it("releases the guard after a FAILURE, so a retry is possible", async () => {
     // A guard that stayed set on rejection turns one transient error into a card
     // that can never be opened again without a reload.
@@ -924,6 +1200,129 @@ describe("taskLaunch — the Task badge map refetch after a launch (D10)", () =>
       expect(useSessions.getState().taskNumbers).toEqual({});
       // And the failure is LOGGED, not swallowed whole.
       expect(consoleError).toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+});
+
+/// The **auto-advance chain's settle edge** — proof the hook is wired into the send
+/// path, and not merely implemented next to it.
+///
+/// `workflowChain.test.ts` owns everything the runtime DOES with a settle; this block
+/// owns the one fact only this file can prove: that `sendLaunchMessage`'s `await
+/// sendPrompt(...)` actually hands that settle over. A runtime that is correct in
+/// isolation and never called is the exact failure this feature cannot ship with — a
+/// column that looks automatic and is not.
+///
+/// The card starts in `backlog`, is launched on `research` (which IS `auto`), and the
+/// settle is the mocked `end_turn`. What follows is the real chain: `research` points at
+/// `implement`, so the card moves and `implement`'s Skill is what goes out.
+describe("the auto-advance chain — the settle edge is wired", () => {
+  // A catalog that carries BOTH columns' Skills. `CATALOGS()` above deliberately has only
+  // `discuss` and `research`, and several of its cases pin the refusal that a missing
+  // Skill produces — widening the shared fixture to cover this chain would put this
+  // block's need on their path. The chain's next column asks for `implement`, so this
+  // block says so itself.
+  const CHAIN_CATALOGS = (): TaskLaunchCatalogs => ({
+    skills: [skill("research"), skill("implement")],
+    agents: [],
+  });
+
+  beforeEach(() => {
+    seedBoard(
+      column("backlog", [taskRow()]),
+      column("research", [], {
+        label: "Research",
+        sortOrder: 1,
+        skill: "research",
+        auto: true,
+      }),
+      column("implement", [], {
+        label: "Implement",
+        sortOrder: 2,
+        skill: "implement",
+      }),
+    );
+  });
+
+  it("advances the card when the launched column is auto and the turn ends", async () => {
+    // The turn settles AFTER the click's promise resolves, which is how it works in
+    // production (a turn takes seconds; `launchTaskSession` returns in milliseconds) and
+    // which is WHY the chain works at all: `launchTaskSession` guards a card's launch in
+    // a module `Set` keyed by `task.id`, and the chain's next launch is a launch of the
+    // SAME card. If the turn settled before the parent released that guard the chain's
+    // launch would be refused by its own parent. A `sendPrompt` mock that resolves
+    // synchronously manufactures exactly that impossible ordering — so this case defers
+    // the settle by hand, which is also the only way to observe the edge at all.
+    let settleTurn!: (reason: StopReason) => void;
+    vi.mocked(sendPrompt).mockImplementation(
+      () => new Promise<StopReason>((resolve) => (settleTurn = resolve)),
+    );
+    const launched = await launchTaskSession(
+      SPACE,
+      taskRow(),
+      "research",
+      CHAIN_CATALOGS(),
+    );
+    expect(launched.sessionId).toBe("sess_new");
+    settleTurn("end_turn");
+    // Flushed, never assumed: the chain is `void`ed on purpose, so neither the step nor
+    // the second launch can be awaited from here — awaiting them is the `ask`-gate
+    // deadlock `sendLaunchMessage`'s header records, one level deeper.
+    await vi.waitFor(() =>
+      expect(moveTask).toHaveBeenCalledWith(SPACE, "tsk_1", "implement"),
+    );
+    expect(workflowRunStep).toHaveBeenCalledWith(SPACE, "tsk_1", null);
+    await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(sendPrompt).mock.calls[1]![1]).toContain("$implement");
+    // The chain's OWN turn is still open — the card moved while the next Session was
+    // still working, which is the whole point of a chain that does not wait.
+    expect(useSessions.getState().inTurn["sess_new"]).toBe(true);
+  });
+
+  it("does not touch the chain for a column that is not auto", async () => {
+    // THE compatibility case, and the reason the 39 cases above still pass untouched:
+    // `stages.auto` defaults to OFF, so a launch on an ordinary column must not reach
+    // the record at all. A chain that started on every launch would silently bound
+    // every card against a step limit nobody configured.
+    seedBoard(
+      column("backlog", [taskRow()]),
+      column("research", [], {
+        label: "Research",
+        sortOrder: 1,
+        skill: "research",
+      }),
+    );
+    await launchTaskSession(SPACE, taskRow(), "research", CHAIN_CATALOGS());
+    await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
+    expect(workflowRunStep).not.toHaveBeenCalled();
+    expect(workflowRunClose).not.toHaveBeenCalled();
+  });
+
+  it("settles the chain's own failure into the Session, never as a rejected launch", async () => {
+    // The `void`ed promise has nothing upstream to catch it, so a rejecting step verb
+    // must land as a line in the transcript (this file's own shape for a failure that
+    // cannot be rethrown) and must NOT move the card: a verdict this side never read is
+    // a verdict it must not guess at.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      vi.mocked(workflowRunStep).mockRejectedValue(new Error("db is busy"));
+      const launched = await launchTaskSession(
+        SPACE,
+        taskRow(),
+        "research",
+        CHAIN_CATALOGS(),
+      );
+      expect(launched.sessionId).toBe("sess_new");
+      await vi.waitFor(() => {
+        const rows = useSessions.getState().messages["sess_new"] ?? [];
+        expect(
+          rows.some((m) => /auto-advance chain/.test((m as { text: string }).text ?? "")),
+        ).toBe(true);
+      });
+      expect(moveTask).toHaveBeenCalledTimes(1);
+      expect(moveTask).toHaveBeenLastCalledWith(SPACE, "tsk_1", "research");
     } finally {
       consoleError.mockRestore();
     }

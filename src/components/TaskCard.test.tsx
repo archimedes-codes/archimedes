@@ -130,7 +130,12 @@ const launchStep = (
     onLaunch: (destination: TaskLaunchDestination) => void;
   }> = {},
 ): NonNullable<TaskCardProps["launchStep"]> => ({
-  destination: { slug: "approved", label: "Approved", onEnterSkill: null },
+  // `promptPrefix: null` is REQUIRED on the destination since the column extra-prompt
+  // field landed — an optional field would compile against this fixture and then
+  // render nothing when a real Stage row arrived (the `StageDto.auto` argument). The
+  // card itself never reads it: it is presentational and hands the destination back
+  // untouched, which is what the `toHaveBeenCalledWith` pin below is about.
+  destination: { slug: "approved", label: "Approved", onEnterSkill: null, promptPrefix: null },
   launchReady: true,
   onLaunch: vi.fn(),
   ...over,
@@ -687,7 +692,7 @@ describe("TaskCard — the primary-next-step pill (issue #179 §7.1)", () => {
         task={task()}
         {...NO_LINKS}
         onOpenTask={onOpenTask}
-        launchStep={launchStep({ destination: { slug: "approved", label: "Approved", onEnterSkill: null }, onLaunch })}
+        launchStep={launchStep({ destination: { slug: "approved", label: "Approved", onEnterSkill: null, promptPrefix: null }, onLaunch })}
       />,
     );
     fireEvent.click(controlNamed("Approved"));
@@ -699,6 +704,7 @@ describe("TaskCard — the primary-next-step pill (issue #179 §7.1)", () => {
       slug: "approved",
       label: "Approved",
       onEnterSkill: null,
+      promptPrefix: null,
     });
     expect(onOpenTask).not.toHaveBeenCalled();
   });
@@ -717,7 +723,7 @@ describe("TaskCard — the primary-next-step pill (issue #179 §7.1)", () => {
         task={task()}
         {...NO_LINKS}
         launchStep={launchStep({
-          destination: { slug: "research", label: "Research", onEnterSkill: "research" },
+          destination: { slug: "research", label: "Research", onEnterSkill: "research", promptPrefix: null },
           launchReady: false,
           onLaunch,
         })}

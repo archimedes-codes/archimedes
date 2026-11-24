@@ -1582,12 +1582,12 @@ describe("SpacesList (archive, ADR 0016)", () => {
   // -- (a `for` over expanded/collapsed); the collapsed state is retired with the
   // -- pane's collapse flag, so it is pinned once, for the one state the pane has. --
 
-  it("the command row above the list is Tasks alone and the band below it reads Skills, Agents, Settings", () => {
+  it("the command row above the list is Workflows then Tasks and the band below it reads Skills, Agents, Settings", () => {
     // The strip used to be ONE four-command row at the top of the pane. It is now
     // TWO surfaces, and this case pins the split rather than the old order:
     //
-    //  - **Tasks** sits ALONE above the `Sessions` header (D2) — the pane reads
-    //    tasks, then sessions;
+    //  - **Workflows** then **Tasks** sit above the `Sessions` header (D2) — the
+    //    pane reads the workflow, then the tasks, then the sessions;
     //  - **Skills / Agents / Settings** form the COMMAND BAND pinned below the
     //    list's scroller (D1), where a long Session list cannot push them off.
     //
@@ -1604,13 +1604,26 @@ describe("SpacesList (archive, ADR 0016)", () => {
     // the `aria-pressed` behaviour is per-button and order-independent (pinned in
     // `App.test.tsx`), and the two modal buttons still carry no `aria-pressed` at
     // all (pinned below).
+    //
+    // THE ROW IS NO LONGER "TASKS ALONE", and this line is the assertion that had
+    // to change to say so. The **Workflows** door joined it ABOVE Tasks on the
+    // owner's placement ("a new button above tasks in the sidebar"), so the row
+    // reads two VIEW doors now. The variable keeps its `tasksRow` name because it
+    // is still resolved THROUGH the Tasks door — that is the idiom being pinned,
+    // not the count. The door's own behaviour (`aria-pressed`, both halves of the
+    // gesture, the bare-call-site no-op) lives in
+    // `SpacesList.workflows.test.tsx`: THIS file is BASELINED at its exact
+    // code-line count and the size ratchet refuses a baselined file growing by one
+    // code line, so a new door's cases go in a NEW file (the
+    // `SpacesList.agents.test.tsx` / `StageEditor.workflows.test.tsx` precedent)
+    // and only the assertion this change makes STALE is edited here, in place.
     render(<SpacesList />);
     const tasksRow = screen.getByRole("button", { name: "Tasks" }).parentElement!;
     expect(
       [...tasksRow.querySelectorAll("button")].map(
         (b) => b.textContent?.trim() ?? "",
       ),
-    ).toEqual(["Tasks"]);
+    ).toEqual(["Workflows", "Tasks"]);
     const band = screen.getByRole("button", { name: "Skills" }).parentElement!;
     expect(
       [...band.querySelectorAll("button")].map(

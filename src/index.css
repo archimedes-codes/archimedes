@@ -1,6 +1,30 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+/* The Workflows canvas's component stylesheet (`@xyflow/react`), and its
+ * position here is decided rather than incidental.
+ *
+ * It is a COMPONENT sheet, not a palette: it ships inside `@layer xyflow` and
+ * declares no `@theme` block and no `.dark` / `.theme-*` block, so it cannot
+ * enter the cascade `src/lib/paletteCompleteness.test.ts`'s layer gate measures.
+ * That gate enumerates the classes `themeClassNames()` can produce and asserts
+ * their order on the RESOLVED sheet (`readResolvedIndexCss`), and
+ * `src/lib/cssSource.ts` DROPS every non-relative `@import` — exactly as it
+ * already drops `tailwindcss`, `tw-animate-css` and `shadcn/tailwind.css` — so
+ * the inlined order the gate pins is byte-for-byte what it was before this line.
+ *
+ * It sits with the other two package sheets at the HEAD for that reason: the
+ * four PALETTE imports at the END of this file are the block the gate's prose
+ * calls "one contiguous run", and putting a third-party sheet inside that run
+ * would split it for no gain. Order among the three package imports is inert for
+ * the app's own tokens (none of them declare any), and this one is the only one
+ * whose rules the app's own `src/styles/*` sheets never name.
+ *
+ * AND `WorkflowsCanvas.tsx` deliberately does NOT re-import this sheet: it needs
+ * only the class names, which this one provides. A component-local copy sat there
+ * and Vite deduped it, so it read as the duplicate and this line as the deletable
+ * one — deleting it would move the sheet after the palette blocks above. */
+@import "@xyflow/react/dist/style.css";
 /* `docs/css-theme-tokens.md` is a DESIGN RECORD, not a source: it quotes
  * Tailwind classes in prose (e.g. the ramp tokens' old `bg-yellow-500`)
  * and Tailwind v4's automatic source detection scans `.md` files in the

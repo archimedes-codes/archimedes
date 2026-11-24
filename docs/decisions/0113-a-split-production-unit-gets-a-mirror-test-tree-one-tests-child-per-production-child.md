@@ -68,14 +68,20 @@ split. Probed against this repo's edition and toolchain, that cost **does not ex
   the `*_COLUMNS` consts) cost nothing to re-home.
 - A **sibling** production file may read the parent's private `const`/`fn` by full path.
 - A sibling may **not** read a sibling's private item — `error[E0603]: function is private` — so the
-  shared row mappers and stage helpers need `pub(super)`. **27** `pub(super)` tokens — declarations,
-  not mentions: `rows` 18, `stages` 5, `migrations` 3, `seams` 1 — and it fails loudly. Count them with
+  shared row mappers and stage helpers need `pub(super)`. **28** `pub(super)` tokens — declarations,
+  not mentions: `rows` 18, `stages` 5, `migrations` 3, `seams` 1, `auto_guards` 1 — and it fails loudly.
+  Count them with
   the comment-anchored filter `grep -rn 'pub(super)' src-tauri/src/storage/db/*.rs | grep -vc '://'`,
-  never the raw grep: that prints **32** because five comment lines (one in `stages.rs`, four in
+  never the raw grep: that prints **34** because six comment lines (one in `stages.rs`, five in
   `db/mod.rs`) discuss the token itself — the trap `docs/agents/census.md` exists to catch. Both
-  32 and 27 are LINE counts, which is what `grep -rn` emits and what the filter subtracts, so do
-  not re-derive them by counting the token instead: it occurs 33 times across those files, because
-  one of the five comment lines (`db/mod.rs:26`) quotes it twice. 27 is also the figure
+  34 and 28 are LINE counts, which is what `grep -rn` emits and what the filter subtracts, and today
+  they coincide with the TOKEN count: `grep -ro 'pub(super)' src-tauri/src/storage/db/*.rs | wc -l`
+  also prints **34**, because no line in the tree quotes the token more than once. That was not always
+  so — an earlier revision of this paragraph recorded 33 tokens against 32 lines, the surplus being a
+  `db/mod.rs` comment line that quoted it twice, and that line has since been rewritten. Do not treat
+  the coincidence as a law: re-run `grep -ron 'pub(super)' src-tauri/src/storage/db/*.rs | awk -F:
+  '{print $1":"$2}' | sort | uniq -c` and look for a count above 1 before you reason from one figure
+  to the other. 28 is also the figure
   `db/mod.rs` carries in its own split block, so doc and code agree.
 - Relocating a `#[cfg(test)] mod tests` out of a file creates **no** dead-code lint. A private item
   whose only reader is the test module fails `-D warnings` **identically inline and relocated**
@@ -115,11 +121,18 @@ is a rule that gets ignored rather than followed.
   test children the same four, plus `support.rs`). Two units did not: `storage/db/tests/` and
   `agent/session/tests/`.
   **`storage/db/tests/` is now compliant** — child-for-child, measured at this branch: production
-  children `artifacts`, `board`, `messages`, `migrations`, `rows`, `seams`, `sessions`, `spaces`,
-  `stages`, `tasks` beside test children of the same names, plus `open.rs` mirroring the `mod.rs`
-  parent that keeps `Db::open`, `gate` and `SCHEMA`, plus `support.rs` as the **only** non-mirror
-  child, plus a `tests/mod.rs` that is nothing but `mod` declarations (12 code lines at the split
-  commit `8ef9d14d`). `seams.rs` was the last gap and it is **closed, not exempted**: it now has
+  children `artifacts`, `auto_guards`, `board`, `messages`, `migrations`, `parent_link`, `retention`,
+  `rows`, `seams`, `sessions`, `spaces`, `stages`, `tasks`, `workflow_runs` beside test children of the
+  same names, plus `open.rs` mirroring the `mod.rs` parent that keeps `Db::open`, `gate` and `SCHEMA`,
+  plus `support.rs` as the **only** non-mirror child, plus a `tests/mod.rs` that is nothing but `mod`
+  declarations. Re-run `ls src-tauri/src/storage/db/*.rs src-tauri/src/storage/db/tests/*.rs` and
+  compare the two name-sets rather than trusting this list; it has grown since this ADR was written —
+  `parent_link` and `retention` came with the transcript-bound work, and `auto_guards` with
+  `workflow_runs` came when the workflow subject was split **by subject** rather than left as one
+  `db/workflows.rs` sibling. That second split is this rule doing its job a second time: the workflow
+  work had added one production file and one test file holding two subjects, and the mirror is what
+  forced the pair apart into same-named children on both sides. `seams.rs` was the last gap of that
+first split and it is **closed, not exempted**: it now has
   `db/tests/seams.rs` holding the unit-level seam tests — trait-bound instantiations of both
   `FulcrumPersistence` and `TaskStore` on `Db`, plus direct `desktop_row_to_crate_row` field-mapping
   assertions. It was never an instance of the "pure data table" permission below, and this ADR used to
@@ -130,7 +143,10 @@ is a rule that gets ignored rather than followed.
   `mod` declarations, against production children `naming.rs`, `router.rs` and `naming/prompt.rs`. It
   has its own card and is not this branch's to close.
 - **The split landed TEN production subjects, not the nine this ADR was written against, and the
-  tenth is a consequence of this rule.** The plan held that the migration free functions had to stay
+  tenth is a consequence of this rule.** (TEN is what that split landed, not what the tree holds: the
+  directory is at **fourteen** siblings now — re-run `ls src-tauri/src/storage/db/*.rs`, which counts
+  `mod.rs` too, and compare against the bullet above. The argument below is about the tenth, and it is
+  unaffected by what came after.) The plan held that the migration free functions had to stay
   in `db/mod.rs`; that constraint was **false** — all 12 `gate(&mut conn, ` calls are inside `pub fn
   open`, which is what the gate-count pin reads, so the free functions were never pinned to the parent
   and were free to move. Without a `db/migrations.rs` sibling the mirror has nowhere to put the

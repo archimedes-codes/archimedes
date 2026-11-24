@@ -1,6 +1,7 @@
-//! Tests for `db/stages.rs`: the six Stage verbs (issue #179, spec §4/§4.1/§5),
-//! the lazy five-stage seed and its per-Space isolation, and the three gated
-//! #179 columns' migration (ADRs 0098 + 0099).
+//! Tests for `db/stages.rs`: the eight Stage verbs (issue #179's six, spec
+//! §4/§4.1/§5, plus the two workflow columns), the lazy five-stage seed and its
+//! per-Space isolation, and the four gated `stages` columns' migration
+//! (ADRs 0098 + 0099).
 
 use crate::storage::db::*;
 
@@ -36,17 +37,19 @@ fn seeding_one_space_leaves_another_space_unseeded() {
 // enforced only under a per-Space opt-in).
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// (spec §3 + §3.1, the fresh path) a brand-new database gets all THREE new
-/// columns from `SCHEMA` — no `ADD COLUMN` runs, because no gate's probe finds a
-/// missing column — and seeds FIVE stages (ADR 0107 retired the seeded `discuss`).
+/// (spec §3 + §3.1, the fresh path) a brand-new database gets EVERY gated column
+/// from `SCHEMA` — no `ADD COLUMN` runs, because no gate's probe finds a missing
+/// column — and seeds FIVE stages (ADR 0107 retired the seeded `discuss`).
 #[test]
-fn fresh_database_gets_the_three_new_columns_from_schema_and_seeds_five() {
+fn fresh_database_gets_every_gated_column_from_schema_and_seeds_five() {
     let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-fresh-", "scratch");
     let db = Db::open(&dir.join("t.db")).expect("db should open");
 
     for (table, column) in [
         ("stages", "on_enter_skill"),
         ("stages", "next_slugs"),
+        ("stages", "auto"),
+        ("stages", "prompt_prefix"),
         ("spaces", "board_strict"),
     ] {
         assert!(
@@ -83,6 +86,15 @@ fn fresh_database_gets_the_three_new_columns_from_schema_and_seeds_five() {
         board.iter().all(|c| c.stage.next_slugs.is_none()),
         "`next_slugs` is NOT backfilled and the seed leaves it NULL — NULL means \
          unconfigured, not \"no edges\" (ADR 0099)"
+    );
+    assert!(
+        board.iter().all(|c| !c.stage.auto),
+        "every seeded column has `auto` OFF — a fresh board never advances a card \
+         on its own; the flag is opt-in per column"
+    );
+    assert!(
+        board.iter().all(|c| c.stage.prompt_prefix.is_none()),
+        "and every seeded column has NO prompt prefix — NULL is \"no extra prompt\""
     );
 }
 
@@ -196,7 +208,132 @@ fn the_on_enter_skill_gate_backfills_research_and_inserts_no_discuss_row() {
     );
 }
 
-// ── The six Stage verbs (spec §4, §4.1, §5) ─────────────────────────────────
+// ── The two workflow columns' gates ──────────────────────────────────────────
+
+/// (the `auto` gate) a pre-existing database whose `stages` table predates the
+/// `auto` column must open CLEANLY, and EVERY pre-existing column must arrive
+/// with the flag OFF.
+///
+/// `false` — not `true` — is the load-bearing half, and it is the same argument
+/// `spaces.board_strict`'s `0` default makes: an existing board's behaviour must
+/// not change because a person upgraded. A column that arrives ON would start
+/// advancing cards on its own in a workflow whose owner never asked for that, so
+/// the `DEFAULT 0` is not a convenience, it is the compatibility story. The
+/// fixture is `SCHEMA_WITHOUT_STAGES_AUTO`: every OTHER gated column is present,
+/// so the sibling gates stay silent and this test observes its own gate.
+#[test]
+fn the_auto_gate_arrives_off_for_every_pre_existing_stage() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-auto-gate-", "scratch");
+    let space = board_space("auto-gate");
+    let path = preexisting_db(
+        &dir,
+        SCHEMA_WITHOUT_STAGES_AUTO,
+        &pre_task_board_rows(&space),
+    );
+
+    {
+        let db = Db::open(&path).expect("the auto gate runs on open");
+        let has: i64 = db
+            .conn
+            .lock()
+            .expect("db mutex poisoned")
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('stages') WHERE name = 'auto'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("pragma_table_info should read");
+        assert_eq!(has, 1, "the `auto` column is in place after the gate");
+
+        let stages = db.list_stages(&space).expect("list_stages");
+        assert_eq!(stages.len(), 5, "the five pre-existing rows survived");
+        assert!(
+            stages.iter().all(|s| !s.auto),
+            "every migrated column reads `auto == false` — the DDL's DEFAULT 0, \
+             so an upgrade cannot make a board auto-advance a card it never \
+             advanced before; got {:?}",
+            stages
+                .iter()
+                .map(|s| (s.slug.clone(), s.auto))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // A SECOND open of the already-migrated file is a clean no-op (the
+    // `pragma_table_info` probe skips the `ALTER`), and nothing flipped.
+    let db = Db::open(&path).expect("a re-open of the migrated db must succeed");
+    assert!(
+        db.list_stages(&space)
+            .expect("list_stages")
+            .iter()
+            .all(|s| !s.auto),
+        "the gate ran once, not twice"
+    );
+}
+
+/// (the `prompt_prefix` gate) a pre-existing database whose `stages` table
+/// predates the `prompt_prefix` column must open CLEANLY, and every pre-existing
+/// column must read `None`.
+///
+/// `None` — not `""` — is the load-bearing half, and it is the `cost_usd`
+/// argument one column down: a `DEFAULT ''` would migrate every existing column
+/// to "an empty extra prompt", which is a state nothing ever configured and which
+/// the launch path would have to special-case forever. The gate therefore carries
+/// NO `DEFAULT` and NO backfill, and the `dflt_value` is pinned directly — the
+/// `None` assertions below would ALSO pass under a `DEFAULT ''` someone later
+/// "improves". The fixture is `SCHEMA_WITHOUT_STAGES_PROMPT_PREFIX`, which omits
+/// EXACTLY this one gated column.
+#[test]
+fn the_prompt_prefix_gate_arrives_null_for_every_pre_existing_stage() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-prefix-gate-", "scratch");
+    let space = board_space("prefix-gate");
+    let path = preexisting_db(
+        &dir,
+        SCHEMA_WITHOUT_STAGES_PROMPT_PREFIX,
+        &pre_task_board_rows(&space),
+    );
+
+    {
+        let db = Db::open(&path).expect("the prompt_prefix gate runs on open");
+        let default_value: Option<String> = db
+            .conn
+            .lock()
+            .expect("db mutex poisoned")
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('stages') WHERE name = 'prompt_prefix'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("pragma_table_info should read");
+        assert_eq!(
+            default_value, None,
+            "`prompt_prefix` has NO column DEFAULT — NULL means 'no extra prompt', \
+             and '' would be a second, invented state"
+        );
+
+        let stages = db.list_stages(&space).expect("list_stages");
+        assert_eq!(stages.len(), 5, "the five pre-existing rows survived");
+        assert!(
+            stages.iter().all(|s| s.prompt_prefix.is_none()),
+            "every migrated column reads `prompt_prefix == None`; got {:?}",
+            stages
+                .iter()
+                .map(|s| (s.slug.clone(), s.prompt_prefix.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    let db = Db::open(&path).expect("a re-open of the migrated db must succeed");
+    assert!(
+        db.list_stages(&space)
+            .expect("list_stages")
+            .iter()
+            .all(|s| s.prompt_prefix.is_none()),
+        "the gate ran once, not twice"
+    );
+}
+
+// ── The eight Stage verbs (spec §4, §4.1, §5) ───────────────────────────────
 
 /// (spec §4 + §5) `create_stage` appends at the end, and refuses a slug
 /// collision by NAMING the slugs that are taken rather than suffixing — a
@@ -340,6 +477,160 @@ fn set_stage_skill_sets_and_clears_the_skill() {
     assert!(
         matches!(err, BoardError::MissingStage { .. }),
         "got {err:?}"
+    );
+}
+
+/// (the per-column auto-advance flag) `set_stage_auto` writes the flag and reads
+/// it back through the SAME mapper the board read uses, in both directions —
+/// ON and back OFF. There is no "clear to NULL" here and that is deliberate: the
+/// column is `NOT NULL DEFAULT 0`, so the flag has exactly two states and `false`
+/// is the off state (unlike `on_enter_skill`, whose absence IS a state).
+#[test]
+fn set_stage_auto_turns_the_flag_on_and_off_and_the_board_read_agrees() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-auto-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("auto");
+    db.get_board(&space).expect("seed");
+
+    let on = db
+        .set_stage_auto(&space, "doing", true)
+        .expect("set auto = true");
+    assert!(on.auto, "the reply carries the value it just wrote");
+    assert_eq!(
+        raw_i64s(
+            &db,
+            &format!("SELECT auto FROM stages WHERE space_path = '{space}' AND slug = 'doing'")
+        ),
+        vec![1],
+        "at rest it is the INTEGER 1 — `auto` is a plain column, not JSON"
+    );
+    assert!(
+        db.get_board(&space)
+            .expect("get_board")
+            .iter()
+            .find(|c| c.stage.slug == "doing")
+            .expect("the doing column")
+            .stage
+            .auto,
+        "the board read reports the same flag the verb returned"
+    );
+
+    let off = db
+        .set_stage_auto(&space, "doing", false)
+        .expect("set auto = false");
+    assert!(!off.auto, "and the flag is turnable back off");
+    assert_eq!(
+        raw_i64s(
+            &db,
+            &format!("SELECT auto FROM stages WHERE space_path = '{space}' AND slug = 'doing'")
+        ),
+        vec![0],
+        "at rest it is the INTEGER 0"
+    );
+
+    // The flag is per-COLUMN: turning one on leaves its neighbours alone.
+    db.set_stage_auto(&space, "done", true).expect("set done");
+    assert!(
+        !db.set_stage_auto(&space, "backlog", false)
+            .expect("set backlog")
+            .auto,
+        "backlog stays off"
+    );
+    assert_eq!(
+        raw_i64s(
+            &db,
+            &format!("SELECT COUNT(*) FROM stages WHERE space_path = '{space}' AND auto = 1")
+        ),
+        vec![1],
+        "exactly ONE column carries the flag — a bulk write would make this 5"
+    );
+
+    let err = db
+        .set_stage_auto(&space, "ghost", true)
+        .expect_err("a missing stage is refused BEFORE the write");
+    assert!(
+        matches!(err, BoardError::MissingStage { .. }),
+        "got {err:?}"
+    );
+}
+
+/// (the per-column extra prompt) `set_stage_prompt_prefix` sets it and — the
+/// half that matters — CLEARS it back to NULL. The parameter is an `Option` for
+/// exactly this reason, following `set_stage_skill`; `set_stage_next` takes a
+/// plain slice and so a configured graph can never be un-configured, which is a
+/// recorded known gap this verb refuses to repeat.
+#[test]
+fn set_stage_prompt_prefix_sets_and_clears_the_prefix() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-prefix-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("prefix");
+    db.get_board(&space).expect("seed");
+
+    let set = db
+        .set_stage_prompt_prefix(&space, "research", Some("Start by re-reading the card. "))
+        .expect("set");
+    assert_eq!(
+        set.prompt_prefix.as_deref(),
+        Some("Start by re-reading the card. "),
+        "the reply carries the text it just wrote, verbatim — leading and trailing \
+         whitespace included, this layer does not trim"
+    );
+
+    let cleared = db
+        .set_stage_prompt_prefix(&space, "research", None)
+        .expect("clear to NULL");
+    assert_eq!(
+        cleared.prompt_prefix, None,
+        "`None` clears the column rather than writing an empty string — NULL is \
+         the ONLY \"no extra prompt\" state"
+    );
+    let raw = raw_column(
+        &db,
+        &format!(
+            "SELECT COALESCE(prompt_prefix,'NULL') FROM stages \
+             WHERE space_path = '{space}' AND slug = 'research'"
+        ),
+    );
+    assert_eq!(
+        raw.first().map(|s| s.as_str()),
+        Some("NULL"),
+        "at rest it is NULL, not '' — otherwise a clear and a set-to-empty would \
+         be indistinguishable states the launch path had to guess between"
+    );
+
+    // An empty string is a VALUE, not a clear: it round-trips as `Some("")`.
+    let empty = db
+        .set_stage_prompt_prefix(&space, "research", Some(""))
+        .expect("an empty prefix is a legal write");
+    assert_eq!(
+        empty.prompt_prefix.as_deref(),
+        Some(""),
+        "`Some(\"\")` is stored, so `None` stays the only spelling of \"cleared\""
+    );
+
+    let err = db
+        .set_stage_prompt_prefix(&space, "ghost", Some("x"))
+        .expect_err("a missing stage is refused BEFORE the write");
+    match err {
+        BoardError::MissingStage { wanted, available } => {
+            assert_eq!(wanted, "ghost");
+            assert!(
+                available.contains("research"),
+                "the refusal names the valid slugs (ADR 0090), got `{available}`"
+            );
+        }
+        other => panic!("expected MissingStage, got {other:?}"),
+    }
+    assert_eq!(
+        db.list_stages(&space)
+            .expect("list_stages")
+            .iter()
+            .find(|s| s.slug == "research")
+            .expect("the research row")
+            .prompt_prefix
+            .as_deref(),
+        Some(""),
+        "the refusal on the ghost slug touched no other row"
     );
 }
 

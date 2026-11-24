@@ -114,6 +114,12 @@ const stage = (slug: string, over: Partial<StageDto> = {}): StageDto => ({
   onEnter: "none",
   onEnterSkill: null,
   nextSlugs: null,
+  // Both REQUIRED on the wire type since the workflow-graph columns landed
+  // (`stages.auto` is `NOT NULL DEFAULT 0`; `promptPrefix` has no SQL DEFAULT and
+  // NULL is its only "no extra prompt" state). `auto: false` is also what every
+  // pre-workflow column holds, so the board renders exactly what it rendered before.
+  auto: false,
+  promptPrefix: null,
   ...over,
 });
 

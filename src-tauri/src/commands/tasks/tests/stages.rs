@@ -1,5 +1,5 @@
-//! issue #179's Stage-command tests — the WIRE half of the six Stage verbs and
-//! the Strict-workflow pair.
+//! issue #179's Stage-command tests — the WIRE half of the eight Stage verbs
+//! (the six of #179 plus the two workflow columns) and the Strict-workflow pair.
 //!
 //! The storage half (`storage::db::tests`) pins what the database refuses and
 //! what it writes. This file pins the one thing only this layer can get wrong:
@@ -351,14 +351,18 @@ fn the_relocation_does_not_call_move_task() {
     );
 }
 
-/// (the file's registration claim) all eight #179 commands are in
+/// (the file's registration claim) all ten Stage commands are in
 /// `lib.rs`'s `generate_handler!` list, inside the board block. `seed.rs` pins
-/// this shape for `start_task_session` with the same source-text read, and the
-/// claim this file's header makes ("SIXTEEN commands") is only true if every name
-/// is actually wired — a missing entry is a command the webview cannot reach and
-/// no Rust test would notice.
+/// this shape for `start_task_session`, [`super::workflows`] pins it for the two
+/// auto-guard commands AND the three `workflow_runs` commands, and the claim
+/// `commands/tasks.rs`'s header makes ("TWENTY-SIX commands", measured against the
+/// `#[tauri::command]` count) is
+/// only true if every name is actually wired — a missing entry is a command the
+/// webview cannot reach and no Rust test would notice. This pin stays at TEN
+/// names on purpose: it is named for the Stage commands, and widening it to cover
+/// unrelated verbs would make its own name a lie.
 #[test]
-fn the_eight_stage_commands_are_registered_in_the_invoke_handler() {
+fn the_ten_stage_commands_are_registered_in_the_invoke_handler() {
     let lib = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
         .expect("src/lib.rs reads");
     for command in [
@@ -366,6 +370,8 @@ fn the_eight_stage_commands_are_registered_in_the_invoke_handler() {
         "commands::tasks::rename_stage",
         "commands::tasks::set_stage_skill",
         "commands::tasks::set_stage_next",
+        "commands::tasks::set_stage_auto",
+        "commands::tasks::set_stage_prompt_prefix",
         "commands::tasks::reorder_stages",
         "commands::tasks::delete_stage",
         "commands::tasks::set_board_strict",
@@ -377,4 +383,112 @@ fn the_eight_stage_commands_are_registered_in_the_invoke_handler() {
              webview reaches commands through that list alone"
         );
     }
+}
+/// (the wire shape `src/lib/tauri/types.ts` mirrors) the two workflow fields
+/// `StageRow` carries serialise with camelCase keys, inside all NINE.
+///
+/// `StageRow` was serialised by NO test at all before this one, and the two fields
+/// the workflow-graph work added are the ones the board renders and the chain
+/// consults: `auto` is the flag `advanceWorkflowChainOnSettle` reads before it moves
+/// a card, and `promptPrefix` is prepended to the launch prompt. Drop
+/// `#[serde(rename_all = "camelCase")]` from the struct and both arrive as
+/// `auto` / `prompt_prefix` — `auto` survives by luck (one word, no case to fold)
+/// while `promptPrefix` becomes `undefined`, so a column's extra prompt silently
+/// stops reaching the Session it configures. `StageDto` in types.ts is the mirror
+/// this pins.
+///
+/// The whole object is asserted, following the row pin above: a `contains`-style
+/// check would pass while the sibling keys carried the wrong spelling.
+#[test]
+fn the_stage_row_serialises_with_the_camel_case_keys_the_ts_mirror_declares() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("cmd-stage-shape-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = "/cmd-stage/shape";
+    db.upsert_space(space, false).expect("upsert_space");
+    db.create_stage(space, "doing", "Doing", None)
+        .expect("create_stage");
+    // Configure BOTH workflow fields, so neither can hide behind a `null`: the
+    // point of the test is the KEY SPELLING of the two, and an unset field would
+    // let a dropped `rename_all` slip past a check that only looked at values.
+    db.set_stage_auto(space, "doing", true)
+        .expect("set_stage_auto");
+    db.set_stage_prompt_prefix(space, "doing", Some("carry the spec forward"))
+        .expect("set_stage_prompt_prefix");
+
+    let row = db
+        .list_stages(space)
+        .expect("list_stages")
+        .into_iter()
+        .find(|stage| stage.slug == "doing")
+        .expect("the column exists");
+    let value = serde_json::to_value(&row).expect("the stage row serialises");
+    let object = value.as_object().expect("as an object");
+
+    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "auto",
+            "label",
+            "nextSlugs",
+            "onEnter",
+            "onEnterSkill",
+            "promptPrefix",
+            "slug",
+            "sortOrder",
+            "spacePath",
+        ],
+        "EXACTLY the nine camelCase keys the mirror declares — `auto` and \
+         `promptPrefix` are the two the workflow-graph work added, and a dropped \
+         `rename_all` would deliver `prompt_prefix`, which the launch path reads \
+         as `undefined` and drops"
+    );
+    assert_eq!(
+        object.len(),
+        9,
+        "exactly the nine — a tenth is a field nothing reads"
+    );
+    assert_eq!(
+        object["auto"],
+        serde_json::json!(true),
+        "`auto` is a JSON boolean, so the chain's `from.auto` test is a real \
+         branch and not a truthy string"
+    );
+    assert_eq!(
+        object["promptPrefix"],
+        serde_json::json!("carry the spec forward"),
+        "and the prompt arrives under the camelCase key the launch path reads"
+    );
+
+    // The `null` arms of the two nullable workflow-adjacent fields are PRESENT and
+    // NULL (the row pin's reasoning, same reason): a column with no Skill and an
+    // UNCONFIGURED graph must arrive as `null`, not as an absent key, or the board
+    // cannot tell "configured, leads nowhere" (`[]`) from "never configured"
+    // (`null`) — the distinction `nextStepOf` branches on.
+    let bare = db
+        .create_stage(space, "backlog", "Backlog", None)
+        .expect("a second column, nothing configured");
+    let bare = serde_json::to_value(&bare).expect("serialises");
+    let bare = bare.as_object().expect("as an object");
+    assert!(
+        bare.contains_key("onEnterSkill") && bare["onEnterSkill"].is_null(),
+        "`null` onEnterSkill is present-and-null, got {:?}",
+        bare.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        bare.contains_key("nextSlugs") && bare["nextSlugs"].is_null(),
+        "`null` nextSlugs is present-and-null — UNCONFIGURED, and the board needs \
+         the key to exist to tell it from `[]`"
+    );
+    assert!(
+        bare.contains_key("promptPrefix") && bare["promptPrefix"].is_null(),
+        "`null` promptPrefix is present-and-null (NO extra prompt)"
+    );
+    assert_eq!(
+        bare["auto"],
+        serde_json::json!(false),
+        "and a fresh column defaults to NOT auto-advancing — the compatibility \
+         rule: adding the capability must not make an existing board move anything"
+    );
 }

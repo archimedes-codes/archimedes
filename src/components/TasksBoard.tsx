@@ -16,6 +16,7 @@ import { launchTaskSession } from "../store/taskLaunch";
 import { useMentionCatalogs } from "../hooks/useMentionCatalogs";
 import { describeIpcError } from "../lib/ipcError";
 import type { TaskLaunchDestination } from "../lib/taskPrompt";
+import { nextStepOf } from "../lib/workflowGraph";
 import type { StageWithTasks, TaskRow } from "../lib/tauri";
 
 /**
@@ -202,50 +203,26 @@ export default function TasksBoard({ onReturnToWorkspace }: TasksBoardProps) {
     }
   };
 
-  /** The card's PRIMARY NEXT STEP, derived from the graph rather than hardcoded.
-   *
-   *  The FIRST `next_slugs` entry (spec §7.1) — the row's author put that one first —
-   *  and with `next_slugs` NULL the fallback is the Stage at `sortOrder + 1`, so an
-   *  unconfigured board keeps a launch pill instead of silently losing it on upgrade.
-   *  `nextSlugs: []` is the OTHER answer (configured, leads nowhere) and yields no
-   *  pill; the two must not collapse (ADR 0099).
-   *
-   *  Deliberately the same derivation `TaskDetailDialog` runs, spelled twice rather
-   *  than hoisted into `lib/`: the two surfaces read the same store slice, and a shared
-   *  helper would have to live in `lib/` (no store) and take the columns as an
-   *  argument, which is the shape both already have locally. If a third surface grows
-   *  the same need, that helper is the extraction to make. */
-  const nextStepOf = (
-    column: StageWithTasks,
-  ): TaskLaunchDestination | undefined => {
-    const slugs =
-      column.stage.nextSlugs ??
-      (columns ?? [])
-        .filter((c) => c.stage.sortOrder === column.stage.sortOrder + 1)
-        .map((c) => c.stage.slug);
-    const slug = slugs[0];
-    if (slug === undefined) return undefined;
-    const stage = columns?.find((c) => c.stage.slug === slug)?.stage;
-    // An edge the slice cannot resolve yields NO pill: unlike the detail modal (which
-    // keeps it, because there the skipped-column NOTE is the surface that explains the
-    // stale read), a pill has no note to fall back on — it would be a control whose
-    // click moves nothing, with the sentence appearing somewhere else entirely.
-    return stage === undefined
-      ? undefined
-      : { slug: stage.slug, label: stage.label, onEnterSkill: stage.onEnterSkill };
-  };
-
   /** The `launchStep` prop for one card, or `undefined` for "no pill".
    *
+   *  The next step comes from `lib/workflowGraph`'s `nextStepOf` — the ONE
+   *  derivation, now shared with the detail modal's buttons and with the
+   *  auto-advance runtime. This file used to spell it here and `TaskDetailDialog`
+   *  spelled it again; the comment here used to call that out and name the
+   *  extraction to make once a third surface needed it. That surface arrived, the
+   *  extraction was made, and the semantics (the `nextSlugs ?? sortOrder + 1`
+   *  fallback, `[]` meaning "leads nowhere", an unresolvable edge yielding no pill)
+   *  are pinned in `lib/workflowGraph.test.ts` rather than re-derived per surface.
+   *
    *  The gate lives HERE rather than inside the card because the card holds no
-   *  catalog — and the gate is the one fact about the pill a card cannot work out for
-   *  itself. A destination with NO Skill is `launchReady: true` outright: nothing is
-   *  waiting, so it renders on the first paint. */
+   *  catalog — and the gate is the one fact about the pill a card cannot work out
+   *  for itself. A destination with NO Skill is `launchReady: true` outright:
+   *  nothing is waiting, so it renders on the first paint. */
   const launchStepFor = (
     column: StageWithTasks,
     task: TaskRow,
   ): TaskCardProps["launchStep"] => {
-    const destination = nextStepOf(column);
+    const destination = nextStepOf(columns, column.stage);
     if (destination === undefined) return undefined;
     return {
       destination,

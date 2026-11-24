@@ -93,6 +93,13 @@ const stage = (slug: string): StageDto => ({
   onEnter: "none",
   onEnterSkill: null,
   nextSlugs: null,
+  // Both REQUIRED on the wire type since the workflow-graph columns landed
+  // (`stages.auto` is `NOT NULL DEFAULT 0`; `promptPrefix` has no SQL DEFAULT and
+  // NULL is its only "no extra prompt" state). This hook reads neither — it only
+  // resolves a destination's `sortOrder` — but the literal is annotated `StageDto`,
+  // so it has to carry what the database answers with.
+  auto: false,
+  promptPrefix: null,
 });
 
 /** One board CARD (issue #174): the wire element is a `TaskCardView` — the row

@@ -1,4 +1,4 @@
-//! The **Stage** subject of `db`: the six Stage verbs, the seed and the slug
+//! The **Stage** subject of `db`: the eight Stage verbs, the seed and the slug
 //! helpers, lifted verbatim out of the unit that was `storage/db.rs` (ADR 0113).
 //!
 //! The helpers here are the ones the board read and the task verbs also call, so
@@ -20,7 +20,8 @@ use super::{BoardError, Db};
 impl Db {
     // ── The configurable Stage (issue #179, spec §4/§4.1/§5, ADRs 0098 + 0099) ──
     //
-    // Six Stage verbs plus the Strict-workflow pair. Every WRITE here refuses
+    // Six Stage verbs from #179, the two workflow columns' pair, plus the
+    // Strict-workflow pair. Every WRITE here refuses
     // BEFORE it writes and names what it refused (ADR 0090), and every one that
     // returns a `StageRow` reads it back through the SAME
     // [`stage_row_by_slug`]/`stage_row_from` path the board read uses — so a
@@ -163,6 +164,81 @@ impl Db {
         guard.execute(
             "UPDATE stages SET next_slugs = ?3 WHERE space_path = ?1 AND slug = ?2",
             params![space_path, slug, encoded],
+        )?;
+        stage_row_by_slug(&guard, space_path, slug)
+    }
+
+    /// Turn this column's auto-advance flag on or off (the workflow-graph work).
+    ///
+    /// ON means a card LAUNCHED on this column advances itself when its Session
+    /// settles, instead of waiting for a person to drag it — the per-column
+    /// decision the board's configuration is made of. The flag is DATA on the
+    /// `stages` row and nothing here acts on it: the runtime that reads it is
+    /// `advanceWorkflowChainOnSettle` in `src/store/workflowChain.ts`, which tests
+    /// the flag on the column its Session settled in before it moves anything, and
+    /// storage's job stops at "the flag is stored, and the reply
+    /// agrees with what a later `get_board` will show".
+    ///
+    /// A `bool` and not an `Option`: the column is `NOT NULL DEFAULT 0`, so there
+    /// is no third state to write and no "clear" to support — `false` IS the off
+    /// state. Contrast [`set_stage_prompt_prefix`] directly below, whose parameter
+    /// IS an `Option` because absence there is a real, distinct state.
+    ///
+    /// `auto` is a plain INTEGER, not JSON: no `serde_json` and no lenient parser
+    /// on this path, unlike `next_slugs`.
+    pub fn set_stage_auto(
+        &self,
+        space_path: &str,
+        slug: &str,
+        auto: bool,
+    ) -> Result<StageRow, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        // Refuse before the write: an `UPDATE` matching zero rows is a silent 0,
+        // and "which slug did I mistype" is the question the caller is asking.
+        if !stage_slug_exists(&guard, space_path, slug)? {
+            return Err(missing_stage(&guard, space_path, slug));
+        }
+        guard.execute(
+            "UPDATE stages SET auto = ?3 WHERE space_path = ?1 AND slug = ?2",
+            params![space_path, slug, auto],
+        )?;
+        stage_row_by_slug(&guard, space_path, slug)
+    }
+
+    /// Set or clear this column's extra prompt (the workflow-graph work): the
+    /// text prepended BEFORE the Skill launch, the per-column half of what a
+    /// column says when it starts a Session. `None` → NULL (the `set_stage_skill`
+    /// precedent, which exists so a Skill can be un-assigned).
+    ///
+    /// The `Option` is load-bearing and it is the deliberate difference from
+    /// [`set_stage_next`]: that verb takes a plain slice, so a configured graph
+    /// can never be un-configured — a recorded known gap. A prefix a person typed
+    /// by mistake has to be removable, so this takes `Option` and writes NULL.
+    ///
+    /// `None` is the ONLY spelling of "no extra prompt": an empty string is a
+    /// VALUE that round-trips as `Some("")`, so a clear and a typed-empty are
+    /// never collapsed into one state (the same NULL-is-one-state argument the
+    /// column's missing `DEFAULT` makes at the DDL).
+    ///
+    /// Stored RAW — no trim, no template, no interpretation. Whether the text is
+    /// well-formed as a prompt is the editor's and the launch path's question,
+    /// not storage's; refusing a length here would be storage inventing a rule
+    /// the wire does not state.
+    pub fn set_stage_prompt_prefix(
+        &self,
+        space_path: &str,
+        slug: &str,
+        prefix: Option<&str>,
+    ) -> Result<StageRow, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        // Refuse before the write — the same reason `set_stage_skill` gives: a
+        // zero-row UPDATE is silent, and the caller wants the slug list.
+        if !stage_slug_exists(&guard, space_path, slug)? {
+            return Err(missing_stage(&guard, space_path, slug));
+        }
+        guard.execute(
+            "UPDATE stages SET prompt_prefix = ?3 WHERE space_path = ?1 AND slug = ?2",
+            params![space_path, slug, prefix],
         )?;
         stage_row_by_slug(&guard, space_path, slug)
     }

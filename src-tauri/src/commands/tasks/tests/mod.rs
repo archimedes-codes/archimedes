@@ -13,9 +13,14 @@
 //!     `move_task`" guard);
 //!   * [`artifacts`] — issue #180 D1's artifact-command tests (the key grammar,
 //!     the 256 KB cap, the missing-Task refusal, the `null` read, the `lib.rs`
-//!     registration, and the "D1 advertises nothing to a model" boundary pin).
+//!     registration, and the "D1 advertises nothing to a model" boundary pin);
+//!   * [`workflows`] — the two per-Space auto-guard commands and the three
+//!     `workflow_runs` commands (the three states the guard editor has to tell
+//!     apart, the `lib.rs` registration of all five, the run verbs' signatures and
+//!     their open → step → close wire behaviour, and the row's camelCase shape).
 
 mod artifacts;
 mod board;
 mod seed;
 mod stages;
+mod workflows;

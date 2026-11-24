@@ -89,6 +89,12 @@ const stage = (slug: string, sortOrder: number): StageDto => ({
   onEnter: "none",
   onEnterSkill: null,
   nextSlugs: null,
+  // REQUIRED on the wire type since the workflow-graph columns landed (`auto` is
+  // `NOT NULL DEFAULT 0`, `promptPrefix` has no DEFAULT and NULL is its only
+  // "no extra prompt" state), so a fixture that omitted either is a board the
+  // database cannot answer with. OFF + `null` is what every existing column holds.
+  auto: false,
+  promptPrefix: null,
 });
 
 const taskRow = (over: Partial<TaskRow> = {}): TaskRow => ({

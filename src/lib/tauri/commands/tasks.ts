@@ -38,12 +38,33 @@
  *     comes from `getArtifact` alone. And a write against a Task that does not
  *     exist is REFUSED — `task_artifacts` has no foreign key on purpose, so nothing
  *     below this call would catch a dangling id.
+ *
+ * The workflow-graph work adds FOUR more — the two per-Column fields (`setStageAuto`,
+ * `setStagePromptPrefix`) and the two per-Space guards (`getAutoGuards`,
+ * `setAutoGuards`) — and one more wire fact worth knowing before you change one:
+ *   - THREE of the four can be CLEARED, and `null` is the only spelling of that.
+ *     `setStageNext`'s plain `string[]` is the recorded accepted defect beside them:
+ *     a value written through it can never be un-configured. `null` is also never
+ *     `0` — an unconfigured guard falls back to a shipped default, a `0` guard is a
+ *     bound a person chose. See the section header above the four.
+ *
+ * The chain's RUN RECORD adds TWO more (`workflowRunStep`,
+ * `workflowRunClose`) and they are a different kind of wrapper from the nine above:
+ * none of them answers a person, none has a store action, and none refuses
+ * anything on the record's own account — see the section header above the two for
+ * why that distinction is
+ * real. The one wire fact to carry away from them is the same `null` ≠ `0` rule the
+ * guards stand on, moved from a bound to the figure the bound is compared against:
+ * `workflowRunStep(…, null)` says "this step reported nothing" and leaves the
+ * chain's cost alone, where `0` says "this step cost nothing".
  */
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AdvanceVerdict,
   Artifact,
   ArtifactMeta,
+  AutoGuards,
   MoveTaskOutcome,
   SessionInfo,
   StageDto,
@@ -378,6 +399,253 @@ export async function setBoardStrict(
  */
 export async function getBoardStrict(spacePath: string): Promise<boolean> {
   return invoke<boolean>("get_board_strict", { spacePath });
+}
+
+
+// ---------------------------------------------------------------------------
+// The workflow graph (the auto-advance chain): the two per-Column fields and the
+// two per-Space guards.
+//
+// The pair above the line is per-COLUMN and rides on the `stages` row, so both
+// answer the stored `StageDto` like the six Stage verbs beside them. The pair
+// below it is per-SPACE and rides on the `spaces` row, so it is the `Strict
+// workflow` pair's exact twin: a `void` write and a read that seeds the editor.
+//
+// THREE of the four take an `Option` on the field they write, and that is the
+// point. `promptPrefix` and BOTH guards are settable AND clearable, and `null` is
+// the only spelling of "cleared" — which is the deliberate refusal to repeat
+// `setStageNext`, whose plain `string[]` is the recorded accepted defect: a
+// configured value can never be un-configured through it, because `[]` and `null`
+// are unrecoverable from each other once written. A bound a person set by mistake
+// has to be removable, so none of these three repeats that. `null` is also NOT
+// `0`: `setAutoGuards(space, 0, null)` means "no auto-chaining, and the ceiling is
+// unconfigured", and the two must not meet in a wrapper.
+// ---------------------------------------------------------------------------
+
+/**
+ * Turn one column's **auto-advance** flag on or off (the workflow-graph work).
+ *
+ * ON means a card LAUNCHED on this column advances itself when its Session settles,
+ * rather than waiting for a person to drag it. Nothing acts on it until the runtime
+ * does — this is the field the editor sets and the runtime reads.
+ *
+ * `auto` is a plain `boolean` and not an `Option`, because the column is
+ * `NOT NULL DEFAULT 0`: a two-valued flag has no third state for a `NULL` to mean,
+ * so there is nothing to clear and no clear-to-null arm to get wrong (the
+ * `setBoardStrict` shape, one row over — not `setStageSkill`'s).
+ *
+ * Answers the stored `StageDto` so the editor updates the column from this call
+ * rather than from a second round trip.
+ */
+export async function setStageAuto(
+  spacePath: string,
+  slug: string,
+  auto: boolean,
+): Promise<StageDto> {
+  return invoke<StageDto>("set_stage_auto", { spacePath, slug, auto });
+}
+
+/**
+ * Set or clear one column's **extra prompt**, prepended BEFORE its Skill launch.
+ *
+ * `null` CLEARS it (no extra prompt), and it is the ONLY spelling of that: the
+ * column carries no SQL `DEFAULT`, so `""` is a stored VALUE a person typed and
+ * round-trips as `""`, while NULL stays the sole "nothing to prepend" state. The
+ * launcher prepends the text verbatim and treats the two the same — but a clear
+ * from this side sends `null`, never `""`, or the database holds a second state
+ * nothing can distinguish from the first.
+ *
+ * That optional parameter is the whole reason this wrapper exists in this shape:
+ * a prefix typed by mistake has to be removable, which is `setStageSkill`'s reason
+ * for the same signature and the gap `setStageNext`'s plain slice left behind.
+ *
+ * The text is NOT trimmed, templated or interpreted here — storage keeps it raw and
+ * the launch path is what prepends it.
+ */
+export async function setStagePromptPrefix(
+  spacePath: string,
+  slug: string,
+  promptPrefix: string | null,
+): Promise<StageDto> {
+  return invoke<StageDto>("set_stage_prompt_prefix", {
+    spacePath,
+    slug,
+    promptPrefix,
+  });
+}
+
+/**
+ * Read one Space's **auto-chain guards** — the seed for the editor's two numeric
+ * fields, and the only thing that can tell "unset" from "set to the same number".
+ *
+ * Both fields answer what is STORED, and an unset one answers `null` rather than
+ * the fallback constant: the runtime applies the fallback, the read never
+ * substitutes it. A read that filled in `DEFAULT_AUTO_MAX_STEPS` would make the
+ * editor show "20" over a Space whose owner never configured anything, and the
+ * owner could no longer tell a bound they chose from a bound they inherited — the
+ * reason the fallback lives in code and the column's `NULL` stays meaningful.
+ *
+ * A Space with no `spaces` row answers `{ maxSteps: null, ceilingUsd: null }`
+ * rather than refusing, which is the same leniency `getBoardStrict` shows that row
+ * (a Detached Space has a board and no bookkeeping row).
+ */
+export async function getAutoGuards(spacePath: string): Promise<AutoGuards> {
+  return invoke<AutoGuards>("get_auto_guards", { spacePath });
+}
+
+/**
+ * Set or clear one Space's auto-chain guards — the bound a chain of auto-advancing
+ * columns may run to, and spend, before it stops.
+ *
+ * BOTH arguments are optional so each guard is CLEARABLE as well as settable, and
+ * `null` writes NULL: "fall back to the shipped default". That is a different
+ * answer from `0` — "this Space's bound is zero", i.e. no auto-chaining / no spend —
+ * and the two must not be collapsed here, or the Clear button becomes an off switch
+ * (ADR 0082's `NULL` ≠ `0.0`, applied to the thing the ceiling exists to bound).
+ *
+ * ONE call for the PAIR, and that is a wire fact rather than a style: the storage
+ * statement writes both columns together and has no "keep what is there" arm, so a
+ * caller that wanted to change one field still has to name the other. A caller
+ * holding only one of the two would clear the other by omission, which is why the
+ * editor reads the pair before it writes either.
+ *
+ * A Space with no `spaces` row is a SILENT no-op — the write cannot land on a row
+ * that does not exist and will not fabricate one from a settings edit. The read
+ * answers the only follow-up question ("what does this Space hold now?"), so a
+ * caller that needs to know whether its write stuck re-reads rather than assumes.
+ */
+export async function setAutoGuards(
+  spacePath: string,
+  maxSteps: number | null,
+  ceilingUsd: number | null,
+): Promise<void> {
+  return invoke("set_auto_guards", { spacePath, maxSteps, ceilingUsd });
+}
+
+
+// ---------------------------------------------------------------------------
+// The auto-advance chain's RUN RECORD: step → close.
+//
+// The four wrappers above ask a person to configure a chain. These two let a
+// chain count itself, and they are the wire half of `Db::workflow_run_step` /
+// `_close`. The pair above the line is per-Space state a person edits;
+// this is per-RUN state a machine writes once per auto-advance.
+//
+// THERE WERE THREE. `workflowRunOpen` — "the open chain for this card, or null" —
+// was deleted as dead IPC, along with its command, its barrel entry and the `Db`
+// verb behind it. Nothing called it: the runtime never asks "is this card
+// mid-chain", because `workflowRunStep` IS the upsert — opening a chain when none
+// is open is what the step verb does. It survived the consumer gate only because
+// `scripts/check-commands.sh` counts the wrapper's own `invoke("workflow_run_open")`
+// literal as its consumer, i.e. a command can pay for its own registration by
+// exporting a function nobody calls; that is the gate's stated failure mode one
+// layer above the layer it inspects, and the honest fix was the deletion rather
+// than an allowlist entry.
+//
+// NO STORE ACTION FOR EITHER OF THESE TWO, and that is a real distinction rather
+// than an omission. `setStageAuto` has one because the flag it writes IS board
+// state: it is a field on a `StageDto` the board slice already holds, so the
+// action paints that slice optimistically and reverts it on a refusal — the store
+// is the only place the "what does this column say" answer lives. A run record is
+// none of that. It belongs to no column and no card the board renders, no component
+// reads it, and it changes on every auto-advance rather than when a person acts, so
+// a store action would put a per-step counter in the slice that renders a board and
+// make that slice a second owner of a fact the database owns. The runtime calls
+// these wrappers directly. If an observability surface ever wants to SHOW a chain,
+// the store action belongs to that feature and not here.
+//
+// NEITHER of the two refuses anything ON THE RECORD'S OWN ACCOUNT, and neither
+// should be made to. Every absence in this family is a `null` or a silent no-op,
+// because the caller is a settle-handler:
+// bookkeeping must never fail a Session that already did its work. A
+// `workflowRunClose` that closed nothing is an `undefined` like any other.
+// `workflowRunStep` DOES refuse, and only at arguments rather than absences: a
+// `spacePath` that is not the card's own Space, and a `taskId` that names no card.
+// Those are not "nothing to do", they are inputs that cannot be honoured, and the
+// storage verb says so rather than answering with a stranger Space's budget.
+
+/**
+ * Record ONE auto-advance, opening a chain if none is open (the upsert), and return
+ * the VERDICT: the row after the write plus whether the chain may take another step.
+ *
+ * Answers an [`AdvanceVerdict`] and not a bare `WorkflowRunRow`, and the reason is
+ * the one that governs this whole family: the guard's two bounds fall back to
+ * SHIPPED DEFAULTS that live in Rust and are deliberately not mirrored here, so this
+ * layer cannot decide "is the chain over budget" without copying a policy number it
+ * would then be obliged to keep in step. The decision is made in Rust and obeyed
+ * here. `advance` is the field to branch on; `stop`, `maxSteps` and `ceilingUsd` are
+ * the ones that make the sentence a caller writes about a stopped chain true (see
+ * the type's doc — including the `null` cost case, which is the reason `ceilingUsd`
+ * is handed over rather than left implicit).
+ *
+ * Do not re-derive `steps`, `costUsd`, or either bound here: a second copy of the
+ * increment rule or of a fallback constant on this side of the wire is one refactor
+ * away from disagreeing with the first, and the disagreement is a chain that runs
+ * past a bound a person set.
+ *
+ * `costDeltaUsd: null` means THIS step reported no figure, and the wrapper passes
+ * it through as `null` rather than `0` because the two are different writes: `null`
+ * leaves `cost_usd` untouched, a number does `COALESCE(cost_usd, 0.0) + x`. Folding
+ * the first into the second would give every chain that never reported a cost a
+ * real `0.0` — ADR 0082's phantom zero, and a ceiling that then reads the chain as
+ * free. A genuine `0` from a Session that really cost nothing is likewise passed
+ * through as `0` and NOT treated as absent, so neither `?? 0` nor `|| null` belongs
+ * in this signature.
+ *
+ * Takes a `spacePath` where `workflowRunClose` does not, on two counts. The INSERT
+ * arm needs a Space to mint a row, and since the verdict landed it is ALSO the key
+ * the guard read looks the Space's bounds up by — so passing a Space other than the
+ * card's own USED to get a verdict measured against the wrong Space's budget. It no
+ * longer can: the storage verb reads the card's own `tasks.space_path` under the same
+ * lock, REFUSES a `spacePath` that canonicalises to a different folder, and stores
+ * the canonicalised form so the audit column and the bound agree. Pass the card's
+ * real Space (the settle handler holds it); the verb checks rather than believes.
+ */
+export async function workflowRunStep(
+  spacePath: string,
+  taskId: string,
+  costDeltaUsd: number | null,
+): Promise<AdvanceVerdict> {
+  return invoke<AdvanceVerdict>("workflow_run_step", {
+    spacePath,
+    taskId,
+    costDeltaUsd,
+  });
+}
+
+/**
+ * Close one card's open chain, recording WHY it stopped.
+ *
+ * `stopReason` is stored VERBATIM — it is the record's only narrative field and the
+ * one thing an afterwards reader has, so nothing here normalizes, lowercases or
+ * defaults it.
+ *
+ * THE VOCABULARY IS CITED, NOT ENUMERATED. Everything the column legitimately holds
+ * is a `ChainStop` spelling (`max_steps`, `cost_ceiling`, `no_next_stage`,
+ * `launch_refused` — see the `ChainStop` union in `../types.ts`, which mirrors the
+ * Rust `ChainStop::as_str()` that owns them), the literal `"manual"` for a person's
+ * column taking the card over, the literal `"interrupted"` for a chain a process
+ * restart orphaned (written by Rust's `Db::open`, never from this side), or a
+ * verbatim `StopReason` (`"cancelled"`, `"max_tokens"`, …) for a turn that never
+ * finished. The enumeration that used to sit here named `"steps"` and `"ceiling"`,
+ * and NOTHING has ever emitted either; that drift is why the spellings are cited to
+ * their owning symbol instead of retyped.
+ *
+ * Resolves `undefined` whether or not there was a chain to close: a card that never
+ * auto-advanced and a chain already closed are both ordinary, and a settle-handler
+ * must not fail a Session because the bookkeeping had nothing to do. The flip side
+ * of that leniency is the caller's job — it must have OPENED the run it means to
+ * close, and a repeated close never rewrites the reason the chain actually stopped
+ * (the storage verb scopes its update on `finished_at IS NULL`). There is no
+ * read-your-close in this family: the read that used to offer one was deleted as
+ * dead IPC (see the section header), so a caller that must audit a chain reads the
+ * `workflow_runs` table rather than asking a command.
+ */
+export async function workflowRunClose(
+  taskId: string,
+  stopReason: string,
+): Promise<void> {
+  return invoke("workflow_run_close", { taskId, stopReason });
 }
 
 

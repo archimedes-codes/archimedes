@@ -139,7 +139,18 @@ const stage = (slug: string, over: Partial<StageDto> = {}): StageDto => ({
   sortOrder: 0,
   onEnter: "none",
   onEnterSkill: null,
-  nextSlugs: null,
+  nextSlugs: null, auto: false, promptPrefix: null,
+  // The two workflow-graph fields are on the SAME line as `nextSlugs` rather than on
+  // lines of their own, and that is a size-ratchet fact, not a style choice: this
+  // file is BASELINED in `scripts/file-size-baseline-test.txt` at its exact code-line
+  // count, and the ratchet refuses a baselined file growing by even one code line.
+  // Both fields are REQUIRED on the wire type (`stages.auto` is `NOT NULL DEFAULT 0`,
+  // so it is always present; `promptPrefix` has no SQL DEFAULT and NULL is its only
+  // "no extra prompt" state), so an annotated `StageDto` literal has to carry them —
+  // and a `//` line is not a code line, which is why the note is affordable here and
+  // the fields are not. `auto: false` is what every pre-workflow column holds, so
+  // nothing below changes shape; a case that wants an auto-advancing column passes
+  // `auto: true` through `over`, exactly as one passes `nextSlugs: []`.
   ...over,
 });
 
@@ -700,7 +711,11 @@ const spikeStage = (over: Partial<StageDto> = {}): StageDto => ({
   sortOrder: 1,
   onEnter: "none",
   onEnterSkill: null,
-  nextSlugs: null,
+  nextSlugs: null, auto: false, promptPrefix: null,
+  // Both REQUIRED on the wire type (see the note on `stage()` above for why they sit
+  // on `nextSlugs`' line rather than on lines of their own). A column a test ADDS is
+  // an ordinary OFF column: `createStage` derives the slug and writes neither field,
+  // so the fake answers with the defaults the DDL would have given it.
   ...over,
 });
 

@@ -40,7 +40,8 @@
  *
  * ## The order of the parts is the contract
  *
- * The destination's `$skill` token FIRST, `<task>` block LAST:
+ * The column's extra prompt FIRST (when it has one), the destination's `$skill` token
+ * ahead of the block, `<task>` block LAST:
  *  - the token sits where the instruction sits, so `expandMentions` — which APPENDS
  *    its block at the END of the text it is given — puts any expanded block ahead of
  *    the task block rather than after it;
@@ -83,14 +84,33 @@ export interface TaskLaunchDestination {
   label: string;
   /** The Stage's `on_enter_skill`, or `null` for a Stage that loads no Skill. */
   onEnterSkill: string | null;
+  /** The Stage's **extra prompt** (`stages.prompt_prefix`) — the column-specific
+   *  steering text that goes **before** this column's Skill launch, so a column can
+   *  carry a Skill (`$research`) AND its own framing, and a chain of columns becomes
+   *  Skill A → Skill B → Skill C each with its own.
+   *
+   *  REQUIRED and not optional, on `StageDto.auto`'s argument (T3): an optional field
+   *  compiles against every fixture and then silently contributes nothing when a real
+   *  `StageDto` arrives — which is precisely how `prompt_prefix` ended up a control
+   *  that wrote into the void for a whole task. `null` means NO extra prompt and is
+   *  what every pre-existing column holds (the column has no SQL `DEFAULT`), so the
+   *  common value is the one that changes no byte of any message.
+   *
+   *  Expanding or not is decided by WHERE it lands, not by this field: it is part of
+   *  the head and therefore passes through `expand` — see [`headOfLaunch`]'s doc for the
+   *  author/card asymmetry that makes that right rather than an oversight. */
+  promptPrefix: string | null;
   /** Does arriving here start a Session? `true` (absent = `true`) for every Stage a
    *  board can lead you to; `false` for exactly one thing, the New Task modal's
    *  save-only button ([`SAVE_ONLY`] in `store/taskLaunch`).
    *
    *  OPTIONAL and read by ONE consumer: `createTaskFromDraft`. This module never
-   *  looks at it, because a message is only ever built for a launch — so the shape
-   *  spec §6.1 describes (`{ slug, label, onEnterSkill }`) still satisfies this type
-   *  everywhere, and a destination resolved from a `StageDto` has nothing to say. It
+   *  looks at it, because a message is only ever built for a launch — so a
+   *  destination resolved from a `StageDto` has nothing to say about launching, and
+   *  the three-key shape spec §6.1 describes (`{ slug, label, onEnterSkill }`) is the
+   *  one thing this interface NO LONGER accepts: `promptPrefix` is REQUIRED, so a
+   *  literal has to say whether its column has extra framing (see that field for why
+   *  an optional one is the defect and not the fix). It
    *  lives here rather than as a second argument because "which column" and "does it
    *  launch" are two facts about the SAME button, and a `launches: boolean` parameter
    *  beside a destination parameter is two arguments that can disagree. */
@@ -172,25 +192,69 @@ export function taskBlock(
 }
 
 /**
- * The pre-expansion HEAD of a launch message: the instruction line plus the
- * destination's `$skill` token, and NOTHING else. Exported so a test can read it
- * directly; production builds a message through [`buildLaunchMessage`].
+ * The pre-expansion HEAD of a launch message: the column's extra prompt, then the
+ * instruction line, then the destination's `$skill` token, and NOTHING else.
+ * Exported so a test can read it directly; production builds a message through
+ * [`buildLaunchMessage`] — which is its only production consumer, so the export is
+ * "one caller plus the test that pins it", not a shared utility.
  *
- * The name still says "mode" for one reason: `taskPrompt.test.ts` reads this to pin
- * that `expand` receives ONLY this string (the injection pin), and that pin is the
- * load-bearing one — renaming it is a cosmetic change to the file whose whole job is
- * a security boundary. What changed is the INPUT: a destination row, not a literal
- * from a deleted table. It stays EXPORTED for the same reason it was before — the
- * test is a reader of it, and an unexported function cannot be asserted against.
+ * It used to be `headOfMode`, on the stated grounds that the name was load-bearing
+ * because `taskPrompt.test.ts` reads it to pin what `expand` receives. That argument
+ * was never true: the pin imports whatever the function is called, and it pins
+ * `expand`'s ARGUMENT, not this identifier. A name that says "mode" in the one file
+ * whose whole job is precision — where the mode table was DELETED and a destination
+ * row replaced it — is a lie the next reader has to un-learn, so it is now
+ * `headOfLaunch` and the pin's content is unchanged.
+ *
+ * What the name must keep saying is the SHAPE: this is the head, i.e. the half that
+ * goes through `expand`, as opposed to the `<task>` block that never does.
  *
  * The instruction sentence is built from the Stage's own label (spec §6.1), and a
  * destination with no skill contributes no token.
+ *
+ * ## The extra prompt is FIRST, and it is inside the expansion
+ *
+ * `promptPrefix` precedes the instruction, not the block: the settled design is "1
+ * Skill per column, PLUS a per-column extra-prompt field **prepended before the Skill
+ * launch**", so the column's framing is the first thing the model reads and the Skill
+ * token is what that framing is framing. The separator is `\n\n` — the same one
+ * `buildLaunchMessage` uses between head and block, one shape for "two parts of one
+ * message" spelled twice. A prefix that is `null`, `""` or whitespace-only contributes
+ * NO bytes at all (not a blank line, not a separator): every existing column holds
+ * NULL, so the byte-identical-ness of the common case is the compatibility promise.
+ *
+ * It is therefore part of what `expand` is handed, and that is a decision, not a
+ * consequence. **The asymmetry to keep in mind: the prefix is AUTHOR text and expands;
+ * the `<task>` block is CARD text and never does.**
+ *  - the prefix is written by the same person who picks the column's Skill, in the
+ *    Stage editor, as CONFIGURATION for every Session this column will ever start. A
+ *    prefix that says `use $implement here` means it, and it would be a mystery for a
+ *    column that can NAME a Skill in a dropdown to be unable to name one in prose —
+ *    the `$skill` token this function itself emits expands by exactly the same rule.
+ *  - a Task title is free text a harness tool can write, so the block is appended
+ *    AFTER expansion (see [`buildLaunchMessage`]) and a card titled `$some-skill` can
+ *    never inject a skill block. That property is unchanged here, and the two pins
+ *    live side by side in `taskPrompt.test.ts` precisely so the asymmetry reads as
+ *    deliberate: one case asserts the prefix's `$foo` DID expand, the next asserts a
+ *    title's `$foo` did NOT.
+ *
+ * So: if you are tempted to "harden" this by moving the prefix after `expand` returns,
+ * you have not closed a hole, you have turned off the feature — and
+ * `taskPrompt.test.ts`'s spy pin on `expand`'s argument will say so.
  */
-export function headOfMode(destination: TaskLaunchDestination): string {
+export function headOfLaunch(destination: TaskLaunchDestination): string {
   const instruction = `Let's work on ${destination.label}.`;
-  return destination.onEnterSkill === null
-    ? instruction
-    : `${instruction}\n\n$${destination.onEnterSkill}`;
+  const head =
+    destination.onEnterSkill === null
+      ? instruction
+      : `${instruction}\n\n$${destination.onEnterSkill}`;
+  // Trimmed here rather than at the writer: `StageRow`'s `<Input>` stores what was
+  // typed and `set_stage_prompt_prefix` stores what it is given, so the cell keeps
+  // trailing whitespace a person left by pressing Enter, and the launch is the one
+  // place that has to decide what the model sees. `trim()` on a null-ish value would
+  // throw, hence the `?? ""` — and an empty trimmed result contributes nothing.
+  const prefix = destination.promptPrefix?.trim() ?? "";
+  return prefix === "" ? head : `${prefix}\n\n${head}`;
 }
 
 /**
@@ -208,10 +272,16 @@ export function headOfMode(destination: TaskLaunchDestination): string {
  * composing first.
  *
  * So the order is enforced HERE and is not available to get wrong at a call site:
- * `expand` sees the head (instruction + token) and nothing else; the block is
- * concatenated after its return value. Passing the whole message to `expand` is
- * structurally impossible from this function — which is what `taskPrompt.test.ts`
+ * `expand` sees the head (extra prompt + instruction + token) and nothing else; the
+ * block is concatenated after its return value. Passing the whole message to `expand`
+ * is structurally impossible from this function — which is what `taskPrompt.test.ts`
  * pins with a spy that asserts its argument carries no `<task`.
+ *
+ * Note which half of the head DOES expand: the column's `promptPrefix` rides inside
+ * `expand`'s argument, because it is author-written Stage configuration and not card
+ * content. The rule this function enforces is about the BLOCK, not about "everything
+ * but the skill token" — see [`headOfLaunch`] for the author/card asymmetry and for the
+ * two pins that keep it from being mistaken for a bug.
  *
  * `expand` is a parameter rather than an import of `expandMentions` for the same
  * reason the block builder moved here at all: expansion needs the Space's skill /
@@ -225,7 +295,7 @@ export function buildLaunchMessage(
   expand: (text: string) => string,
   artifactKeys: readonly string[] = [],
 ): string {
-  const head = expand(headOfMode(destination));
+  const head = expand(headOfLaunch(destination));
   return `${head}\n\n${taskBlock(task, artifactKeys)}`;
 }
 

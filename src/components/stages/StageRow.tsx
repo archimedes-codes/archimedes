@@ -7,6 +7,7 @@ import { StageDestinations } from "./StageDestinations";
 import { cn } from "../lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Switch } from "../ui/switch";
 import {
   Select,
   SelectContent,
@@ -21,18 +22,20 @@ import { CONTROL_ROW, ROW_BUTTON, ROW_SELECT } from "./stageStyles";
 /**
  * One **Stage row** — the whole editing form for one column of the board: its
  * label, its card count, its slug caption, the Skill a Session started from it
- * loads (ADR 0098), its destinations (`StageDestinations`), its place in the
- * order, and its deletion.
+ * loads (ADR 0098), the extra prompt that goes before that Skill, whether a card
+ * launched here advances itself when its Session settles, its destinations
+ * (`StageDestinations`), its place in the order, and its deletion.
  *
  * ---------------------------------------------------------------------------
  * IT READS THE STORE DIRECTLY — BUT THE `SessionRow` CITATION IS SPLIT,
  * BECAUSE THE ROW BREAKS IT IN ONE PLACE
  * ---------------------------------------------------------------------------
  *
- * The five verbs its own controls call — `renameStage`, `setStageSkill`,
- * `setStageNext`, `reorderStages`, `deleteStage` — come off `useTasks` here rather
+ * The seven verbs its own controls call — `renameStage`, `setStageSkill`,
+ * `setStageNext`, `setStageAuto`, `setStagePromptPrefix`, `reorderStages`,
+ * `deleteStage` — come off `useTasks` here rather
  * than through props, exactly as `spaces/SessionRow.tsx` reads `useSessions` for
- * its own Stop / Archive. A prop per verb would be five more props for five calls
+ * its own Stop / Archive. A prop per verb would be seven more props for seven calls
  * whose trigger is in this file, and the parent holds none of the state they touch:
  * `store/tasks` owns the optimistic paint, the whole-slice re-derivation and the
  * revert into `error` (spec §8.1), which the dialog renders.
@@ -57,13 +60,13 @@ import { CONTROL_ROW, ROW_BUTTON, ROW_SELECT } from "./stageStyles";
  * exception). `main`'s one-file shell held 10 `useTasks(` CALLS for the whole
  * dialog, whatever the row count. At HEAD the same surface splits them: 2 in
  * `StageEditor.tsx`, 1 in `stages/AddStageField.tsx`, 2 in
- * `stages/StrictWorkflowToggle.tsx` — 5, fixed — plus the 6 CALLS in this file, one
- * set per RENDERED row. So the whole surface costs 6N + 5, and the N worth quoting
+ * `stages/StrictWorkflowToggle.tsx` — 5, fixed — plus the 8 CALLS in this file, one
+ * set per RENDERED row. So the whole surface costs 8N + 5, and the N worth quoting
  * is the PRODUCT's seed board: `DEFAULT_STAGES` in `src-tauri/src/storage/db.rs` is
  * `[(&str, &str, Option<&str>); 5]` — backlog, research, approved, doing, done —
  * and `store/tasks.ts` describes itself as "seeding the five default stages". Five
- * columns take the surface from 10 subscriptions to 6(5) + 5 = **35**, and a
- * 10-column board to 65. That is +25 selector INVOCATIONS per store write on the
+ * columns take the surface from 10 subscriptions to 8(5) + 5 = **45**, and a
+ * 10-column board to 85. That is +35 selector INVOCATIONS per store write on the
  * seed board, and it is worth being exact about what that does and does not buy:
  *  - ZERO extra renders — but NOT because the store holds the reference still. It
  *    does not: `load`, `moveTask`, `createTask` and `reorderWithinStage` in
@@ -76,21 +79,24 @@ import { CONTROL_ROW, ROW_BUTTON, ROW_SELECT } from "./stageStyles";
  *    render is one level up: the parent `StageEditor` subscribes to the SAME slice
  *    (its own `columns` selector, the first line of its body), so any republish
  *    re-renders the parent and re-renders every row with it — the row's own
- *    subscription can therefore never be the thing that causes a render. The five
+ *    subscription can therefore never be the thing that causes a render. The seven
  *    action selectors return refs the store builds once in `create` and never `set`s
  *    again (no `set` in that file names an action), so they add no render either; and
  *    this row is not `memo`-ised, so nothing about it could skip the parent's
  *    re-render even if the reference were held.
- *  - +25 selector CALLS per store write on the seed board, which is one function
+ *  - +35 selector CALLS per store write on the seed board, which is one function
  *    call per subscription per write and nothing else. On a dialog this size that is
  *    the cheaper side of the trade; a row that rendered a list of thousands would not
  *    get to say so.
  *
  * (The counts above are CALL SITES, and the bare token is not how to count them —
- * this header names it in prose elsewhere too. The six are, in order, the five action
- * selectors (`renameStage`, `setStageSkill`, `setStageNext`, `reorderStages`,
- * `deleteStage`) back to back at the top of the component body, then the column slice
- * two lines below them.)
+ * this header names it in prose elsewhere too. The eight are, in order, the seven
+ * action selectors (`renameStage`, `setStageSkill`, `setStageNext`, `setStageAuto`,
+ * `setStagePromptPrefix`, `reorderStages`, `deleteStage`) back to back at the top of
+ * the component body, then the column slice two lines below them. The workflow-graph
+ * work added the two middle ones and therefore moved every figure in this section:
+ * the per-row count 6 → 8, the seed-board total 35 → 45, the per-write delta +25 →
+ * +35. All three re-measured against the tree, none inherited.)
  *
  * ---------------------------------------------------------------------------
  * ONE `role="button"`, AND WHO GETS THE CLICK
@@ -179,6 +185,8 @@ export function StageRow({
   const renameStage = useTasks((s) => s.renameStage);
   const setStageSkill = useTasks((s) => s.setStageSkill);
   const setStageNext = useTasks((s) => s.setStageNext);
+  const setStageAuto = useTasks((s) => s.setStageAuto);
+  const setStagePromptPrefix = useTasks((s) => s.setStagePromptPrefix);
   const reorderStages = useTasks((s) => s.reorderStages);
   const deleteStage = useTasks((s) => s.deleteStage);
   // The column set, for the OTHER columns' labels — see the header. The same
@@ -197,6 +205,11 @@ export function StageRow({
    *  text. Cleared after a commit — success or refusal — so the field falls back to
    *  what the store actually has. */
   const [draft, setDraft] = useState<string | null>(null);
+  /** The extra prompt being typed, or `null` when the field shows the STORED prefix.
+   *  A SECOND `useState` beside `draft` rather than one Record, on the same argument
+   *  `draft`'s note makes: unmount discards it, so a half-typed prefix cannot survive
+   *  filtering the row away and back. */
+  const [prefixDraft, setPrefixDraft] = useState<string | null>(null);
   /** The row's own focus route. It was a `Map<string, HTMLInputElement>` in the
    *  parent, existing ONLY so the parent could focus an `Input` a row renders; the
    *  row's `onClick` is right here, so one local ref replaces the map, its setter
@@ -217,6 +230,57 @@ export function StageRow({
       // The store reverted the slice and wrote the sentence into `error`, which this
       // dialog renders; the draft is already cleared, so the field falls back to the
       // label the database actually holds.
+    }
+  };
+
+  const commitPrefix = async (): Promise<void> => {
+    const committed = prefixDraft;
+    setPrefixDraft(null);
+    // NO draft → nothing was touched, so nothing is written (the commit fires on
+    // every blur, exactly as the label's does).
+    if (committed === null) return;
+    // An EMPTY field is the CLEAR, and the clear sends `null` — the only spelling of
+    // "no extra prompt" the database holds, and the same rule `onEnterSkill`'s `none`
+    // item follows, so a clear is spelled ONE way for both nullable text fields on
+    // this row. `""` is NOT sent: the column stores it as a VALUE a person typed, and
+    // a UI that wrote it would create a second state indistinguishable from the first
+    // and un-clearable — the argument `set_stage_next` records as its known gap. The
+    // one consequence is stated rather than hidden: a column whose stored prefix IS
+    // `""` (reachable only from outside this dialog) reads as empty here, and
+    // committing the empty field clears it to NULL — which is the launcher's own
+    // answer anyway, since it prepends `""` and NULL identically.
+    const next = committed === "" ? null : committed;
+    if (next === stage.promptPrefix) return;
+    try {
+      await setStagePromptPrefix(spacePath, stage.slug, next);
+    } catch {
+      // The store reverted the slice and wrote the sentence into `error`, which this
+      // dialog renders; the draft is already cleared, so the field falls back to the
+      // prefix the database actually holds.
+    }
+  };
+
+  /** Flip this column's auto-advance flag.
+   *
+   *  NO local state and no re-read, and that is the difference from
+   *  `stages/StrictWorkflowToggle.tsx` rather than an omission of it. That component
+   *  holds `strict` in a `useState` because the flag is NOT on any row the board read
+   *  returns — it lives on the `spaces` row — so it must seed itself from
+   *  `getBoardStrict`, and re-read after the write because `setBoardStrict` answers
+   *  `void` and captures its failure into `error` without rethrowing. Its rule, "paint
+   *  from the READ, never from the click", therefore means "the rendered value is
+   *  never the click". The SAME rule holds here through a different OWNER: `auto`
+   *  rides on the `StageDto` this row already renders, the STORE owns the optimistic
+   *  paint and the revert, and the row re-renders from the slice — so what is on
+   *  screen is the slice's value and never the click's, and the stored `StageDto` the
+   *  command answers is merged back over it by the store. A local `useState` here would
+   *  be a second owner of one fact, and it would keep showing ON after the revert. */
+  const toggleAuto = async (next: boolean): Promise<void> => {
+    try {
+      await setStageAuto(spacePath, stage.slug, next);
+    } catch {
+      // Reverted; the store's line explains it. The card a person is looking at did
+      // not move, because the runtime reads the STORED flag and it did not change.
     }
   };
 
@@ -400,6 +464,59 @@ export function StageRow({
           labelOf={labelOf}
           onWrite={(next) => void writeDestinations(next)}
           onAdd={(slug) => void addDestination(slug)}
+        />
+      </div>
+
+      {/* The two halves of "what this column says and does when it starts a Session",
+          on their own line because neither is a choice the Skill `Select` above
+          constrains: which Skill it loads, what text goes BEFORE that Skill, and
+          whether the card then advances itself. All three are per-column DATA on the
+          same row (ADR 0098 rules the first, the workflow-graph work the other two),
+          and the line they sit on is OUTSIDE the drag surface's label field — see the
+          `draggable` note below, which is what the two `stop` handlers on the `Input`
+          are guarding. */}
+      <div className={CONTROL_ROW}>
+        <Switch
+          checked={stage.auto}
+          // NOT `disabled={… === null}`: `StrictWorkflowToggle` needs that arm
+          // because its flag has an unread state, and `auto` has none — the column is
+          // `NOT NULL DEFAULT 0`, so `stage.auto` IS the seeded value and is never
+          // unknown. A `disabled` here would be a control that is inert for a reason
+          // that does not exist.
+          aria-label={`Auto-advance cards launched in ${stage.slug}`}
+          title={`Auto-advance cards launched in ${stage.slug}`}
+          className="shrink-0"
+          // Both handlers, like every nested control in this row: the click must not
+          // bubble into the row's own "focus the label" affordance, and a
+          // keyboard-activated Switch must not run the row's Enter handler on top of
+          // its own activation.
+          onClick={stop}
+          onKeyDown={stop}
+          onCheckedChange={(checked) => void toggleAuto(checked)}
+        />
+        <Input
+          aria-label={`Extra prompt for ${stage.slug}`}
+          className="h-6 min-w-0 flex-1 text-ui-sm"
+          placeholder="Extra prompt before the Skill launch"
+          // The stored prefix when no draft is being typed — the same
+          // `draft ?? stored` shape the label field uses, so the column and this
+          // field can never disagree about what is saved.
+          value={prefixDraft ?? stage.promptPrefix ?? ""}
+          onChange={(event) => setPrefixDraft(event.target.value)}
+          // THREE props copied from the label `Input` verbatim, and the middle one is
+          // load-bearing in a way that is easy to "simplify" away: `draggable`
+          // INHERITS to children, so a `<input>` inside this row is inside a drag
+          // surface — the exact defect `StageEditor`'s header cites as the reason
+          // Stage editing is a modal at all, and the reason a field on the column
+          // header would start a drag on the first click. `onClick={stop}` keeps the
+          // click in the field, `stop(e)` keeps an Enter from reaching the row, and
+          // `onBlur` is what commits the text a person left without pressing Enter.
+          onClick={stop}
+          onKeyDown={(event) => {
+            stop(event);
+            if (event.key === "Enter") void commitPrefix();
+          }}
+          onBlur={() => void commitPrefix()}
         />
       </div>
 

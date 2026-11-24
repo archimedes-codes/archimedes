@@ -143,7 +143,19 @@ const BUTTONS: {
     hint: "Save this to the Backlog column. Nothing is started.",
   },
   {
-    destination: { slug: "research", label: "Research", onEnterSkill: "research" },
+    // THE ONE PREFIX-LESS DESTINATION IN THE APP, and it is prefix-less because there
+    // is no row to read a prefix FROM. Every other destination is a Stage the board
+    // painted a button for and `stages.prompt_prefix` is a cell of that row; this
+    // button is a literal, so the only honest value is `null` — the Skill launches
+    // with the Skill's own framing and nothing invented beside it. (The button is
+    // hardcoded on purpose, the header above records why: a list derived from the
+    // loaded Stages is a list that can offer a launch the create refuses.)
+    destination: {
+      slug: "research",
+      label: "Research",
+      onEnterSkill: "research",
+      promptPrefix: null,
+    },
     label: "Research",
     hint: "Save it to the Research column and open a session that researches it.",
   },

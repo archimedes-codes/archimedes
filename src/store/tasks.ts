@@ -5,22 +5,29 @@ import {
   linkSession as linkSessionCommand,
   moveTask as moveTaskCommand,
   reorderTasks as reorderTasksCommand,
-  // T3's ten (issue #179 §8.1 + issue #180 D1). ALIASED, every one: this store's
+  // T3's ten (issue #179 §8.1 + issue #180 D1) plus the FOUR the workflow graph adds
+  // (`setStageAuto`, `setStagePromptPrefix`, `getAutoGuards`, `setAutoGuards`) —
+  // fourteen, ALIASED every one: this store's
   // own actions carry the SAME names these wrappers have, so a bare import is not
   // a collision error but INFINITE RECURSION — the action calling itself instead
   // of the command. See the module header.
   createStage as createStageCommand,
   deleteStage as deleteStageCommand,
   getArtifact as getArtifactCommand,
+  getAutoGuards as getAutoGuardsCommand,
   getBoardStrict as getBoardStrictCommand,
   renameStage as renameStageCommand,
   reorderStages as reorderStagesCommand,
+  setAutoGuards as setAutoGuardsCommand,
   setBoardStrict as setBoardStrictCommand,
+  setStageAuto as setStageAutoCommand,
   setStageNext as setStageNextCommand,
+  setStagePromptPrefix as setStagePromptPrefixCommand,
   setStageSkill as setStageSkillCommand,
   writeArtifact as writeArtifactCommand,
   type Artifact,
   type ArtifactMeta,
+  type AutoGuards,
   type StageDto,
   type StageWithTasks,
   type TaskCardView,
@@ -63,9 +70,11 @@ import { describeIpcError } from "../lib/ipcError";
  * unloaded slice costs you the PAINT and not the WRITE. A guard that returned early
  * would make the editor's rename silently do nothing during the one frame the board
  * has not fetched, which is a fetch problem wearing a permission mask. The
- * `void`-returning writes (`reorderStages`, `deleteStage`, `setBoardStrict`) capture
- * their failure into `error` exactly as `moveTask` does; the six that ANSWER
- * something (`createStage`, `renameStage`, `setStageSkill`, `setStageNext`, and both
+ * `void`-returning writes (`reorderStages`, `deleteStage`, `setBoardStrict`,
+ * `setAutoGuards`) capture
+ * their failure into `error` exactly as `moveTask` does; the eight that ANSWER
+ * something (`createStage`, `renameStage`, `setStageSkill`, `setStageNext`,
+ * `setStageAuto`, `setStagePromptPrefix`, `getAutoGuards`, and both
  * artifact actions) rethrow as well, because on a refusal there is no value to hand
  * back and the caller is holding text this store will never display.
  *
@@ -111,8 +120,29 @@ interface BoardState {
   /** Read one Space's board. Resolves either way — a rejection lands in `error`. */
   load: (spacePath: string) => Promise<void>;
   /** The cross-column drop: writes `stage_slug` and runs the destination's
-   *  `onEnter`. Optimistic, reverted on rejection. */
-  moveTask: (spacePath: string, taskId: string, toStageSlug: string) => Promise<void>;
+   *  `onEnter`. Optimistic, reverted on rejection.
+   *
+   *  Resolves with **the column the card is in when it settles** — the stage slug, or
+   *  `null` for "there is no board here, so this action cannot say where anything is".
+   *  It NEVER rejects (a drop handler must not throw out of a drop), and the
+   *  swallow-and-revert is exactly what a drag handler needs, so the paint a person sees
+   *  is unchanged either way.
+   *
+   *  THE RETURN IS THE FACT THE SWALLOW USED TO LOSE, and a second surface now depends
+   *  on it: `store/taskLaunch.launchTaskSession` compares this against the column it
+   *  meant to move into, because a backend refusal (`StrictMoveRefused` under
+   *  `board_strict`, or a card that is not in this Space) reverts the paint and lands in
+   *  `error` — which renders only if a board or a canvas happens to be mounted, and an
+   *  unattended auto-advance chain has neither. Without the return value a refused move
+   *  read as a successful launch, and the Session that started carried a `<task stage>`
+   *  naming a column the card is not in. THE REPO LESSON: a swallow that a second surface
+   *  depends on must RETURN the fact it swallowed; an `error` field is not a channel when
+   *  the surface that reads it may not exist. */
+  moveTask: (
+    spacePath: string,
+    taskId: string,
+    toStageSlug: string,
+  ) => Promise<string | null>;
   /** A new card. `stageSlug` omitted lands it in the Space's FIRST stage. */
   createTask: (
     spacePath: string,
@@ -177,6 +207,24 @@ interface BoardState {
    *  `[]` means "configured, and nothing may follow this column" and is NOT the
    *  same answer as the `null` that means "unconfigured, therefore unconstrained". */
   setStageNext: (spacePath: string, slug: string, slugs: string[]) => Promise<StageDto>;
+  /** Turn one column's **auto-advance** flag on or off (the workflow graph): a card
+   *  launched here advances itself when its Session settles.
+   *
+   *  The SAME paint shape as `setStageSkill` — one field on the row, whole-slice
+   *  re-derivation, revert-into-`error`, rethrow (this answers the stored `StageDto`
+   *  and on a refusal there is not one to hand back). Nothing else on the row moves:
+   *  `auto` is a THIRD question beside `onEnter`'s and `onEnterSkill`'s, and a paint
+   *  that touched more than it wrote would be a second owner of the other two. */
+  setStageAuto: (spacePath: string, slug: string, auto: boolean) => Promise<StageDto>;
+  /** Set or clear one column's **extra prompt**, prepended before its Skill launch.
+   *  `null` CLEARS it and is the only spelling of cleared — `""` is a stored VALUE a
+   *  person typed, so an action that normalized `null` to `""` would make a prefix
+   *  un-clearable, which is the `setStageNext` defect this signature exists to avoid. */
+  setStagePromptPrefix: (
+    spacePath: string,
+    slug: string,
+    prefix: string | null,
+  ) => Promise<StageDto>;
   /** Rewrite the board's column order in one pass.
    *
    *  `slugs` is the board's WHOLE visible slice in its new order — the
@@ -216,6 +264,43 @@ interface BoardState {
    *  Rejects loudly rather than answering `false`, so the editor can tell "off"
    *  from "unread". */
   getBoardStrict: (spacePath: string) => Promise<boolean>;
+
+  // -------------------------------------------------------------------------
+  // The AUTO-CHAIN GUARD pair (the workflow graph's bound). Per-SPACE, so neither
+  // belongs to the board slice and neither paints anything: like the Strict pair
+  // immediately above, the two fields live on the `spaces` row and change no
+  // column, so painting would make this store a second owner of one fact. They are
+  // here because `getBoardStrict`/`setBoardStrict` are here, for the identical
+  // reason — the Stage editor drives all four and one store owns the board's writes.
+  // -------------------------------------------------------------------------
+
+  /** Set or clear one Space's auto-chain guards (the step bound and the USD
+   *  ceiling a chain of auto-advancing columns runs under).
+   *
+   *  ONE call for the PAIR, because the write is one statement on the Rust side and
+   *  has no "keep what is there" arm: whatever this hands over is exactly what
+   *  lands, so a caller that changed one field still has to name the other. That is
+   *  why the editor reads the pair before it writes either.
+   *
+   *  `null` clears a guard to "not configured", which falls back to a SHIPPED
+   *  DEFAULT and is NOT unlimited; `0` is a bound a person chose ("no
+   *  auto-chaining"). This action passes both through verbatim and never
+   *  normalizes one into the other. Captures its failure into `error` and does NOT
+   *  rethrow — the `setBoardStrict` shape: nothing to hand back. */
+  setAutoGuards: (
+    spacePath: string,
+    maxSteps: number | null,
+    ceilingUsd: number | null,
+  ) => Promise<void>;
+  /** Read the guards back — the seed for the editor's two numeric fields.
+   *
+   *  Reports the STORED pair, `null` included: the runtime applies the fallback,
+   *  this never substitutes it, which is what lets the editor tell "unset" from
+   *  "set to the same number". Rejects loudly rather than answering an all-`null`
+   *  pair, so the editor can tell "not configured" from "unread" — the
+   *  `getBoardStrict` rule, and the same one a field showing a number the Space
+   *  never chose would break. */
+  getAutoGuards: (spacePath: string) => Promise<AutoGuards>;
 
   // -------------------------------------------------------------------------
   // The ARTIFACT pair (issue #180 D1). Both are passthroughs, and the reason is
@@ -341,8 +426,10 @@ export const useTasks = create<BoardState>((set, get) => ({
   moveTask: async (spacePath, taskId, toStageSlug) => {
     const columns = get().boardsBySpace[spacePath];
     if (!columns) {
+      // `null` is "this action cannot say where the card is", and it is the only answer
+      // that is true here — there is no slice to read the position out of.
       set({ error: "No board loaded for this Space." });
-      return;
+      return null;
     }
     // A board element is a `TaskCardView` (issue #174): the card's own fields live
     // under `.task`, so every read of a card here reaches through it. The WRAPPER is
@@ -357,7 +444,14 @@ export const useTasks = create<BoardState>((set, get) => ({
     const to = columns.find((c) => c.stage.slug === toStageSlug);
     // A drag whose endpoints are not both in the loaded board is a STALE gesture
     // (the board reloaded mid-drag). Refusing beats inventing a column.
-    if (!from || !to || from.stage.slug === toStageSlug) return;
+    //
+    // The refused arms still ANSWER, and with the card's real column rather than the one
+    // that was asked for: a caller that meant to move it must be able to see that it did
+    // not. `null` only when the source column cannot be found at all — no slice position
+    // is knowable then, and an invented one is worse.
+    if (!from || !to || from.stage.slug === toStageSlug) {
+      return from ? from.stage.slug : null;
+    }
 
     // THE OPTIMISTIC SLICE, and the value the revert restores. The card moves to
     // the END of the destination column: within-column position is the OTHER verb
@@ -404,6 +498,7 @@ export const useTasks = create<BoardState>((set, get) => ({
           boostNotes: { ...state.boostNotes, [spacePath]: outcome.boostNote! },
         }));
       }
+      return toStageSlug;
     } catch (err) {
       // Restore the slice this action replaced — do NOT refetch. `get_board` seeds
       // stage rows on read, so a refetch is a WIDER mutation than the one being
@@ -413,6 +508,15 @@ export const useTasks = create<BoardState>((set, get) => ({
         error: describeIpcError(err),
       }));
       console.error(`Failed to move task ${taskId} to ${toStageSlug}:`, err);
+      // THE SWALLOWED REFUSAL, RETURNED. The paint is back to `previous`, so the honest
+      // answer is the column the card is in AFTER the revert — read from the restored
+      // slice rather than asserted from `from.stage.slug`, so the answer and the state a
+      // caller can observe cannot diverge.
+      const reverted = get().boardsBySpace[spacePath];
+      const landedIn = reverted?.find((c) =>
+        c.tasks.some((t) => t.task.id === taskId),
+      );
+      return landedIn?.stage.slug ?? null;
     }
   },
 
@@ -635,6 +739,59 @@ export const useTasks = create<BoardState>((set, get) => ({
     }
   },
 
+  setStageAuto: async (spacePath, slug, auto) => {
+    const previous = get().boardsBySpace[spacePath];
+    // The flag alone. `auto` rides on the `StageDto` the row already holds, so the
+    // paint has a stored value to start from and no separate read to wait for —
+    // unlike the Strict Switch, which is seeded from `getBoardStrict` because the
+    // flag is NOT on any row the board read returns.
+    if (previous) paint(set, spacePath, withStage(previous, slug, { auto }));
+    try {
+      const row = await setStageAutoCommand(spacePath, slug, auto);
+      if (previous)
+        paint(
+          set,
+          spacePath,
+          withStage(get().boardsBySpace[spacePath]!, slug, row),
+        );
+      return row;
+    } catch (err) {
+      // The card a person is looking at does NOT move on this failure — the runtime
+      // that advances it reads the stored flag, and the stored flag did not change.
+      // Leaving the row painted ON over a Space that refused would be the
+      // Switch-showing-Strict-over-a-lenient-board failure one control over.
+      if (previous) paint(set, spacePath, previous);
+      set({ error: describeIpcError(err) });
+      console.error(`Failed to set the auto flag of stage ${slug}:`, err);
+      throw err; // see `renameStage`'s note for why this arm rethrows
+    }
+  },
+
+  setStagePromptPrefix: async (spacePath, slug, prefix) => {
+    const previous = get().boardsBySpace[spacePath];
+    // `prefix` verbatim, INCLUDING `""`: an empty string is a stored VALUE and the
+    // paint has to show the value the database will hold, not the `null` the row
+    // held before. Normalizing `""` to `null` here would paint a clear the write did
+    // not perform — and normalizing `null` to `""` would make the field un-clearable.
+    if (previous)
+      paint(set, spacePath, withStage(previous, slug, { promptPrefix: prefix }));
+    try {
+      const row = await setStagePromptPrefixCommand(spacePath, slug, prefix);
+      if (previous)
+        paint(
+          set,
+          spacePath,
+          withStage(get().boardsBySpace[spacePath]!, slug, row),
+        );
+      return row;
+    } catch (err) {
+      if (previous) paint(set, spacePath, previous);
+      set({ error: describeIpcError(err) });
+      console.error(`Failed to set the prompt prefix of stage ${slug}:`, err);
+      throw err;
+    }
+  },
+
   reorderStages: async (spacePath, slugs) => {
     const previous = get().boardsBySpace[spacePath];
     if (previous) paint(set, spacePath, orderBySlugs(previous, slugs));
@@ -718,6 +875,39 @@ export const useTasks = create<BoardState>((set, get) => ({
       // this read exists to prevent.
       set({ error: describeIpcError(err) });
       console.error(`Failed to read the strict workflow of ${spacePath}:`, err);
+      throw err;
+    }
+  },
+
+  setAutoGuards: async (spacePath, maxSteps, ceilingUsd) => {
+    // No slice read, no paint, no guard on a loaded board — the guards live on the
+    // `spaces` row and change no column, exactly as `setBoardStrict` above, and for
+    // the same stated reason. Both values pass through VERBATIM: `null` is a clear
+    // and `0` is a bound, and a `?? 0` or a `|| null` anywhere in this action would
+    // turn one into the other on the one field whose whole meaning is the
+    // difference (ADR 0082's `NULL` ≠ `0.0`).
+    try {
+      await setAutoGuardsCommand(spacePath, maxSteps, ceilingUsd);
+    } catch (err) {
+      set({ error: describeIpcError(err) });
+      console.error(`Failed to set the auto-chain guards of ${spacePath}:`, err);
+    }
+  },
+
+  getAutoGuards: async (spacePath) => {
+    try {
+      // The stored pair, `null`s included — no fallback is substituted here. The
+      // editor renders the fallback as a CAPTION ("unset falls back to
+      // DEFAULT_AUTO_MAX_STEPS"), which is the only way a person can tell a bound
+      // they chose from one they inherited.
+      return await getAutoGuardsCommand(spacePath);
+    } catch (err) {
+      // Captured AND rethrown, the `getBoardStrict` rule: an all-`null` pair is a
+      // FACT about the Space ("nothing configured, so the shipped bound governs")
+      // and a swallowed failure would hand the editor that fact as its default,
+      // printing a field that claims "unset" over a Space with a real ceiling.
+      set({ error: describeIpcError(err) });
+      console.error(`Failed to read the auto-chain guards of ${spacePath}:`, err);
       throw err;
     }
   },

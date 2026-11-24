@@ -19,6 +19,7 @@ import { launchTaskSession } from "../store/taskLaunch";
 import { useSessions } from "../store/sessions";
 import { useTasks } from "../store/tasks";
 import { describeIpcError } from "../lib/ipcError";
+import { nextStepSlugs } from "../lib/workflowGraph";
 import {
   Dialog,
   DialogContent,
@@ -221,30 +222,30 @@ export default function TaskDetailDialog({
   // `next_slugs` is the graph (ADR 0099) and is rendered IN ITS OWN ORDER — the row's
   // author decided that order, so it is not re-sorted here.
   //
-  // NULL means UNCONFIGURED, which is NOT the same answer as the empty array: null
-  // falls back to the column at `sortOrder + 1` so an existing install keeps its
-  // launch button after the upgrade (the migration backfills, but a Space that has
-  // never been read has no rows to backfill), while `[]` is "configured, leads
-  // nowhere" and renders nothing. Collapsing the two would silently remove a working
-  // button from every unconfigured board.
+  // The slug LIST comes from `lib/workflowGraph`'s `nextStepSlugs` — the ONE
+  // derivation, now shared with the board's launch pill and with the auto-advance
+  // runtime. This file used to spell the fallback itself and `TasksBoard` spelled it
+  // again; the extraction happened when the runtime became the third surface that
+  // needed the same answer. What that helper owns is the three-way reading of the
+  // column: `["a","b"]` in the row's own order, `null` = UNCONFIGURED falling back to
+  // the column at `sortOrder + 1` (so an existing install keeps its launch button
+  // after the upgrade — the migration backfills, but a Space never read has no rows to
+  // backfill from), and `[]` = "configured, leads nowhere" rendering nothing. The
+  // `??` that keeps the last two apart, rather than a `||` that would fold an empty
+  // array into "no opinion", lives in that one place now.
   //
-  // An edge whose slug is no longer a column is KEPT and labelled with the SLUG, on
-  // the same argument `stageLabel` above carries: "we could not name it" is a
-  // different claim from "it has no column", and a destination the graph names but the
-  // slice cannot resolve is exactly that case. It is also what keeps
-  // `store/taskLaunch`'s skipped-column note REACHABLE from this surface — the click
-  // starts the Session it was asked for, skips the move it could not perform, and the
-  // note says so. Dropping the edge instead would delete a working button on a stale
-  // read and leave the note block below with no path to the user at all.
+  // What stays HERE is this surface's own verdict on an edge whose slug is no longer a
+  // column: it is KEPT and labelled with the SLUG, on the same argument `stageLabel`
+  // above carries — "we could not name it" is a different claim from "it has no
+  // column" — and it is what keeps `store/taskLaunch`'s skipped-column note REACHABLE
+  // from this surface, since the click starts the Session it was asked for, skips the
+  // move it could not perform, and the note says so. `nextStepOf`, the pill's reader
+  // of the same list, DROPS such an edge instead, because a pill has no note to fall
+  // back on. Two verdicts on one list, both deliberate, both documented on the helper.
   const edges = useMemo(() => {
     const current = columns?.find((c) => c.stage.slug === task.stageSlug);
     if (!current) return [];
-    const slugs =
-      current.stage.nextSlugs ??
-      (columns ?? [])
-        .filter((c) => c.stage.sortOrder === current.stage.sortOrder + 1)
-        .map((c) => c.stage.slug);
-    return slugs.map((slug) => {
+    return nextStepSlugs(columns, current.stage).map((slug) => {
       const stage = columns?.find((c) => c.stage.slug === slug)?.stage;
       return {
         slug,
@@ -252,6 +253,12 @@ export default function TaskDetailDialog({
         // An unresolvable row contributes NO Skill — we never invent one for a row we
         // cannot read, which also means such a button is not gated and cannot fail.
         onEnterSkill: stage?.onEnterSkill ?? null,
+        // ...and the same rule for the extra prompt: no row, no prose. The store
+        // re-resolves the destination from this very slice when the click lands, so
+        // nothing here decides the message — but a `TaskLaunchDestination` that left a
+        // REQUIRED field out would be a destination claiming to be a row it did not
+        // read, which is the two-answers-to-one-fact shape this file argues against.
+        promptPrefix: stage?.promptPrefix ?? null,
       };
     });
   }, [columns, task.stageSlug]);

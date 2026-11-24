@@ -14,17 +14,22 @@
 //!
 //! This parent holds what every subject shares and what the pins read: the three
 //! error types and their `From` maps, the `Db` struct, [`Db::open`] **whole**
-//! (its thirteen `gate` calls ARE the migration surface, and
+//! (its seventeen `gate` calls ARE the migration surface, and
 //! `the_three_task_tables_are_in_schema_and_have_no_gate_entry` counts them from
 //! this file's text), `gate`, `set_journal_pragmas`, `LAST_ACTIVITY` and `SCHEMA`.
 //! Every subject lives in the sibling that names it — [`sessions`], [`messages`],
 //! [`spaces`], [`board`], [`tasks`], [`stages`], [`artifacts`], [`seams`],
-//! [`rows`], [`migrations`] — and `tests/` mirrors those siblings one for one.
+//! [`rows`], [`migrations`], [`auto_guards`], [`workflow_runs`] — and `tests/`
+//! mirrors those siblings one for one.
 //!
 //! A sibling reads the parent's private `SCHEMA` / `gate` / `LAST_ACTIVITY` by
-//! full path (a child module may, with no widening). Nothing is widened past
-//! `pub(super)`, and never to `pub(crate)` — the three things `pub(super)` IS used
-//! for are enumerated at the `mod` list below.
+//! full path (a child module may, with no widening). Nothing a sibling declares is
+//! widened past `pub(super)` **except** the [`auto_guards`] sibling's two auto-chain
+//! fallback constants, which are `pub` and re-exported below for the reason stated
+//! there — they are a shipped spend bound the auto-advance runtime must name by
+//! path, and the retention subject's two bounds are the in-repo precedent for a
+//! policy constant travelling exactly this route. The three things `pub(super)` IS
+//! used for are enumerated at the `mod` list below.
 
 use std::path::Path;
 use std::sync::Mutex as StdMutex;
@@ -614,6 +619,49 @@ impl Db {
             )?;
         }
         conn.execute_batch(SCHEMA)?;
+        // A chain interrupted by a process restart: close every run still open.
+        //
+        // WHY THIS EXISTS. A `workflow_runs` row is OPENED by `Db::workflow_run_step`
+        // and CLOSED by the TypeScript settle handler (`advanceWorkflowChainOnSettle`
+        // → `workflowRunClose`), so the close lives in the JS runtime. A window
+        // reload, a quit or a crash mid-chain leaves `finished_at` NULL and there is
+        // nothing left in the process that can ever stamp it — the settle edge for a
+        // turn that already ended does not fire again. And `workflow_run_step`
+        // UPSERTs onto the OPEN run, so the NEXT chain that card ever starts
+        // inherits the dead chain's `steps` and `cost_usd`: a person who configured
+        // a 20-step / $10 bound silently gets a shorter, partly-spent one. That is
+        // the exact hazard `advanceWorkflowChainOnSettle`'s comment and ADR 0119 §3
+        // describe for the paths the runtime DOES reach; this is the one it cannot
+        // reach, and the sweep has to be on the Rust side because the runtime that
+        // would perform it is the thing that just died.
+        //
+        // WHY IT IS SOUND TO CLOSE UNCONDITIONALLY: nothing can legitimately be
+        // mid-chain across a process launch. The only writer of a step is a settle
+        // handler in the JS runtime, and that runtime has just started — it holds no
+        // in-flight chain to be counting against. So every `finished_at IS NULL` row
+        // this statement sees is by definition an orphan.
+        //
+        // One statement, once per open, beside the one-time migrations below. It
+        // must sit AFTER `execute_batch(SCHEMA)` above, because that batch is what
+        // creates the table — before it, an older database has no `workflow_runs` to
+        // update and the open fails. Unlike the `gate` calls it needs no schema
+        // pre-check for exactly that reason.
+        //
+        // `'interrupted'` is a NEW `stop_reason` spelling and the ONLY one this file
+        // writes. It joins the vocabulary `ChainStop::as_str()` freezes
+        // (`db/workflow_runs.rs`) — see that enum for the rest — and like
+        // `no_next_stage` / `launch_refused` it has no Rust-side producer in the
+        // verdict: **it is emitted by Rust, not TypeScript**, and it is deliberately
+        // NOT a `ChainStop` variant, because it is not a bound and a verdict must
+        // never claim one. `a_run_left_open_by_a_restart_is_closed_when_the_database_reopens`
+        // pins the spelling, and its companion pins that a CLOSED run is untouched —
+        // the `WHERE finished_at IS NULL` arm is what keeps this a repair of orphans
+        // rather than a rewrite of the record's only narrative field on every launch.
+        conn.execute(
+            "UPDATE workflow_runs SET finished_at = ?1, stop_reason = 'interrupted' \
+             WHERE finished_at IS NULL",
+            params![now_ms()],
+        )?;
         // One-time migration for pre-existing databases: add `trusted`
         // (fresh databases already have it from SCHEMA). Gated on a schema
         // pre-check — the ALTER runs only when the column is absent, so a
@@ -796,6 +844,45 @@ impl Db {
             tx.execute("ALTER TABLE stages ADD COLUMN next_slugs TEXT", [])?;
             Ok(())
         })?;
+        // The per-column auto-advance flag (the workflow-graph work). A new
+        // COLUMN on `stages` — a table a pre-existing database already holds —
+        // so it is gate territory (AGENTS.md): an existing user database must
+        // GAIN the column, not fail to open over a `no such column` the first
+        // `SELECT STAGE_COLUMNS` runs against it.
+        //
+        // The `0` default is the whole compatibility story, and it is the same
+        // argument `spaces.board_strict` above makes about Strict: a flag that
+        // arrived ON would start advancing cards on their own in a workflow
+        // whose owner never asked for that, so an upgrade would change behaviour
+        // nobody upgraded for. OFF is not a convenience default, it is the
+        // statement that this release adds a capability and does not use it.
+        //
+        // NOT a `DEFAULT`-less column like `parent_session_id`: `auto` has no
+        // third state to protect. It is a two-valued flag whose off state is a
+        // real answer, so the DDL spells that answer rather than leaving NULL to
+        // be folded into it by every reader.
+        gate(&mut conn, "stages", "auto", |tx| {
+            tx.execute(
+                "ALTER TABLE stages ADD COLUMN auto INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            Ok(())
+        })?;
+        // The per-column extra prompt, prepended before the Skill launch. Same
+        // gate argument as `auto` one line above: a new column on an EXISTING
+        // table, so an existing database has to grow it.
+        //
+        // NO `DEFAULT` and NO backfill, deliberately, and it is the
+        // `parent_session_id` / `cost_usd` argument rather than the `auto` one:
+        // `NULL` here means "this column adds no prompt", which is the truth for
+        // every column in every existing database. A `DEFAULT ''` would migrate
+        // them all to "an empty extra prompt" — a SECOND state that means the
+        // same thing by a different spelling, and one the launch path would have
+        // to special-case forever. One absent state, spelled NULL.
+        gate(&mut conn, "stages", "prompt_prefix", |tx| {
+            tx.execute("ALTER TABLE stages ADD COLUMN prompt_prefix TEXT", [])?;
+            Ok(())
+        })?;
         // The Strict-workflow opt-in (ADR 0099). Rides the `spaces` row;
         // `SpaceRow` does NOT gain a field — `board_strict` is read and written by
         // SQL only, so the `Vec<SpaceRow>` wire type is untouched. The `0` default
@@ -846,6 +933,41 @@ impl Db {
             // No transaction wrapper is spelled at this call site: the single
             // ALTER runs inside the factory's tx, exactly as `cost_usd` above does.
             tx.execute("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT", [])?;
+            Ok(())
+        })?;
+        // The two per-Space auto-chain GUARDS (the workflow-graph work). Rides the
+        // `spaces` row exactly as `board_strict` two gates up does — a new COLUMN on
+        // a table an existing user database already holds, which is gate territory
+        // (AGENTS.md), and `SpaceRow` gains NO field, so the `Vec<SpaceRow>` wire
+        // type is untouched and the guards are read and written by SQL alone.
+        //
+        // NO `DEFAULT` and NO backfill on either, and that is the load-bearing part
+        // of both gates. It is ADR 0082's `cost_usd` argument one table over, with
+        // the stakes turned up because what is being defaulted is a SPEND limit:
+        // NULL means "this Space never configured a guard", which the runtime reads
+        // as "the shipped fallback governs", while `0` means "no auto-chaining" and
+        // `0.0` means "no spend" — both CONFIGURED values a person may legitimately
+        // choose. A `DEFAULT 0` would migrate every existing Space into a limit
+        // nobody set, exactly as `DEFAULT 0` on `cost_usd` migrated every row into a
+        // `$0.00` the provider never reported. And a `DEFAULT` large enough to be
+        // harmless would be indistinguishable from a real setting, which is the other
+        // half of the same collapse. `NULL` is the only honest value for a column
+        // that never existed. Both `dflt_value`s are pinned to NULL by
+        // `the_auto_max_steps_gate_arrives_null_on_a_preexisting_space` and
+        // `the_auto_ceiling_usd_gate_arrives_null_on_a_preexisting_space`, so a
+        // `DEFAULT` added here fails a pin rather than passing the `None` asserts.
+        //
+        // NO CHECK constraint either: a negative bound is storable and the read
+        // returns it verbatim, because whether the number is SANE is the editor's
+        // question, not storage's (the `prompt_prefix` / `set_stage_prompt_prefix`
+        // argument — refusing a value the wire does not forbid is storage inventing
+        // a rule).
+        gate(&mut conn, "spaces", "auto_max_steps", |tx| {
+            tx.execute("ALTER TABLE spaces ADD COLUMN auto_max_steps INTEGER", [])?;
+            Ok(())
+        })?;
+        gate(&mut conn, "spaces", "auto_ceiling_usd", |tx| {
+            tx.execute("ALTER TABLE spaces ADD COLUMN auto_ceiling_usd REAL", [])?;
             Ok(())
         })?;
         // One-time migration for pre-existing databases: give
@@ -995,7 +1117,15 @@ CREATE TABLE IF NOT EXISTS spaces (
     last_opened_at INTEGER NOT NULL,
     trusted INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    board_strict INTEGER NOT NULL DEFAULT 0
+    board_strict INTEGER NOT NULL DEFAULT 0,
+    -- The two per-Space auto-chain GUARDS. NO `DEFAULT` on either, and that is
+    -- the same discipline `sessions.cost_usd` carries (issue #105, D5 / ADR 0082):
+    -- NULL means "not configured", so the shipped fallback constants govern,
+    -- while `0` / `0.0` are CONFIGURED values a person chose — "no auto-chaining"
+    -- and "no spend" respectively. A `DEFAULT 0` would migrate every existing
+    -- Space into a limit nobody set. See both gates in `Db::open`.
+    auto_max_steps INTEGER,
+    auto_ceiling_usd REAL
 );
 CREATE TABLE IF NOT EXISTS stages (
     space_path TEXT NOT NULL,
@@ -1005,6 +1135,8 @@ CREATE TABLE IF NOT EXISTS stages (
     on_enter TEXT NOT NULL DEFAULT 'none',
     on_enter_skill TEXT,
     next_slugs TEXT,
+    auto INTEGER NOT NULL DEFAULT 0,
+    prompt_prefix TEXT,
     PRIMARY KEY (space_path, slug)
 );
 CREATE TABLE IF NOT EXISTS tasks (
@@ -1053,23 +1185,100 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (task_id, key)
 );
+-- The record ONE auto-advance chain leaves behind: the thing the step bound and
+-- the cost ceiling are counted against, and the reason the guards can ship before
+-- the runtime that reads them (an unattended chain of LLM Sessions is an
+-- unbounded spend risk, and you cannot bound what you cannot count).
+--
+-- Run semantics: AT MOST ONE OPEN run per Task (`finished_at IS NULL`). A run
+-- OPENS on the first auto-advance of a chain and CLOSES when the chain stops, so
+-- a card that auto-advances twice in a day is TWO bounded runs, not one
+-- unbounded one — the bound is per chain.
+--
+-- `finished_at` is the open/closed discriminator and `NULL` here is the ONLY
+-- spelling of "still running" — there is no default to collapse it into.
+-- `cost_usd` keeps ADR 0082's discipline for the same reason its sibling on
+-- `sessions` does: NULL is "no Session in this chain ever reported a figure",
+-- 0.0 is "they reported a real zero", and the ceiling must not trip on the first
+-- one rendered as the second. `steps` is the exception: it is a counter that
+-- starts at 0 and is incremented, never a figure that may be unknown.
+--
+-- NO foreign key, on either `space_path` or `task_id`, and for the ADR 0090/0100
+-- reason the two board tables state above: closing a Space tab runs `delete_space`,
+-- and a run record that cascaded away with the tab would erase the money a person
+-- is trying to audit. A Task has no delete verb at all, so a `task_id` FK could
+-- only ever fire on that same tab close.
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    id TEXT PRIMARY KEY,
+    space_path TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    steps INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL,
+    stop_reason TEXT
+);
+-- The lookup the runtime makes on every auto-advance is "does this Task already
+-- have a run open?", and this PARTIAL index is exactly that question: it covers
+-- only the `finished_at IS NULL` rows, so it stays one entry per OPEN chain while
+-- the closed history grows underneath it. A plain index on `task_id` would be a
+-- second, larger copy of what the primary key's own lookups already do.
+--
+-- UNIQUE, and that is the load-bearing word. `WorkflowRunRow`'s doc states "at most
+-- ONE open row per Task" and
+-- `workflow_run_step`'s `SELECT id … WHERE finished_at IS NULL` reads whichever row
+-- SQLite reaches first — so a second open row would count a chain against a
+-- stranger's `steps` and spend, i.e. THE SPEND BOUND FAILING OPEN. A plain index
+-- documents that shape and enforces nothing; this one refuses it at the INSERT,
+-- which is the only place the invariant can be enforced without a second round trip
+-- inside the step verb. `a_second_open_run_for_one_task_is_rejected_by_the_schema`
+-- pins the refusal.
+--
+-- WHY NOW AND NOT LATER: `CREATE UNIQUE INDEX IF NOT EXISTS` against an existing
+-- index of the SAME NAME that is NOT unique is a SILENT NO-OP — SQLite sees the
+-- name, skips the statement, and the old non-unique index stays in place forever.
+-- So editing the word `UNIQUE` into this line after release would look shipped and
+-- be nothing; it would later cost a `DROP INDEX`-and-recreate migration on every
+-- existing database. This is the only cheap moment to say it.
+--
+-- It sits HERE, directly after its own table, for the reason
+-- `idx_task_sessions_session`'s comment above gives verbatim: `SCHEMA` runs as
+-- ONE `execute_batch`, so a statement cannot reference a table a LATER statement
+-- creates. And like that one, an INDEX gets NO `gate` entry — `gate` adds a COLUMN
+-- to a table an older database already holds, and `IF NOT EXISTS` already covers
+-- a re-open.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open
+    ON workflow_runs(task_id) WHERE finished_at IS NULL;
 "#;
 
 // ── The Task board tables (spec §2, ADR 0090) — notes on the batch above ───
 //
-// FOUR tables. They ride the idempotent `CREATE TABLE IF NOT EXISTS` batch and
+// FIVE tables ride this batch: `stages`, `tasks`, `task_sessions`,
+// `task_artifacts` and `workflow_runs`. They ride the idempotent
+// `CREATE TABLE IF NOT EXISTS` batch and
 // get NO migration entry of their own: `gate` above is a transaction factory for
 // adding a COLUMN to an EXISTING table (it probes `pragma_table_info`), so a new
 // TABLE needs no gate because the batch is already idempotent on re-open.
 // `the_three_task_tables_are_in_schema_and_have_no_gate_entry` pins both halves
-// (the name kept its #176 number when `task_artifacts` joined the batch in #180;
+// (the name kept its #176 number when `task_artifacts` joined the batch in #180 and
+// when `workflow_runs` joined with the auto-chain work;
 // the list is what is authoritative).
 //
 // The #179 Stage-config work DID add three gated COLUMNS — `stages.on_enter_skill`,
 // `stages.next_slugs` and `spaces.board_strict` — and those are gates, because
 // `stages` and `spaces` are tables a pre-#179 database already holds in an older
-// shape. That is the distinction the pin draws: a new column on an existing table
-// is gate territory, a new table never is.
+// shape. The workflow-graph work added FOUR MORE for the identical reason — `auto`
+// and `prompt_prefix` to `stages`, `auto_max_steps` and `auto_ceiling_usd` to
+// `spaces` — because both tables are ones an existing user database already holds
+// in the older shape, and a missing column is a `no such column` at the first
+// `SELECT` rather than a table the batch can create. The counts in those two
+// sentences are history, not
+// the current surface — `the_three_task_tables_are_in_schema_and_have_no_gate_entry`
+// pins what the tree measures today. That is the distinction the pin draws: a new
+// column on an existing table is gate territory, a new table never is — which is
+// why `workflow_runs`, the FIFTH table in this batch, rides `SCHEMA` with no gate
+// and no entry in that pin's forbidden list by the same rule the four that joined
+// it follow.
 //
 // NO foreign key on `space_path`, on either board table (ADR 0090). Closing a
 // Space tab runs `delete_space` (`DELETE FROM spaces WHERE path = ?1`), so a
@@ -1100,14 +1309,19 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
 // genuinely shared (the error types, `Db`, `open`, `gate`, the pragmas,
 // `LAST_ACTIVITY`, `SCHEMA`) and nothing else. A sibling may read those by full
 // path WITHOUT widening, because Rust privacy is "the defining module and its
-// descendants" and every sibling is a descendant of this one. Nothing is widened to
-// `pub(crate)`. The 27 `pub(super)` items the children do carry fall into THREE
+// descendants" and every sibling is a descendant of this one. What a sibling
+// declares `pub` is ONLY what a re-export below names, and every one of those
+// re-exports is the retention/`rows` precedent doing its job: a `pub` item in a
+// private module is unreachable outside `storage/` without the line, and each
+// entry states who needs it. Nothing is declared `pub(crate)` at all. The 28
+// `pub(super)` items the children do carry fall into THREE
 // categories, and naming all three is the point — the sentence this block replaced
 // claimed the first category was the only one:
 //
-//   * SIBLING→SIBLING, the majority (19): `rows`' column consts and row mappers,
-//     read by every subject that runs a `SELECT`, plus `stages`' five helpers and
-//     `seams`' `space_key`.
+//   * SIBLING→SIBLING, the majority (20): `rows`' column consts and row mappers,
+//     read by every subject that runs a `SELECT`, plus `stages`' five helpers,
+//     `seams`' `space_key`, and `auto_guards`' guard projection — which
+//     `workflow_runs` reads while it holds the one lock that read has to ride.
 //   * PARENT→CHILD (3): the three `migrations` data steps, imported by `mod.rs` just
 //     below and called from inside `open`'s `gate` closures. `pub(super)` is what the
 //     PARENT needs here, not a sibling reaching sideways — so none of them can be a
@@ -1118,6 +1332,7 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
 //     arity side of the drift guards, so their only consumer is the test tree.
 
 mod artifacts;
+mod auto_guards;
 mod board;
 mod messages;
 mod migrations;
@@ -1129,6 +1344,7 @@ mod sessions;
 mod spaces;
 mod stages;
 mod tasks;
+mod workflow_runs;
 
 // `Db::open`'s gates run these three data steps inside their own transactions.
 use migrations::{backfill_session_todos, seed_session_sort_order, seed_space_sort_order};
@@ -1145,6 +1361,20 @@ pub use rows::{
     TaskCardView, TaskNumberRow, TaskRow, TaskSessionRow,
 };
 
+// The workflow subject's PUBLIC surface: the run record and the VERDICT a step
+// answers with (`AdvanceVerdict` + the `ChainStop` vocabulary it carries), from
+// `workflow_runs`, and the two guards from `auto_guards`. Same widening the `rows`
+// re-export above performs for a private sibling's items — `mod db;` is private in
+// `storage/mod.rs`, so `crate::storage::db::…` is not a path outside `storage/`, and
+// the command layer's `get_auto_guards` return type has to be nameable.
+// `WorkflowRunRow` rides with it because the auto-advance runtime reads it back from
+// `workflow_run_step` and nothing in `storage/` should have to reach into a private
+// sibling to name what a `Db` verb returns — and `AdvanceVerdict` now rides for the
+// stronger reason: it IS what `workflow_run_step` returns, and the guard decision the
+// runtime obeys is inside it.
+pub use auto_guards::AutoGuards;
+pub use workflow_runs::{AdvanceVerdict, ChainStop, WorkflowRunRow};
+
 // `PrunedCounts` and the two bounds are the retention subject's PUBLIC surface, and
 // they need this line to be nameable at all: `mod db;` is private in
 // `storage/mod.rs`, so `crate::storage::db::…` is not a path outside `storage/`,
@@ -1154,6 +1384,24 @@ pub use rows::{
 pub use retention::{
     PrunedCounts, MAX_CLOSED_SUBAGENT_TRANSCRIPT_AGE, VACUUM_FREELIST_THRESHOLD_BYTES,
 };
+
+// The two auto-chain fallback constants, re-exported because the TEST tree reads
+// them by path. `pub use` for the SAME mechanical reason the retention bounds above
+// carry one: `mod db;` is private in `storage/mod.rs`, so a `pub` item in a private
+// sibling is not nameable outside `storage/` without this line, and
+// `storage/mod.rs` re-exports them.
+//
+// WHO ACTUALLY CONSUMES THEM, measured rather than assumed: `db/tests/auto_guards.rs`
+// and `commands/tasks/tests/workflows.rs`, which assert the EFFECTIVE bounds on a
+// verdict against the CONSTANTS and not against the literals 20 and 10.0 — the reason
+// `the_fallback_constants_carry_their_approved_values` gives for preferring the
+// constant over the literal (a literal passes under a re-tuned policy the mirror no
+// longer describes). NO PRODUCTION CODE OUTSIDE `storage/db/` names them, and that is
+// deliberate: the auto-advance runtime is TypeScript and ADR 0119 §2 keeps the two
+// fallbacks Rust-only precisely so a policy number is not duplicated across the wire.
+// The earlier sentence here claimed the runtime "must name them by path"; it does
+// not, and it must not.
+pub use auto_guards::{DEFAULT_AUTO_CEILING_USD, DEFAULT_AUTO_MAX_STEPS};
 
 #[cfg(test)]
 mod tests;

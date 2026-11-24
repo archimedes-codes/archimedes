@@ -5,6 +5,7 @@ import {
   PlusIcon,
   SettingsIcon,
   SparklesIcon,
+  WorkflowIcon,
 } from "lucide-react";
 import {
   type ModelDto,
@@ -14,6 +15,7 @@ import {
 } from "../lib/tauri";
 import { sessionFieldOf } from "../lib/sessionLookup";
 import { titleFor } from "../lib/sessionTitle";
+import type { AppView } from "../lib/appView";
 import { useSessions, spaceViewFor } from "../store/sessions";
 import { useDragReorder } from "../hooks/useDragReorder";
 import { useSkillCatalog } from "../hooks/useSkillCatalog";
@@ -52,17 +54,17 @@ import { spaceNameFor } from "./spaces/sessionRowStyles";
 export const LEFT_PANE_WIDTH = 260;
 
 /**
- * THE SIDEBAR'S FOUR LABELLED COMMAND BUTTONS (Tasks, Skills, Agents, Settings) — one ghost
- * `<Button>` recipe, spelled ONCE because all four draw the identical box. (The two
+ * THE SIDEBAR'S FIVE LABELLED COMMAND BUTTONS (Workflows, Tasks, Skills, Agents, Settings) — one ghost
+ * `<Button>` recipe, spelled ONCE because all five draw the identical box. (The two
  * that used to ride this recipe — `Open Space` and `New Session` — are gone: the
  * first left the sidebar for the chrome bar, the second is now the `+` in the
  * `Sessions` header, which is an icon button and does NOT use this recipe.)
  *
- * The four now live in TWO boxes, not one strip: **Tasks** above the list (D2) and
- * **Skills / Agents / Settings** in the band below it (D1). That is a POSITION change
- * only — every one of them still takes this recipe verbatim, which is exactly the
- * point of spelling it once: a move like that touches two `className` call sites and
- * no button's own shape.
+ * The five now live in TWO boxes, not one strip: **Workflows** and **Tasks** above
+ * the list (D2) and **Skills / Agents / Settings** in the band below it (D1). That
+ * is a POSITION change only — every one of them still takes this recipe verbatim,
+ * which is exactly the point of spelling it once: a move like that touches two
+ * `className` call sites and no button's own shape.
  *
  * The FIRST argument is what `Button`'s base and the `default` size would add
  * that these two never had, and each entry only names a group the row below
@@ -146,7 +148,7 @@ const SIDEBAR_COMMAND_BUTTON =
  * Dracula read 5% where `--color-surface-hover` reads 10%), so letting the arm
  * win that group would repaint the hover fill.
  *
- * `h-8 w-full` is ALSO why the two view doors can wear this and not the chrome
+ * `h-8 w-full` is ALSO why the view doors can wear this and not the chrome
  * grammar: `chromeButton.test.ts`'s source gate reserves
  * `h-7 w-7 items-center justify-center` for `chromeButton.ts` alone.
  */
@@ -162,6 +164,7 @@ const NO_SESSION_IDS: string[] = [];
 
 export default function SpacesList({
   onOpenBoard,
+  onOpenWorkflows,
   onOpenSettings,
   onReturnToWorkspace,
   currentView = "workspace",
@@ -179,6 +182,20 @@ export default function SpacesList({
    *  THE THREE PROPS BELOW SHARE THAT RULE, for the same reason: this pane's command
    *  surfaces are the app's view switcher now, and only `App` knows which view is up. */
   onOpenBoard?: () => void;
+  /** Open the **Workflows** canvas (`App`'s `"workflows"` view) — the graph view of
+   *  the SAME per-Space column set the board paints.
+   *
+   *  OPTIONAL on the same rule as `onOpenBoard` above (the bare-`<SpacesList />`
+   *  render sites), and absent means the door is a NO-OP rather than a crash.
+   *
+   *  IT IS A THIRD VIEW DOOR and not a variant of the Tasks one. Both name the
+   *  board's columns; what differs is the SHAPE they show — a kanban of cards
+   *  versus the chain those columns form (`auto`, each column's Skill, where the
+   *  edges go, where a chain dead-ends). The canvas is READ-ONLY: every field it
+   *  shows is edited by the `StageEditor` dialog the board's `Configure` door
+   *  opens, which this door's node click reaches too. A second editor for the same
+   *  eight fields would be a second owner of them, so there is none here. */
+  onOpenWorkflows?: () => void;
   /** Open the **Settings** view. The door that used to sit in the chrome bar's
    *  `ChromeControls` (deleted) — this pane's command band is its only home, so the
    *  pane holds the app's ONE route to the settings page. */
@@ -189,16 +206,30 @@ export default function SpacesList({
    *  two routes give every view two exits (N1), so no view is a dead end and the
    *  pane needs no control of its own to get home. */
   onReturnToWorkspace?: () => void;
-  /** Which view `App` is showing, so the two view doors can render pressed and
-   *  toggle off. Defaults to `"workspace"` — the state a bare render is in.
+  /** Which view `App` is showing, so the THREE view doors can render pressed and
+   *  toggle off. Defaults to `"workspace"` — the state a bare render is in, and the
+   *  one where no door is pressed.
    *
    *  NOT `activeView`: that name is already this component's local for the ACTIVE
-   *  **Space**'s folder view (see below), which feeds `rowIds`. */
-  currentView?: "workspace" | "settings" | "board";
+   *  **Space**'s folder view (see below), which feeds `rowIds`.
+   *
+   *  THE TYPE IS SHARED (`lib/appView.ts`), and that changes WHICH gap this line
+   *  leaves, so read the consequence rather than the history. It used to be a third
+   *  restatement of the union, and widening `App`'s without widening this prop WAS a
+   *  `tsc` error here (an `App` value not assignable to the prop). Now both read one
+   *  declaration, so that error is gone by construction — and the gap that remains is
+   *  the one that was never a type error anyway: widening the union WITHOUT adding a
+   *  door here is not an error at all, because a prop a component accepts and ignores
+   *  compiles. `App` can be TOLD about a view this pane cannot name. That is what
+   *  `SpacesList.workflows.test.tsx`'s `aria-pressed` case closes, and it is now the
+   *  ONLY thing that does — the shared union removed a catch this line used to give
+   *  for free, which is the price of one declaration instead of three and the reason
+   *  that pin stays. */
+  currentView?: AppView;
 } = {}) {
   // THE COMMAND SURFACES ARE THE VIEW SWITCHER. The Settings door moved here from
   // the chrome bar's control cluster (`ChromeControls`, deleted): the pane is
-  // permanent across all three views since ADR 0094, so the door that opens a view
+  // permanent across every view since ADR 0094, so the door that opens a view
   // can also be the door that closes it, and the top-right of the window is left to
   // the window controls alone.
   const spaces = useSessions((s) => s.spaces);
@@ -454,14 +485,51 @@ export default function SpacesList({
           `shrink-0` band after it) needs the nesting. */}
       <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-col gap-2 p-3">
-        {/* The Task board's door, and it is now the ONLY command ABOVE the list (D2):
-            the pane reads tasks, then sessions. It joined the labelled commands after
-            **Agents** (spec §3) and was later moved to the front — the board is where
-            work starts, and a door below three others is a door nobody finds. It now
-            sits alone in this box: the other three moved BELOW the scroller (D1), so
-            the adjacency the original order defended (Settings next to Tasks, the two
-            modal commands together) is gone entirely. Nothing reads neighbours — see
-            the band's comment for what the KIND split still carries.
+        {/* The **Workflows** canvas's door, FIRST in the row and therefore ABOVE
+            `Tasks` — the owner's placement, and the reason this box now holds two
+            doors rather than one. The order is a claim about discovery: the graph is
+            the thing a person cannot see on a kanban (which columns are automatic,
+            where the chain dead-ends), so it is the first thing the pane offers, and
+            `Tasks` — the surface it describes — follows it.
+
+            The SAME recipe and the SAME two halves as `Tasks` below it, verbatim:
+            it is a COMMAND button and NOT a section header (the canvas is one
+            surface, not a list of rows, so it owns no chevron, no count and no
+            list), it is pressed while ITS OWN view is up, and clicking the pressed
+            door leaves it. The guard is on the door's OWN view and not on
+            `currentView === "workspace"`, so board → Workflows is one click rather
+            than a trip back through the chat. `WorkflowIcon` is lucide's
+            branching-flow glyph, which is the shape of what the canvas draws — an
+            edge from one column to the next — rather than a generic settings gear. */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="default"
+          aria-pressed={currentView === "workflows"}
+          onClick={() =>
+            currentView === "workflows"
+              ? onReturnToWorkspace?.()
+              : onOpenWorkflows?.()
+          }
+          className={cn(
+            SIDEBAR_COMMAND_BUTTON,
+            PANE_COMMAND_ROW,
+            currentView === "workflows" && "bg-selected",
+          )}
+        >
+          <WorkflowIcon className="size-4" />
+          <span className="flex-1 text-left">Workflows</span>
+        </Button>
+        {/* The Task board's door, and the SECOND of the two commands ABOVE the list
+            (D2): the pane reads the workflow, then the tasks, then the sessions. It
+            joined the labelled commands after **Agents** (spec §3) and was later
+            moved to the front — the board is where work starts, and a door below
+            three others is a door nobody finds. It no longer sits alone in this box:
+            the **Workflows** door joined it ABOVE, on the owner's instruction, and
+            the other three remain BELOW the scroller (D1), so the adjacency the
+            original order defended (Settings next to Tasks, the two modal commands
+            together) is still gone entirely. Nothing reads neighbours — see the
+            band's comment for what the KIND split still carries.
             It is a COMMAND button and NOT a section header like
             `Sessions`, because a board is one surface rather than a list of rows —
             so it takes the shared recipe verbatim and owns no chevron, no count and
@@ -613,16 +681,16 @@ export default function SpacesList({
 
           **Settings** — the app's ONLY app control, and the reason this band is a view
           switcher rather than a row of commands. It used to be a gear at the far RIGHT
-          of the chrome bar (`ChromeControls`, deleted): the pane is permanent across all
-          three views (ADR 0094), so the door lives with the other doors, and the bar's
+          of the chrome bar (`ChromeControls`, deleted): the pane is permanent across
+          every view (ADR 0094), so the door lives with the other doors, and the bar's
           top-right belongs to the window manager alone. It is LAST in the band, a
           position chosen rather than a leftover, and the KIND difference is what the
           order carries: a modal is not a location, so Skills and Agents raise a dialog
-          and carry NO `aria-pressed`; Settings and Tasks name a view, so they say which
-          one is showing and toggle off when clicked again. Two exits per view (N1) —
-          its own door, or any **Session** row — so no view is a dead end. That is what
-          makes the Settings page's own `Back` redundant (it is retired); this pane owns
-          no exit control of its own.
+          and carry NO `aria-pressed`; Settings, Workflows and Tasks name a view, so they
+          say which one is showing and toggle off when clicked again. Two exits per view
+          (N1) — its own door, or any **Session** row — so no view is a dead end. That is
+          what makes the Settings page's own `Back` redundant (it is retired); this pane
+          owns no exit control of its own.
 
           NOT `CHROME_BUTTON`, and that is a gate, not a preference:
           `chromeButton.test.ts`'s source gate requires `chromeButton.ts` to be the ONLY

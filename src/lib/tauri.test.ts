@@ -37,6 +37,8 @@ import {
   reorderTasks,
   sessionRecency,
   taskNumbers,
+  workflowRunClose,
+  workflowRunStep,
   type AgentDefinitionReportDto,
   type AttentionAlertClickedPayload,
   type WindowFrameState,
@@ -791,6 +793,173 @@ describe("reorderTasks (the within-column drag write path, spec §3)", () => {
   });
 });
 
+
+describe("the workflow_run wrappers (the auto-advance chain's bookkeeping IPC)", () => {
+  beforeEach(() => {
+    mockedInvoke.mockReset();
+  });
+
+  /** An OPEN `WorkflowRunRow`: the eight camelCase keys the type serialises. It
+   *  rides as the `run` field of every verdict fixture below, and it used to be
+   *  what `commands::tasks::workflow_run_open` answered directly — that command and
+   *  its wrapper are deleted (dead IPC), so this is now a nested fixture rather than
+   *  a command's own answer, and the two tests that pinned the wrapper went with it.
+   *  The stamps are the far-future fixture
+   *  values the repo's rule requires (a mocked payload must not be able to look
+   *  like a real `now_ms()`), and `costUsd: null` is deliberate — it is the state
+   *  a USD ceiling cannot see, so it must be a value these tests carry rather than
+   *  one they avoid. */
+  const openRun = {
+    id: "wfr_00000000-0000-4000-8000-000000000001",
+    spacePath: "/space/chain",
+    taskId: "tsk_1",
+    startedAt: 1_700_000_000_001,
+    finishedAt: null,
+    steps: 2,
+    costUsd: null,
+    stopReason: null,
+  };
+
+  /** The VERDICT `commands::tasks::workflow_run_step` answers: the five camelCase
+   *  keys `AdvanceVerdict` serialises, with the row above nested in `run`. The
+   *  command used to answer the bare row, and these fixtures are how the shape
+   *  change is pinned from this side — a wrapper that still typed its answer
+   *  `WorkflowRunRow` would compile against nothing (the wire sends a verdict) and
+   *  the settle-handler written against it would read `undefined` for `advance`.
+   *  `maxSteps: 20` / `ceilingUsd: 10` are the SHIPPED FALLBACKS; they are spelled
+   *  as fixture values here and nowhere in `src/lib/tauri/**`, because the
+   *  constants are Rust-only on purpose and a copy in the wrapper layer is the
+   *  drift this verdict exists to remove. */
+  const verdict = {
+    run: openRun,
+    advance: true,
+    stop: null,
+    maxSteps: 20,
+    ceilingUsd: 10,
+  };
+
+  it("workflowRunStep invokes `workflow_run_step` with all three argument keys", async () => {
+    mockedInvoke.mockResolvedValue({
+      ...verdict,
+      run: { ...openRun, steps: 3 },
+    });
+    await expect(
+      workflowRunStep("/space/chain", "tsk_1", 0.25),
+    ).resolves.toEqual({ ...verdict, run: { ...openRun, steps: 3 } });
+    expect(mockedInvoke).toHaveBeenCalledWith("workflow_run_step", {
+      spacePath: "/space/chain",
+      taskId: "tsk_1",
+      costDeltaUsd: 0.25,
+    });
+  });
+
+  it("workflowRunStep sends `costDeltaUsd: null` for a step with no figure — never `0`", async () => {
+    // THE assertion of this cluster. `null` and a number are different writes on
+    // the Rust side: `null` leaves `cost_usd` untouched, a number does
+    // `COALESCE(cost_usd, 0.0) + x`. Send `0` for "unknown" and a chain whose
+    // Sessions never reported a figure accumulates a real `0.0`, which is ADR 0082's
+    // phantom zero — and a ceiling compared against a figure that is a lie reads as
+    // "under budget" forever. Asserted through `JSON.stringify` (the encoder the
+    // real `invoke` uses) because an `undefined` here would encode as an ABSENT key,
+    // which is a third thing the command does not accept.
+    mockedInvoke.mockResolvedValue(verdict);
+    await workflowRunStep("/space/chain", "tsk_1", null);
+    const [, args] = mockedInvoke.mock.calls[0]!;
+    expect(JSON.parse(JSON.stringify(args))).toEqual({
+      spacePath: "/space/chain",
+      taskId: "tsk_1",
+      costDeltaUsd: null,
+    });
+  });
+
+  it("workflowRunStep passes a REAL `0` through as `0` (a free step is not an unknown one)", async () => {
+    // The other half of the boundary above, and the reason `?? 0` or `|| null` in
+    // the wrapper would both be bugs: `0` is a figure a Session reported, and it
+    // must reach the `COALESCE` arm rather than the "say nothing" arm.
+    mockedInvoke.mockResolvedValue({
+      ...verdict,
+      run: { ...openRun, costUsd: 0 },
+    });
+    await workflowRunStep("/space/chain", "tsk_1", 0);
+    expect(mockedInvoke).toHaveBeenCalledWith("workflow_run_step", {
+      spacePath: "/space/chain",
+      taskId: "tsk_1",
+      costDeltaUsd: 0,
+    });
+  });
+
+  it("workflowRunStep returns the verdict AS-IS (the guard's decision, unedited)", async () => {
+    // TWO things this forwards untouched, and both are load-bearing. The ROW: the
+    // Rust command reads it back AFTER the write precisely so the caller compares
+    // the STORED counter against its bound, and a wrapper that re-counted it here
+    // would put a second copy of the increment rule on this side of the wire. The
+    // VERDICT: `advance` / `stop` / `maxSteps` / `ceilingUsd` are the guard's
+    // decision and its EFFECTIVE bounds, computed in Rust because the fallback
+    // constants are Rust-only — a wrapper that defaulted, coerced or "simplified"
+    // any of them (say `stop: verdict.stop ?? "max_steps"`) would put the policy
+    // back on this side of the wire, which is the thing the verdict was introduced
+    // to remove. Hence `toBe`: identity, not equality.
+    mockedInvoke.mockResolvedValue(verdict);
+    await expect(workflowRunStep("/space/chain", "tsk_1", null)).resolves.toBe(
+      verdict,
+    );
+  });
+
+  it("workflowRunStep delivers a stopped chain's verdict with its reason and both bounds", async () => {
+    // The shape T6b's settle-handler is written against, and the one the wrapper must
+    // not touch: `advance: false` arrives WITH the snake_case `stop` and the two
+    // EFFECTIVE bounds, because the handler has to close the run using the same
+    // vocabulary the record stores (`workflowRunClose`'s `stopReason`) and has to say
+    // out loud what the bound WAS — a number it cannot derive, since the fallback is
+    // Rust-side. A wrapper that dropped `maxSteps` when it equalled the row's `steps`
+    // (a plausible "tidy-up") would leave the handler able to report only that a chain
+    // stopped.
+    const stopped = {
+      run: { ...openRun, steps: 20, costUsd: 4.5 },
+      advance: false,
+      stop: "max_steps" as const,
+      maxSteps: 20,
+      ceilingUsd: 10,
+    };
+    mockedInvoke.mockResolvedValue(stopped);
+    const answered = await workflowRunStep("/space/chain", "tsk_1", 0.5);
+    expect(answered).toEqual(stopped);
+    expect(answered.stop).toBe("max_steps");
+    expect(answered.maxSteps).toBe(20);
+    expect(answered.ceilingUsd).toBe(10);
+    expect(answered.run.steps).toBe(20);
+  });
+
+  it("workflowRunClose invokes `workflow_run_close` with `taskId` and `stopReason`", async () => {
+    mockedInvoke.mockResolvedValue(undefined);
+    await expect(workflowRunClose("tsk_1", "cost_ceiling")).resolves.toBeUndefined();
+    // `stopReason` is the record's only narrative field and it is stored VERBATIM,
+    // so no normalizing, lowercasing or defaulting belongs in this wrapper. The
+    // spelling is a real one from the shared vocabulary — `ChainStop::as_str()`'s
+    // four (`max_steps`, `cost_ceiling`, `no_next_stage`, `launch_refused`), plus
+    // `"manual"`, plus `"interrupted"` (written by Rust's `Db::open`), plus a
+    // verbatim `StopReason` — cited rather than retyped, because the enumeration
+    // that used to sit here named `"steps"` and `"ceiling"`, which nothing emits.
+    expect(mockedInvoke).toHaveBeenCalledWith("workflow_run_close", {
+      taskId: "tsk_1",
+      stopReason: "cost_ceiling",
+    });
+  });
+
+  it("workflowRunClose takes NO spacePath (the Db verb scopes on the card alone)", async () => {
+    // `Db::workflow_run_close` updates `WHERE task_id = ?1 AND finished_at IS NULL`.
+    // A `spacePath` here would be an argument with no parameter behind it, and the
+    // failure mode is the quiet one: Tauri drops it, the close still succeeds, and
+    // the wrapper's signature has become a lie about what binds the write.
+    mockedInvoke.mockResolvedValue(undefined);
+    await workflowRunClose("tsk_1", "manual");
+    const [, args] = mockedInvoke.mock.calls[0]!;
+    expect(Object.keys(args as Record<string, unknown>)).toEqual([
+      "taskId",
+      "stopReason",
+    ]);
+  });
+});
 
 describe("editTask (the per-field patch IPC boundary)", () => {
   beforeEach(() => {

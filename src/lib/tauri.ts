@@ -173,6 +173,38 @@ export type {
   // CONTENT; `ArtifactMeta` is what a write answers with, deliberately without it.
   Artifact,
   ArtifactMeta,
+  // (the workflow graph) The per-Space auto-chain guard row — the shape
+  // `getAutoGuards` answers and `setAutoGuards` writes. TYPE-ONLY: it vanishes at
+  // runtime, so `TAURI_RUNTIME_API` does NOT gain it (the
+  // `AccessRule`/`AccessDirection` precedent, and `Artifact`/`ArtifactMeta`
+  // immediately above) while its two wrappers enter both lists. Named for the Rust
+  // `Serialize` type it mirrors rather than as `AutoGuardsDto`, on the `SpaceRow` /
+  // `StageDto`-adjacent rule the block above states.
+  AutoGuards,
+  // The auto-advance chain's record — the shape nested inside the `AdvanceVerdict`
+  // that `workflowRunStep` returns.
+  // TYPE-ONLY: it vanishes at runtime, so
+  // `TAURI_RUNTIME_API` does NOT gain it (the `AccessRule`/`AccessDirection`
+  // precedent, and `AutoGuards` immediately above) while its two wrappers enter
+  // both lists. Named for the Rust `Serialize` type it mirrors rather than as
+  // `WorkflowRunRowDto`, on the `SpaceRow` rule the block above states.
+  WorkflowRunRow,
+  // (T6a) The chain's GUARD VERDICT — what `workflowRunStep` answers with now, and
+  // the reason-vocabulary it carries. TYPE-ONLY like the two above (they vanish at
+  // runtime, so `TAURI_RUNTIME_API` does NOT gain them), and named for the Rust
+  // types they mirror rather than as `…Dto`s, on the same rule.
+  //
+  // WHY THE VERDICT CROSSES THE WIRE AT ALL: its two bounds fall back to shipped
+  // defaults that live in Rust and are deliberately NOT mirrored in `types.ts` (the
+  // `AutoGuards` block above gives the reason — a policy number copied across the
+  // wire is one that drifts), so TypeScript cannot decide "is this chain over
+  // budget" for itself. The decision is made in `storage/db/workflow_runs.rs` beside
+  // the constants it reads (declared in `auto_guards.rs`, imported by the file that
+  // judges against them), and the settle-handler obeys it. `maxSteps` / `ceilingUsd`
+  // ride along because the handler must be able to NAME the bound it hit, and it
+  // cannot derive either one.
+  AdvanceVerdict,
+  ChainStop,
 } from "./tauri/types";
 
 export {
@@ -255,6 +287,39 @@ export {
   deleteStage,
   setBoardStrict,
   getBoardStrict,
+  // (the workflow graph) The two per-COLUMN auto-advance fields. Both enter
+  // `TAURI_RUNTIME_API` and `TAURI_PUBLIC_API` in this commit, and neither adds a
+  // TYPE name: both answer the already-pinned `StageDto`, which GAINS `auto` and
+  // `promptPrefix` in the same commit — widening an existing interface moves neither
+  // list (the `onEnterSkill`/`nextSlugs` precedent one block above), but leaving it
+  // narrow would make the wired type a lie about a column the database already
+  // answers for.
+  setStageAuto,
+  setStagePromptPrefix,
+  // (the workflow graph) The two per-SPACE auto-chain guards — the `Strict
+  // workflow` pair's twin (a `void` write, and a read that seeds the editor).
+  // `setAutoGuards` adds no TYPE name and `getAutoGuards` adds exactly ONE,
+  // `AutoGuards` below: a `Serialize` row type like `Artifact`, so it enters
+  // `TAURI_PUBLIC_API` and, being a TYPE, NOT `TAURI_RUNTIME_API`.
+  setAutoGuards,
+  getAutoGuards,
+  // The auto-advance chain's RUN RECORD — the three the runtime counts its steps
+  // and its spend against. All THREE enter `TAURI_RUNTIME_API` and
+  // `TAURI_PUBLIC_API` in this commit, and exactly ONE TYPE name enters with them:
+  // `WorkflowRunRow`, which is a `Serialize` row type and therefore lands in
+  // `TAURI_PUBLIC_API` alone (the `AutoGuards` / `Artifact` precedent directly
+  // above). They are registered because the runtime is TypeScript and reaches the
+  // table over IPC: the verbs shipped with no command layer on the theory that an
+  // in-process caller would use them, and the caller turned out to be on the other
+  // side of the wire. NO store action accompanies either, and the wrapper
+  // module's section header gives the reason (run bookkeeping is not board-slice
+  // state) — an unexplained absence reads as an oversight, so it is stated there.
+  // A THIRD wrapper, `workflowRunOpen`, was deleted as dead IPC along with its
+  // command and its `Db` verb: nothing called it, and the consumer gate could not
+  // see that because the wrapper's own `invoke("workflow_run_open")` literal
+  // counted as its consumer.
+  workflowRunStep,
+  workflowRunClose,
   // (issue #180 D1, spec §1) The two artifact commands — a HUMAN surface today,
   // and the verbs the crate seam's D2 step will build on. Both enter
   // `TAURI_RUNTIME_API` and `TAURI_PUBLIC_API` in this commit. Neither is a model

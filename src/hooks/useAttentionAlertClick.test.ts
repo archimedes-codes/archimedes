@@ -51,7 +51,13 @@ vi.mock("../lib/tauri", async () => {
   };
 });
 
-type View = "workspace" | "settings" | "board";
+// Widened with `App`'s union and `useAttentionAlertClick`'s `AppView`, which is the
+// error this line is a fixture for: the hook takes the SETTER, so a host whose state is
+// narrower than `AppView` is a compile error — the same catch `App.tsx` gets for free
+// because it declares the union. The host below never names `"workflows"` in a case, and
+// it does not need to: step 2 of the hook's five leaves whatever non-workspace arm is up,
+// so an arm added later is covered by the FUNCTIONAL updater rather than by a case here.
+type View = "workspace" | "settings" | "board" | "workflows";
 
 /** The host: owns the `view` state whose setter the hook is handed, and paints
  *  the committed value so a case can assert the view switch. */

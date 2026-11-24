@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildLaunchMessage,
   escapeAttr,
-  headOfMode,
+  headOfLaunch,
   taskBlock,
   type TaskLaunchDestination,
 } from "./taskPrompt";
@@ -24,7 +24,11 @@ import type { TaskRow } from "./tauri";
  *  4. the head is derived ENTIRELY from the destination `TaskLaunchDestination` the
  *     caller passes — its label supplies the sentence and its `onEnterSkill` supplies
  *     the token — so no surface re-spells a skill name or an instruction as a literal
- *     (issue #179 / ADR 0098 deleted the mode table that used to own both).
+ *     (issue #179 / ADR 0098 deleted the mode table that used to own both);
+ *  5. the column's **extra prompt** (`stages.prompt_prefix`) goes FIRST, ahead of the
+ *     instruction and the token, and it is on the EXPANDING side of the injection
+ *     boundary the way the token is — see the last describe for why that asymmetry
+ *     against the `<task>` block is a decision and not an oversight.
  *
  * WHY THESE ARE NOT component tests: every rule here is a rule about a STRING, and
  * a component test can only see a string by driving a whole chat surface (which is
@@ -50,6 +54,11 @@ function destination(
     slug: "research",
     label: "Research",
     onEnterSkill: "research",
+    // `null` is what every column that predates the workflow-graph work holds, and
+    // REQUIRED rather than optional for the `auto` reason (T3): an optional field
+    // compiles against a fixture that never sets it and then silently contributes
+    // nothing when a real `StageDto` arrives.
+    promptPrefix: null,
     ...over,
   };
 }
@@ -271,9 +280,9 @@ describe("taskPrompt — the launch draft", () => {
     // A destination with NO Skill contributes no token at all: that is the state
     // every pre-#179 column is in, and a bare `$` would be an unmatched token
     // riding the text verbatim to the model.
-    expect(headOfMode(destination({ slug: "research", onEnterSkill: "research" }))).toContain("$research");
-    expect(headOfMode(destination({ slug: "research", onEnterSkill: "research" }))).not.toContain("$discuss");
-    expect(headOfMode(destination({ slug: "approved", onEnterSkill: null }))).not.toContain("$");
+    expect(headOfLaunch(destination({ slug: "research", onEnterSkill: "research" }))).toContain("$research");
+    expect(headOfLaunch(destination({ slug: "research", onEnterSkill: "research" }))).not.toContain("$discuss");
+    expect(headOfLaunch(destination({ slug: "approved", onEnterSkill: null }))).not.toContain("$");
   });
 
   it("carries an instruction line built from the destination's label", () => {
@@ -285,10 +294,10 @@ describe("taskPrompt — the launch draft", () => {
     // work on WIP." — a 3-char noun doing sentence duty. It is pinned here with
     // exactly that label so the accepted shape is the one on record, and so a
     // revert to the deleted per-mode prose ("Research this task.") cannot pass.
-    expect(headOfMode(destination({ slug: "doing", label: "WIP", onEnterSkill: null }))).toBe(
+    expect(headOfLaunch(destination({ slug: "doing", label: "WIP", onEnterSkill: null }))).toBe(
       "Let's work on WIP.",
     );
-    expect(headOfMode(destination({ slug: "research", label: "Research", onEnterSkill: "research" }))).toBe(
+    expect(headOfLaunch(destination({ slug: "research", label: "Research", onEnterSkill: "research" }))).toBe(
       "Let's work on Research.\n\n$research",
     );
   });
@@ -315,6 +324,199 @@ describe("taskPrompt — the launch draft", () => {
     );
     expect(buildLaunchMessage(task(), destination(), identity)).not.toContain(
       "<artifacts",
+    );
+  });
+});
+
+describe("taskPrompt — the column's extra prompt (`stages.prompt_prefix`)", () => {
+  /** The message a Skill-bearing, prefix-less column produces TODAY — written out as
+   *  a literal rather than derived from the code under test, because every case below
+   *  compares against it and a comparison to a computed value proves nothing about a
+   *  shape that changed. Every existing column in every existing database holds
+   *  `prompt_prefix` NULL, so THIS is the overwhelmingly common output and the one
+   *  that must not wobble by one byte. */
+  const PREFIXLESS_RESEARCH =
+    "Let's work on Research.\n\n$research\n\n" +
+    '<task id="tsk_1a2b" stage="backlog" title="Wire up the board">\n' +
+    "Cards need a detail modal.\n</task>";
+
+  it("sends the prefix FIRST, ahead of the instruction and the skill token", () => {
+    // The settled design is "1 Skill per column, PLUS a per-column extra-prompt field
+    // prepended **before the Skill launch**". So the order is prefix → instruction →
+    // token → block, and the prefix is not merely PRESENT: a prefix that landed after
+    // the `$research` token would be a column framing the Skill it is about to load
+    // with text the Skill has already been asked to do, and a prefix that landed
+    // inside the `<task>` block would be card-scoped rather than column-scoped.
+    const message = buildLaunchMessage(
+      task(),
+      destination({ promptPrefix: "Read the attached board before you start." }),
+      identity,
+    );
+    expect(message.indexOf("Read the attached board before you start.")).toBe(0);
+    expect(message.indexOf("Read the attached board")).toBeLessThan(
+      message.indexOf("Let's work on Research."),
+    );
+    expect(message.indexOf("Let's work on Research.")).toBeLessThan(
+      message.indexOf("$research"),
+    );
+    expect(message.indexOf("$research")).toBeLessThan(message.indexOf("<task "));
+    expect(message.trimEnd().endsWith("</task>")).toBe(true);
+  });
+
+  it("separates the prefix from the head with one blank line (the house `\\n\\n`)", () => {
+    // The separator is pinned as a literal because the file already uses `\n\n`
+    // between head and block: one shape for "these are the two parts of a launch
+    // message", spelled the same way twice. A single newline or a blank-line-plus-
+    // one here would be a visible difference in the user's own bubble for no reason.
+    expect(
+      buildLaunchMessage(
+        task(),
+        destination({ promptPrefix: "Frame it first." }),
+        identity,
+      ),
+    ).toBe("Frame it first.\n\n" + PREFIXLESS_RESEARCH);
+  });
+
+  it("trims the prefix and adds nothing around it", () => {
+    // The column stores what was typed, RAW (`StageRow`'s `<Input>` does not trim and
+    // the Rust command does not trim), so a person who pressed Enter after their
+    // sentence has a trailing `\n` in the cell. Un-trimmed that becomes three blank
+    // lines in the message — the model has to explain the whitespace to itself, and
+    // `taskBlock`'s own comment records the house rule that a blank line the model
+    // must account for is worse than no line.
+    expect(
+      buildLaunchMessage(
+        task(),
+        destination({ promptPrefix: "\n  Frame it first.  \n\n" }),
+        identity,
+      ),
+    ).toBe("Frame it first.\n\n" + PREFIXLESS_RESEARCH);
+  });
+
+  it("is BYTE-IDENTICAL to today for a column with no extra prompt", () => {
+    // THE COMPATIBILITY PIN. `prompt_prefix` has no SQL `DEFAULT`, so every column
+    // that predates this change reads back NULL, and the whole existing suite of
+    // prompt pins — this file, `NewTaskDialog.test.tsx`, `taskLaunch.test.ts` — is
+    // written against the prefix-less shape. An implementation that emitted an empty
+    // line, an empty element, or a separator with nothing before it reddens here
+    // while still passing every other case in this describe.
+    const nullPrefix = buildLaunchMessage(task(), destination(), identity);
+    expect(nullPrefix).toBe(PREFIXLESS_RESEARCH);
+    // `""` is a VALUE a person typed and cleared the other way round (the Rust
+    // `set_stage_prompt_prefix` answers `""` back as a value and keeps NULL as the
+    // only clear), but it contributes NOTHING to a message either. Both spellings of
+    // "nothing" must produce the same bytes as the column that never had one.
+    expect(
+      buildLaunchMessage(task(), destination({ promptPrefix: "" }), identity),
+    ).toBe(PREFIXLESS_RESEARCH);
+    // Whitespace-only is the third spelling — a cell someone typed into and then
+    // backspaced over, leaving a space. It contributes nothing either, and it must
+    // NOT become a leading blank line above the instruction.
+    expect(
+      buildLaunchMessage(task(), destination({ promptPrefix: "   \n\t " }), identity),
+    ).toBe(PREFIXLESS_RESEARCH);
+    // And the same holds for a Skill-LESS column, i.e. the other arm of `headOfLaunch`.
+    const skillless = {
+      slug: "review",
+      label: "Review",
+      onEnterSkill: null,
+      promptPrefix: null,
+    } satisfies TaskLaunchDestination;
+    expect(buildLaunchMessage(task(), skillless, identity)).toBe(
+      "Let's work on Review.\n\n" +
+        '<task id="tsk_1a2b" stage="backlog" title="Wire up the board">\n' +
+        "Cards need a detail modal.\n</task>",
+    );
+  });
+
+  it("hands the prefix to `expand` and STILL never the task block", () => {
+    // THE BOUNDARY PIN, and the one a future reader is most likely to "fix" by
+    // accident. The prefix is INSIDE `expand`'s argument; the `<task>` block is
+    // OUTSIDE it. Both halves are asserted here because either one alone can be
+    // broken by a plausible-looking edit: moving the prefix after `expand(head)`
+    // returns (a one-line change that keeps every other case green) would silently
+    // stop a prefix that says `use $implement here` from working, and folding the
+    // block into the expanded text would reopen the injection hole the case above
+    // pins shut.
+    const seen: string[] = [];
+    buildLaunchMessage(
+      task(),
+      destination({ promptPrefix: "Use $implement when you get there." }),
+      (text) => {
+        seen.push(text);
+        return text;
+      },
+    );
+    expect(seen).toHaveLength(1);
+    // The prefix is in there — and FIRST, which is what "prepended before the Skill
+    // launch" means at this level of the stack.
+    expect(seen[0]).toBe(
+      "Use $implement when you get there.\n\nLet's work on Research.\n\n$research",
+    );
+    // The card is not.
+    expect(seen[0]).not.toContain("<task");
+    expect(seen[0]).not.toContain("Wire up the board");
+  });
+
+  it("expands a $ token in the prefix and never one in a card title", () => {
+    // THE ASYMMETRY, spelled out as behaviour. Both are free text and both are
+    // `string | null` on the wire, so nothing in the TYPES says which one expands —
+    // and that is exactly why this case exists.
+    //
+    // The prefix is AUTHOR text: the same person who picks the column's Skill typed it,
+    // in the Stage editor, as configuration. It expands for the same reason the
+    // `$skill` token beside it expands — a column that says "use $implement here"
+    // means it, and a column whose author can pick a Skill from a dropdown but cannot
+    // NAME one in prose is the field this task exists to add.
+    //
+    // The `<task>` block is CARD text: a title is free text a harness tool can write,
+    // so a card titled `$some-skill` must never be able to inject a skill block into
+    // a Session nobody asked for. That is the security property `buildLaunchMessage`'s
+    // doc comment records, and it is unchanged by this task.
+    //
+    // The fake expander stands in for `expandMentions` by rewriting every `$token` it
+    // is handed, so the assertion is about WHICH TEXT was handed to it.
+    const expandTokens = (text: string): string =>
+      text.replace(/\$([a-z-]+)/g, "<expanded:$1>");
+
+    const withPrefix = buildLaunchMessage(
+      task(),
+      destination({ promptPrefix: "Use $implement when you get there." }),
+      expandTokens,
+    );
+    expect(withPrefix).toContain("<expanded:implement>");
+    expect(withPrefix).toContain("<expanded:research>");
+
+    // A title carrying the same token is untouched — same expander, same call, and
+    // the difference is only which side of the boundary the text came from.
+    const titled = buildLaunchMessage(
+      task({ title: "$implement" }),
+      destination(),
+      expandTokens,
+    );
+    expect(titled).toContain("<expanded:research>");
+    expect(titled).not.toContain("<expanded:implement>");
+    expect(titled).toContain('title="$implement"');
+  });
+
+  it("carries the prefix through `headOfLaunch` (the exported head)", () => {
+    // The head is what `expand` receives and what the injection pin reads, so the
+    // prefix has to be part of the HEAD and not something `buildLaunchMessage` glues
+    // on afterwards — that distinction is the whole of the boundary above, and this
+    // case is the one that fails fastest when it is lost. NOTE this case reads the
+    // exported function by NAME, so the rename (`headOfMode` → `headOfLaunch`) cannot
+    // weaken the boundary pin above it: that pin asserts `expand`'s ARGUMENT and never
+    // mentions this identifier. `seen[0] not.toContain("<task")` is the load-bearing
+    // assertion and it is untouched by anything done to a name.
+    expect(
+      headOfLaunch(destination({ promptPrefix: "Frame it first." })),
+    ).toBe("Frame it first.\n\nLet's work on Research.\n\n$research");
+    expect(
+      headOfLaunch(destination({ promptPrefix: "Frame it first." }))).toBe(
+      "Frame it first.\n\n" + headOfLaunch(destination()),
+    );
+    expect(headOfLaunch(destination())).toBe(
+      "Let's work on Research.\n\n$research",
     );
   });
 });

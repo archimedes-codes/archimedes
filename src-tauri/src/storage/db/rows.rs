@@ -203,15 +203,36 @@ pub struct StageRow {
     /// Leniently parsed: any value that is not a JSON array reads as `None`,
     /// never as an error (spec §3).
     pub next_slugs: Option<Vec<String>>,
+    /// The per-column auto-advance flag (the workflow-graph work): ON means a
+    /// card LAUNCHED on this column advances itself when its Session settles,
+    /// rather than waiting for a person to drag it.
+    ///
+    /// A `bool` over the DDL's `INTEGER NOT NULL DEFAULT 0`, following the
+    /// `spaces.board_strict` precedent — a two-valued flag with no third state to
+    /// protect, so there is nothing for a `NULL` to mean and `NOT NULL` is what
+    /// says so. The default is OFF, and that is the compatibility story: adding
+    /// the capability must not make an existing board advance anything.
+    pub auto: bool,
+    /// Extra prompt text prepended BEFORE this column's Skill launch (the
+    /// workflow-graph work) — the per-column half of "what this column says when
+    /// it starts a Session", beside `on_enter_skill`'s "which Skill it loads".
+    ///
+    /// `NULL` means NO extra prompt, and it is the ONLY spelling of that: the
+    /// column carries no `DEFAULT`, so an upgraded database gains NULL rather than
+    /// a second, equivalent empty-string state. `Some("")` is therefore a stored
+    /// VALUE a person typed, not a clear — clearing is `None`
+    /// (`Db::set_stage_prompt_prefix`, whose parameter is an `Option` for exactly
+    /// that reason). Stored RAW: nothing here trims, templates or interprets it.
+    pub prompt_prefix: Option<String>,
 }
 
 /// The ONE `stages` SELECT list every read uses, as a const array of column
 /// names — same reason and same honest scope as [`SESSION_COLUMNS`].
 ///
-/// The two #179 columns go at the END, not in the middle: [`stage_row_from`]
-/// reads by POSITION, so appending keeps every existing index stable and a
-/// reorder cannot silently swap two fields' meanings.
-pub(super) const STAGE_COLUMNS: [&str; 7] = [
+/// The two #179 columns and the two workflow columns go at the END, not in the
+/// middle: [`stage_row_from`] reads by POSITION, so appending keeps every
+/// existing index stable and a reorder cannot silently swap two fields' meanings.
+pub(super) const STAGE_COLUMNS: [&str; 9] = [
     "space_path",
     "slug",
     "label",
@@ -219,9 +240,11 @@ pub(super) const STAGE_COLUMNS: [&str; 7] = [
     "on_enter",
     "on_enter_skill",
     "next_slugs",
+    "auto",
+    "prompt_prefix",
 ];
 
-pub(super) const STAGE_ROW_FIELDS: usize = 7;
+pub(super) const STAGE_ROW_FIELDS: usize = 9;
 // Compile-time arity tie ONLY — see SESSION_ROW_FIELDS for the honest scope;
 // the drift-guard TEST is the guard.
 const _: [(); STAGE_COLUMNS.len()] = [(); STAGE_ROW_FIELDS];
@@ -236,6 +259,11 @@ pub(super) fn stage_row_from(row: &Row<'_>) -> rusqlite::Result<StageRow> {
         on_enter: row.get(4)?,
         on_enter_skill: row.get::<_, Option<String>>(5)?,
         next_slugs: lenient_next_slugs(row.get::<_, Option<String>>(6)?),
+        // The flag is a plain INTEGER, NOT JSON — no lenient parser here, and a
+        // `!= 0` rather than `== 1` so a foreign writer that stores `2` reads as
+        // ON rather than silently as OFF.
+        auto: row.get::<_, i64>(7)? != 0,
+        prompt_prefix: row.get::<_, Option<String>>(8)?,
     })
 }
 

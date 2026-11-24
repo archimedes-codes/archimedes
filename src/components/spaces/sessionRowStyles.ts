@@ -66,8 +66,10 @@ import { basenameOfPath } from "../../lib/paths";
  *    `forced-colors`;
  *  - `disabled:*` / `aria-invalid:*` / `aria-expanded:*` — none of the four is
  *    ever disabled, and nothing sets `aria-invalid` or `aria-expanded` on it
- *    (the two view doors in this pane's command surfaces do — Settings and Tasks;
- *     these do not);
+ *    (the VIEW doors in this pane's command surfaces do — Settings, Tasks and
+ *     Workflows; these do not. The list is not exhaustive-by-name by design: a
+ *     fourth door joins it without a visit to this file, and what the sentence
+ *     claims is the KIND split, not a census);
  *  - `text-ui-base/relaxed` — 14px/1.625 declared where the button previously
  *    inherited the UA's 16px (this app never sets a root `font-size`; it sizes
  *    text only through `--ui-font-size` and the `text-ui-*` utilities, and
