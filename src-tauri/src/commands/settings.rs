@@ -1107,8 +1107,9 @@ mod tests {
             .await
             .expect_err("unknown provider must fail");
         assert!(
-            err.to_string()
-                .contains("Valid providers: brave, tavily, perplexity, searxng, duckduckgo"),
+            err.to_string().contains(
+                "Valid providers: brave, tavily, perplexity, searxng, keenable, duckduckgo"
+            ),
             "error should list valid providers: {err}"
         );
     }
@@ -1166,6 +1167,48 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "Search provider 'perplexity' is not configured with an API key or URL"
+        );
+    }
+
+    // The `ENV_LOCK` (`std::sync::Mutex`) is held across this test's `await`
+    // point INTENTIONALLY: `test_search_provider` reads `KEENABLE_API_KEY`
+    // through `WebConfig::from_web_settings`, so the var must stay cleared for
+    // the whole call — and `remove_env`'s `unsafe` is only sound while the lock
+    // is held, since the parallel harness runs sibling env-mutating tests
+    // concurrently (`test_support::ENV_LOCK`). Measured in this binary, those
+    // siblings are: the `HOME` mutators `commands/agents.rs` and `open.rs`, and
+    // `agent/session/tests/mod.rs`, which mutates env too but NOT `HOME` — its
+    // six calls are `LITELLM_GCLOUD_TOKEN_AUTH` (4) and `T2_TEST_HEADER` (2).
+    // Any of them writing while this test's `remove_env` is in flight is the
+    // unlocked-writer race the lock exists to prevent.
+    //
+    // Note the precedent above names a race this test does NOT have: its comment
+    // still points at `agent/web/config.rs`, which T5/S2 moved into the crate, so
+    // the tests that read and write these vars by name now run in the CRATE's CI,
+    // not in this binary. What is true HERE is the weaker and still load-bearing
+    // claim: this test clears a PROCESS-GLOBAL var, so it takes the shared lock
+    // like every other env-mutating test in the binary.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn test_search_provider_unconfigured_keenable_is_err() {
+        // Temporarily clear any env var that could configure keenable — UNDER
+        // the env lock, because clearing it is an unlocked-writer mutation of
+        // process state the sibling tests above share.
+        let _lock = crate::test_support::env_lock();
+        let _restore = remove_env("KEENABLE_API_KEY");
+        let result = test_search_provider(
+            "keenable".into(),
+            serde_json::json!({
+                "web": {
+                    "keenableApiKey": ""
+                }
+            }),
+        )
+        .await;
+        let err = result.expect_err("unconfigured provider must fail");
+        assert_eq!(
+            err.to_string(),
+            "Search provider 'keenable' is not configured with an API key or URL"
         );
     }
 

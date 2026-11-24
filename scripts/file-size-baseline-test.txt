@@ -7,8 +7,8 @@
 5543	src/store/sessions.test.ts
 3179	src-tauri/src/agent/session/tests/mod.rs
 2315	src-tauri/tests/worker_e2e.rs
-2128	src/components/settings/SettingsPage.test.tsx
-1848	src/App.test.tsx
+2130	src/components/settings/SettingsPage.test.tsx
+1849	src/App.test.tsx
 1760	src/components/ChatStream.test.tsx
 1559	src/lib/paletteCompleteness.test.ts
 1528	src/components/SpacesList.test.tsx
@@ -17,7 +17,7 @@
 1342	src/components/chat/MessageList.scroll.test.tsx
 1273	src/components/ChatStreamMentionPicker.test.tsx
 1241	src/components/ChatStreamDirectoryCompletion.test.tsx
-1124	src-tauri/tests/fulcrum_seams.rs
+1129	src-tauri/tests/fulcrum_seams.rs
 1109	src-tauri/tests/provider_oauth_flow.rs
 1086	src-tauri/src/storage/db/tests/sessions.rs
 1079	src-tauri/src/storage/batching/tests/mod.rs

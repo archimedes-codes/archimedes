@@ -83,6 +83,7 @@ const settingsFixture = (over: Partial<AppSettings> = {}): AppSettings => ({
     braveApiKey: "",
     tavilyApiKey: "",
     perplexityApiKey: "",
+    keenableApiKey: "",
     searxngUrl: "",
     defaultProvider: "auto",
     proxy: "",

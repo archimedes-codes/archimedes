@@ -134,6 +134,7 @@ vi.mock("./lib/tauri", async () => {
         braveApiKey: "",
         tavilyApiKey: "",
         perplexityApiKey: "",
+        keenableApiKey: "",
         searxngUrl: "",
         defaultProvider: "auto",
         proxy: "",

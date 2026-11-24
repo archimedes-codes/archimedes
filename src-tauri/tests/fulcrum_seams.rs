@@ -729,7 +729,7 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
         "`client_id` is REQUIRED: an `oidc` block that omits it fails the whole document"
     );
 
-    // ── `WebSettings` — 6 `String` fields, all-default-empty ──────────────────
+    // ── `WebSettings` — 7 `String` fields, all-default-empty ──────────────────
     let bare_web: fulcrum_harness::web::config::WebSettings =
         serde_json::from_str("{}").expect("an absent web block is legal");
     assert_eq!(
@@ -740,6 +740,7 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
     let web_json = serde_json::to_string(&web_settings_move_across(
         archimedes_lib::agent::web::config::WebSettings {
             brave_api_key: "k".to_string(),
+            keenable_api_key: "k2".to_string(),
             ..Default::default()
         },
     ))
@@ -747,6 +748,14 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
     assert!(
         web_json.contains("\"braveApiKey\":\"k\""),
         "`brave_api_key` crosses as `braveApiKey` — got {web_json}"
+    );
+    // NOT the only pin on this spelling: `config.rs`'s `web_block_round_trips` writes a real
+    // `settings.json` and asserts the raw bytes carry `"keenableApiKey"`, so it pins the NAME. What
+    // this seam adds is the VALUE crossing the boundary — encoded only after `web_settings_move_across`,
+    // whose signature names the crate spelling, and asserted with `"k2"` so it cannot pass vacuously.
+    assert!(
+        web_json.contains("\"keenableApiKey\":\"k2\""),
+        "`keenable_api_key` crosses as `keenableApiKey` — got {web_json}"
     );
 
     // And the packaged envelope carries the SAME types (`StartEnv.providers` is a

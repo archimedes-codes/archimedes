@@ -43,6 +43,7 @@ const settings: AppSettings = {
     braveApiKey: "",
     tavilyApiKey: "",
     perplexityApiKey: "",
+    keenableApiKey: "",
     searxngUrl: "",
     defaultProvider: "auto",
     proxy: "",
