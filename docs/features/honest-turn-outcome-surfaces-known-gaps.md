@@ -153,65 +153,6 @@ retry at all.
    Fulcrum has **no file-size ratchet**: `scripts/check-file-size.sh` exists only in this repo and its walk
    (`git ls-files -- src-tauri/src src-tauri/tests src`) never sees fulcrum's `src/`. A look-at signal, not
    a defect.
-9. **Auto-failover can now route a failing free provider INTO Keenable, which is metered, and the user
-   sees no signal that it cost anything.** Recorded here because it is the same class as the gaps above —
-   an outcome the user is entitled to read that the surfaces do not render — and because no
-   `docs/features/` file covers the Search providers or the Settings → **Web search** section at all, so
-   there is no closer home for it (see the note under this list).
-
-   **The behaviour.** `AVAILABILITY_ORDER` (`fulcrum-harness` 0.7.0 `web/providers/registry.rs:16`) is
-   `["brave","tavily","perplexity","searxng","keenable","duckduckgo"]`, and the auto-failover arm takes
-   `AVAILABILITY_ORDER[current_idx + 1..]` and picks the first provider whose `is_available` holds
-   (`registry.rs:162-172`). Keenable sits at **index 4**, immediately after all four keyed providers and
-   immediately before the keyless DuckDuckGo. So for a user holding **brave + keenable**, a brave `429`
-   (or `402`/`500`) now fails over **into Keenable** — a per-credit paid API — where the same failure
-   previously dropped straight to free DuckDuckGo. Identically for **tavily + keenable**, **perplexity +
-   keenable** and **searxng + keenable**. The other half of the change was intended: a user holding
-   **only** a Keenable key now auto-resolves to Keenable rather than to DuckDuckGo.
-
-   **Who it affects, precisely.** Only the `auto` path. Failover is gated on `was_auto_resolved`
-   (`registry.rs:158`), and `resolve_provider_from` sets that flag **only** on the `AVAILABILITY_ORDER`
-   walk (`:87`); an explicit `web.defaultProvider` — or a `provider` argument on the tool call — returns
-   `was_auto_resolved: false` (`:64`, `:75`) and its errors propagate without failover. So the exposed
-   population is a user with a Keenable key **plus** any one of the four keyed providers, left on the
-   default `auto`. That is the ordinary configuration, not an exotic one.
-
-   **Why it matters — this is metered spend.** `docs/research/keenable-as-a-search-provider.md` establishes
-   that Keenable keys are **entirely unscoped with no per-key spend cap**, that Stripe auto top-up defaults
-   to a **$1,000/month** ceiling on accounts that can hold a card, and that `credits_remaining` is never
-   surfaced — measured: `grep -rn credits_remaining src/ src-tauri/src` returns **0** hits, and the crate
-   carries no such field either. A brave rate-limit is ordinary and expected, and it used to be free. It
-   now spends the user's money. The engine does report which provider answered, in the tool result's
-   `details.provider` (`web/tools.rs:176`, `:185`), but nothing in `src/` reads that field, so no surface
-   renders it: the spend is silent in the UI.
-
-   **This is deliberate-by-omission, not discovered-late.** The position was an approved decision —
-   research recommendation #1, `AVAILABILITY_ORDER` **position 5** — and the desktop shipped it as
-   approved. What was never accounted for is the forward edge into Keenable from the four providers above
-   it; the research argued only about Keenable's own forward edge (see below).
-
-   **The fix is a crate release, so it is out of the desktop's reach.** The right shape is a per-provider
-   attribute on the `SearchProvider` trait — an "is this paid / may failover enter it" flag the failover
-   arm consults, so a metered provider can be auto-resolved as a *first* choice but never *fallen into*.
-   That closes the **identical** existing edge for **tavily** and **perplexity**, both keyed and both
-   metered, which today can also be fallen into from a provider ahead of them; Keenable merely made the
-   edge cheap enough to notice. `AVAILABILITY_ORDER` is `pub` in the crate and its position was an
-   approved decision, so this is not a desktop-side edit and was not attempted here.
-
-   **Cross-reference — the research doc's line-337 claim is narrower than it reads.** That document's
-   `AVAILABILITY_ORDER` decision argues position 5 is safe because it keeps failover "keyed-before-keyless
-   so a Keenable `429`/`402` degrades to DDG rather than to another **paid** provider". True, and it argues
-   **only** Keenable's own forward edge. It implies neutrality it does not establish, and it implies both
-   directions of the edge while analyzing one. The dated correction block at the top of that file now says
-   so; read that block, not the dated body sentence, for the shipped state.
-
-   *Why this paragraph lives here:* the natural home would be a `docs/features/web-search-known-gaps.md`,
-   and inventing a one-paragraph file was ruled out. Of what exists, this file is the only known-gaps page
-   whose subject is **whether a user can read what actually happened to them**, and item 5 above is the
-   same shape — a fact the engine produces with no reader in the UI. Note the naming rule while reading
-   this: **Search provider** is not **provider**; the gap above is about Search providers and belongs to
-   neither `litellm-provider-connections.md` nor ADR 0014, which own the model-endpoint sense of the word.
-   If a real Web-search page is ever opened, move this item there.
 
 ## 6. The word-set is hand-mirrored across repos and has already drifted
 

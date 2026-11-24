@@ -65,8 +65,16 @@ task: tsk_d740a5e2-5bc7-4af5-a893-1f9be4f3be8e
 > `perplexity` and `searxng`. For a user holding brave + keenable, an ordinary brave `429` now fails
 > over **into** Keenable — a metered, per-credit paid API — where before it dropped straight to free
 > DuckDuckGo. Recorded as an accepted gap in
-> `docs/features/honest-turn-outcome-surfaces-known-gaps.md` §5 item 9; see that item for the full
-> account, including the fact that failover fires only on the `auto` path.
+> `docs/features/keenable-search-known-gaps.md` §2; see that item for the full account, including the
+> fact that failover fires only on the `auto` path. (That item first landed in
+> `docs/features/honest-turn-outcome-surfaces-known-gaps.md` §5 item 9, before a Search-provider
+> known-gaps file existed; it moved on 2026-11-24 and that file no longer carries it.)
+>
+> **Durable home for the shipped state.** This report is the dated reading, not the record. The accepted
+> defects and deliberately-unbuilt scope of the shipped Search-provider work — the card-URL expiry, the
+> unpinned `SelectItem` list, the plaintext key store, the privacy disclosure, `credits_remaining`,
+> device login and the keyless tier — are in `docs/features/keenable-search-known-gaps.md`. Read that
+> file for what is open; read this one for what was known on 2026-11-22 and what was decided against it.
 
 ---
 
