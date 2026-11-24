@@ -12,6 +12,13 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+// The subagent-parent-link tests, one subject in one file (ADR 0113's shape:
+// `agent/session/` now has a `parent_link.rs` production child, so this is a
+// mirror child AND a subject child at once). They build their own
+// `SessionManager` because `router.rs`'s `manager_seeded` is private to that
+// module's inline test block.
+mod parent_link;
+
 #[test]
 fn mint_session_id_format() {
     let sid = mint_session_id();

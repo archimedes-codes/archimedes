@@ -21,6 +21,7 @@ pub mod crashlog;
 pub mod errors;
 pub mod harness;
 pub mod provider_auth;
+pub mod retention;
 mod session;
 pub mod web;
 pub mod worker;

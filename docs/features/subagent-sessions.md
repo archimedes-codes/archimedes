@@ -2,6 +2,7 @@
 status: live
 last-verified: 2026-11-23
 verified-by: 2026-11-23 pass over the addressing rule and two dead paths — the **delivery address** / **origin address** generalisation in "Metrics are real" (ADR 0117) and the corrected `worker/manager/pump.rs` and `worker/manager/mod.rs` paths are prose, so nothing here was RE-RUN and no test reads `docs/`. What was RE-READ at this HEAD — `docs/decisions/0117-*.md` in full, both `CONTEXT.md` entries, `src-tauri/Cargo.toml` pinning `fulcrum-harness` 0.6.0, and the crate extract's `worker/manager/pump.rs` (where `delivery_id` is computed) and `worker/manager/mod.rs` (where `DEFAULT_SUBAGENT_DEAD_BOUND` lives), which is what the two path fixes cite now that `src-tauri/src/agent/worker/` is a pure re-export shell with no `manager.rs`; that dead path `src-tauri/src/agent/worker/manager.rs` is GONE from the BODY prose — everything below the front-matter greps **0** for it — and this sentence is its ONLY remaining occurrence in this file, so a `grep -c` over the WHOLE file gives **1** and that 1 is this assertion quoting the very path it scopes itself to, NOT a regression (the check is therefore stated over the body, which is what was measured). The one test the new prose names, `a_subagents_task_request_is_answered_in_the_child_and_not_the_parent`, was READ in `src-tauri/tests/worker_e2e.rs` and NOT executed here, and its failing-message quote is carried from that test's own mutation note. The liveness rule (ADR 0055 — the drive's race, the `SubagentLiveness` signal, the gate-close and failure-`reason` wiring) and the client half carry their earlier stamp and were not re-measured, and the pre-ADR 0025 driver prose below stays HISTORY except for the one dead path corrected in it — the earlier stamp on that half was the `feature/harness-cost-close-out` wave-end six-command gate, measured at implement time. Re-measured the SAME sitting 2026-11-23 for one overclaim this file was carrying in the board seam's bound entry — "every path that fails to answer records an always-on `diagnostics` line" was FALSE as an unqualified universal. `grep -c "diagnostics::record(" src-tauri/src/agent/session/router.rs` gives exactly FOUR call sites — the trailing paren is what makes it a call site, because the bare symbol greps **6** in that file and the two extra are a doc comment and a test comment, not paths — and all four sit inside the `WorkerInboundEvent::TaskRequest` arm, which the arm-scoped instrument proves without a single drifting line number (`sed -n '/WorkerInboundEvent::TaskRequest {/,/WorkerInboundEvent::Exited(code)/p' src-tauri/src/agent/session/router.rs | grep -c "diagnostics::record("` gives the same **4**), and they cover only the four paths the arm's own comment scopes them to, its words being "every path below that fails to answer" — an unroutable child frame, a missing `WorkerManager`, a `handle_for` miss, and a `send_inbound_frame` `Err`. A panic inside the spawned answering task (the `JoinHandle` is dropped and tokio swallows it) and a `tokio::spawn` on a shutting-down runtime (the task never runs) leave NO trace. The entry then said the deadline is landed BESIDE those two rather than instead of them, and THAT WAS ALSO FALSE — corrected in the same entry the same sitting, found by reading where the bound is armed instead of trusting the paragraph it had been written into; `with_board_deadline` is awaited INSIDE the spawned future (`tokio::spawn` to `run_task_call` to `spawn_board` to `with_board_deadline`), so a task that panics or never runs never reaches it, and the **Dead bound** does not cover them either because it is disarmed while a `tool_call_id` is outstanding, which is exactly a parked child's state. Those two are covered by NEITHER mechanism and the entry now names them as the residual this seam does not close. The record claim itself is now scoped with the arm comment's OWN words — "every path below that fails to answer" — rather than paraphrased as a quotation. Nothing else in this entry was re-measured and no test reads `docs/`, so the greps above ARE the instrument. Runs in that sitting, for the sibling doc's claims — `cargo test --lib -- a_board_call an_unanswerable unroutable a_subagents a_main_frame` gives **6 passed** and `cargo test --test worker_e2e` gives **13 passed**, which is what makes it safe to say the deadline and the four `record` sites still behave as described here. The render `timeoutMs` figure the sibling `task-board-known-gaps.md` had been citing as 5000 was found to be TEST code and is corrected THERE, not here — this file never cited it.
+re-verified: 2026-11-23 — the PERSISTENCE clauses only (the intro "ephemeral" parenthetical, "The driver task" steps 2/3/7 and the PRE-ADR 0025 note under it, and "Trust inheritance"), against ADR 0025 and ADR 0118; the 2026-11-23 stamp above is RE-READ and NOT re-measured — the delivery-address / origin-address generalisation in "Metrics are real", its ADR 0117 and `fulcrum-harness` 0.6.0 citations, the `a_subagents_task_request_is_answered_in_the_child_and_not_the_parent` test it names, the liveness rule (ADR 0055) and the client half are all OUT of this re-verification's scope, and the remaining in-process plumbing names in the driver-task history list are still unrepaired
 ---
 
 # Subagent sessions
@@ -19,7 +20,14 @@ verified-by: 2026-11-23 pass over the addressing rule and two dead paths — the
 > `:memory:` `Db`, the `TempFileGuard`, `NativeDeps`, `ExternalClose`,
 > `agent/interactive.rs` — none of which exist under `src-tauri/src` any more
 > since the drive moved Supervisor-side into `WorkerManager` (ADR 0025). Read
-> them as history; the fix is a separate pass — history in git.
+> them as history; the plumbing names in that list are still unrepaired,
+> and a probe proves it — `grep -rn "open_throwaway_db\|TempFileGuard"
+> --include='*.rs' src-tauri/src/` is exit 1 today, as are `open_temp_db`,
+> `dispatch_native_inner`, `NativeDeps`, `ExternalClose` and
+> `agent/interactive.rs`. **The PERSISTENCE clauses have since been
+> corrected** (2026-11-23): a child's rows DO persist, in the Supervisor's
+> `Db`, and ADR 0118 bounds them at 24 h. Read those clauses as shipped,
+> not as history.
 
 A **Subagent session** is a native `AgentLoop` child the desktop spawns **in
 process** — the SAME in-process runtime (the main tokio runtime) and the
@@ -28,9 +36,18 @@ the external `pi` embodiment is removed (ADR 0022), so a subagent session is
 always an in-process native child. The `subagent` tool's dispatch
 (`dispatch_native` on the `SubagentSessionManager`) `tokio::spawn`s a driver
 task that builds the child, drives its single task turn, and resolves with
-the final output + metrics. Subagent sessions are **ephemeral** (the driver's `db` is `None` —
-the child's `native_messages` writes go to a throwaway `Db` discarded on
-teardown) and are excluded from the one-live policy by definition. A
+the final output + metrics. Subagent sessions are **ephemeral** in the sense
+that survives ADR 0025 — the child's **Worker process** is torn down and
+there is no Resume — but their transcripts **are** persisted, by the
+Supervisor, as a hidden `is_subagent = 1` `sessions` row plus its **stored
+display rows** (`messages`) and its **provider transcript**
+(`native_messages`). They are not `:memory:` and not throwaway: ADR 0025
+deleted that machinery on 2026-10-04. **ADR 0118 bounds them** — once the
+child is a **closed Subagent session** older than
+`MAX_CLOSED_SUBAGENT_TRANSCRIPT_AGE` (24 h) its provider transcript goes
+entirely and all but the newest stored display row go with it; the
+`sessions` row survives. They are excluded from the one-live policy by
+definition. A
 subagent cannot dispatch subagents (the `subagent` tool is stripped from the
 child's tool set — the recursion guard).
 
@@ -127,7 +144,19 @@ oneshot is the observation point; the `JoinHandle` is detached). The task:
 **Steps 1–8 are the PRE-ADR 0025 driver:** the drive now runs **Supervisor-side**
 in `WorkerManager` (`dispatch_subagent` → `drive_subagent`) against a Worker
 PROCESS — no throwaway `Db`, no `TempFileGuard`, no `dispatch_native_inner`. Only
-step 6's race survived the move; **Liveness: Active vs Dead** below documents it.
+step 6's race survived the move; **Liveness: Active vs Dead** below documents it. Concretely, the three steps above that
+name a database describe a mechanism with no home: step 2's
+`open_temp_db`/`TempFileGuard`, step 3's "records the child session in the
+throwaway `Db`", and step 7's teardown of "the throwaway `Db` / temp file"
+all probe exit 1. **What happens instead:** the Worker holds no `Db` at all;
+the Supervisor's persister creates the child's hidden `sessions` row
+(`ensure_session_row`, keyed off the payload's `sessionId` — the frame's
+**origin address**, not its **delivery address**, which is ADR 0117's
+distinction and the reason the child's row is the child's and not the
+parent's) and writes both transcript tables from the event stream;
+`src-tauri/tests/ipc.rs::a_subagent_transcript_persists_as_a_hidden_ephemeral_row`
+is the pin. So the child's rows are durable from the child's first frame — and
+ADR 0118 is what finally bounds them.
 
 **Cancel — the `SubagentCancel` / `ExternalClose` pair:** despite the
 `ExternalClose` type name (a harness-neutral rename survivor, ADR 0022),
@@ -309,10 +338,12 @@ the in-process permission gate auto-approves the gated tools
 confirm + password modal) and `ask` (a `select` request, not a confirm) are
 unaffected. `None` = fail-closed (the gate prompts on every `bash` /
 `edit` / `write` in the child). It is SEPARATE from the driver's `db`
-(transcript persistence — always `None` for subagents): threading the full
-db here would make subagent updates attempt transcript inserts into a
-`sessions` row that does not exist (a FK failure) — the lookup and the
-persistence are deliberately decoupled.
+(transcript persistence — `None` on the Worker-side driver because ADR 0025
+gives the Worker **no `Db` at all**; the Supervisor is the sole writer). The
+reason is the sole-writer rule, **not** a missing row: the child's `sessions`
+row DOES exist — `ensure_session_row` creates it, which is why the
+`native_messages` FK holds and why ADR 0118 has anything to prune. The
+lookup and the persistence are deliberately decoupled.
 
 ## Interactive tools (ask, sudo_exec)
 

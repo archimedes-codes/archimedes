@@ -58,6 +58,13 @@ use fulcrum_harness::seams::FulcrumPersistence;
 pub type RefresherFactory<R> =
     fn(&provider_auth::SupervisorRefresherDeps<R>) -> Option<provider_auth::SupervisorRefresher>;
 
+/// The retention loop's start seam — the same shape as [`RefresherFactory`]: a FUNCTION POINTER,
+/// because the choice is made by the caller of `setup_dirs*`, once, at startup; and `Option`
+/// because the test-facing entries decline it. A loop that deleted rows during `cargo test` would
+/// take other tests' transcripts with it, so `None` is the whole test-facing story.
+pub type RetentionFactory =
+    fn(&agent::retention::RetentionDeps) -> Option<agent::retention::RetentionLoop>;
+
 /// The `setup_dirs` seam (the `test_support` pattern — the injectable
 /// `WorkerFactory`): `None` = the production factory (`current_exe()`);
 /// `Some(factory)` = the test factory (the `fake_worker` fixture — the
@@ -75,7 +82,7 @@ pub fn setup_dirs_with_factory<R: tauri::Runtime>(
     app_data_dir: PathBuf,
     worker_factory: Option<Arc<dyn WorkerFactory>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    init_dir_deps(app, config_dir, app_data_dir, worker_factory, None)
+    init_dir_deps(app, config_dir, app_data_dir, worker_factory, None, None)
 }
 
 /// The production entry: the shared core WITH the credential refresher started
@@ -93,6 +100,7 @@ pub fn setup_dirs_with_factory_refresher<R: tauri::Runtime>(
         app_data_dir,
         worker_factory,
         Some(provider_auth::production_refresher_factory),
+        Some(agent::retention::production_retention_factory),
     )
 }
 
@@ -110,6 +118,7 @@ fn init_dir_deps<R: tauri::Runtime>(
     app_data_dir: PathBuf,
     worker_factory: Option<Arc<dyn WorkerFactory>>,
     refresher_factory: Option<RefresherFactory<R>>,
+    retention_factory: Option<RetentionFactory>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // The persistence database lives in the app data directory.
     let db = Arc::new(
@@ -143,6 +152,9 @@ fn init_dir_deps<R: tauri::Runtime>(
     let persister = Arc::new(TranscriptPersister::new(
         batched.clone() as Arc<dyn FulcrumPersistence>
     ));
+    // Cloned for the retention loop's deps BEFORE `batched` is MOVED into the
+    // builder below (the same window the refresher's clone sits in).
+    let retention_batched = batched.clone();
 
     let mut builder =
         SessionManagerBuilder::new(config_dir.clone(), db.clone(), sink.clone(), persister)
@@ -175,6 +187,9 @@ fn init_dir_deps<R: tauri::Runtime>(
     // The `WorkerManager` is managed state (the `set_space_trusted`
     // command's running-Workers `Config` push + the `test_support`
     // registry accessor).
+    // Cloned for the retention loop's deps BEFORE `wm` is MOVED below (the
+    // retention gate reads `test_session_count` + `test_drive_count`).
+    let retention_worker_manager = wm.clone();
     app.manage(wm);
     // The manager is `Sync` (its mutable state is `Arc<Mutex<…>>`
     // internally), so it is shared directly without an outer lock.
@@ -184,7 +199,11 @@ fn init_dir_deps<R: tauri::Runtime>(
     // use, so a credential refresh reaches the live sessions without a state
     // lookup that could silently miss.
     let refresher_manager = manager.clone();
+    let retention_manager = manager.clone();
     app.manage(manager);
+    // Cloned for the retention loop's deps BEFORE `db` is MOVED below (one
+    // `Arc<Db>` is enough: sweep, VACUUM and the latch are all its methods).
+    let retention_db = db.clone();
     app.manage(db);
     // The attention countdown (ADR 0038/0039): the renderer decides WHEN and
     // WHAT, Rust only counts down — a backgrounded webview is throttled
@@ -287,6 +306,34 @@ fn init_dir_deps<R: tauri::Runtime>(
     if refresher_factory.is_some() {
         app.manage(budget_poller);
     }
+    // The transcript retention loop (docs/research/database-size-unbounded-transcript-growth.md
+    // §"Approved design (2026-11-22)", parts 5 and 6). THE SAME DISCIPLINE as the refresher above:
+    // `None` on every test-facing entry point, because a loop that deleted rows during `cargo test`
+    // would take other tests' transcripts with it. The started handle is managed so it stays
+    // REACHABLE (a test can `stop()` it) and so `Drop` is the census backstop; `None` in the slot is
+    // the test-facing shape, so the absence is DETECTABLE and not merely true.
+    let retention_slot: Arc<std::sync::Mutex<Option<agent::retention::RetentionLoop>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    if let Some(factory) = retention_factory {
+        // FOUR clones, all inside the window in which every one of them is still a live owned
+        // value: `retention_db` (before `app.manage(db)`), `retention_manager` (before
+        // `app.manage(manager)`), `retention_worker_manager` (where `wm` MOVES), `retention_batched`
+        // (where `batched` MOVES). One `Arc<Db>` is enough: the sweep, the VACUUM and the
+        // `user_version` latch are all inherent methods on it.
+        let deps = agent::retention::RetentionDeps::new(
+            retention_db,
+            retention_manager,
+            retention_worker_manager,
+            retention_batched,
+        );
+        // SYNC, and it DECLINES (returns `None`) rather than panicking when there is no runtime to
+        // hold the loop — which runtime it picks and why the `setup` hook is not a tokio context is
+        // `production_retention_factory`'s documented decision.
+        if let Some(handle) = factory(&deps) {
+            *retention_slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(handle);
+        }
+    }
+    app.manage(retention_slot);
     Ok(())
 }
 

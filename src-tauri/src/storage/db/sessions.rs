@@ -311,6 +311,19 @@ impl Db {
     ///
     /// Returns `true` when a row matched, `false` when nothing matched (a
     /// missing row is a no-op, not an error — mirroring `set_space_trusted`).
+    ///
+    /// TWO things this verb does not do, and a reader of the flag needs both:
+    ///
+    ///   * it does not touch a CHILD's transcript. Archiving a Session trims the
+    ///     display transcript (to its newest row) and the whole native transcript
+    ///     of each Subagent session it owns; that is the CALLER's step, through
+    ///     the per-parent verb in [`super::retention`] — see
+    ///     `commands/history.rs`'s `set_session_archived_core`;
+    ///   * it has NO liveness condition. This is an id-only `UPDATE`, which is
+    ///     exactly right for the flag and completely useless as a guard: nothing
+    ///     in the `sessions` table records whether a Session is running, so
+    ///     deciding "closed" belongs to the caller, and the caller can see it
+    ///     while this layer cannot.
     pub fn set_session_archived(&self, id: &str, archived: bool) -> Result<bool, DbError> {
         let n = self.conn.lock().expect("db mutex poisoned").execute(
             "UPDATE sessions SET archived = ?2 WHERE id = ?1",
@@ -381,6 +394,16 @@ impl Db {
     /// removed (both tables are `ON DELETE CASCADE`; the explicit
     /// `native_messages` `DELETE` is belt-and-suspenders — it also
     /// covers a pre-migration database that never gained the FK).
+    ///
+    /// What the CASCADE does NOT reach is the reason a caller must do more than
+    /// call this: `parent_session_id` carries no foreign key by decision, so a
+    /// Subagent CHILD's row survives its parent — and the cascade destroys the
+    /// parent's rows, i.e. the rows that named those children, while their own
+    /// transcripts stay exactly as large as they were. In the measured database
+    /// 1,325 of 2,643 children are already orphaned that way. Trimming them is
+    /// the CALLER's step, through the per-parent verb in [`super::retention`],
+    /// and it runs BEFORE this call — see `commands/history.rs`'s
+    /// `delete_session_core`.
     pub fn delete_session(&self, session_id: &str) -> Result<(), DbError> {
         let mut guard = self.conn.lock().expect("db mutex poisoned");
         let tx = guard.transaction()?;

@@ -37,6 +37,15 @@ impl SessionManager {
                 if let Some(p) = self.persister.get() {
                     p.apply(is_subagent, &frame);
                 }
+                // AFTER `p.apply`, because the child's row is created INSIDE the
+                // crate (`persist.rs:279` `ensure_session_row`) and `SessionInfo`
+                // is the crate's type — the parent cannot travel with the row, so
+                // it is stamped on afterwards. OUTSIDE the `if let` above on
+                // purpose: the two writes are independent, and with no persister
+                // there is no `Db` either (`attach_db` sets both), so this is a
+                // no-op there. `frame` is still borrowed, not moved — `p.apply`
+                // takes `&StoreFrame` (`persist.rs:117`).
+                self.link_subagent_parent(session_id, is_subagent, Self::frame_child_id(&frame));
             }
             WorkerInboundEvent::SinkFrame { event, payload } => {
                 // The interactive-persistence gate, narrowed PER EVENT (issue
@@ -118,6 +127,15 @@ impl SessionManager {
                             //   written — the same distinction the block above
                             //   exists to make.
                             self.flush_batched(target, "after apply_interactive_event");
+                            // The OTHER arm that creates a child's row:
+                            // `apply_interactive_event` calls `ensure_session_row`
+                            // itself (`persist.rs:239`), and a child's first priced
+                            // call can arrive before any of its `StoreFrame`s.
+                            // `target` is the row that was just written — the
+                            // CHILD's — so it is the child id this branch already
+                            // computed. For a main frame `target == session_id` and
+                            // the guard skips.
+                            self.link_subagent_parent(session_id, is_subagent, target);
                         }
                     }
                 }

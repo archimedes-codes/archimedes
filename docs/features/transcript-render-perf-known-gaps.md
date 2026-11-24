@@ -1,6 +1,6 @@
 ---
 status: live
-last-verified: 2026-11-14
+last-verified: 2026-11-23
 verified-by: §1–§3 as originally recorded — each claim re-measured against this tree at `041ef6ad` rather than
   copied from the roadmap plan that recorded it (`git merge-base --is-ancestor <fix commit> v0.9.2` for the three
   already-shipped fixes, all three true; `grep -l 'memo(' src/components/**/*.tsx` for the memo census, 3 files,
@@ -39,6 +39,7 @@ verified-by: §1–§3 as originally recorded — each claim re-measured against
   and §5.5's claim that `SidePane` does not inherit the carried-label salvage (**it does** — it reads
   `sessionFieldOf(…, "title")`, which is exactly what the salvage writes). The four per-issue commit hashes
   this file cited are gone, replaced by a content-marker check: they die with the squash-merge.
+re-verified: 2026-11-23 — §5.1 only (the wal_autocheckpoint paragraph, its two probes, and the two dead `src-tauri/src/storage/db.rs` paths PR #215 orphaned when it split that file into `storage/db/`), answered with the VACUUM measurements ADR 0118 records; §5.3's `insert_native_message` premise re-checked and still true
 ---
 
 # Transcript render performance — known gaps
@@ -355,17 +356,44 @@ prose. **Nothing here is a defect the branch missed; each was weighed and left.*
 WAL does not only remove cost, it **introduces** a checkpoint cost that rollback-journal never had. The
 measurement that matters is the **81 ms `wal_checkpoint(TRUNCATE)` observed at 703 MB** during planning.
 
-Located by content in `src-tauri/src/storage/db.rs`, in the doc comment on the pragma setter — the comment ends
+Located by content in `src-tauri/src/storage/db/mod.rs`, in the doc comment on `set_journal_pragmas` — the comment ends
 *“Deliberately NOT here: `wal_autocheckpoint` … tuning the autocheckpoint blind against it would trade one stall
 for another with no measurement to say which is cheaper.”* Re-runnable:
 
 ```bash
 grep -rn 'wal_autocheckpoint' src-tauri/src          # exactly ONE hit, and it is prose, not a pragma
-grep -n 'journal_mode\|synchronous\|busy_timeout' src-tauri/src/storage/db.rs | head
+grep -n 'journal_mode\|synchronous\|busy_timeout' src-tauri/src/storage/db/mod.rs | head
 ```
 
 The three pragmas that DID ship are set in one function and read back (`journal_mode` refuses silently on some
-filesystems, so a `?` cannot see it). A fourth is a tuning decision with no data behind it, so it was not taken.
+filesystems, so a `?` cannot see it). A fourth is a tuning decision with no data behind it, so it was not taken —
+and that posture is still correct **about `wal_autocheckpoint`**, which remains un-tuned and still has no
+measurement.
+
+**But "no data, no knob" is no longer this database's whole posture, and one knob has since been taken with data.**
+ADR 0118 sets `VACUUM_FREELIST_THRESHOLD_BYTES` = 256 MiB, and it answers this section rather than inheriting it.
+Measured on the machine the decision was taken on (SQLite 3.53.4, `journal_mode = wal`, `synchronous = NORMAL`,
+`page_size` = 4096, synthetic databases of this size, peak disk sampled with `du` once a second): `VACUUM` took
+**7,831 ms** at a 2,822 MiB file with a 1,978 MiB freelist and **8,314 ms** at 3,261 MiB / 2,417 MiB, each with a
+**+25–26% peak-disk** overhead — and **6,871 ms at an 847 MiB file with a freelist of ZERO, returning +1,031 MiB of
+peak disk and reclaiming nothing at all**. The cost tracks the file, not the work, so a gate is what stops a
+periodic housekeeping task from being a per-boot stall; the live database's freelist at Census A was 8 pages
+(32,768 B), about 8,000× below it. `PRAGMA incremental_vacuum` is a measured no-op while `auto_vacuum = 0`
+(39,384 pages freed, 1,000 asked back, `freelist_count` unchanged), so full `VACUUM` is the only reclaim. Reading
+the two gating `PRAGMA`s costs **3 ms**, which is what makes a 15-minute gate affordable. **What is measured is
+that a gate is required; the value 256 MiB is chosen, not derived** — nothing in the table varies the freelist
+below the file size, so nothing in it shows where `VACUUM` starts paying, and 256 MiB is one week of this
+database's growth (≈33 MiB/day) rounded to a power of two. Pages below it are reused anyway, so the value errs
+toward not running. Re-runnable against the live file, read-only:
+
+```bash
+sqlite3 'file:'"$HOME"'/.local/share/archimedes/archimedes.db?mode=ro' \
+  'PRAGMA page_size; PRAGMA page_count; PRAGMA freelist_count; PRAGMA auto_vacuum;'   # 3 ms, no lock contention
+```
+
+What this does **not** buy is a `wal_autocheckpoint` number. Nothing above measures a checkpoint, and the 81 ms
+`wal_checkpoint(TRUNCATE)` at 703 MB is still the only checkpoint figure in the corpus. The knob that was taken was
+taken because it was measured; this one still is not.
 
 ### 2. `with_batched` on the builder is load-bearing and enforced by nothing but a comment
 

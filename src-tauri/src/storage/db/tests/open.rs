@@ -1,11 +1,11 @@
-//! Tests for what `db/mod.rs` keeps: `Db::open` and its twelve migration gates,
+//! Tests for what `db/mod.rs` keeps: `Db::open` and its thirteen migration gates,
 //! `SCHEMA`, `LAST_ACTIVITY`, `set_journal_pragmas`.
 //!
 //! The mirror (ADR 0113) gives every production sibling a test child of the same
 //! name; this child is the one that mirrors the PARENT, because `open`, `gate`,
 //! `SCHEMA` and `LAST_ACTIVITY` stay in `mod.rs` — the gate-count pin
 //! (`the_three_task_tables_are_in_schema_and_have_no_gate_entry`) reads this
-//! parent's source text and counts the twelve gates inside `open`, so moving them
+//! parent's source text and counts the thirteen gates inside `open`, so moving them
 //! would move the pin's premise.
 
 use crate::storage::db::*;
@@ -648,6 +648,144 @@ fn cost_usd_column_migration_on_a_preexisting_db() {
     );
 }
 
+/// A pre-existing database whose `sessions` table predates the
+/// `parent_session_id` column must open CLEANLY (the one-time migration adds the
+/// column), and the pre-existing rows must read `parent_session_id == NULL`.
+///
+/// `NULL` — not `''` — is the load-bearing half of this test, and it is the same
+/// argument `cost_usd_column_migration_on_a_preexisting_db` above makes about a
+/// phantom `$0.00`: roughly half the children already in a live database have NO
+/// parent to record (their parent row is gone), so a `DEFAULT ''` would fabricate
+/// an empty-string parent for every one of them and the column would stop being a
+/// fact. The migration therefore has NO `DEFAULT` and NO backfill.
+///
+/// The second half pins the column carries NO foreign key, at rest, in BOTH
+/// places its DDL can be spelled — see the two read targets below.
+#[test]
+fn parent_session_id_column_migration_on_a_preexisting_db() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-parent-test-", "scratch");
+    // A pre-existing database: the `sessions` table WITHOUT `parent_session_id`.
+    // Every OTHER gated column IS present, so this test isolates the
+    // `parent_session_id` gate (the sibling migrations are no-ops here) — the same
+    // isolation the `cost_usd` migration test above practices, now spelled as the
+    // shared `SCHEMA_WITHOUT_PARENT_SESSION_ID` constant.
+    let path = preexisting_db(
+        &dir,
+        SCHEMA_WITHOUT_PARENT_SESSION_ID,
+        "INSERT INTO sessions (id, cwd, created_at, capabilities_json) \
+         VALUES ('s1', '/tmp', 1, '{}');",
+    );
+    // The next `Db::open` must SUCCEED (the migration adds the column).
+    let db = Db::open(&path).expect("the parent_session_id migration is one-time and idempotent");
+    // ...and the column is in place now.
+    let has: i64 = db
+        .conn
+        .lock()
+        .expect("db mutex poisoned")
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'parent_session_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        has, 1,
+        "the parent_session_id column is in place after the migration"
+    );
+    // And it has NO default. A `DEFAULT ''` would pass the NULL assertions below
+    // only by lying — every migrated row would read "this child's parent is the
+    // session whose id is the empty string", a parent that never existed, which is
+    // the phantom-`$0.00` defect one column over. Pinned directly on
+    // `dflt_value`, because a `DEFAULT NULL` someone later "improves" to
+    // `DEFAULT ''` would otherwise slip through the value assertions.
+    let default_value: Option<String> = db
+        .conn
+        .lock()
+        .expect("db mutex poisoned")
+        .query_row(
+            "SELECT dflt_value FROM pragma_table_info('sessions') WHERE name = 'parent_session_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        default_value, None,
+        "`parent_session_id` has NO column DEFAULT — NULL means 'parent never known', \
+         '' would fabricate a parent the ~50% already-orphaned children never had"
+    );
+    // ...and the pre-existing row reads NULL. Read through the raw connection
+    // because nothing on `SessionRow` reads the column: `rows::SESSION_COLUMNS` is
+    // deliberately unchanged, so the column is invisible to the row structs and
+    // only SQL sees it.
+    let parent: Option<String> = db
+        .conn
+        .lock()
+        .expect("db mutex poisoned")
+        .query_row(
+            "SELECT parent_session_id FROM sessions WHERE id = 's1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        parent, None,
+        "a pre-existing row reads parent_session_id == NULL (no parent was ever known)"
+    );
+    // ...and a SECOND open of the already-migrated database is a clean no-op (the
+    // `pragma_table_info` gate skips the ALTER) — the migration is idempotent.
+    drop(db);
+    let db = Db::open(&path).expect("a re-open of the migrated db must succeed");
+    let has: i64 = db
+        .conn
+        .lock()
+        .expect("db mutex poisoned")
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'parent_session_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        has, 1,
+        "the re-open neither drops nor duplicates the column"
+    );
+
+    // ── The at-rest no-FK pin ────────────────────────────────────────────────
+    //
+    // NOTHING enforced this decision before now: the column ships with no foreign
+    // key on purpose, and a reviewer adding the "obvious" `REFERENCES
+    // sessions(id)` to tidy the schema would break both halves of the design at
+    // once. A `ON DELETE CASCADE` FK would delete the CHILD `sessions` rows, which
+    // the design forbids — the row survives because it carries `cost_usd` and costs
+    // 0.6 MB for 2,643 rows — and a RESTRICTing (or `SET NULL`) FK would refuse the
+    // ~50% of existing children whose parent is already deleted, i.e. it would
+    // refuse the future writes too. A dangling `parent_session_id` is a storable,
+    // expected state; the in-tree precedent is `sessions.cwd`, which carries no FK
+    // to `spaces` for the identical reason (`db/mod.rs`'s board-table comment: a
+    // board that cascaded away with the tab would lose a person's whole workflow to
+    // a click that deletes nothing else). `task_sessions.session_id` is the
+    // COUNTER-example — that link DOES cascade, because a Session has a delete verb
+    // and a Task does not.
+    //
+    // TWO READ TARGETS, and both are live — the shape
+    // `no_board_table_has_a_foreign_key_to_spaces` records. `SCHEMA` is the DDL
+    // batch, where a reviewer would most obviously write the FK. The `include_str!`
+    // arm asks the same question of `db/mod.rs`, whose gate block carries DDL that
+    // lives OUTSIDE `SCHEMA` and is therefore invisible to the first arm: the new
+    // `ALTER TABLE sessions ADD COLUMN parent_session_id …` is exactly such DDL.
+    assert!(
+        !SCHEMA.contains("parent_session_id TEXT REFERENCES"),
+        "`parent_session_id` carries NO foreign key by decision — a cascading FK would \
+         delete the child `sessions` rows the design keeps, and a RESTRICTing one would \
+         refuse the ~50% already-orphaned children; got {SCHEMA}"
+    );
+    assert!(
+        !include_str!("../mod.rs").contains("ADD COLUMN parent_session_id TEXT REFERENCES"),
+        "and the gate's own `ALTER` carries no FK either — that statement is DDL \
+         outside `SCHEMA`, so the arm above cannot see it"
+    );
+}
+
 /// Isolation is these fixtures' load-bearing property, so it is ASSERTED rather
 /// than commented: each `SCHEMA_WITHOUT_*` must omit EXACTLY ONE gated column
 /// across both tables and carry every other one. If a fixture silently
@@ -656,7 +794,7 @@ fn cost_usd_column_migration_on_a_preexisting_db() {
 #[test]
 fn each_cluster_schema_omits_exactly_one_gated_column() {
     // (table, column) for every gate `Db::open` probes, in probe order.
-    const GATED: [(&str, &str); 12] = [
+    const GATED: [(&str, &str); 13] = [
         ("spaces", "trusted"),
         ("sessions", "archived"),
         ("sessions", "context_usage_json"),
@@ -669,11 +807,16 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
         ("stages", "on_enter_skill"),
         ("stages", "next_slugs"),
         ("spaces", "board_strict"),
+        ("sessions", "parent_session_id"),
     ];
-    let fixtures: [(&str, &str); 8] = [
+    let fixtures: [(&str, &str); 9] = [
         ("SCHEMA_WITHOUT_ARCHIVED", SCHEMA_WITHOUT_ARCHIVED),
         ("SCHEMA_WITHOUT_CONTEXT_USAGE", SCHEMA_WITHOUT_CONTEXT_USAGE),
         ("SCHEMA_WITHOUT_COST_USD", SCHEMA_WITHOUT_COST_USD),
+        (
+            "SCHEMA_WITHOUT_PARENT_SESSION_ID",
+            SCHEMA_WITHOUT_PARENT_SESSION_ID,
+        ),
         (
             "SCHEMA_WITHOUT_SPACE_SORT_ORDER",
             SCHEMA_WITHOUT_SPACE_SORT_ORDER,
@@ -759,7 +902,7 @@ fn the_three_task_tables_are_in_schema_and_have_no_gate_entry() {
     // table of some other shape, which it never did — and it would make
     // `each_cluster_schema_omits_exactly_one_gated_column`'s fixtures lie, so
     // this is the guard that keeps that test honest.
-    // Re-pointed at the PARENT's own text by the ADR 0113 split: all twelve
+    // Re-pointed at the PARENT's own text by the ADR 0113 split: all thirteen
     // `gate(&mut conn, …)` calls live inside `Db::open`, and `open` is what
     // `db/mod.rs` kept, so the parent is still the file whose gate surface this
     // counts. `migrations.rs` holds the three gate DATA STEPS and calls no gate.
@@ -773,14 +916,14 @@ fn the_three_task_tables_are_in_schema_and_have_no_gate_entry() {
              `gate(` call ({gated})"
         );
     }
-    // And the gate surface is still exactly the twelve additive columns: the 9
-    // pre-#179 gates plus `stages.on_enter_skill`, `stages.next_slugs` and
-    // `spaces.board_strict`.
+    // And the gate surface is still exactly the thirteen additive columns: the 9
+    // pre-#179 gates plus `stages.on_enter_skill`, `stages.next_slugs`,
+    // `spaces.board_strict` and `sessions.parent_session_id`.
     assert_eq!(
         source.matches("gate(&mut conn, ").count(),
-        12,
-        "the 12 gates are the whole migration surface; a NEW TABLE (as opposed to a
-         new column on an existing one) must not add a 13th, and no gate may ever \
+        13,
+        "the 13 gates are the whole migration surface; a NEW TABLE (as opposed to a
+         new column on an existing one) must not add a 14th, and no gate may ever \
          name `tasks`, `task_sessions` or `task_artifacts`"
     );
 }

@@ -50,6 +50,12 @@ asserts `source.matches("gate(&mut conn, ").count() == 12` with all 12 gates ins
 which is what forces `open` (and `SCHEMA`, and the migration free functions) to stay **whole** in
 `db/mod.rs`. Those pins are a constraint on the split, not collateral damage from it.
 
+> The **12** above is the count at the split, and it has since moved: the pin asserts **13** as of
+> ADR 0118, which added the `sessions.parent_session_id` gate. That is the pin working — an additive
+> column is supposed to add exactly one gate, and a NEW TABLE is supposed to add none (the two
+> `assert_eq!(…, 0)` arms above). What constrains the split is the pin's *shape* — a whole-file count
+> of the gates inside `open`, which only holds while `open` stays in `db/mod.rs` — never the number.
+
 ## Why the mirror costs almost nothing, measured
 
 The predecessor report named the test module's `use super::*` glob as the dominant hidden cost of any

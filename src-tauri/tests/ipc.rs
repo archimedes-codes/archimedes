@@ -2218,3 +2218,52 @@ fn a_buffered_row_with_no_flush_point_lands_within_the_interval() {
         );
     });
 }
+
+/// THE PIN that no retention loop runs under `cargo test`. The lint in `retention/tests/mod.rs`
+/// reads `lib.rs` and proves the source says `None`; this proves the app agrees — the slot is
+/// MANAGED (so the wiring is real) and EMPTY (so nothing was started, and nothing is deleting rows
+/// out from under this binary's other tests).
+///
+/// WHY THE WAIT IS BOUNDED ON *THE SLOT ITSELF* AND NOT INHERITED FROM `build_app` — an ordering
+/// constraint, recorded here so nobody "simplifies" it back into a flake. `build_app` (:149)
+/// synchronises on `try_state::<Arc<SessionManager>>()`, which `setup` manages early in
+/// `init_dir_deps`; `app.manage(retention_slot)` is the LAST statement of the start block. So
+/// `build_app` can return, and this assertion can run, BEFORE the slot is managed — a bare
+/// `is_some()` there goes RED on a correct tree. Hence: wait on `RetentionSlot` with the same bound
+/// `build_app` uses (15 s, 50 ms polls). The bound stays a bound rather than an unbounded loop so
+/// that a genuinely missing `app.manage` is a FAILURE, not a hang — which is the same reason
+/// `build_app` says "bounded, so a missing setup is a test failure, not a hang". This suite already
+/// carries that 15 s deadline for exactly this class of race; do not shorten it.
+///
+/// KEEPING IT CAPABLE OF GOING RED (do not delete this note or the check it describes): the mutation
+/// check — flip Step 9's test-facing `None` to `Some(..)` and watch THIS test fail — is what proves
+/// the pin is live. A bound-wait that ended in `assert!(…is_some())` after an unconditional `sleep`
+/// would still be capable of going red; a `let _ = try_state::<RetentionSlot>()` "for wiring" would
+/// not.
+#[test]
+fn the_test_facing_app_manages_a_retention_slot_and_it_is_empty() {
+    let dirs = TestDirs::new();
+    let app = build_app(&dirs);
+    // `Arc` + `StdMutex` are `std::sync::Arc` and `std::sync::Mutex` (:56) — the SAME types `lib.rs`
+    // manages, so the TypeId matches. Writing `std::sync::Arc<…>` out longhand here would also match;
+    // what must NOT happen is a different `Mutex` (a `tokio::sync::Mutex` slot would be a DIFFERENT
+    // TypeId and this test would pass vacuously on unmanaged state).
+    type RetentionSlot = Arc<StdMutex<Option<archimedes_lib::agent::retention::RetentionLoop>>>;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline && app.handle.try_state::<RetentionSlot>().is_none()
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        app.handle.try_state::<RetentionSlot>().is_some(),
+        "the retention slot must be managed even in a test app — an absent slot and an empty slot \
+         say the same thing to a consumer, and only one of them is a wiring bug"
+    );
+    let slot = app.handle.state::<RetentionSlot>();
+    let guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+    assert!(
+        guard.is_none(),
+        "a test-facing app started a retention loop — it would DELETE ROWS out from under the other \
+         tests in this binary"
+    );
+}

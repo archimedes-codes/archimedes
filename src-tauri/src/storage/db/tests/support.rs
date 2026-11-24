@@ -24,11 +24,12 @@
 //! THREE groups of single-reader items stay here anyway, for two different reasons,
 //! and both reasons are the rule's own wording rather than an exception to it:
 //!
-//!   * SIX of the eight `SCHEMA_WITHOUT_*` consts (`…_ARCHIVED`, `…_CONTEXT_USAGE`,
-//!     `…_COST_USD`, `…_STAGES_ON_ENTER_SKILL`, `…_STAGES_NEXT_SLUGS`,
-//!     `…_SPACES_BOARD_STRICT`) are read ONLY by `tests/open.rs`, and they stay.
+//!   * SEVEN of the nine `SCHEMA_WITHOUT_*` consts (`…_ARCHIVED`, `…_CONTEXT_USAGE`,
+//!     `…_COST_USD`, `…_PARENT_SESSION_ID`, `…_STAGES_ON_ENTER_SKILL`,
+//!     `…_STAGES_NEXT_SLUGS`, `…_SPACES_BOARD_STRICT`) are read ONLY by
+//!     `tests/open.rs`, and they stay.
 //!     That child consumes them as a COMPLETE SET —
-//!     `each_cluster_schema_omits_exactly_one_gated_column` walks all eight by name
+//!     `each_cluster_schema_omits_exactly_one_gated_column` walks all nine by name
 //!     and asserts each omits exactly one gated column, so the property lives in the
 //!     SET and not in any one string. One consumer of a set is still the reason the
 //!     set exists: the rule counts CONSUMERS, not call sites, and scattering the
@@ -71,7 +72,7 @@ use crate::types::SessionInfo;
 // 5-table `CREATE` batch (sessions + stages + spaces + messages +
 // native_messages) with EXACTLY ONE gate's column absent and every OTHER
 // gated column present, so `Db::open`'s other gates find their column and stay
-// SILENT: the test observes its own gate, not twelve gates at once. Two of the
+// SILENT: the test observes its own gate, not thirteen gates at once. Two of the
 // five fixtures were NOT isolated before this consolidation (the `archived` one
 // also omitted `trusted`, both `sort_order`s, `context_usage_json`,
 // `is_subagent`, `todos_json` and `cost_usd`, and carried `agent_id` — so it
@@ -156,7 +157,8 @@ CREATE TABLE sessions (
     todos_json TEXT,
     cost_usd REAL,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    title_stage INTEGER NOT NULL DEFAULT 0
+    title_stage INTEGER NOT NULL DEFAULT 0,
+    parent_session_id TEXT
 );
 "
     };
@@ -166,7 +168,7 @@ CREATE TABLE sessions (
 /// so neither `stages` gate fires. EVERY cluster fixture carries this spelling
 /// except the two whose gate owns this table: `Db::open` probes `stages` too
 /// now, so a fixture with NO `stages` table at all would count as omitting both
-/// columns and break the isolation assert on all eight fixtures at once.
+/// columns and break the isolation assert on all nine fixtures at once.
 macro_rules! legacy_stages_complete {
     () => {
         "
@@ -344,7 +346,8 @@ CREATE TABLE sessions (
     todos_json TEXT,
     cost_usd REAL,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    title_stage INTEGER NOT NULL DEFAULT 0
+    title_stage INTEGER NOT NULL DEFAULT 0,
+    parent_session_id TEXT
 );
 ",
     spaces_with_sort_order
@@ -364,7 +367,8 @@ CREATE TABLE sessions (
     todos_json TEXT,
     cost_usd REAL,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    title_stage INTEGER NOT NULL DEFAULT 0
+    title_stage INTEGER NOT NULL DEFAULT 0,
+    parent_session_id TEXT
 );
 ",
     spaces_with_sort_order
@@ -384,6 +388,30 @@ CREATE TABLE sessions (
     context_usage_json TEXT,
     is_subagent INTEGER NOT NULL DEFAULT 0,
     todos_json TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    title_stage INTEGER NOT NULL DEFAULT 0,
+    parent_session_id TEXT
+);
+",
+    spaces_with_sort_order
+);
+
+/// The full 5-table batch with ONLY `sessions.parent_session_id` missing — the
+/// isolation the `dflt_value` pin depends on (a pre-existing row has NO known
+/// parent, so the column must arrive DEFAULT-less; see the gate in `db/mod.rs`).
+pub(super) const SCHEMA_WITHOUT_PARENT_SESSION_ID: &str = legacy_batch!(
+    "
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    cwd TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    title TEXT,
+    capabilities_json TEXT NOT NULL,
+    archived INTEGER NOT NULL DEFAULT 0,
+    context_usage_json TEXT,
+    is_subagent INTEGER NOT NULL DEFAULT 0,
+    todos_json TEXT,
+    cost_usd REAL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0
 );
@@ -408,7 +436,8 @@ CREATE TABLE sessions (
     todos_json TEXT,
     cost_usd REAL,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    title_stage INTEGER NOT NULL DEFAULT 0
+    title_stage INTEGER NOT NULL DEFAULT 0,
+    parent_session_id TEXT
 );
 ",
     spaces_without_sort_order
@@ -429,7 +458,8 @@ CREATE TABLE sessions (
     is_subagent INTEGER NOT NULL DEFAULT 0,
     todos_json TEXT,
     cost_usd REAL,
-    title_stage INTEGER NOT NULL DEFAULT 0
+    title_stage INTEGER NOT NULL DEFAULT 0,
+    parent_session_id TEXT
 );
 ",
     spaces_with_sort_order

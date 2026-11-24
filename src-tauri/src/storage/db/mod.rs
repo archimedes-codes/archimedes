@@ -14,7 +14,7 @@
 //!
 //! This parent holds what every subject shares and what the pins read: the three
 //! error types and their `From` maps, the `Db` struct, [`Db::open`] **whole**
-//! (its twelve `gate` calls ARE the migration surface, and
+//! (its thirteen `gate` calls ARE the migration surface, and
 //! `the_three_task_tables_are_in_schema_and_have_no_gate_entry` counts them from
 //! this file's text), `gate`, `set_journal_pragmas`, `LAST_ACTIVITY` and `SCHEMA`.
 //! Every subject lives in the sibling that names it — [`sessions`], [`messages`],
@@ -808,6 +808,46 @@ impl Db {
             )?;
             Ok(())
         })?;
+        // One-time migration for pre-existing databases: add
+        // `parent_session_id` to `sessions` (fresh databases already have it from
+        // `SCHEMA`). The same pragma-gated pattern as the `cost_usd` migration
+        // above, and it inherits that gate's argument wholesale.
+        //
+        // NO `DEFAULT` and NO backfill, and that is the load-bearing part of this
+        // gate: `NULL` means "this child's parent was never known", which is the
+        // truth for roughly HALF the Subagent children in a live database — 1,325
+        // of 2,643 in the measured database already have no parent row at all,
+        // because deleting a parent destroys the rows naming its children while the
+        // children survive. A `DEFAULT ''` would migrate every one of them into
+        // "my parent is the session whose id is the empty string" — a parent
+        // fabricated out of nothing, which is the phantom-`$0.00` defect one column
+        // over (issue #105, D5 / ADR 0082) wearing a different hat. There is
+        // nothing honest to backfill either: the parent-child link was never stored
+        // anywhere before this column existed. That no-default rule is asserted by
+        // `parent_session_id_column_migration_on_a_preexisting_db`, which reads
+        // `pragma_table_info('sessions').dflt_value` and requires NULL — a `DEFAULT`
+        // added here fails that pin.
+        //
+        // NO FOREIGN KEY, deliberately, and the test pins the forbidden spelling
+        // absent. An `ON DELETE CASCADE` FK would delete
+        // the CHILD `sessions` rows, which the design forbids — the row survives
+        // because it carries `cost_usd` and costs 0.6 MB for 2,643 rows, and its
+        // transcript is what the retention verbs trim, not the row. A
+        // non-cascading FK would REFUSE the ~50% whose parent is already gone, i.e.
+        // it would refuse the future writes too. A dangling `parent_session_id` is
+        // therefore a storable, expected state. The precedent is `sessions.cwd`,
+        // which carries no FK to `spaces` for the identical reason (see the board
+        // tables' comment below: a board that cascaded away with the tab would lose
+        // a person's whole workflow to a click that deletes nothing else).
+        // `task_sessions.session_id` is the COUNTER-example — that link DOES carry
+        // `ON DELETE CASCADE`, because a Session has a delete verb and a Task does
+        // not.
+        gate(&mut conn, "sessions", "parent_session_id", |tx| {
+            // No transaction wrapper is spelled at this call site: the single
+            // ALTER runs inside the factory's tx, exactly as `cost_usd` above does.
+            tx.execute("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT", [])?;
+            Ok(())
+        })?;
         // One-time migration for pre-existing databases: give
         // `native_messages` its `ON DELETE CASCADE` foreign key (a
         // pre-existing table cannot GAIN an FK in place — recreate it,
@@ -924,7 +964,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     todos_json TEXT,
     cost_usd REAL,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    title_stage INTEGER NOT NULL DEFAULT 0
+    title_stage INTEGER NOT NULL DEFAULT 0,
+    -- NO `DEFAULT` and NO foreign key, and both are decisions: NULL means "the
+    -- parent was never known", which is honest for the children whose parent row
+    -- is already gone. See the `parent_session_id` gate in `Db::open` and
+    -- `parent_session_id_column_migration_on_a_preexisting_db`.
+    parent_session_id TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY,
@@ -1076,6 +1121,8 @@ mod artifacts;
 mod board;
 mod messages;
 mod migrations;
+mod parent_link;
+mod retention;
 mod rows;
 mod seams;
 mod sessions;
@@ -1096,6 +1143,16 @@ use migrations::{backfill_session_todos, seed_session_sort_order, seed_space_sor
 pub use rows::{
     Artifact, ArtifactMeta, MoveOutcome, SessionRecency, SpaceRow, StageRow, StageWithTasks,
     TaskCardView, TaskNumberRow, TaskRow, TaskSessionRow,
+};
+
+// `PrunedCounts` and the two bounds are the retention subject's PUBLIC surface, and
+// they need this line to be nameable at all: `mod db;` is private in
+// `storage/mod.rs`, so `crate::storage::db::…` is not a path outside `storage/`,
+// and `storage/mod.rs` re-exports the three names below. This is the same widening
+// the `rows` re-export above performs for a private sibling's items. `Db`'s verbs
+// need no line here — they are inherent methods on the already-re-exported `Db`.
+pub use retention::{
+    PrunedCounts, MAX_CLOSED_SUBAGENT_TRANSCRIPT_AGE, VACUUM_FREELIST_THRESHOLD_BYTES,
 };
 
 #[cfg(test)]

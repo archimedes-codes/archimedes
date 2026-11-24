@@ -27,6 +27,8 @@ mod board;
 mod messages;
 mod migrations;
 mod open;
+mod parent_link;
+mod retention;
 mod rows;
 mod seams;
 mod sessions;

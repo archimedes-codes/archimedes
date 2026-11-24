@@ -64,3 +64,89 @@ Three defects in the Task-2 hook (`src/agent/crashlog.rs`) were found from a rea
 - **`on_crash` gains a third parameter**, so every `WorkerManager::new` call site (14 across `src/` and `tests/`) threads an `Option<u32>` — the cost of exactness, paid once.
 - **Two guards keep the leak from returning, and they do not cover the same ground.** A census invariant in the `childproc` idiom (`production_crashlog_never_resolves_a_data_dir`: no production line in `crashlog.rs` may contain `dirs::data_dir()`, comment-filtered, with a vacuity guard) is the cheap source-level claim that runs everywhere, Windows included. `scripts/check-test-data-dir.sh` is the behavioural one, and it runs **on Linux and macOS only** — Linux redirects with `XDG_DATA_HOME`, macOS with `HOME`. There is deliberately **no Windows arm and no `APPDATA` line**, because the redirect is impossible there: `dirs` 6.0.0 resolves the Windows data dir with `SHGetKnownFolderPath(FOLDERID_RoamingAppData)` (`dirs-sys-0.5.0/src/lib.rs:150-178`; `dirs-6.0.0/src/win.rs:10`), which **ignores `%APPDATA%`** — a Windows "redirect" would move nothing and the check would go green for exactly the wrong reason. So on Windows the census is the ONLY guard: no behavioural guard exists for a `dirs::data_dir()` reached from outside `crashlog.rs`, and a `dirs` upgrade that starts honouring the variable is undetectable there. That gap is recorded, not closed. What the two OSes do check is load-bearing on its own terms: without the redirect the script inspects a directory the suite never wrote to, which is how the first version of the `exec` stdin test passed while guarding nothing (`agent/tools/exec.rs:1780-1791`) — which is also why `test_support::the_ci_data_dir_redirect_took_effect` fails the run when the redirect did not take effect, asserting the premise instead of leaving it assumed.
 - **A pre-amendment crash log is still attributable**: the pid-less fallback finds `crash-*-worker.log`, and the wider prune pattern matches those names too.
+
+## Amendment (2026-11-23) — a closed Subagent session's transcripts are bounded at 24 hours, and the "debug view" that justified persisting them was never built
+
+**What stands unchanged, in full:** every session in its own **Worker process** with the desktop a pure
+**Supervisor**; the sole-writer persistence of transcripts from the Worker event stream; `unwind` and the crash
+hooks; the **Stalled session**; the deletion of the throwaway-`Db` machinery. And two of the three clauses of the
+parenthetical quoted below still hold exactly: a child's rows are still **never archived** (0 of 2,649 carry
+`archived = 1` at Census A, and 0 of 2,714 at the 2026-11-23 re-read), and they are still **hidden from Space
+lists** (`list_sessions` filters `is_subagent = 0` in both arms, as does `session_recency`). **This ADR is NOT superseded and its `status` is unchanged.** What is narrowed is
+one clause of one Consequences bullet and the argument attached to it. ADR 0118 carries the decision; this section
+records what it did to this one.
+
+**The clause being retired.** Above, "The throwaway-DB machinery is deleted", the promise reads *"never archived,
+hidden from Space lists, **inspectable in a debug view**"*. The third clause **was never true and is now moot.**
+`grep -rniE "debug view|debugview|debug-view" src/ src-tauri/src/` is **exit 1** — the phrase exists nowhere in the
+frontend or the backend. No IPC command takes an `is_subagent` argument or can name a child session; every reader
+of the two transcript tables is either `is_subagent = 0` filtered (`list_sessions`, `session_recency`), reachable
+only with an id no list can produce (`load_history`/`messages_page`, `messages_for`, `load_native_messages`), or
+in-memory-only (`SubagentTranscript` reads `useSessions.messages[entry.sessionId]`, and `discardSessionMessages`
+deletes that entry at `subagent-closed`). `git log --all -S "debug view"` names **seven commits at
+`1428c941` — `d3e552ea`, `07ccb4f3`, `022d2f53`, `98c970d9`, `d5a23ded`, `1146a59b`, `1a47f823` — and
+every one of them is docs, none under `src/` or `src-tauri/src/`**
+(`git log --all -S "debug view" -- src/ src-tauri/src/` prints **nothing**). Named
+honestly: `1a47f823` is the commit that added ADR 0025 itself (with its plan and the glossary terms), `1146a59b`
+is that plan, `d5a23ded` / `98c970d9` / `022d2f53` / `07ccb4f3` are the research report and its three
+correction passes, and `d3e552ea` is main's own ADR 0117 commit, which touches the same research report and
+quotes the same phrase while ruling on a different seam. Every hit is a document quoting the phrase; **no ref
+of this repository ever contained a debug view.**
+
+**What changed in the argument — this is the part that has to be argued, not asserted.** Above, the rows were
+persisted because they were *"previously discarded, which is why a 32-minute subagent's work was un-inspectable
+after the fact."* Deleting them at 24 h **re-creates that defect on a delay**, so "the bytes are large" is not an
+answer. Three things changed:
+
+1. **The promise was never kept, so the argument never bought what it claimed.** Inspectability was the
+   justification; what shipped was **unreadable storage with an inspectability rationale that had no
+   implementation**. A bound on a thing no surface can reach costs nothing the decision actually delivered —
+   and it is the *unboundedness* that was never argued for, not the persistence.
+2. **Inspectability now has a real home, and it is the parent.** The child's final report is delivered to the
+   parent as the `subagent` tool result and persisted in the **parent's own** stored display row
+   (`payload_json.rawOutput.content[0].text`), which `ToolCallCard` renders on expand — untouched by this change,
+   and kept for the parent's whole life. So "what did that 32-minute child actually do" is answerable from the
+   parent's transcript forever, while the child's own verbatim copy — the only copy that survives for the 64%
+   whose text does not match the parent's — is kept for a working day. 24 h is not a decay curve chosen for the
+   bytes; it is the window in which the investigation actually happens, priced at 23.4 MB kept out of 2,042 MB
+   freed.
+3. **The cost was never measured when this decision was taken, and the asymmetry was never argued.** This same
+   ADR's 2026-10-18 amendment bounded **11 MB** of crash logs with two constants, a named prune function, a
+   clock-skew rule and a one-off cleanup. 2,042 MB of product data bounded nothing for seven weeks (this ADR is
+   dated 2026-10-04; this amendment is 2026-11-23, fifty days later). The distinction
+   (diagnostic noise vs the product's own transcript) is right **in kind** and was wrong **in degree**: the
+   product's data deserves a *longer* window than a crash log, not an infinite one. 24 h against 30 days is that
+   claim made numeric.
+
+**And the honest residue, stated rather than smoothed.** For a child older than 24 hours the child's own
+transcript is gone and nothing recovers it. If the 64% of newest rows that do not match a parent's `rawOutput`
+turn out to matter, the reader that would need them must be built **before** the window shrinks, not after — and
+if the window is ever shortened, this amendment is the file that has to be revisited first.
+
+## Considered Options (amendment)
+
+- **Supersede this ADR outright (rejected).** Nothing above reverses this ADR's decision; only its reach moved.
+  `superseded-by:` is the instrument for a whole-decision replacement (7 of 109 use it that way), and using it here
+  would bury the Worker-process architecture under a retention rule. ADR 0016 rejected the same shape for the same
+  reason: *"a separate ADR superseding this one — rejected because nothing above reverses this ADR's decision, only
+  its stated reach."*
+- **Edit line 21 in place (rejected).** `docs/decisions/` is append-only. The clause is the record of what was
+  believed on 2026-10-04, and 0024's precedent is explicit that a clause false of shipped code is left standing and
+  corrected below.
+- **A `*Partial: see ADR 0118*` note instead (rejected).** That is the instrument for narrowing one sentence of a
+  *merged* ADR from the new file. It was considered — and the narrowing sentence does live in ADR 0118 as well — but
+  the change here retires a whole clause **and its argument**, which is amendment-sized, and this file already
+  carries the precedent two lines above.
+
+## Consequences (amendment)
+
+- **"Inspectable in a debug view" is no longer a promise this repository makes.** Any future doc that repeats it is
+  wrong; the phrase is now cited only to be retired. The frontend's own comment at `src/store/sessions.ts` — "a
+  child's rows DO persist … no surface can re-open a closed child" — is the sentence that matches the code, and it
+  weakens to "persist for 24 hours" when the code lands.
+- **The rows this ADR justified persisting now have a lifetime**: `MAX_CLOSED_SUBAGENT_TRANSCRIPT_AGE` = 24 h after
+  the child is **closed**, with the newest `messages` row and the `sessions` row surviving. ADR 0118 owns the rule,
+  the measurements and the `VACUUM` threshold; this section owns the correction to the rationale.
+- **`CONTEXT.md`'s "Subagent session" entry still calls the row a "hidden ephemeral row — ADR 0025"**, and the
+  **Closed Subagent session** entry (added 2026-11-22) now defines the state that triggers the prune. Per ADR 0086
+  names are repaired **on touch**, not by sweep, so the older clause stays until something touches it.

@@ -464,6 +464,41 @@ bound. An age bound is a necessary but **not sufficient** guard; the second guar
 is running when the prune executes (which also satisfies hazard 7). `SessionManager::session_count()`
 (`agent/session/mod.rs:1456`, rows whose `live` slice is set) is the existing accessor.
 
+**9. Three claims in this report are false — corrected at ADR 0118, which is written against the
+corrections.** 9a and 9b arrived as fan-in from the implementation tasks; 9c was found when this work was
+re-based onto `1428c941` and re-probed.
+
+  a. **The idle gate is THREE conditions, not the one part 6 names.** Part 6's "Why this is safe" rests safety
+     on `SessionManager::session_count() == 0`. That is **not sufficient**: a running Subagent session is
+     **invisible** to `session_count()`, because `row.live` is set at exactly one production site (the
+     main-session start/resume path) and a Subagent session never passes through it. The crate says the same
+     thing about its own accessor — a subagent Worker **"is NOT in `workers`, so `test_session_count` never
+     sees it"**. The gate is `session_count() == 0` **AND** `WorkerManager::test_session_count() == 0` **AND**
+     `WorkerManager::test_drive_count() == 0`, and the third term is the one that sees an in-flight child.
+     **Part 6's "Why this is safe" is superseded as written**; the corrected gate is in ADR 0118, because that
+     gate is what answers the ADR 0055 objection correction 8 raises.
+
+  b. **"self-heals on the next frame" (part 2) is false.** The crate inserts the `drives` entry once, at
+     dispatch, and removes it at teardown — it is never re-inserted. A delivery-id miss can therefore only
+     occur at the **end** of a child's stream, and no later frame exists that could resolve it. The **guard is
+     still correct** (skip when `session_id == child_id`; leave `parent_session_id` `NULL`; never invent a
+     parent) but the *reason* given here is wrong, and the consequence is weaker than claimed: a child whose
+     delivery id raced keeps `NULL` **permanently**. Do not repeat "self-heals" anywhere — a doc that ships it
+     ships a recovery mechanism that does not exist.
+
+  c. **"`0117` is free" — twice, in "What must be fixed in the same change" and in "Recording constraint
+     for the design" — is FALSE, and the sentence is the reason the number moved.** Both clauses were
+     verified against the directory at `94af00d1` and were true there. `1428c941` carries
+     `docs/decisions/0117-a-frames-delivery-address-is-a-ui-scope-key-and-never-a-reply-address.md` — a
+     **different** decision, about a frame's delivery address being a UI-scope key and never a reply address
+     (the 255m55s `get_artifact` board hang). **The retention ADR is `0118`**, verified free against the
+     directory and against `git log --all --diff-filter=A` at `1428c941`. This is `AGENTS.md`'s ADR-collision
+     rule doing exactly what it exists to do: the number was checked once, at a base, and a decision landed
+     after the check. The two neighbouring ADRs share a subject (**Subagent session**s) and share no
+     decision; `0118` says so in its own "What this is NOT" section so a reader cannot conflate them. Do not
+     edit the two clauses above — they are the record of what was true on 2026-11-22 — but do not re-cite
+     `0117` as free either.
+
 ## Proposed direction (user-proposed 2026-11-14 — measured feasibility, NOT a design)
 
 > **Read "Approved design (2026-11-22)" before acting on anything below.** Three claims here are
@@ -627,6 +662,13 @@ no knob" posture the `VACUUM` threshold must answer with a measurement; and an a
 section on ADR 0025 retiring *"inspectable in a debug view"* (`0117` free; `superseded-by:` is reserved
 for whole-decision replacement and is **not** the instrument here).
 
+**Status (2026-11-23): ruled.** The six parts above are ADR 0118, and the four items named in the paragraph
+immediately above are corrected in that ADR's own commit. The `VACUUM` threshold the design left as "a threshold" is
+`VACUUM_FREELIST_THRESHOLD_BYTES` = 256 MiB. **What is measured is that a gate is required; 256 itself is chosen.**
+`VACUUM` costs about the same whether there is anything to reclaim or not (6.9 s and +1 GiB of peak disk to reclaim
+**nothing** at an 847 MiB file with an empty freelist), so the gate is what makes it runnable at all — and 256 MiB is
+one week of growth (≈33 MiB/day) rounded to a power of two, not a measured optimum. ADR 0118 says so in those words.
+
 ## Approved scope (2026-11-22) — decided, not yet designed
 
 > **Superseded by "Approved design (2026-11-22)" above.** Kept as the record of the scope decision.
@@ -664,7 +706,7 @@ they were *"previously discarded, which is why a 32-minute subagent's work was u
 fact"*. **Deleting at 24 h re-creates that defect on a delay**, so the new decision must say what changed
 in the *argument*, not merely that the bytes are large. This repo's instrument for that is an
 `## Amendment (YYYY-MM-DD) — <scope>` section appended to the original file, opening by naming what still
-stands and stating *"This ADR is NOT superseded"* — 33 of 108 ADRs use it, and ADR 0025 already carries
+stands and stating *"This ADR is NOT superseded"* — 33 of 109 ADRs use it, and ADR 0025 already carries
 one (its 2026-10-18 crash-log amendment). `superseded-by:` in front matter is reserved for whole-decision
 replacement. `0117` is free (verified against the directory *and* `git log --all --diff-filter=A`; the
 sole duplicate is the pre-existing `0086`).
@@ -725,3 +767,8 @@ explicitly, because "what if someone resumes it?" is the first question this cha
 - `docs/decisions/0022-native-harness-only.md:11,23` — the two-table decision.
 - `docs/decisions/0008-inline-attachment-persistence.md:21-22` — the growth concern that did not
   materialize, and its unused escape hatch.
+- `docs/decisions/0118-a-closed-subagent-sessions-transcripts-are-pruned-at-24-hours-and-vacuum-needs-a-measured-freelist.md`
+  — the ruling this report's §"Approved design (2026-11-22)" fed. The report stands as the measurement, the ADR is
+  the decision; it adds the `VACUUM` measurements §5.1 of `docs/features/transcript-render-perf-known-gaps.md`
+  asked for and amends ADR 0025's never-implemented "debug view" rationale. Not superseded: this file is the census,
+  and a census does not expire because the thing it counted got a rule.

@@ -62,6 +62,11 @@ use crate::types::{ContextUsage, SessionInfo};
 // wiring live in the child module, which sees this module's private items
 // (`driver.db`, `sink`, the `sessions` per-session map) with no widening.
 mod naming;
+// The subagent parent link: the ONE place the DESKTOP writes
+// `sessions.parent_session_id`. A child's row is created inside the crate, so
+// the desktop fills the parent in after the fact — from the router, which is the
+// only place that holds both ids. The verb it calls is `db/parent_link.rs`.
+mod parent_link;
 mod router;
 
 /// The `PermissionOutcome::Selected` option ids the desktop CONSUMES.
