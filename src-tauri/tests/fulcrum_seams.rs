@@ -729,7 +729,7 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
         "`client_id` is REQUIRED: an `oidc` block that omits it fails the whole document"
     );
 
-    // ── `WebSettings` — 6 `String` fields, all-default-empty ──────────────────
+    // ── `WebSettings` — 7 `String` fields, all-default-empty ──────────────────
     let bare_web: fulcrum_harness::web::config::WebSettings =
         serde_json::from_str("{}").expect("an absent web block is legal");
     assert_eq!(
@@ -740,6 +740,7 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
     let web_json = serde_json::to_string(&web_settings_move_across(
         archimedes_lib::agent::web::config::WebSettings {
             brave_api_key: "k".to_string(),
+            keenable_api_key: "k2".to_string(),
             ..Default::default()
         },
     ))
@@ -747,6 +748,15 @@ fn the_config_dtos_are_one_type_across_the_boundary() {
     assert!(
         web_json.contains("\"braveApiKey\":\"k\""),
         "`brave_api_key` crosses as `braveApiKey` — got {web_json}"
+    );
+    // The ONLY pin on this inner camelCase spelling anywhere in the desktop:
+    // the top-level key array in `config.rs` pins the DOCUMENT's top-level keys
+    // (`web` is one of them) and `web_block_round_trips` pins the key NAMES, so
+    // a spelling regression here would be caught by neither. Asserted WITH the
+    // value, so it cannot pass vacuously on a key that is merely present empty.
+    assert!(
+        web_json.contains("\"keenableApiKey\":\"k2\""),
+        "`keenable_api_key` crosses as `keenableApiKey` — got {web_json}"
     );
 
     // And the packaged envelope carries the SAME types (`StartEnv.providers` is a

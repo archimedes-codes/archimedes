@@ -1107,8 +1107,9 @@ mod tests {
             .await
             .expect_err("unknown provider must fail");
         assert!(
-            err.to_string()
-                .contains("Valid providers: brave, tavily, perplexity, searxng, duckduckgo"),
+            err.to_string().contains(
+                "Valid providers: brave, tavily, perplexity, searxng, keenable, duckduckgo"
+            ),
             "error should list valid providers: {err}"
         );
     }

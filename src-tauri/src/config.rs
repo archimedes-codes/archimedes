@@ -1427,6 +1427,7 @@ mod tests {
                 brave_api_key: "b".to_string(),
                 tavily_api_key: "t".to_string(),
                 perplexity_api_key: "p".to_string(),
+                keenable_api_key: "k".to_string(),
                 searxng_url: "s".to_string(),
                 default_provider: "brave".to_string(),
                 proxy: "px".to_string(),
@@ -1617,6 +1618,7 @@ mod tests {
         assert_eq!(WebSettings::default().brave_api_key, "");
         assert_eq!(WebSettings::default().tavily_api_key, "");
         assert_eq!(WebSettings::default().perplexity_api_key, "");
+        assert_eq!(WebSettings::default().keenable_api_key, "");
         assert_eq!(WebSettings::default().searxng_url, "");
         assert_eq!(WebSettings::default().default_provider, "");
         assert_eq!(WebSettings::default().proxy, "");
@@ -1634,6 +1636,7 @@ mod tests {
                 brave_api_key: "brave-key-123".to_string(),
                 tavily_api_key: "tvly-xyz".to_string(),
                 perplexity_api_key: "pplx-abc".to_string(),
+                keenable_api_key: "kn-key-123".to_string(),
                 searxng_url: "https://searx.example.com".to_string(),
                 default_provider: "brave".to_string(),
                 proxy: "http://127.0.0.1:8080".to_string(),
@@ -1647,6 +1650,7 @@ mod tests {
             "\"braveApiKey\"",
             "\"tavilyApiKey\"",
             "\"perplexityApiKey\"",
+            "\"keenableApiKey\"",
             "\"searxngUrl\"",
             "\"defaultProvider\"",
             "\"proxy\"",
