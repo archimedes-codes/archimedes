@@ -1174,9 +1174,13 @@ mod tests {
     // point INTENTIONALLY: `test_search_provider` reads `KEENABLE_API_KEY`
     // through `WebConfig::from_web_settings`, so the var must stay cleared for
     // the whole call — and `remove_env`'s `unsafe` is only sound while the lock
-    // is held, since the parallel harness runs the sibling env-mutating tests
-    // (the `HOME` ones in `agent/session/`, `commands/agents.rs`, `open.rs`)
-    // concurrently (`test_support::ENV_LOCK`).
+    // is held, since the parallel harness runs sibling env-mutating tests
+    // concurrently (`test_support::ENV_LOCK`). Measured in this binary, those
+    // siblings are: the `HOME` mutators `commands/agents.rs` and `open.rs`, and
+    // `agent/session/tests/mod.rs`, which mutates env too but NOT `HOME` — its
+    // six calls are `LITELLM_GCLOUD_TOKEN_AUTH` (4) and `T2_TEST_HEADER` (2).
+    // Any of them writing while this test's `remove_env` is in flight is the
+    // unlocked-writer race the lock exists to prevent.
     //
     // Note the precedent above names a race this test does NOT have: its comment
     // still points at `agent/web/config.rs`, which T5/S2 moved into the crate, so

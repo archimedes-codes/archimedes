@@ -25,13 +25,35 @@ verified-by: >-
   `unknown_parameter`, `/v1/search/public` and device login. CARRIED, not re-measured: every pricing,
   retention, ToS, benchmark and Stripe-auto-top-up number comes from the research doc's dated reading; the
   moved failover gap's account of WHO is affected is re-derived from source here, its reasoning is the
-  previous fixer's. **What was and was not executed.** No claim in this file rests on a test run, and no
-  `cargo` command was run (there is no `src-tauri/target/` here, so even the scoped
-  `cargo test --test fulcrum_seams` is a cold full build, not a cheap check). As the gate for a
-  `docs/`-only change, `TMPDIR=/home/daniel/tmp npx vitest run` over the four suites that read or quote
-  `docs/` (67 passed) and `TMPDIR=/home/daniel/tmp pnpm build` (clean) were run in this sitting and both
-  passed; they corroborate nothing written below. No authenticated Keenable call was made — the vendor
-  claims were re-read from its published docs, which is the same instrument the research doc used.
+  previous fixer's. **What was and was not executed.** No claim in this file rests on a test run. As the
+  gate for a `docs/`-only change, `TMPDIR=/home/daniel/tmp npx vitest run` over the four suites that read
+  or quote `docs/` (67 passed) and `TMPDIR=/home/daniel/tmp pnpm build` (clean) were run in that sitting
+  and both passed; they corroborate nothing written below. No authenticated Keenable call was made — the
+  vendor claims were re-read from its published docs, which is the same instrument the research doc used.
+  **Corrected at `cbb3690e` + this change — the reason given there was false.** This file previously
+  explained the absence of any `cargo` run by saying there is no `src-tauri/target/`, so even a scoped
+  `cargo test --test fulcrum_seams` would be a cold full build. `src-tauri` is a **workspace member**
+  (`Cargo.toml`: `members = ["src-tauri"]`), so its artifacts land in the **root** `target/`, which is
+  warm; the scoped runs below cost about a second each once built. They have now been run here:
+  `cargo test --test fulcrum_seams` → **22 passed / 0 failed / 0 ignored** (~1.1 s warm), and
+  `cargo test --test search_provider_vocabulary` → **1 passed / 0 failed** (~0.8 s warm), the latter with
+  its `include_str!` of `WebSearchSection.tsx` compiling and its four set comparisons green against the
+  real frontend file. §4's account of the two live `SelectItem` mutations is no longer a reading: both
+  mutations were re-applied to the real `.tsx` and re-measured — each reddens
+  `the_search_provider_vocabulary_agrees_across_the_crate_and_the_frontend` and leaves
+  `npx vitest run src/components/settings/WebSearchSection.test.tsx` at 8 passed — and the file was
+  restored byte-identically. **Crate citations re-verified at this sitting:** every `file:line` citation
+  above and every crate test name in this file was re-checked against the published 0.7.0 source. One test
+  name was wrong and is fixed here — `parse_keenable_reads_snippet_not_description` does not exist; the
+  real name is `parse_keenable_fixture_reads_snippet_not_description` (`web/providers/keenable.rs:351`).
+  The other names hold (`parse_keenable_keeps_markdown_newlines` `:379`,
+  `test_safe_fetch_redirect_and_cross_origin_header_stripping` `web/net.rs:480`,
+  `test_resolve_provider_order` `web/providers/registry.rs:384`,
+  `test_exec_web_search_explicit_provider_no_failover_wiremock` `web/tools.rs:573`), and so does every
+  line citation, including `web/config.rs:19`/`:44`/`:102-103`/`:152`, `web/providers/registry.rs:16`/
+  `:82`/`:158-160`/`:169`, `web/providers/keenable.rs:37-47`/`:93-99`/`:115`/`:140-149`/`:159-163`,
+  `web/net.rs:119-124`, `web/tools.rs:171-179`/`:183-188`, `web/providers/types.rs:41` and
+  `mcp/callback.rs:23`. The `keenable.rs` test count of **nine** also re-measures correct.
 ---
 
 # Keenable Search provider — known gaps
@@ -85,8 +107,8 @@ line-numbered artifact (the one place AGENTS.md's no-`file:line` rule has an exc
 - **Markdown is preserved by deliberately NOT calling `clean_snippet`.** The shared helper collapses
   all whitespace, which destroys a Markdown table; Keenable's snippet is Markdown, so `parse_keenable`
   trims and passes through (`web/providers/keenable.rs:93-99`). Both deviations are commented at the
-  top of the file and pinned — `parse_keenable_reads_snippet_not_description` and
-  `parse_keenable_keeps_markdown_newlines`.
+  top of the file and pinned — `parse_keenable_fixture_reads_snippet_not_description`
+  (`web/providers/keenable.rs:351`) and `parse_keenable_keeps_markdown_newlines` (`:379`).
 - **The `x-api-key` cross-origin strip shipped in the same release.** `strip_cross_origin_headers`
   (`web/net.rs:119-124`) removes `authorization`, `cookie`, `x-subscription-token` **and now
   `x-api-key`**. Before 0.7.0, `safe_fetch` followed redirects manually and re-sent the headers with
@@ -198,36 +220,61 @@ result content:**
 Measured at 0.7.0: neither `disable_cards` nor `cards.keenable` appears anywhere in the crate's `src/`,
 and no `keenable.rs` test names either — the handling does not exist in any form.
 
-## 4. The `SelectItem` list is not pinned, and the pin next to it makes that asymmetry sharp
+## 4. The `SelectItem` list was unpinned — CLOSED in-tree, and what the closure still does not pin
 
-`src-tauri/tests/fulcrum_seams.rs`'s `the_search_provider_vocabulary_agrees_across_the_crate_and_the_frontend`
-now **parses** the closed-select array out of `WebSearchSection.tsx` (a `closed_select_options` helper
-that finds the single `closedSelectValue(` call — guarded by an `== 1` call-site assert — and reads the
-quoted literals from its `[ … ]`) and pins it to the crate's `SEARCH_PROVIDERS` in **both** directions:
-an id the crate offers and the array omits fails, and an id the array offers and the crate lacks fails.
-It also pins the parse itself (non-empty, first element `"auto"`), because an empty parse would make
-both comparisons pass vacuously. That is a real gate and it is the right shape — the array is parsed,
-never re-listed in the test.
+**CLOSED by `test(settings): extract the vocabulary pin, pin the SelectItem list, and clear the size
+ratchet`.** Kept here as the record of the gap, of the shape of the fix, and of the residue the fix
+deliberately leaves. The pin now lives in `src-tauri/tests/search_provider_vocabulary.rs` — extracted
+out of `fulcrum_seams.rs`, whose subject is type identity across the seam, not this vocabulary.
 
-**The gap: the dropdown's `SelectItem` list is a separate literal in the same file and is not pinned at
-all.** Verified by reading both: the array is one line inside the `value={closedSelectValue(…)}` prop
-and the menu is a sibling block of seven hand-written `<SelectItem value="…">` elements inside
-`<SelectContent>`. They agree today, and nothing checks that they keep agreeing. The concrete failure:
-a provider added to the array and not to the menu is a value the select will happily hold —
-`closedSelectValue` accepts it, so the stored `defaultProvider` survives and renders — while the user
-**cannot select or deselect it**, because no menu entry exists to click. The reverse (a `SelectItem`
-whose value is missing from the array) is worse: `closedSelectValue` falls back to `"auto"` for any
-value the array lacks, so the menu shows a provider as selectable, the click writes it, and the row
-re-renders as "auto" — with `SEARCH_PROVIDERS` still accepting it on the wire, so it is a valid stored
-value that the UI cannot display. **Every test stays green in both cases.** The direction-1a assert
-(`FRONTEND.contains("\"keenable\"")`) does not catch either, because the `SelectItem` line itself names
-the id — which is exactly the reason the array is parsed rather than grepped, and exactly the hole that
-reason leaves.
+**What the gap was.** The dropdown's `SelectItem` list is a separate literal in the same file from the
+closed-select array and was not pinned at all. Verified by reading both: the array is one line inside
+the `value={closedSelectValue(…)}` prop and the menu is a sibling block of seven hand-written
+`<SelectItem value="…">` elements inside `<SelectContent>` — `auto`, `brave`, `tavily`, `perplexity`,
+`searxng`, `keenable`, `duckduckgo`, i.e. `auto` plus the six `SEARCH_PROVIDERS`, so all seven carry a
+`SelectItem` and none is missing one. They agree today, and nothing checked that they kept agreeing.
+The concrete failure: a provider added to the array and not to the menu is a value the select will
+happily hold — `closedSelectValue` accepts it, so the stored `defaultProvider` survives and renders —
+while the user **cannot select or deselect it**, because no menu entry exists to click. The reverse (a
+`SelectItem` whose value is missing from the array) is worse: `closedSelectValue` falls back to `"auto"`
+for any value the array lacks, so the menu shows a provider as selectable, the click writes it, and the
+row re-renders as "auto" — with `SEARCH_PROVIDERS` still accepting it on the wire, so it is a valid
+stored value that the UI cannot display. **Every test stayed green in both cases** — measured, not
+asserted: adding `<SelectItem value="exafunction">` and deleting the `brave` one each left
+`npx vitest run src/components/settings/WebSearchSection.test.tsx` at 8 passed and left the then-current
+Rust pin passing too, because the direction-1a whole-file containment assert
+(`FRONTEND.contains("\"keenable\"")`) is satisfied by the `SelectItem` line itself naming the id. That
+is exactly the hole the "parse, don't grep" reasoning left.
 
-Cheap fix, and it is the same trick: parse the `SelectItem` values out of the file the same way and
-assert the two sets are equal. It is a `src-tauri/tests/fulcrum_seams.rs` edit and needs no crate
-release. Deliberately not done in the shipping change, which was scoped to making the vocabulary agree,
-not to widening the pin.
+**The fix, and it is the same trick.** A `select_item_values` helper parses each `<SelectItem` element's
+`value="…"` out of the same source text and the test asserts **set equality in both directions** against
+the parsed closed-select array. No crate release is needed — it is a `src-tauri/tests/` edit. Proven to
+bite against the real file: adding `<SelectItem value="exafunction">` fails the new direction-4 assert
+naming `["exafunction"]`; deleting the `brave` `SelectItem` fails direction 3 naming `["brave"]`. The
+`.tsx` was restored byte-identically (sha256 verified, `git diff -- src/` empty).
+
+**What the closure still does NOT pin** — the residue, so a reader does not conclude the vocabulary is
+fully guarded (the file's own header comment carries the same list):
+
+- **Whether a configuration ROW exists** for each provider. `WebSearchSection.tsx` renders
+  `KeyedProviderRow provider="brave" | "tavily" | "perplexity" | "keenable"` plus `SearxngRow` and
+  `DuckDuckGoRow`. Nothing compares that set to `SEARCH_PROVIDERS`; the only assertion touching it is
+  the cheap whole-file containment one, which a `SelectItem` alone already satisfies. Delete the Keenable
+  row and the user loses the API-key field with every test green.
+- **The menu's labels and its `(not configured)` predicates** — a `<SelectItem value="keenable">` whose
+  guard reads the wrong `settings.web` field is unpinned.
+- **Order within the menu** — the new comparison is a set comparison, since display order is cosmetic.
+  (`AVAILABILITY_ORDER` vs `SEARCH_PROVIDERS` IS order-pinned, because there order is behaviour.)
+- **The sibling TypeScript implementation** — a different repo, reached by no `include_str!` here.
+
+**Two guards keep the new parse honest** (the failure mode of any source-text parse is reading nothing
+and passing): the parse's length is asserted equal to the raw `<SelectItem` occurrence count in the file
+and non-empty, so a parse that silently yields an empty set fails loudly, and the file is asserted to
+hold exactly one `<SelectContent>` so a second `Select` cannot feed unrelated values into the comparison.
+Both parses are wrap-agnostic — measured: a one-element-per-line reformat of the array parses
+identically, a `SelectItem` re-wrapped across lines with a second attribute parses identically, renaming
+`<SelectItem` → `<MenuItem` fails with "the parse read nothing", a `value`-less `<SelectItem` panics
+naming its own tag rather than stealing its neighbour's, and a second `<SelectContent>` trips its guard.
 
 ## 5. Keys live in plaintext `settings.json`, deliberately, and that is the highest-value structural follow-up
 
