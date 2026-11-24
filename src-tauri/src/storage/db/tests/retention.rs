@@ -787,6 +787,76 @@ fn the_retention_schema_version_accepts_a_value_above_the_marker() {
 
 // ── the boundary pins ────────────────────────────────────────────────────────
 
+/// Match one of the allowed path SUFFIXES on EITHER separator.
+///
+/// `path.display()` on Windows renders a MIXED-separator string — CI's failing
+/// message read
+/// `D:\a\archimedes\archimedes\src-tauri/src/storage\db\retention.rs`, forward
+/// slashes because `CARGO_MANIFEST_DIR` arrives with them and native ones because
+/// `read_dir` appends them — so a `/`-delimited `ends_with` CANNOT match there and
+/// the walk fires on a file that is legitimately IN the allowed set. Normalising
+/// first is this repo's own idiom for exactly this (`is_test_target`,
+/// `src-tauri/tests/childproc_census.rs`).
+fn suffix_allowed(shown: &str, allowed: &[&str]) -> bool {
+    let norm = shown.replace('\\', "/");
+    allowed.iter().any(|a| norm.ends_with(a))
+}
+
+/// The allow-list must match on both separators, or the walk below accuses a file
+/// that is IN the set. Linux cannot reproduce the failure, so this pin reproduces
+/// the SHAPE instead of relying on a Windows runner: the string below is verbatim
+/// from the CI message that went red on `windows-latest` for the first run of this
+/// file. The last assert is the mutation guard — it pins that the NAIVE predicate
+/// (a bare `ends_with` on the un-normalised path) is what fails, so the fix cannot
+/// silently regress to it and stay green.
+#[test]
+fn the_allowed_path_suffixes_match_a_windows_rendered_path() {
+    let allowed = [
+        "src/storage/db/retention.rs",
+        "src/storage/db/tests/retention.rs",
+    ];
+    let windows = r"D:\a\archimedes\archimedes\src-tauri/src/storage\db\retention.rs";
+    let windows_tests = r"D:\a\archimedes\archimedes\src-tauri/src\storage\db\tests\retention.rs";
+    let unix = "/home/runner/archimedes/src-tauri/src/storage/db/retention.rs";
+
+    assert!(
+        suffix_allowed(windows, &allowed),
+        "the production verbs' file must be allowed on a Windows-rendered path: {windows}"
+    );
+    assert!(
+        suffix_allowed(windows_tests, &allowed),
+        "this file must be allowed on a Windows-rendered path: {windows_tests}"
+    );
+    assert!(
+        suffix_allowed(unix, &allowed),
+        "the same suffix must still match a POSIX path: {unix}"
+    );
+
+    // Non-vacuity: normalising must not turn the allow-list into a rubber stamp.
+    // An escaped file stays refused on both separators.
+    assert!(
+        !suffix_allowed(
+            r"D:\a\archimedes\archimedes\src-tauri/src\storage\db\mod.rs",
+            &allowed
+        ),
+        "a `db/mod.rs` that names the pragma must still be refused"
+    );
+    assert!(
+        !suffix_allowed(
+            "/home/runner/archimedes/src-tauri/src/storage/db/open.rs",
+            &allowed
+        ),
+        "a POSIX sibling that names the pragma must still be refused"
+    );
+
+    // The predicate this helper replaces, pinned as the broken half.
+    assert!(
+        !windows.ends_with(allowed[0]),
+        "if this ever passes, `path.display()` no longer renders backslashes and \
+         the helper's normalisation is dead code — delete it rather than keep both"
+    );
+}
+
 /// (a guard against a FUTURE edit, not a feature) none of the retention verbs is
 /// called from `Db::open`, and neither the marker constant nor a stray
 /// `user_version` lives anywhere in `storage/`.
@@ -889,7 +959,7 @@ fn nothing_in_db_open_prunes_vacuums_or_touches_the_marker_and_no_constant_lives
             );
             if content.contains(pragma_needle) {
                 assert!(
-                    allowed.iter().any(|a| shown.ends_with(a)),
+                    suffix_allowed(&shown, &allowed),
                     "`user_version` escaped its two files: {shown}"
                 );
             }
