@@ -234,4 +234,40 @@ describe("TaskDetailHeader", () => {
     );
     expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe("Doomed");
   });
+
+  // REGRESSION (Greptile P2, "Failed saves lose keyboard focus"). Disabling the input during
+  // the save removes focus from it, and re-enabling it on a rejected save does NOT restore
+  // focus. So the user had to click back in, and Escape then reached the dialog instead of
+  // the editor. A failed save must hand focus back to the still-open input.
+  it("a rejected save returns keyboard focus to the input, so Escape still cancels the editor", async () => {
+    // jsdom does NOT drop focus when an input is disabled (verified: `activeElement` stays on
+    // the input), but a browser DOES. So simulate the browser: while the save is pending,
+    // move focus off the input, as disabling it does in a real browser. The fix must
+    // restore focus after the failed save, or this assertion fails.
+    let reject: (err: Error) => void = () => {};
+    const onSaveTitle = vi.fn(
+      () =>
+        new Promise<void>((_resolve, rej) => {
+          reject = rej;
+        }),
+    );
+    renderHeader({ title: "Old", onSaveTitle });
+    const input = openEditor();
+    fireEvent.change(input, { target: { value: "Doomed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onSaveTitle).toHaveBeenCalledWith("Doomed"));
+    // The browser drops focus when the input is disabled. jsdom does not (and `blur()` is a
+    // no-op on a disabled element), so move focus to a neutral element explicitly: that is
+    // the state a real browser leaves the user in. The fix must hand focus back.
+    const neutral = document.createElement("button");
+    document.body.appendChild(neutral);
+    neutral.focus();
+    expect(document.activeElement).toBe(neutral);
+    reject(new Error("empty_title"));
+    await waitFor(() =>
+      expect((screen.getByRole("textbox") as HTMLInputElement).disabled).toBe(false),
+    );
+    expect(document.activeElement).toBe(screen.getByRole("textbox"));
+    neutral.remove();
+  });
 });

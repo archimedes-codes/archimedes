@@ -363,6 +363,35 @@ describe("TaskDetailProperties — spec path", () => {
     );
     expect(screen.getByDisplayValue("/bad.md")).toBeTruthy();
   });
+
+  // REGRESSION (Greptile P2, "Failed saves lose keyboard focus"), the SpecPathRow half.
+  // A rejected save must hand focus back to the still-open input, so Escape still cancels.
+  it("a rejected spec save returns keyboard focus to the input, so Escape still cancels", async () => {
+    let reject: (err: Error) => void = () => {};
+    const onSaveSpecPath = vi.fn(
+      () =>
+        new Promise<void>((_resolve, rej) => {
+          reject = rej;
+        }),
+    );
+    renderProperties({ task: taskRow({ specPath: "/old.md" }), onSaveSpecPath });
+    fireEvent.click(screen.getByTestId("spec-path-value"));
+    const input = screen.getByRole("textbox") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "/bad.md" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onSaveSpecPath).toHaveBeenCalledWith("/bad.md"));
+    // Move focus to a neutral element, as a browser does when the input is disabled.
+    const neutral = document.createElement("button");
+    document.body.appendChild(neutral);
+    neutral.focus();
+    expect(document.activeElement).toBe(neutral);
+    reject(new Error("bad path"));
+    await waitFor(() =>
+      expect((screen.getByRole("textbox") as HTMLInputElement).disabled).toBe(false),
+    );
+    expect(document.activeElement).toBe(screen.getByRole("textbox"));
+    neutral.remove();
+  });
 });
 
 describe("TaskDetailProperties — Updated, Created and the id", () => {

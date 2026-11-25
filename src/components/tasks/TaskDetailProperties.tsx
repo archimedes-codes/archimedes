@@ -192,6 +192,16 @@ function SpecPathRow({
   // input, so newer typing cannot be discarded when the old save resolves (Greptile P2).
   const savingRef = useRef(false);
   const [saving, setSaving] = useState(false);
+  // The input, and a one-shot request to refocus it after a rejected save (see TaskDetailHeader:
+  // a disabled input drops its focus, and it must be handed back once enabled again).
+  const inputRef = useRef<HTMLInputElement>(null);
+  const refocusRef = useRef(false);
+  useEffect(() => {
+    if (!saving && refocusRef.current) {
+      refocusRef.current = false;
+      inputRef.current?.focus();
+    }
+  }, [saving]);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -238,6 +248,7 @@ function SpecPathRow({
       },
       () => {
         savingRef.current = false;
+        refocusRef.current = true;
         if (mounted.current) setSaving(false);
       },
     );
@@ -254,6 +265,7 @@ function SpecPathRow({
       <MutedCaption>Spec path</MutedCaption>
       {editing ? (
         <Input
+          ref={inputRef}
           size="sm"
           autoFocus
           className="font-mono"

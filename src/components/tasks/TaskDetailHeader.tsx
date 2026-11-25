@@ -46,6 +46,16 @@ export function TaskDetailHeader({
   // and newer typing cannot be discarded when the old save resolves (Greptile P2).
   const savingRef = useRef(false);
   const [saving, setSaving] = useState(false);
+  // The input, and a one-shot request to refocus it. A disabled input loses focus, so after
+  // a REJECTED save the focus has to be handed back explicitly once it is enabled again.
+  const inputRef = useRef<HTMLInputElement>(null);
+  const refocusRef = useRef(false);
+  useEffect(() => {
+    if (!saving && refocusRef.current) {
+      refocusRef.current = false;
+      inputRef.current?.focus();
+    }
+  }, [saving]);
   // Guards the post-await state updates: a successful save unmounts the editor.
   const mounted = useRef(true);
   useEffect(() => {
@@ -92,8 +102,10 @@ export function TaskDetailHeader({
         setEditingState(false);
       },
       () => {
-        // Rejected: stay open with the draft. The caller renders `error`.
+        // Rejected: stay open with the draft. The caller renders `error`. Disabling the input
+        // dropped its focus, so ask for it back once the re-render re-enables the input.
         savingRef.current = false;
+        refocusRef.current = true;
         if (mounted.current) setSaving(false);
       },
     );
@@ -113,6 +125,7 @@ export function TaskDetailHeader({
         </span>
         {editing ? (
           <Input
+            ref={inputRef}
             size="sm"
             autoFocus
             className="min-w-0 flex-1"
