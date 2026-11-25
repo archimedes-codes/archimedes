@@ -63,9 +63,11 @@ export function TaskColumn({
    *  A FACTORY taking the CARD, exactly as `sessionStatusFor` above does, for the
    *  same reason: the column renders N cards and each card's answer comes from ITS
    *  OWN linked Sessions. It is a SEPARATE prop and not a widening of
-   *  `sessionStatusFor`, because the two marks answer two different questions and a
-   *  card can wear both — `TaskCardProps.ready` carries the argument, and this column
-   *  only forwards. No store read and no derivation appears here, as with every other
+   *  `sessionStatusFor` because the two are different KINDS of fact — one derived
+   *  from live stores, one authored by the model — even though the card folds both
+   *  into ONE glyph via `cardMarkOf`. The column does not resolve that precedence
+   *  and could not: it holds neither store. It forwards both facts and the card
+   *  decides, so no store read and no derivation appears here, as with every other
    *  prop on this list. */
   readyFor: (card: TaskCardView) => boolean;
   /** Builds this card's primary-next-step pill (issue #179 §7.1), or `undefined` for

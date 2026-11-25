@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-11-25
-verified-by: read against this tree at `99aa04cc` + `feature/session-ready-mark` — `store/interactive.ts` (`READY_MARKER_TEXT`, `isReadyMarker`, `boardAssertsReady`, the `ready` slot), `store/sessions.ts` (`beginTurn`), `components/TaskCard.tsx` (the glyph), `hooks/useTaskBoardAutoRefresh.ts`
+verified-by: read against this tree at `main` after `fix/card-single-attention-mark` — `lib/readyMarker.ts` (the word + the sentence), `store/interactive.ts` (`isReadyMarker`, `boardAssertsReady`, the `ready` slot), `store/sessions.ts` (`beginTurn`), `lib/sessionStatusRollup.ts` (`cardMarkOf`), `components/TaskCard.tsx` (the one mark), `lib/taskPrompt.ts` (the trailer), `hooks/useTaskBoardAutoRefresh.ts`
 ---
 
 # The session `ready` marker
@@ -98,20 +98,37 @@ in `storage/db/tests/open.rs`) — deliberately not paid.
 
 ## The mark on the card
 
-`TaskCard` renders a `CircleCheckIcon` (`data-testid="task-card-ready"`) when the
-board tells it the card's linked Sessions include a ready one.
+`TaskCard` renders a `BellRingIcon` (`data-testid="task-card-ready"`) in
+`text-warning` when `cardMarkOf` resolves the card to `ready`.
 
-- **Separate prop, separate glyph.** It does **not** ride `sessionStatus`
-  (`"waiting" | "running" | "live" | "stored"`). Adding `"ready"` to that union
+- **ONE mark per card.** The card wears at most one glyph, chosen by
+  `cardMarkOf` (`src/lib/sessionStatusRollup.ts`): `waiting` > `ready` > `running`.
+  This **reversed** the first design, which painted a `ready` glyph *beside* the
+  session mark and argued the pair was "more actionable than either half". The pair
+  was built, and on a real board a green check next to an amber `?` read "finished,
+  but blocked" — two marks disagreeing about whether anyone was needed. The fact a
+  card reports is single, so the contradictory state is now **unrepresentable**
+  rather than discouraged. `sessionStatus` and `sessionStatusRollupOf` are still
+  untouched; the wider precedence lives beside them, not inside them.
+- **Amber, and NOT a check.** The first glyph was `CircleCheckIcon` in
+  `text-success`, which was a mistake the repo's own vocabulary should have
+  prevented: `SubagentStatusIcon`'s `completed` case draws `CheckCircle2` in
+  `text-success` and `ChecklistPanel`'s done indicator is a check circle in
+  `text-success` too. The app spends real ink teaching that **a green tick means
+  DONE** — and `ready` means the opposite, that a person is needed NOW to review. So
+  it wears the attention hue the `?` already uses, and the SHAPE carries the
+  difference: a bell for a hand-off, a question mark for a blockage, a spinner for
+  progress. Sharing one hue across the attention family is coherent precisely
+  because only one mark renders.
+- **A separate prop, not a fifth `SessionStatus`.** Adding `"ready"` to that union
   would drag in `sessionStatusOf`, `useSessionStatus`, `SpaceTabs`,
-  `TaskDetailDialog`, `sessionStatusRollup.test.ts`'s precedence, and
-  `TasksBoard.test.tsx`'s `toEqual(["waiting","spinner","none"])` census. A card can
-  be **ready AND have a Session waiting**; collapsing them loses information, so the
-  three-way `sessionStatusRollupOf` answer is untouched.
-- **Glyph, never a coloured word.** `text-success` as 12px *text* is a measured
-  worst resting reading (3.87 on the `#f0f0f0` band, `src/lib/palettes/default.ts`).
-  As a 14px **glyph** the applicable bar is 3:1 for non-text, which `text-success`
-  clears (3.53–4.41 across the measured readings).
+  `TaskDetailDialog`, and `TasksBoard.test.tsx`'s dot census. The two inputs are
+  also different KINDS of fact — one derived from live stores, one authored by the
+  model — so the card takes both and `cardMarkOf` decides.
+- **Glyph, never a coloured word.** `text-warning` as 12px *text* is a recorded
+  defect (2.12 Everforest light), and `text-foreground-subtlest` on `bg-card` is
+  2.36 / 2.18 with no palette gate able to see it. At 14px stroked the mark is WCAG
+  non-text UI (the 3:1 class), where `text-warning` measures 3.00 on a white card.
 - **Stroke compensated.** Lucide draws on a 24-unit viewBox at `stroke-width: 2`,
   so a 14px box renders ~1.17px — a hairline on the one mark with no text beside it.
   `READY_GLYPH_STROKE_WIDTH` matches `SessionStatusMark`'s own `?` compensation
@@ -140,21 +157,33 @@ call sites). Shipped with the mark, in the same branch:
   Space change and unmount. Mounted by **both** `TasksBoard` and `WorkflowsCanvas`.
 - No new Tauri event: the frontend already receives what a settle needs.
 
-## A convention nobody is told about is a convention nobody uses
+## How the model is told: the launch-message trailer
 
-**No in-app text currently tells a model this marker exists.** Nothing in the tool
-descriptions, the system prompt, or the board mentions it — and the tool descriptions
-are engine-owned, so they cannot be edited from here.
+**A convention nobody is told about is a convention nobody uses**, and nothing in the
+tool descriptions, the system prompt, or the board used to mention it. The tool
+descriptions are engine-owned, so they cannot say it from here, and
+`StartEnv.system_prompt` is not a way out either: the harness's `(Fresh, Some(seed))`
+arm calls `prepend_system` and **never** `build_main_prompt`, so "seeding" a Task
+Session would leave it blind to its own `<tools>` section, its discovered skills, its
+`cwd` and `AGENTS.md`.
 
-The channel that reaches a model **today** is desktop-owned and already exists:
+The channel that ships is the **launch message**. `lib/readyMarker.ts` owns the
+sentence, `buildLaunchMessage` appends it **after** the `<task>` block, and every
+card-launched Session gets it automatically — no per-column prose, no per-Space
+setup. It rides the block's side of the injection boundary, so it is never expanded
+(`readyMarker.test.ts` pins that it carries no `$`, and `taskPrompt.test.ts` pins the
+expander's argument).
 
-- a column's **prompt prefix** (`stages.prompt_prefix`), or
-- a column's **on-enter Skill** (`stages.on_enter_skill`).
+Both strings live in `lib/readyMarker.ts` on purpose: the detector
+(`store/interactive.ts`) and the instruction must agree on the exact word, and the
+`lib/` layer cannot runtime-import `store/`, so a literal in each layer would drift
+silently. `readyMarker.test.ts` pins the sentence against the constant.
 
-Either can say "when the work is done, write a todo item whose content is exactly
-`ready`". Until someone puts that text in a column, the mark will only appear for a
-model that happens to guess the convention — **which is the expected state, not a
-bug**, and it is the reason this file is written as a contract.
+Scope is **every card-launched Session**, including a column with no Skill. Sessions
+started from the sidebar or the workspace never call `buildLaunchMessage` and so are
+not told — correct, since `ready` is a claim about a Task. It is also inert in a
+Space that has `manage_todo_list` switched off in Settings.
 
-When #183 lands, the sentence moves out of the column prompt and into a real tool
-description, and the marker text retires.
+When #183 lands, this sentence moves out of the launch message and into a real tool
+description, the marker word retires, and **the read path does not move** — which is
+why the convention was built first.

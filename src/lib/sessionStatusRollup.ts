@@ -73,3 +73,66 @@ export function sessionStatusRollupOf(
   if (statuses.includes("running")) return "running";
   return null;
 }
+
+/** The ONE mark a **Task card** paints, across three states: `waiting` > `ready`
+ * > `running` > nothing.
+ *
+ * ## Why this is a separate answer from [`sessionStatusRollupOf`]
+ *
+ * That function answers "what are this group of Sessions doing" and is shared with
+ * the tab strip, which has no notion of `ready` and must not acquire one. This
+ * answers "what does this CARD need from the person looking at the board", which
+ * is a wider question with a wider input — the session rollup PLUS the card's own
+ * `ready` claim. Keeping them separate is what stops the tab strip inheriting a
+ * state it has no way to source.
+ *
+ * ## Why a card paints ONE mark and not two
+ *
+ * `ready` first shipped as a SECOND, additive glyph beside the session mark, and
+ * the pair was wrong in a way no test could see: a green check next to an amber
+ * `?` reads "finished, but blocked", and the two marks disagreed about whether
+ * anyone was needed. The underlying fact is single — "the model declared the work
+ * done, or it is stuck on you". Collapsing to one mark makes the contradictory
+ * state UNREPRESENTABLE instead of merely discouraged, which is the same reason
+ * [`sessionStatusRollupOf`] answers one glyph for a group of Sessions.
+ *
+ * ## The order
+ *
+ *  - `waiting` first: a Session parked on a HUMAN is the most time-critical thing
+ *    a card can be, and this is already the rule [`sessionStatusRollupOf`] gives a
+ *    group. A card cannot be more urgent than "answering you is blocked".
+ *  - `ready` second: also "a person is needed", to review rather than to unblock.
+ *    It outranks `running` because a finished card is IDLE work while a running one
+ *    is progress — and this is the case the two-mark design got visibly wrong: a
+ *    model that declares `ready` and then starts another turn was showing a
+ *    spinner over its own hand-off.
+ *  - `running` last: nothing is needed of anyone. It is the weakest claim, and it
+ *    is the one that would otherwise hide the two that matter.
+ *
+ * ## `ready` is a CLAIM and `sessionStatus` is a DERIVATION, and that is fine
+ *
+ * The two inputs have different epistemic status — `sessionStatus` is computed
+ * from live store state, `ready` is a word a model chose to write. The precedence
+ * does not need them to agree or to be the same kind of thing; it needs one glyph.
+ * A false `ready` is a model lying about being finished, which the mark surfaces
+ * rather than conceals — you see the claim and can click through.
+ */
+export function cardMarkOf({
+  sessionStatus,
+  ready,
+}: {
+  sessionStatus: SessionStatus | null;
+  ready: boolean;
+}): "waiting" | "ready" | "running" | null {
+  if (sessionStatus === "waiting") return "waiting";
+  if (ready) return "ready";
+  // `running` is the ONLY remaining state worth a mark. Named rather than
+  // `return sessionStatus`, which the first version did and which `tsc` caught:
+  // the parameter is the full `SessionStatus | null`, so returning it verbatim
+  // would hand a caller `live` or `stored` and paint a RING on a card — the glyph
+  // set that means "blocked on you" two states away. The board never produces
+  // those (`sessionStatusRollupOf` answers only `waiting` / `running` / `null`),
+  // but this function's contract is about the CARD, so it refuses them itself
+  // rather than relying on its caller. Pinned by a test, not by the build.
+  return sessionStatus === "running" ? "running" : null;
+}

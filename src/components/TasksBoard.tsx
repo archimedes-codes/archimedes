@@ -426,9 +426,13 @@ export default function TasksBoard({
    *  gives: the column renders N cards and each card's answer is its own. The card
    *  stays presentational and takes the value.
    *
-   *  `ready` is ADDITIVE and takes no precedence slot against `sessionStatus` — see
-   *  `TaskCardProps.ready` for the argument. Both marks render whenever both are
-   *  true, and `sessionStatusRollupOf`'s 3-way answer is untouched. */
+   *  The board hands over the FACT and does not resolve the mark. `ready` and
+   *  `sessionStatus` are two inputs to ONE glyph, folded by `cardMarkOf` at the
+   *  card; the board holds neither the precedence nor a reason to own it, and
+   *  `sessionStatusRollupOf`'s 3-way answer is untouched because `ready` never
+   *  entered it. (This comment used to claim the opposite — that both marks render
+   *  whenever both are true. That pairing is what the owner rejected on a real
+   *  board; see `TaskCardProps.ready`.) */
   const readyFor = (card: TaskCardView): boolean =>
     card.sessions.some((link) => readyBySession[link.sessionId] === true);
 

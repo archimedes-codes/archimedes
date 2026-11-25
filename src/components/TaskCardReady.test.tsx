@@ -5,51 +5,61 @@ import TaskCard, { type TaskCardProps } from "./TaskCard";
 import type { TaskRow, TaskSessionRow } from "../lib/tauri";
 
 /**
- * THE `ready` MARK ON THE CARD — the second mark a Task card can wear, and the
- * second one built under the rules the first one had to learn the hard way.
+ * THE MARK a Task card wears — ONE glyph, and the `ready` state's half of it.
  *
- * ## Why it is a SEPARATE prop and a SEPARATE glyph, not a fifth `SessionStatus`
+ * ## Why ONE mark and not two (this file used to argue the opposite)
  *
- * `SessionStatus` is `"waiting" | "running" | "live" | "stored"` and it answers a
- * question about what a Session is DOING RIGHT NOW, derived by one function from
- * four stores. `ready` answers a different question — "the model has finished and
- * wants a look" — and it is authored by the MODEL as a todo item, not derived.
- * Adding `"ready"` to `SessionStatus` would mean editing `sessionStatusOf`,
- * `useSessionStatus`, `SpaceTabs`, `TaskDetailDialog`, the rollup's precedence and
- * `TasksBoard.test.tsx`'s dot census, and it would force two different facts into
- * one slot on one glyph. They are separate because a card can be BOTH: a Session
- * that marked itself ready and then parked on a permission is blocked on you AND
- * finished, and collapsing that into one mark throws away the more actionable
- * half.
+ * `ready` first shipped as a SECOND, additive glyph beside the session mark, in
+ * green, and the owner caught what the pair paints: a green check next to an amber
+ * `?` reads "finished, but blocked", and the two marks disagreed about whether
+ * anyone was needed. Both were "true"; the card was saying two things at once.
  *
- * ## The rules it inherits from the session mark
+ * The underlying fact is single — what does this card need from the person looking
+ * at the board — so the card now paints ONE glyph chosen by `cardMarkOf`
+ * (`waiting` > `ready` > running). The contradictory pair is UNREPRESENTABLE rather
+ * than merely discouraged, which is the same reason `sessionStatusRollupOf` answers
+ * one glyph for a whole group of Sessions.
+ *
+ * ## Why `ready` is AMBER and not green
+ *
+ * It was `CheckCircleIcon` in `text-success`, and that was a mistake the repo's own
+ * vocabulary should have prevented: `SubagentStatusIcon`'s `completed` case draws
+ * `CheckCircle2` in `text-success`, and `ChecklistPanel`'s done indicator is a
+ * check circle in `text-success` too. The app spends real ink teaching that a green
+ * tick means DONE. `ready` means the opposite — a person is needed NOW to review.
+ *
+ * So it wears `text-warning`, the attention ink this row already uses for the `?`
+ * and `SubagentStatusIcon` already uses for running. Colour says "you are needed";
+ * SHAPE says why: a bell for a hand-off, a question mark for a blockage, a spinner
+ * for progress. Sharing the hue across the attention family is coherent precisely
+ * BECAUSE only one mark ever renders.
+ *
+ * ## The rules it keeps from the session mark
  *
  *  - **A glyph, never a coloured word.** `text-foreground-subtlest` on `bg-card`
  *    measures 2.36 default-light / 2.18 default-dark and no palette gate can see
- *    it (both Default readings declare that token `textUngradeable`); a faint word
- *    on the card is the explicitly-refused shape. And `text-success` as a 12px
- *    WORD is not a free pass either — `default.ts` records it as a worst resting
- *    reading at 3.87.
+ *    it; a faint word on the card is the explicitly-refused shape. `text-warning`
+ *    as 12px TEXT is also a recorded defect (2.12 Everforest light), which is why
+ *    the ink goes on a 14px outline — WCAG non-text UI, the 3:1 class, where
+ *    `text-warning` measures 3.00 on a white card.
  *  - **Its ink is its own.** `SessionStatusMark`'s `className` is GEOMETRY-only
  *    (`cn()` drops an ink utility a caller passes), so it cannot be re-inked from
- *    the card and it cannot be reused for a different meaning. This is a dedicated
- *    glyph.
+ *    the card and cannot be borrowed for a fifth meaning. This is a dedicated glyph.
  *  - **Decoration.** The card is a `RowButton`, and a `div[role="button"]`'s
- *    accessible name is computed RECURSIVELY from its subtree, so an announced
- *    mark renames the card under the user between two frames. Pinned below with
- *    the real accessible-name computation, not with `textContent`.
+ *    accessible name is computed RECURSIVELY from its subtree, so an announced mark
+ *    renames the card under the user between two frames. Pinned below with the real
+ *    accessible-name computation, not with `textContent`.
  *  - **Zero `[role="button"]` matches** — it is an icon, like the `spec` chip and
  *    the artifact key chips are spans, because `SpacesList.test.tsx` resolves rows
  *    through `.closest('[role="button"]')` at eight sites.
- *  - **No new pill, no new caption.** It adds no `rounded-full`, no
- *    `bg-background` and no `text-ui-xs text-foreground-subtlest` pair, so the
- *    `slabFloatSeparation.test.ts` and `mutedCaption.test.ts` censuses do not
- *    move. Pinned here as a rendered count.
+ *  - **No new pill, no new caption.** It adds no `rounded-full`, no `bg-background`
+ *    and no `text-ui-xs text-foreground-subtlest` pair, so the
+ *    `slabFloatSeparation.test.ts` and `mutedCaption.test.ts` censuses do not move.
  */
 
 /** The `sessionStatus` prop's own type, read off the component rather than
- *  re-spelled, so the table in the precedence case below compiles against the REAL
- *  union and cannot invent a fifth value the card would silently not render. */
+ *  re-spelled, so the precedence table below compiles against the REAL union and
+ *  cannot invent a value the card would silently not render. */
 type SessionStatusOfProp = TaskCardProps["sessionStatus"];
 
 const task = (over: Partial<TaskRow> = {}): TaskRow => ({
@@ -74,9 +84,9 @@ const link = (sessionId: string): TaskSessionRow => ({
 
 const noop = () => {};
 
-/** Every prop a card needs that is not this file's subject. `ready` is REQUIRED
- *  (see `TaskCardProps`), so it is deliberately NOT in here: every case below
- *  spells it, which is the point of a required prop. */
+/** Every prop a card needs that is not this file's subject. `sessionStatus` and
+ *  `ready` are REQUIRED (see `TaskCardProps`), so they are deliberately NOT in
+ *  here: every case spells them, which is the point of a required prop. */
 const BASE: Pick<
   TaskCardProps,
   "sessions" | "costUsd" | "artifactKeys" | "onOpenSession" | "onOpenTask"
@@ -88,61 +98,126 @@ const BASE: Pick<
   onOpenTask: noop,
 };
 
-/** The ready glyph, or `null` for "the card does not report readiness". Queried by
- *  `data-testid` and not by role: it is decoration, so a role query would read
- *  `null` for the CORRECT card and could not tell silent from absent. */
-const glyph = (): Element | null =>
-  screen
-    .getByTestId("task-card")
-    .querySelector('[data-testid="task-card-ready"]');
+const card = (): HTMLElement => screen.getByTestId("task-card");
+
+/** The `ready` glyph, or `null` for "this card is not reporting readiness".
+ *  Queried by `data-testid` and not by role: it is decoration, so a role query
+ *  would read `null` for the CORRECT card and could not tell silent from absent. */
+const readyGlyph = (): Element | null =>
+  card().querySelector('[data-testid="task-card-ready"]');
+
+/** The session glyph (`waiting` / `running`), which keeps its own test id so the
+ *  board's existing mark census keeps reading it. */
+const sessionGlyph = (): Element | null =>
+  card().querySelector('[data-testid="task-card-status"]');
 
 describe("TaskCard — the ready mark", () => {
   it("a ready card shows the glyph", () => {
     render(<TaskCard task={task()} {...BASE} sessionStatus={null} ready />);
-    const mark = glyph();
+    const mark = readyGlyph();
     expect(mark).not.toBeNull();
-    // The app's ONE "finished" shape: `SubagentStatusIcon`'s `completed` case and
-    // `ChecklistPanel`'s done indicator both draw a check in a circle, and a third
-    // spelling of "done" would be a third glyph for one fact.
     expect(mark!.tagName).toBe("svg");
-    // The success ink, on a GLYPH. Measured against `bg-card` in all 13 palette
-    // readings (see the case below that pins the numbers): worst 2.69
-    // (Everforest light), and every one of them clears that palette's OWN recorded
-    // raised-step floor for `color-success`. It is also the best-measuring of the
-    // three marks a card can wear — `text-warning`'s `?` is 2.12 Everforest light /
-    // 2.16 Rosé Pine light / 2.31 Catppuccin light, and the `running` spinner's
-    // `text-foreground-subtlest` is 2.36 default-light / 2.18 default-dark.
-    expect((mark!.getAttribute("class") ?? "").split(/\s+/)).toContain(
-      "text-success",
-    );
+    // AMBER, not green. The success ink is the app's DONE colour
+    // (`SubagentStatusIcon`'s `completed`, `ChecklistPanel`'s done indicator) and
+    // `ready` is the opposite claim — a person is needed now. Pinned as a token
+    // list rather than a computed style so a palette swap cannot quietly move it.
+    const tokens = (mark!.getAttribute("class") ?? "").split(/\s+/);
+    expect(tokens).toContain("text-warning");
+    expect(tokens).not.toContain("text-success");
   });
 
-  it("a card that is not ready shows no glyph", () => {
-    // `false` is the value the board produces for a card no Session has marked, and
-    // it renders NOTHING — no placeholder, no reserved slot, exactly like the spec
-    // chip, the artifact chips and the session mark for an absent fact.
+  it("the ready glyph is NOT a check, so it cannot read as done", () => {
+    // The shape carries the meaning here: the hue is shared with the `?`, so a
+    // tick would make a hand-off and a blockage the same glyph in the same colour.
+    // `BellRing` is asserted by its lucide class, which is the only stable shape
+    // signal available without rendering the path data.
+    render(<TaskCard task={task()} {...BASE} sessionStatus={null} ready />);
+    const tokens = (readyGlyph()!.getAttribute("class") ?? "").split(/\s+/);
+    expect(tokens).toContain("lucide-bell-ring");
+    expect(tokens.some((t) => t.includes("check"))).toBe(false);
+  });
+
+  it("a card that is not ready shows no ready glyph", () => {
     render(
       <TaskCard task={task()} {...BASE} sessionStatus={null} ready={false} />,
     );
-    expect(glyph()).toBeNull();
-    expect(screen.getByTestId("task-card").textContent).toContain("T3");
+    expect(readyGlyph()).toBeNull();
+    expect(card().textContent).toContain("T3");
+  });
+});
+
+describe("TaskCard — ONE mark per card (the precedence, as rendered)", () => {
+  // THE REVERSED DECISION, pinned as behaviour. The case that used to live here
+  // asserted the opposite — that both marks render together — and that is exactly
+  // the state the owner saw and rejected. `cardMarkOf` owns the ORDER and its own
+  // suite pins it exhaustively; what THIS file pins is that the card paints at most
+  // one glyph, which is the part only a render can see.
+  const cases: Array<[SessionStatusOfProp, boolean, string]> = [
+    ["waiting", true, "waiting"],
+    ["waiting", false, "waiting"],
+    ["running", true, "ready"],
+    ["running", false, "running"],
+    [null, true, "ready"],
+    [null, false, "none"],
+  ];
+
+  it.each(cases)(
+    "sessionStatus=%s + ready=%s paints exactly ONE mark: %s",
+    (status, ready, expected) => {
+      render(
+        <TaskCard task={task()} {...BASE} sessionStatus={status} ready={ready} />,
+      );
+      const marks = card().querySelectorAll(
+        '[data-testid="task-card-ready"], [data-testid="task-card-status"]',
+      );
+      // THE LOAD-BEARING ASSERTION: never two glyphs on one card.
+      expect(marks.length, `expected ${expected}, saw ${marks.length} marks`).toBe(
+        expected === "none" ? 0 : 1,
+      );
+      if (expected === "ready") expect(readyGlyph()).not.toBeNull();
+      if (expected === "waiting" || expected === "running") {
+        expect(sessionGlyph()).not.toBeNull();
+      }
+    },
+  );
+
+  it("a ready card whose Session is waiting shows the QUESTION, not the bell", () => {
+    // The single most important ordering: a card cannot be more urgent than
+    // "answering you is blocked", and a hand-off mark must never hide a prompt.
+    render(<TaskCard task={task()} {...BASE} sessionStatus="waiting" ready />);
+    expect(sessionGlyph()).not.toBeNull();
+    expect(readyGlyph()).toBeNull();
   });
 
-  it("the ready mark is DECORATION: it does not rename the card", () => {
-    // THE ACCESSIBLE-NAME PIN, and it is the one that matters. `TaskCard` is a
-    // `RowButton`; a `div[role="button"]`'s name is computed RECURSIVELY from its
-    // subtree, so a mark carrying `aria-label="Ready"` would turn the card's name
-    // into "Ship the board Ready" between two frames — the same mid-turn rename
-    // that made the tab strip pass `announce={false}`.
+  it("live and stored never paint a ring on a card", () => {
+    // The board cannot produce these, but the SURFACE owns the rule rather than
+    // trusting it — which is why the guard names them and why they are passed here
+    // deliberately. A narrower prop type would make this uncompilable and therefore
+    // untestable.
+    for (const status of ["live", "stored"] as SessionStatusOfProp[]) {
+      const { unmount } = render(
+        <TaskCard task={task()} {...BASE} sessionStatus={status} ready={false} />,
+      );
+      expect(card().querySelectorAll('[data-testid^="task-card-"]')).toHaveLength(
+        0,
+      );
+      unmount();
+    }
+  });
+});
+
+describe("TaskCard — the mark is decoration, not a control", () => {
+  it("the mark does not rename the card", () => {
+    // THE ACCESSIBLE-NAME PIN. `TaskCard` is a `RowButton`; a `div[role="button"]`'s
+    // name is computed RECURSIVELY from its subtree, so a mark carrying
+    // `aria-label="Ready"` would turn the card's name into "Ship the board Ready"
+    // between two frames — the same mid-turn rename that made the tab strip pass
+    // `announce={false}`.
     //
     // Asserted through `getByRole`'s own `{ name }` option, which runs testing-
     // library's accessible-name computation and therefore DOES see an `aria-label`.
     // `textContent` could not: the defect this pins is invisible to it, so a
     // `textContent` assertion here would be a vacuous green.
-    //
-    // `dom-accessibility-api` is the package underneath that computation but it is
-    // TRANSITIVE only (pnpm's strict layout will not resolve it from `src/`), and
-    // this adds no dependency — `getByRole` already reaches it.
     const { unmount } = render(
       <TaskCard task={task()} {...BASE} sessionStatus="waiting" ready />,
     );
@@ -151,34 +226,30 @@ describe("TaskCard — the ready mark", () => {
     expect(
       screen.getAllByRole("button", { name: /Ship the board/ }),
     ).toHaveLength(1);
-    // …and the mark is not in that name. A `ready` in the name means the glyph is
-    // announced, and the row is being renamed under the user.
     expect(screen.queryAllByRole("button", { name: /ready/i })).toHaveLength(0);
-    // The glyph is hidden from the accessibility tree outright, which is the
-    // mechanism (`aria-hidden`), not merely an absence the next frame undoes.
-    expect(glyph()!.getAttribute("aria-hidden")).toBe("true");
+    // The mechanism, on whichever glyph actually rendered — under this precedence
+    // that is the `?`, not the bell. Asserting on `readyGlyph()` here would read
+    // `null` for the CORRECT card, which is the vacuous-green shape.
+    const rendered = card().querySelector(
+      '[data-testid="task-card-ready"], [data-testid="task-card-status"]',
+    );
+    expect(rendered).not.toBeNull();
+    expect(rendered!.getAttribute("aria-hidden")).toBe("true");
     unmount();
 
-    // The SAME card with the mark removed resolves to the SAME one control: the
-    // glyph contributes nothing to the name in either direction.
+    // The SAME card with the mark removed resolves to the SAME one control.
     render(
-      <TaskCard
-        task={task()}
-        {...BASE}
-        sessionStatus="waiting"
-        ready={false}
-      />,
+      <TaskCard task={task()} {...BASE} sessionStatus="waiting" ready={false} />,
     );
     expect(
       screen.getAllByRole("button", { name: /Ship the board/ }),
     ).toHaveLength(1);
   });
 
-  it('the mark adds ZERO `[role="button"]` matches and zero `<button>`s', () => {
+  it('adds ZERO `[role="button"]` matches and zero extra `<button>`s', () => {
     // `SpacesList.test.tsx` resolves rows through `.closest('[role="button"]')` at
     // eight sites, and `RowButton`'s contract is ONE match per row. Counted with
-    // both nested controls present (the chip and the pill are real `<button>`s) so
-    // the numbers describe a fully-populated card, not an empty one.
+    // both nested controls present so the numbers describe a fully-populated card.
     render(
       <TaskCard
         task={task()}
@@ -199,91 +270,52 @@ describe("TaskCard — the ready mark", () => {
       />,
     );
     expect(document.querySelectorAll('[role="button"]')).toHaveLength(1);
-    expect(document.querySelectorAll('[role="button"]')[0]).toBe(
-      screen.getByTestId("task-card"),
-    );
-    expect(
-      screen.getByTestId("task-card").querySelectorAll("button"),
-    ).toHaveLength(2);
-    expect(glyph()!.tagName).not.toBe("BUTTON");
+    expect(document.querySelectorAll('[role="button"]')[0]).toBe(card());
+    expect(card().querySelectorAll("button")).toHaveLength(2);
+    // And the mark that DID render is not one of the buttons.
+    const rendered = card().querySelector(
+      '[data-testid="task-card-ready"], [data-testid="task-card-status"]',
+    )!;
+    expect(rendered.tagName).not.toBe("BUTTON");
   });
 
   it("the mark is not a pill: the card's pill census does not move", () => {
     // `slabFloatSeparation.test.ts` counts `bg-background`-filled `rounded-full`
-    // literals in `TaskCard.tsx` and pins the number at FIVE. A status glyph is not
-    // a pill — it wears no fill — so the count of RENDERED pills must stay what it
-    // was before this mark existed: `T{n}` + spec + one artifact key + the sessions
-    // chip = 4, and the mark is not a fifth.
+    // literals in `TaskCard.tsx` and pins the number at FIVE. A status glyph wears
+    // no fill, so the RENDERED count stays what it was before any mark existed:
+    // `T{n}` + spec + one artifact key + the sessions chip = 4.
     render(
       <TaskCard
         task={task({ specPath: "/tmp/spec.md" })}
         {...BASE}
         artifactKeys={["plan"]}
-        sessionStatus="waiting"
+        sessionStatus={null}
         ready
       />,
     );
     const pills = Array.from(
-      screen
-        .getByTestId("task-card")
-        .querySelectorAll('[class*="rounded-full"]'),
+      card().querySelectorAll('[class*="rounded-full"]'),
     );
     expect(pills).toHaveLength(4);
-    expect(pills.some((p) => p.contains(glyph()!))).toBe(false);
-  });
-
-  it("the mark sits beside the session mark, and one never suppresses the other", () => {
-    // THE PRECEDENCE DECISION, pinned as behaviour. `ready` is ADDITIVE, not a
-    // precedence slot: a card whose Session marked itself ready and then parked on
-    // a permission shows BOTH the check and the `?`, because both are true and the
-    // pair is more actionable than either half. Making `ready` outrank `waiting`
-    // would hide the prompt behind a "done" mark — the worst possible ordering of
-    // these two facts.
-    const cases: Array<[SessionStatusOfProp, boolean]> = [
-      ["waiting", true],
-      ["running", true],
-      ["waiting", false],
-      ["running", false],
-      [null, true],
-      [null, false],
-    ];
-    for (const [status, ready] of cases) {
-      const { unmount } = render(
-        <TaskCard
-          task={task()}
-          {...BASE}
-          sessionStatus={status}
-          ready={ready}
-        />,
-      );
-      const card = screen.getByTestId("task-card");
-      const hasSessionMark =
-        card.querySelector('[data-testid="task-card-status"]') !== null;
-      const hasReadyMark = glyph() !== null;
-      expect(hasSessionMark, `sessionStatus=${status}`).toBe(status !== null);
-      expect(hasReadyMark, `ready=${ready}`).toBe(ready);
-      unmount();
-    }
+    expect(pills.some((p) => p.contains(readyGlyph()!))).toBe(false);
   });
 
   it("the mark is a glyph with NO text beside it", () => {
     // The refused shape is a faint WORD. Asserted as the ABSENCE of the word from
     // the card's own text, so a future change that adds a `ready` caption next to
-    // the glyph (and inherits `text-foreground-subtlest`'s 2.36 / 2.18 on the card)
+    // the glyph (inheriting `text-foreground-subtlest`'s 2.36 / 2.18 on the card)
     // goes red here rather than shipping.
     render(<TaskCard task={task()} {...BASE} sessionStatus={null} ready />);
-    const text = screen.getByTestId("task-card").textContent ?? "";
+    const text = card().textContent ?? "";
     expect(text).toContain("Ship the board");
     expect(text).not.toMatch(/ready/i);
-    // And the glyph carries no text node of its own.
-    expect(glyph()!.textContent).toBe("");
+    expect(readyGlyph()!.textContent).toBe("");
   });
 
   it("a click on the mark is answered by the ROW, once", () => {
     // The mark is decoration, not a second way to open something: it has no handler
     // of its own, so a pointer on it activates the card, which is the row's one
-    // verb (open the detail modal). `userEvent` is not needed — `fireEvent` on the
-    // glyph bubbles to the row exactly as a real click does.
+    // verb (open the detail modal).
     const onOpenTask = vi.fn();
     const onOpenSession = vi.fn();
     render(
@@ -296,10 +328,7 @@ describe("TaskCard — the ready mark", () => {
         ready
       />,
     );
-    // The glyph sits INSIDE the row, so a click on it reaches the row's handler
-    // through the normal bubble — `fireEvent.click` dispatches a bubbling click,
-    // which is what a real pointer on the glyph does.
-    fireEvent.click(glyph()!);
+    fireEvent.click(readyGlyph()!);
     expect(onOpenTask).toHaveBeenCalledTimes(1);
     expect(onOpenTask).toHaveBeenCalledWith("tsk_1");
     expect(onOpenSession).not.toHaveBeenCalled();

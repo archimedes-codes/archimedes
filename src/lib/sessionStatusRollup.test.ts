@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sessionStatusRollupOf } from "./sessionStatusRollup";
+import { cardMarkOf, sessionStatusRollupOf } from "./sessionStatusRollup";
 import type { SessionStatus } from "../hooks/useSessionStatus";
 
 /**
@@ -81,5 +81,89 @@ describe("sessionStatusRollupOf — the precedence one rollup, two surfaces", ()
     ]);
     // And the whole union at once still answers with the loudest member.
     expect(sessionStatusRollupOf(all)).toBe("waiting");
+  });
+});
+
+describe("cardMarkOf — ONE mark per card, across three states", () => {
+  // WHY A CARD SHOWS ONE MARK AND NOT TWO. `ready` shipped as a SECOND, additive
+  // glyph beside the session mark, and the owner caught what that paints: a green
+  // tick next to an amber `?`, which reads "finished, but blocked". The real state
+  // is "the model said ready, then asked you something" — ONE fact about one card.
+  // Two marks also meant one mark could claim nothing was needed while the other
+  // said it was. Collapsing to a single mark makes the contradictory state
+  // unrepresentable rather than merely discouraged.
+  //
+  // THE PRECEDENCE, and why this order:
+  //  - `waiting` first — a Session parked on a HUMAN outranks everything, the same
+  //    rule `sessionStatusRollupOf` already gives a group. An unanswered question is
+  //    the most time-critical thing a card can be.
+  //  - `ready` second — also "a person is needed", but to review, not to unblock.
+  //    It outranks `running` because a finished card is idle work while a running
+  //    one is progress.
+  //  - `running` last — nothing is needed of anyone. It is the weakest claim and it
+  //    is the one that would otherwise hide the other two.
+
+  it("waiting beats ready (an unanswered question outranks a hand-off)", () => {
+    expect(cardMarkOf({ sessionStatus: "waiting", ready: true })).toBe("waiting");
+  });
+
+  it("waiting beats running (a Session parked on a human is not working)", () => {
+    expect(cardMarkOf({ sessionStatus: "running", ready: false })).toBe("running");
+    expect(cardMarkOf({ sessionStatus: "waiting", ready: false })).toBe("waiting");
+  });
+
+  it("ready beats running (idle work outranks progress)", () => {
+    // THE case the two-mark design got wrong: a card whose model declared itself
+    // ready and then started another turn. The hand-off is the actionable fact;
+    // the spinner is not.
+    expect(cardMarkOf({ sessionStatus: "running", ready: true })).toBe("ready");
+  });
+
+  it("ready is reported when nothing is waiting or running", () => {
+    expect(cardMarkOf({ sessionStatus: null, ready: true })).toBe("ready");
+  });
+
+  it("nothing is reported when nothing is needed and nothing finished", () => {
+    // `live` / `stored` already roll up to `null` upstream, so an idle card answers
+    // `null` here too — the card paints no ring, per `sessionStatusRollupOf`.
+    expect(cardMarkOf({ sessionStatus: null, ready: false })).toBeNull();
+  });
+
+  it("live and stored can NEVER become the card's mark (no ring on a card)", () => {
+    // The board cannot produce these — `sessionStatusRollupOf` answers only
+    // `waiting` / `running` / `null` — so this is a claim about the CARD, not about
+    // the pipeline, and the card has to refuse it itself rather than rely on its
+    // caller. A ring here would paint an idle Space with the glyph set that means
+    // "blocked on you" two states away, which is why `sessionStatusRollupOf`
+    // suppresses them and why this function must not re-admit them.
+    //
+    // This case exists because the first version of `cardMarkOf` returned
+    // `sessionStatus` verbatim, and `tsc` caught it while NO TEST did: the signature
+    // admitted `live` and returned it. Asserted here so a rewrite that widens the
+    // return type reddens a test and not just a build.
+    const wide = sessionStatusRollupOf(["live"]) ;
+    expect(wide).toBeNull();
+    // The inputs are typed `SessionStatus | null`, so the unsafe pair is reachable
+    // at the boundary even though the board never builds it.
+    expect(
+      cardMarkOf({ sessionStatus: "live" as SessionStatus | null, ready: false }),
+    ).toBeNull();
+    expect(
+      cardMarkOf({ sessionStatus: "stored" as SessionStatus | null, ready: false }),
+    ).toBeNull();
+    // And a `ready` claim still reports through them, so the suppression is not a
+    // general "return nothing".
+    expect(
+      cardMarkOf({ sessionStatus: "stored" as SessionStatus | null, ready: true }),
+    ).toBe("ready");
+  });
+
+  it("the mark is a function of the two inputs only (pure, no store read)", () => {
+    // The board computes it once per card, so a card stays presentational. Same
+    // argument `sessionStatusRollupOf` makes for the tab strip.
+    const a = cardMarkOf({ sessionStatus: "waiting", ready: true });
+    const b = cardMarkOf({ sessionStatus: "waiting", ready: true });
+    expect(a).toBe(b);
+    expect(a).toBe("waiting");
   });
 });

@@ -58,6 +58,7 @@
  * the user's own bubble. A model-visible Skill ships the bare token (spec §6.2), so
  * the live pin is about the token. Do not re-create the deleted assertion.
  */
+import { readyMarkerInstruction } from "./readyMarker";
 import type { TaskRow } from "./tauri";
 
 /**
@@ -288,6 +289,24 @@ export function headOfLaunch(destination: TaskLaunchDestination): string {
  * agent catalogs, and this module is pure (no store, no fetch — and
  * `layerBoundary.test.ts` keeps it that way). The caller supplies the catalogs it
  * already holds.
+ *
+ * ## The ready-marker instruction is the LAST thing, and it is NOT expanded
+ *
+ * A convention nobody is told about is a convention nobody uses: the session
+ * `ready` marker (`lib/readyMarker.ts`) is a word a model has to choose to write,
+ * and until this line nothing in the app told it the word existed. The launch
+ * message is the ONE desktop-owned channel that reaches every card-launched
+ * Session at once — a tool description is engine-owned, `StartEnv.system_prompt`
+ * would REPLACE the main prompt rather than extend it (see the header), and a
+ * per-column extra prompt has to be retyped into every Space. So the sentence
+ * rides here.
+ *
+ * It sits AFTER the block, on the block's side of the boundary, and that is the
+ * load-bearing detail. The property the block-last pins guard is that the block is
+ * appended AFTER expansion so a card titled `$deploy` cannot inject a skill — a
+ * claim about the EXPANDER's argument, not about who is last. Appending a static
+ * trailer after the block leaves that argument untouched, and the spy case in
+ * `taskPrompt.test.ts` re-pins it at the new shape.
  */
 export function buildLaunchMessage(
   task: TaskRow,
@@ -296,6 +315,6 @@ export function buildLaunchMessage(
   artifactKeys: readonly string[] = [],
 ): string {
   const head = expand(headOfLaunch(destination));
-  return `${head}\n\n${taskBlock(task, artifactKeys)}`;
+  return `${head}\n\n${taskBlock(task, artifactKeys)}\n\n${readyMarkerInstruction}`;
 }
 

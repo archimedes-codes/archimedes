@@ -1,4 +1,4 @@
-import { CircleCheckIcon } from "lucide-react";
+import { BellRingIcon } from "lucide-react";
 import { MutedCaption } from "./MutedCaption";
 import { RowButton } from "./RowButton";
 import { moneyOf } from "./SessionCostLine";
@@ -8,11 +8,13 @@ import type { SessionStatus } from "../hooks/useSessionStatus";
 import type { TaskLaunchDestination } from "../lib/taskPrompt";
 import type { TaskRow, TaskSessionRow } from "../lib/tauri";
 import { relativeTimeFromInstant } from "../lib/sessionTime";
+import { cardMarkOf } from "../lib/sessionStatusRollup";
 import { cn } from "./lib/utils";
 
-/** The `ready` glyph's box in px — the same box the session mark uses on this card
- *  (`size={14}`), so the two marks in this row are one size and a card that changed
- *  state as it gained a mark would read as jitter. */
+/** The mark's box in px — the same box `SessionStatusMark` is given on this card
+ *  (`size={14}`). A card wears ONE mark chosen by `cardMarkOf`, so the two glyphs it
+ *  can wear occupy ONE slot: if they differed in size, a card whose Session settled
+ *  mid-glance would visibly jitter in the spot the eye is already on. */
 const READY_GLYPH_SIZE_PX = 14;
 
 /** The `ready` glyph's `stroke-width` attribute for that box.
@@ -21,8 +23,8 @@ const READY_GLYPH_SIZE_PX = 14;
  *  width scales the stroke with it and a 14px box renders ~1.17px — a hairline, on
  *  the one mark that has no text beside it to fall back on. The compensation is the
  *  same arithmetic `SessionStatusMark`'s `questionStrokeWidth` applies to its `?`,
- *  with the same rendered weight (1.25 device px), so the two marks on this row
- *  carry the same stroke.
+ *  with the same rendered weight (1.25 device px), so whichever of the two marks is
+ *  painted carries one stroke weight — the same one-slot argument as the size.
  *
  *  It is spelled HERE rather than imported because `questionStrokeWidth` and its
  *  constant are module-PRIVATE to that component, and exporting them would widen a
@@ -183,18 +185,25 @@ export interface TaskCardProps {
    *  nobody has touched, and nothing would fail. `undefined` is not a state the
    *  board produces; it is only ever a caller that forgot.
    *
-   *  It is a SEPARATE prop from `sessionStatus` and it renders a SEPARATE glyph, and
-   *  that is a decision rather than laziness. `SessionStatus` answers what a Session
-   *  is DOING RIGHT NOW, derived by `sessionStatusOf` from four stores; `ready`
-   *  answers "the model says the work is finished", and it is AUTHORED by the model
-   *  as a todo item. Riding the existing prop would mean adding a fifth value to
-   *  `SessionStatus` — which drags in `sessionStatusOf`, `useSessionStatus`,
-   *  `SpaceTabs`, `TaskDetailDialog`, the rollup's 3-way precedence and
-   *  `TasksBoard.test.tsx`'s dot census — and it would force the two facts into one
-   *  slot, so a Session that marked itself ready and then parked on a permission
-   *  could only report one of them. Both are true and the pair is more actionable
-   *  than either half, so the mark is ADDITIVE and takes no precedence slot.
-   *  `sessionStatusRollupOf` is untouched.
+   *  It stays a SEPARATE prop from `sessionStatus`, and the two feed ONE glyph.
+   *  They are separate inputs because they are different KINDS of fact:
+   *  `SessionStatus` answers what a Session is DOING RIGHT NOW, derived by
+   *  `sessionStatusOf` from four stores, while `ready` answers "the model says the
+   *  work is finished" and is AUTHORED by the model as a todo item. Collapsing them
+   *  into one prop would mean adding a fifth value to `SessionStatus` — dragging in
+   *  `sessionStatusOf`, `useSessionStatus`, `SpaceTabs`, `TaskDetailDialog`, the
+   *  rollup's precedence and `TasksBoard.test.tsx`'s dot census — for no gain.
+   *
+   *  THIS PROP USED TO DOCUMENT THE OPPOSITE DESIGN, and that comment was wrong. It
+   *  argued the mark was "ADDITIVE and takes no precedence slot" because "both are
+   *  true and the pair is more actionable than either half". The pair was built, and
+   *  the owner looked at a real board: a green check beside an amber `?` reads
+   *  "finished, but blocked", and the two marks disagreed about whether anyone was
+   *  needed. The fact a card reports is single — what it needs from the person
+   *  looking — so `cardMarkOf` now resolves the two inputs to ONE mark and the
+   *  contradictory state is UNREPRESENTABLE rather than discouraged. `SessionStatus`
+   *  and `sessionStatusRollupOf` are still untouched; the wider precedence lives
+   *  beside them, not inside them.
    *
    *  The card does NOT derive it, does not read a store for it, and does not know
    *  what a todo item is. The marker convention lives in
@@ -258,6 +267,18 @@ export default function TaskCard({
   // nobody ever measured — which is why `moneyOf` is imported and the arithmetic
   // is never spelled at this site.
   const money = moneyOf(costUsd);
+  // THE MARK, resolved by the ONE precedence rather than spelled here. Imported
+  // for the identical reason `moneyOf` is: a card that re-derived the rule would be
+  // a second owner of "which of these three facts wins", and the board already
+  // folds the same inputs for the tab strip through `sessionStatusRollup`. The card
+  // stays presentational — it reads two props it was handed and calls a pure
+  // function; `TaskCard.test.tsx` pins the file against importing a store.
+  //
+  // Both props stay REQUIRED and separate (rather than one pre-resolved prop) so a
+  // caller cannot silently drop one half, and so the precedence lives in ONE
+  // pure place that its own suite pins. The card receives facts; `cardMarkOf`
+  // decides.
+  const mark = cardMarkOf({ sessionStatus, ready });
   // NEWEST is LAST, because the query is oldest-first. This is the same choice
   // `pick_compact_target` makes (`.last()`), so the card that opens a Session and
   // the board that compacts one never point at two different Sessions.
@@ -356,159 +377,91 @@ export default function TaskCard({
           <span className="shrink-0 rounded-full bg-background px-2 py-0.5 font-mono text-ui-xs text-foreground-subtle">
             T{task.number}
           </span>
-          {/* THE LIVE SESSION MARK — the card's one non-static fact, and a GLYPH.
+          {/* THE MARK — the card's one non-static fact, ONE glyph, and a GLYPH.
 
-              The guard names THREE values (`null`, `live`, `stored`) although the
-              rollup the board feeds this prop can only ever answer `waiting`,
-              `running` or `null`. That is not redundancy, it is the surface owning
-              its own rule: "a card never wears a ring" is a claim about THIS
-              component, and a card that painted one the moment a caller passed a
-              fourth value would be the defect — provable only if the card refuses it
-              itself. `TaskCard.test.tsx` passes `live` and `stored` on purpose, which
-              a narrower prop type would have made uncompilable and therefore
-              untestable.
+              WHY ONE MARK AND NOT TWO. This card used to wear a session mark AND a
+              `ready` mark at once, and the pair read wrong in a way no test could
+              see: a green check beside an amber `?` says "finished, but blocked",
+              and the two marks disagreed about whether anyone was needed. The
+              underlying fact is single — "the model declared the work done, or it is
+              stuck on you" — so the card now paints ONE glyph and the contradictory
+              state is UNREPRESENTABLE rather than merely discouraged. The precedence
+              is `cardMarkOf`'s (waiting > ready > running), imported rather than
+              spelled here exactly as `moneyOf` is: the card does not own the rule,
+              and one surface cannot drift from the other.
 
-              WHY A GLYPH AND NOT A WORD. `WorkflowNodes.tsx` records `text-warning` as
-              12px TEXT as a live defect — 2.12 Everforest light, 2.16 Rosé Pine light,
-              2.31 Catppuccin light, measured again against `bg-card` here — and a
-              faint WORD is worse still: `text-foreground-subtlest` on `bg-card`
-              measures 2.36 default-light / 2.18 default-dark and NO palette gate can
-              see it, because both Default readings declare that token
-              `textUngradeable` (a `color-mix` over an oklch Tailwind token, with no
-              hex reading in this repo to grade) and `--color-card` sits in the graded
-              `raised` text-surface set in only 8 of the 13 readings. The app's rule is
-              hue on border/fill and readable ink on WORDS, and this is neither: it is
-              a mark.
+              WHY `ready` IS AMBER AND NOT GREEN. It was a check inside a circle in
+              `text-success`, and that was a mistake this repo should have caught:
+              `SubagentStatusIcon`'s `completed` case draws `CheckCircle2` in
+              `text-success` and `ChecklistPanel`'s done indicator is a check circle
+              in `text-success` too, so the app spends real ink teaching that
+              green-tick means DONE. `ready` means the OPPOSITE — a person is needed
+              NOW, to review. It belongs to the attention family, which is
+              `text-warning`, the ink this very row already uses for the `?` and
+              `SubagentStatusIcon` already uses for running. So colour now says
+              "you are needed" and SHAPE says why: a bell for a hand-off, a question
+              mark for a blockage. Since only one mark ever renders, sharing the hue
+              across the family is coherent rather than ambiguous — and it is the
+              same argument `SessionStatusMark` makes for its own `?`, that amber on
+              an OUTLINE is the app's attention signal.
 
-              WHY NO `className` WITH INK IN IT. `SessionStatusMark` documents
-              `className` as GEOMETRY-only and says so because two same-group utilities
-              in one list resolve by CSS source order, which the caller cannot control —
-              `cn()` (tailwind-merge) now enforces it by DROPPING the mark's own. So the
-              `?` arrives wearing `text-warning` and the spinner
-              `text-foreground-subtlest`, the same two values the tab strip ships at the
-              same 14px, and this file restyles nothing. That is deliberate, not an
-              oversight: the alternative is a card whose `?` is a different orange from
-              the tab's.
+              WHY A BELL. It has to be unmistakably not a tick, and it has to read as
+              "this is waiting for you" rather than "this is running" (a spinner owns
+              that) or "this is blocked on a question" (the `?` owns that). `BellRing`
+              is the app's only unused attention glyph — `grep` finds no other
+              consumer — so it is not borrowing meaning from anywhere else.
 
-              ONE HONEST CAVEAT, recorded rather than fixed here. `waiting` is fine —
-              `text-warning` is graded per palette (Everforest light carries a 1.75
-              floor on it, so its 2.12 is a RECORDED value and not an accident). But the
-              `running` spinner's ink IS the faint token, and it measures 2.36 on
-              `bg-card` in default-light — the same family of number this file refuses
-              for a WORD. It is inherited, not chosen here: it is what the tab strip and
-              the detail modal's session rows already ship for a non-active mark, it
-              lands on a 14px animated OUTLINE rather than on text, and `className` is
-              geometry-only, so a card that wanted it bolder would have to break the
-              mark's contract and end up with a spinner that disagrees with the tab's.
-              The fix, if it is wanted, is in `SessionStatusMark`'s ink for ALL its
-              surfaces at once — which is exactly why it is not made in this file.
+              WHY A GLYPH AND NOT A WORD. `WorkflowNodes.tsx` records `text-warning`
+              as 12px TEXT as a live defect — 2.12 Everforest light, 2.16 Rosé Pine
+              light, 2.31 Catppuccin light — and a faint WORD is worse:
+              `text-foreground-subtlest` on `bg-card` is 2.36 default-light / 2.18
+              default-dark and NO palette gate can see it. The rule is hue on
+              border/fill and readable ink on WORDS; this is a mark, and at 14px
+              stroked it is WCAG non-text UI (the 3:1 class
+              `fileIconContrast.test.ts` grades), not 12px text (the 4.5 class).
+              `text-warning` measures 3.00 on a `bg-card` white card.
 
-              `announce={false}`, i.e. decoration, and the reason is the TAB's reason
-              rather than an invention: the card is a `RowButton` and a
-              `div[role="button"]`'s accessible name is computed RECURSIVELY from its
-              subtree (this file's own `controlsNamed` helper exists because of it), so
-              an announced mark would rename the card under the user mid-turn — "Ship
-              the board, Waiting for you" — exactly the way it would rename a tab. The
-              sidebar row keeps the announcement because its "Waiting" TEXT pill was
-              deleted and the glyph is the only statement left; a card is not that case,
-              the detail modal's session rows carry the SAME mark announced, and a board
-              can hold N marks at once, which is an argument for restraint.
+              WHY THE GUARD NAMES THREE VALUES (`null`, `live`, `stored`) when the
+              rollup can only answer `waiting` / `running` / `null`: the surface owns
+              its own rule. "A card never wears a ring" is a claim about THIS
+              component, and `TaskCard.test.tsx` passes `live` and `stored` on purpose
+              — a narrower prop type would make that uncompilable and therefore
+              untestable. `cardMarkOf` refuses them too and is pinned at its own home;
+              both guards are deliberate.
 
-              NOT a control, so zero `[role="button"]` matches — the rule the `spec` chip
-              and the artifact key chips follow and that `TaskCard.test.tsx` re-pins
-              (`SpacesList.test.tsx` resolves rows through `.closest('[role="button"]')`
-              at eight sites). Opening a Session already has its affordance: the chip. */}
-          {sessionStatus !== null &&
-            sessionStatus !== "live" &&
-            sessionStatus !== "stored" && (
-              <SessionStatusMark
-                status={sessionStatus}
-                size={14}
-                testId="task-card-status"
-                announce={false}
-                className="shrink-0"
-              />
-            )}
-          {/* THE `ready` MARK — the card's second mark, and a GLYPH for every one
-              of the reasons the first one is.
-
-              WHY A GLYPH AND NOT A WORD. `text-foreground-subtlest` on `bg-card`
-              measures 2.36 default-light / 2.18 default-dark and NO palette gate can
-              see it (both Default readings declare that token `textUngradeable`, and
-              `--color-card` is in the graded `raised` text-surface set in only 8 of
-              the 13 readings, so anything placed on the card is graded). A faint word
-              on the card is the explicitly-refused shape. And `text-success` is NOT a
-              free pass for a WORD either — `palettes/default.ts` records it as a worst
-              resting reading at 3.87 on the `#f0f0f0` band — so the ink goes on an
-              OUTLINE and never on a caption.
-
-              WHY `text-success` FOR THE OUTLINE, measured against `--color-card` in
-              all 13 palette readings: 4.41 default-light, 6.04 default-dark, 8.59
-              Dracula, 2.69 Everforest-light, 6.01 Everforest-dark, 2.96
-              Catppuccin-light, 8.46 Catppuccin-dark, 3.43 Ayu-light, 10.77 Ayu-dark,
-              5.88 Rosé Pine-light, 8.91 Rosé Pine-dark, 3.26 Kanagawa-light, 5.45
-              Kanagawa-dark. The worst is 2.69 (Everforest light), and every reading
-              clears that palette's OWN recorded raised-step floor for `color-success`
-              (Everforest light records 2.1 on its chip step, Catppuccin light 1.8,
-              Kanagawa light 2.45, Ayu light 3.4, Default light 3.5, Rosé Pine light
-              4.4, Everforest dark 4.47) — i.e. the mark is graded by the same numbers
-              the palette already publishes for itself, and it is BETTER than the two
-              marks already on this card: `text-warning`'s `?` is 2.12 Everforest
-              light / 2.16 Rosé Pine light / 2.31 Catppuccin light, and the `running`
-              spinner's inherited `text-foreground-subtlest` is 2.36 default-light /
-              2.18 default-dark. A 14px stroked OUTLINE is also WCAG non-text UI (the
-              3:1 class `fileIconContrast.test.ts` grades), not 12px text (the 4.5
-              class), which is the distinction `WorkflowNodes.tsx` records.
-
-              WHY A NEW GLYPH AND NOT `SessionStatusMark` WITH A DIFFERENT INK. That
-              component's `className` is GEOMETRY-ONLY — `cn()` DROPS an ink utility a
-              caller passes, on purpose, so its four states cannot disagree between the
-              tab, the sidebar row and this card. So it cannot be re-inked from here,
-              and borrowing it for a fifth meaning would put a model-authored claim
-              into the derived-state glyph set. This is its own `<span>`-free `<svg>`,
-              and its ink is its own for every surface.
-
-              THE SHAPE: a check in a circle, because that is the app's ONE "finished"
-              shape — `SubagentStatusIcon`'s `completed` case draws `CheckCircle2` in
-              `text-success` and `ChecklistPanel`'s done indicator is a check circle in
-              `text-success` too. A third spelling of "done" would be a third glyph for
-              one fact; a third COLOUR would be worse.
-
-              `aria-hidden` + `role="presentation"`, i.e. DECORATION, and the reason is
-              the tab's reason rather than an invention: the card is a `RowButton` and a
-              `div[role="button"]`'s accessible name is computed RECURSIVELY from its
-              subtree, so an announced mark would rename the card under the user between
-              two frames ("Ship the board" → "Ship the board Ready"). A board can hold N
-              marks at once, which is a further argument for restraint. The detail
-              dialog and the checklist are where the state is READ; the card is where it
-              is glanced at.
-
-              NO FILL, so the pill census does not move: no `rounded-full`, no
-              `bg-background` (both counted by `slabFloatSeparation.test.ts`), and no
-              `text-ui-xs text-foreground-subtlest` pair (censused to one file by
-              `mutedCaption.test.ts`). Zero new literals of any of the three.
-
-              ORDER, beside the session mark: the session mark goes FIRST because it is
-              the time-critical half — a `?` is "blocked on you NOW", the check is
-              "finished at some point and nobody has looked". That is a READING ORDER,
-              not a precedence rule: neither mark suppresses the other, both render
-              whenever they are true, and `sessionStatusRollupOf`'s 3-way answer is
-              untouched by this mark. */}
-          {ready && (
-            <CircleCheckIcon
+              DECORATION, not a name: `aria-hidden` + `role="presentation"`. The card
+              is a `RowButton` and a `div[role="button"]`'s accessible name is
+              computed RECURSIVELY from its subtree, so an announced mark would rename
+              the card between two frames ("Ship the board" -> "Ship the board Ready").
+              A board holds N marks at once, which is a further argument for restraint.
+              The detail dialog is where a state is READ; the card is where it is
+              glanced at. And it is NOT a control, so zero `[role="button"]` matches —
+              the rule the `spec` and artifact chips follow, and the reason
+              `SpacesList.test.tsx` can resolve rows through `.closest('[role="button"]')`
+              at eight sites. Opening a Session already has its affordance: the chip. */}
+          {mark === "ready" ? (
+            <BellRingIcon
               data-testid="task-card-ready"
               aria-hidden
               role="presentation"
-              // The stroke compensation `SessionStatusMark` documents for its own `?`:
-              // lucide draws on a 24-unit viewBox at `stroke-width: 2`, so a 14px box
-              // renders ~1.17px and the mark goes hairline exactly where there is no
-              // text beside it to fall back on. Same arithmetic, same constant, so the
-              // two marks on this row carry the same weight.
+              // The stroke compensation `SessionStatusMark` documents for its own
+              // `?`: lucide draws on a 24-unit viewBox at `stroke-width: 2`, so a
+              // 14px box renders ~1.17px and the mark goes hairline exactly where
+              // there is no text beside it to fall back on. Same arithmetic, same
+              // constant, so both marks this row can wear carry one weight.
               strokeWidth={READY_GLYPH_STROKE_WIDTH}
-              style={{ width: 14, height: 14 }}
-              className="shrink-0 text-success"
+              style={{ width: READY_GLYPH_SIZE_PX, height: READY_GLYPH_SIZE_PX }}
+              className="shrink-0 text-warning"
             />
-          )}
+          ) : mark !== null ? (
+            <SessionStatusMark
+              status={mark}
+              size={READY_GLYPH_SIZE_PX}
+              testId="task-card-status"
+              announce={false}
+              className="shrink-0"
+            />
+          ) : null}
         </div>
         {/* The same buckets the Session list prints, from a different instant —
             `task.updatedAt` is Unix ms (`now_ms()` in `db.rs`), so it goes through

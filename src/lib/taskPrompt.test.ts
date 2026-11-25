@@ -6,6 +6,7 @@ import {
   taskBlock,
   type TaskLaunchDestination,
 } from "./taskPrompt";
+import { READY_MARKER_TEXT, readyMarkerInstruction } from "./readyMarker";
 import type { TaskRow } from "./tauri";
 
 /**
@@ -38,6 +39,27 @@ import type { TaskRow } from "./tauri";
 
 /** An expander that changes nothing — for the cases that only care about ORDER. */
 const identity = (t: string): string => t;
+
+/** True when `</task>` is the last thing in the message EXCEPT the ready trailer.
+ *
+ *  FOUR assertions the trailer displaced said this (two here, one in
+ *  `taskLaunch.test.ts`, one in `NewTaskDialog.test.tsx`). Two others in this file
+ *  also read `endsWith("</task>")` and were CORRECTLY LEFT ALONE: they assert on
+ *  `taskBlock()`'s own output, not on a whole message, and the block still ends
+ *  with its closer — only the message gained a trailer. Counting all six as
+ *  "displaced" would have implied two valid pins were weakened.
+ *
+ *  The four were never really about nothing-following-the-block: the property they
+ *  stood in for is that the `<task>` block is appended AFTER expansion, so a card
+ *  titled `$deploy` cannot inject a skill. That property is about the EXPANDER'S
+ *  ARGUMENT and is pinned directly by the spy cases. What these four DO still carry
+ *  is the ORDER — the card's own context closes before anything advisory — and this
+ *  is the honest spelling of that now the trailer exists. */
+const afterTaskBlockIsOnlyTheTrailer = (message: string): boolean => {
+  const close = message.lastIndexOf("</task>");
+  if (close < 0) return false;
+  return message.slice(close) === `</task>\n\n${readyMarkerInstruction}`;
+};
 
 /** One destination Stage (issue #179: the Stage row owns the launch).
  *
@@ -233,7 +255,13 @@ describe("taskPrompt — the launch draft", () => {
     );
     expect(message).toContain("$research");
     expect(message.indexOf("$research")).toBeLessThan(message.indexOf("<task "));
-    expect(message.trimEnd().endsWith("</task>")).toBe(true);
+    // The block CLOSES the card's context; only the ready trailer follows it. The
+    // old assertion here was `endsWith("</task>")`, and the property it was standing
+    // in for is that the block is appended AFTER expansion — a claim about the
+    // expander's ARGUMENT, which the spy case below pins directly. Asserting the
+    // closer is last-but-one keeps the ordering honest without claiming nothing can
+    // follow it, which the trailer now does deliberately.
+    expect(afterTaskBlockIsOnlyTheTrailer(message)).toBe(true);
   });
 
   it("runs the expander over the HEAD ONLY, never over the task block", () => {
@@ -338,7 +366,16 @@ describe("taskPrompt — the column's extra prompt (`stages.prompt_prefix`)", ()
   const PREFIXLESS_RESEARCH =
     "Let's work on Research.\n\n$research\n\n" +
     '<task id="tsk_1a2b" stage="backlog" title="Wire up the board">\n' +
-    "Cards need a detail modal.\n</task>";
+    "Cards need a detail modal.\n</task>" +
+    // The ready trailer, appended here rather than at each case because EVERY case
+    // in this describe is about the PREFIX and none of them is about the trailer.
+    // Spelled as a suffix on the literal (and not derived from the builder) keeps
+    // the property this constant exists for: it is written out, not computed from
+    // the thing under test. It also keeps these pins from reddening when the
+    // trailer's WORDING changes — the trailer has its own describe for that, and a
+    // prefix-compatibility pin that breaks on trailer copy is a pin about the wrong
+    // subject.
+    `\n\n${readyMarkerInstruction}`;
 
   it("sends the prefix FIRST, ahead of the instruction and the skill token", () => {
     // The settled design is "1 Skill per column, PLUS a per-column extra-prompt field
@@ -360,7 +397,7 @@ describe("taskPrompt — the column's extra prompt (`stages.prompt_prefix`)", ()
       message.indexOf("$research"),
     );
     expect(message.indexOf("$research")).toBeLessThan(message.indexOf("<task "));
-    expect(message.trimEnd().endsWith("</task>")).toBe(true);
+    expect(afterTaskBlockIsOnlyTheTrailer(message)).toBe(true);
   });
 
   it("separates the prefix from the head with one blank line (the house `\\n\\n`)", () => {
@@ -425,7 +462,8 @@ describe("taskPrompt — the column's extra prompt (`stages.prompt_prefix`)", ()
     expect(buildLaunchMessage(task(), skillless, identity)).toBe(
       "Let's work on Review.\n\n" +
         '<task id="tsk_1a2b" stage="backlog" title="Wire up the board">\n' +
-        "Cards need a detail modal.\n</task>",
+        "Cards need a detail modal.\n</task>" +
+        `\n\n${readyMarkerInstruction}`,
     );
   });
 
@@ -518,5 +556,79 @@ describe("taskPrompt — the column's extra prompt (`stages.prompt_prefix`)", ()
     expect(headOfLaunch(destination())).toBe(
       "Let's work on Research.\n\n$research",
     );
+  });
+});
+
+describe("taskPrompt — the ready-marker instruction is appended LAST", () => {
+  // WHY A TRAILER AND NOT THE HEAD. The launch message is the ONE desktop-owned
+  // channel that reaches every card-launched Session at once, and the session
+  // `ready` convention is useless until a model is told it exists (a convention
+  // nobody announces is a convention nobody uses). It goes after the `<task>`
+  // block for two reasons: recency, and the block is the last thing the model has
+  // to read before deciding what the task actually is.
+  //
+  // THIS DOES NOT WEAKEN THE INJECTION BOUNDARY. The property the block-last pins
+  // were always guarding is that the block is appended AFTER expansion — never
+  // expanded over — so a card titled `$deploy` can never inject a skill. That is a
+  // claim about the EXPANDER's argument, not about who is last, and the spy pin in
+  // "runs the expander over the HEAD ONLY" still asserts it verbatim. The trailer
+  // rides the same NON-expanding side as the block, which the spy case below pins.
+
+  it("tells the model the ready convention, so it can actually mark itself ready", () => {
+    const message = buildLaunchMessage(task(), destination(), identity);
+    // The word itself, not a paraphrase — the detector matches the word exactly.
+    expect(message).toContain(READY_MARKER_TEXT);
+    expect(message).toContain(readyMarkerInstruction);
+  });
+
+  it("appends the instruction AFTER the closing task tag", () => {
+    const message = buildLaunchMessage(task(), destination(), identity);
+    const close = message.indexOf("</task>");
+    const instruction = message.indexOf(readyMarkerInstruction);
+    expect(close).toBeGreaterThanOrEqual(0);
+    expect(instruction).toBeGreaterThan(close);
+    // And it is the LAST thing in the message — the shape the owner asked for.
+    expect(message.trimEnd().endsWith(readyMarkerInstruction)).toBe(true);
+  });
+
+  it("does NOT pass the instruction to the expander (it rides the safe side)", () => {
+    // The trailer is static text, so expanding it is pointless; and if it ever
+    // gained a `$` it must not become a Mention behind the author's back. This is
+    // the same spy instrument the injection pin uses, aimed at the new part.
+    const seen: string[] = [];
+    buildLaunchMessage(task(), destination(), (t) => {
+      seen.push(t);
+      return t;
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toContain(readyMarkerInstruction);
+    expect(seen[0]).not.toContain("<task");
+  });
+
+  it("still cannot be injected through, with the trailer present", () => {
+    // The original threat, re-pinned at the NEW message shape: a harness tool
+    // titles a card `$deploy` and the body carries another token.
+    const message = buildLaunchMessage(
+      task({ title: "$deploy", body: "$other-skill" }),
+      destination(),
+      (t) => t.toUpperCase(),
+    );
+    expect(message).toContain('title="$deploy"');
+    expect(message).toContain("$other-skill");
+    // The upper-cased head proves the expander ran on the head ONLY; the block and
+    // the trailer below it are byte-identical to what the builder emitted.
+    expect(message).toContain(readyMarkerInstruction);
+  });
+
+  it("carries the instruction on a Skill-less destination too (every card launch)", () => {
+    // The owner chose ALL card launches, including a column with no Skill and no
+    // extra prompt — the shortest message the builder can produce still tells the
+    // model the convention.
+    const message = buildLaunchMessage(
+      task(),
+      destination({ onEnterSkill: null, promptPrefix: null }),
+      identity,
+    );
+    expect(message).toContain(readyMarkerInstruction);
   });
 });

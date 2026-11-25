@@ -8,6 +8,7 @@ import {
   type TaskLaunchCatalogs,
 } from "./taskLaunch";
 import type { TaskLaunchDestination } from "../lib/taskPrompt";
+import { readyMarkerInstruction } from "../lib/readyMarker";
 import { useSessions } from "./sessions";
 import { useTasks } from "./tasks";
 import { resetStores } from "../test/resetStores";
@@ -435,7 +436,14 @@ describe("taskLaunch — the discuss launch", () => {
     expect(sent).toContain("$discuss");
     expect(sent).not.toContain("<skill");
     expect(sent).not.toContain("DISCUSS BODY");
-    expect(sent.trimEnd().endsWith("</task>")).toBe(true);
+    // The card's context closes, then the ready trailer, then nothing. The old
+    // `endsWith("</task>")` here was standing in for "the block is appended AFTER
+    // expansion", which is a claim about the expander's argument and is pinned at
+    // `lib/taskPrompt.test.ts`; what this asserts now is the ORDER, which is what a
+    // launch-path test can actually see.
+    expect(sent.trimEnd().endsWith(`</task>\n\n${readyMarkerInstruction}`)).toBe(
+      true,
+    );
     expect(sent).toContain('id="tsk_1"');
     // The instruction line survives, and it names the DESTINATION Stage rather than
     // a per-mode constant: the sentence is `Let's work on <label>.`.

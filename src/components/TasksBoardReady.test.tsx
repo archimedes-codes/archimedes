@@ -236,12 +236,12 @@ describe("the board wires the ready mark to its cards", () => {
     for (const card of cards()) expect(readyGlyphOf(card)).toBeNull();
   });
 
-  it("the mark and the session mark both appear on one card", async () => {
-    // THE PRECEDENCE DECISION, asserted where both inputs are real. A Session that
-    // marked itself ready and then parked on a permission is BOTH finished AND blocked
-    // on you, and the card says both — because the actionable half ("come and answer
-    // me") must not be hidden behind the informational one. `sessionStatusRollupOf`'s
-    // 3-way answer is untouched by this: `ready` never entered it.
+  it("ONE mark per card: a running Session that marked itself ready shows the bell", async () => {
+    // THE PRECEDENCE, asserted where both inputs are real. This case used to assert
+    // the OPPOSITE — spinner and bell together — and that pairing is what the owner
+    // saw and rejected: two marks on one card, disagreeing about whether anyone was
+    // needed. `cardMarkOf` now answers one glyph, and `ready` outranks `running`
+    // because a finished card is IDLE work while a running one is progress.
     seedBoard(cardWith("t1", 1, "doing", ["sess_1"]));
     useSessions.setState({
       sessions: [
@@ -253,11 +253,17 @@ describe("the board wires the ready mark to its cards", () => {
 
     render(<TasksBoard />);
     await waitFor(() => expect(cards()).toHaveLength(1));
-    // Turn running: the spinner, and the ready glyph, together.
+    const card = cards()[0]!;
+    const marks = card.querySelectorAll(
+      '[data-testid="task-card-ready"], [data-testid="task-card-status"]',
+    );
+    // THE LOAD-BEARING ASSERTION: at most one glyph, and the two-mark state is
+    // unreachable from the board, not merely discouraged by a comment.
+    expect(marks).toHaveLength(1);
+    expect(readyGlyphOf(card)).not.toBeNull();
     expect(
-      cards()[0]!.querySelector('[data-testid="task-card-status"]'),
-    ).not.toBeNull();
-    expect(readyGlyphOf(cards()[0]!)).not.toBeNull();
+      card.querySelector('[data-testid="task-card-status"]'),
+    ).toBeNull();
   });
 
   it("the mark disappears when a later frame withdraws the marker", async () => {
