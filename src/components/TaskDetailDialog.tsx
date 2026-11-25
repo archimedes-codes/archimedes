@@ -1,17 +1,17 @@
 import { useMemo, useState } from "react";
 import { Button } from "./ui/button";
-import { AgentMarkdown } from "./AgentMarkdown";
-import { EmptyListLine } from "./EmptyListLine";
 import { IpcErrorLine } from "./IpcErrorLine";
 import { MutedCaption } from "./MutedCaption";
 import { SessionStatusMark } from "./SessionStatusMark";
-import { moneyOf } from "./SessionCostLine";
-import { TaskArtifactSection } from "./tasks/TaskArtifactSection";
+import { TaskArtifactTabPane } from "./tasks/TaskArtifactTabPane";
+import { TaskDescription } from "./tasks/TaskDescription";
+import { TaskDetailHeader } from "./tasks/TaskDetailHeader";
+import { TaskDetailProperties } from "./tasks/TaskDetailProperties";
 import { cn } from "./lib/utils";
-import { relativeTimeFromInstant } from "../lib/sessionTime";
 import { sessionFieldOf } from "../lib/sessionLookup";
 import { titleFor } from "../lib/sessionTitle";
 import { basenameOfPath } from "../lib/paths";
+import { sessionStatusRollupOf } from "../lib/sessionStatusRollup";
 import { useMentionCatalogs } from "../hooks/useMentionCatalogs";
 import { useSessionStatuses } from "../hooks/useSessionStatus";
 import { useArtifactReader } from "../hooks/useArtifactReader";
@@ -23,96 +23,62 @@ import { nextStepSlugs } from "../lib/workflowGraph";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
-  DialogHeader,
-  DialogTitle,
 } from "./ui/dialog";
 import type { TaskRow, TaskSessionRow } from "../lib/tauri";
 
 /**
- * The **Task detail** modal — what a card opens when it is clicked.
+ * The **Task detail** modal: what a card opens when it is clicked.
  *
  * ## Why this surface exists
  *
- * The card is a two-line summary by construction: `line-clamp-2` on the title and
- * two more on the body, a chip that says "2 sessions" instead of listing them, and a
- * spec path deliberately hidden because an absolute path on every card is noise. All
- * of those are correct ON a card and all of them hide information. This modal is
- * where that information goes, and the two buttons that the card has no room for.
+ * The card is a two-line summary by construction, and that is correct on a card. This
+ * modal is where the clipped information goes, and where the launch buttons live. It is
+ * wide (`sm:max-w-4xl`) and two-column: a Document-First tab strip (Overview plus one tab
+ * per artifact) over ONE scroller on the left, and a Properties column on the right. The
+ * header and the launch footer stay pinned.
  *
- * ## Two buttons, and the one thing that differs between them
+ * ## It is the only file that reads stores or IPC
  *
- * **Discuss** loads the `discuss` skill; **Research** loads `research` AND moves the
- * card to the Research column. Everything else — start a Session linked to the card,
- * select it, send one first message with the `<task>` block last — is identical and
- * lives in `store/taskLaunch`, which owns the ORDERING rules (move before start, for
- * the reason its header gives). This component decides which MODE a click means and
- * what to paint; it does not implement launching.
+ * ADR 0074: the four children under `components/tasks/` are props-only. This file owns
+ * `useArtifactReader`, the `useTasks` actions, `launchTaskSession`, the session-row label
+ * chain, and the lifted editing state that decides whether Escape closes the modal.
  *
- * There is NO third button. Backlog belongs to the create modal: this card already
- * exists and already lives in a column, so a "Backlog" button here would be a move
- * wearing a create's clothes.
+ * ## Two buttons and the edges they come from
+ *
+ * The launch footer is one button per outgoing workflow edge. The first is the Primary
+ * next step (`variant="default"`); the rest are `outline`. Each is gated on the skill its
+ * own destination needs, and the modal closes after a successful launch.
  *
  * ## `onLaunched` is what makes the feature visible
  *
- * The launch selects the new Session in the store, but the board VIEW covers the
- * chat column — `App`'s `"board"` arm renders this board in place of `ChatStream`.
- * Without this callback the click starts a real Session and the user sees nothing at
- * all. That is the same defect the card's sessions chip had (PR #178 found it),
- * and it is why the prop is REQUIRED rather than optional: an optional "leave the
- * board" is a launch that silently does nothing visible, which is this repo's
- * documented silent-green shape.
- *
- * ## It closes on success and stays on failure
- *
- * A launched Session is the surface the user wanted, so the modal gets out of the
- * way. A failed launch keeps the modal up with its error line — closing would discard
- * both the card being read and the reason the click failed.
- *
- * ## The catalogs come from the existing hook, not a new fetch
- *
- * `useMentionCatalogs` is module-cached per Space and is already mounted by the board
- * surface, so this read shares that fetch rather than issuing a second one. The
- * catalog is not decoration: `store/taskLaunch` REFUSES a launch whose skill the
- * Space does not have, because `expandMentions` leaves an unmatched token verbatim
- * and the model would read a literal `$discuss` as a skill call.
+ * The launch selects the new Session in the store, but the board view covers the chat
+ * column. Without `onLaunched` the click starts a real Session and the user sees nothing.
+ * It is REQUIRED for that reason.
  */
 export interface TaskDetailDialogProps {
-  /** The card, whole. The modal reads every field — the board's slice already
-   *  carries them, so no `getTask` fetch is issued for a card that is on screen. */
+  /** The card, whole. The board's slice already carries every field, so no `getTask`
+   *  fetch is issued for a card that is on screen. */
   task: TaskRow;
-  /** The card's linked Sessions, OLDEST FIRST (what `get_board` publishes). The
-   *  order is rendered as given: the card's chip opens the LAST entry, and if this
-   *  list were re-sorted here the two surfaces would disagree about "this card's
-   *  Session". */
+  /** The card's linked Sessions, OLDEST FIRST. Rendered as given, so this list and the
+   *  card's chip agree about which Session "this card's" is. */
   sessions: TaskSessionRow[];
-  /** Summed cost of those Sessions, computed in Rust. `null` is "never reported" and
-   *  renders NOTHING, `0` is "a real zero" and renders `$0.00` — ADR 0082, owned by
-   *  `moneyOf` and imported rather than re-spelled. */
+  /** Summed cost of those Sessions. `null` renders nothing; `0` renders `$0.00` (ADR 0082). */
   costUsd: number | null;
-  /** The artifact KEYS on the card being read (issue #180, spec §3) — T4's
-   *  `TaskCardView.artifactKeys`, threaded by the board.
-   *
-   *  REQUIRED, on the same argument that made `sessions` and `costUsd` required: an
-   *  optional prop compiles against every fixture and then renders NO artifact
-   *  section when real data arrives — this repo's silent-green shape. The board
-   *  always holds the field (REQUIRED on `TaskCardView`), so omitting it is a caller
-   *  that forgot, which is a type error and not a runtime case.
-   *
-   *  KEYS ONLY, never content. The board read carries names because it runs for
-   *  every card on every mount; the document is fetched for the ONE key the human
-   *  selects (`getArtifact`), which is the split ADR 0100 exists to make cheap.
-   *  NOT read off `task` — `TaskRow` has no such field by design. */
+  /** The artifact KEYS on the card (ADR 0100). Keys only, never content: the document is
+   *  fetched for the ONE tab the human opens. REQUIRED, so a caller that forgets it is a
+   *  type error and not a silently empty tab strip. */
   artifactKeys: string[];
-  /** The Space whose board is showing, and the cwd a launched Session starts in.
-   *  `null` disables both buttons: `startTaskSession(null, …)` is not a thing. */
+  /** The Space whose board is showing, and the cwd a launched Session starts in. `null`
+   *  disables the Stage control and the launch buttons. */
   spacePath: string | null;
+  /** Does ANY linked Session carry the `ready` marker? The board passes `readyFor(card)`.
+   *  REQUIRED: the Status row's ready mark depends on it. */
+  ready: boolean;
   onClose: () => void;
-  /** Opens a Session — the board forwards `useSessions.getState().openSession`. */
+  /** Opens a Session. The board forwards `useSessions.getState().openSession`. */
   onOpenSession: (sessionId: string) => void;
-  /** Leave the board view: a Session is now open and the chat column is behind this
-   *  board. REQUIRED — see the module note. */
+  /** Leave the board view: a Session is now open. REQUIRED. */
   onLaunched: () => void;
 }
 
@@ -122,126 +88,82 @@ export default function TaskDetailDialog({
   costUsd,
   artifactKeys,
   spacePath,
+  ready,
   onClose,
   onOpenSession,
   onLaunched,
 }: TaskDetailDialogProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The launch's WARNING (the skipped-column case), kept SEPARATE from `error`
-  // because it is not one: the Session started. `TasksBoard`'s boost note is the
-  // precedent — a `role="status"` line beside a `role="alert"` line, so a successful
-  // action is never announced as a failure.
+  // The launch's WARNING (the skipped-column case). Kept apart from `error` because the
+  // Session did start; a successful action is never announced as a failure.
   const [note, setNote] = useState<string | null>(null);
 
-  // The artifact reader (ADR 0114): its state and its request epoch live in
-  // `hooks/useArtifactReader`, mounted ONCE here because the rail and the pane
-  // read the SAME selection — two mounts would be two answers to "which key am
-  // I looking at". The store action is read here and passed in, never selected
-  // inside the hook: ADR 0074 puts the barrel read in the component/store.
+  // THE TAB. `null` is Overview. A vanished key falls back to Overview below.
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const shownKey =
+    activeKey !== null && artifactKeys.includes(activeKey) ? activeKey : null;
+
+  // The inline editors' open state, LIFTED here so the dialog's Escape handler can tell
+  // "an editor is open" from "nothing is". Each child reports every transition.
+  const [titleEditing, setTitleEditing] = useState(false);
+  const [specEditing, setSpecEditing] = useState(false);
+  // The Description draft lives HERE so it survives Overview → artifact → Overview. It
+  // only counts while its textarea is mounted (Overview showing), see `bodyEditorMounted`.
+  const [bodyDraft, setBodyDraft] = useState<string | null>(null);
+  const [titleError, setTitleError] = useState<string | null>(null);
+  const [bodyError, setBodyError] = useState<string | null>(null);
+  const [specError, setSpecError] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
+
+  // THE STORE READS, all in this file (ADR 0074). The prop is authoritative for which
+  // Space the card belongs to; `task.spacePath` is the fallback for a null prop.
+  const editTask = useTasks((state) => state.editTask);
+  const moveTask = useTasks((state) => state.moveTask);
+  const editSpace = spacePath ?? task.spacePath;
+  const boostNote = useTasks((state) =>
+    spacePath ? (state.boostNotes[spacePath] ?? null) : null,
+  );
+
+  // The artifact reader (ADR 0114). Mounted once here; the tab strip and the pane read
+  // the same selection. The store action is passed in, never selected in the hook.
   const getArtifact = useTasks((state) => state.getArtifact);
   const { selectedKey, selectedArtifact, artifactError, select } =
     useArtifactReader({ taskId: task.id, getArtifact });
 
-  // `mcpServers` is dropped here and `store/taskLaunch` passes an EMPTY list: this
-  // message carries no `[image #3]` marker, and the `#` prefix is the one the
-  // workspace's send path has to mask for that reason. Reading only skills and
-  // agents keeps the precondition out of the modal too.
+  // `mcpServers` is dropped: a launch message carries no `[image #3]` marker, so the
+  // catalog precondition is skills and agents only.
   const { skills, agents } = useMentionCatalogs(spacePath);
   const catalogs = useMemo(() => ({ skills, agents }), [skills, agents]);
 
-  // THE COLUMN LABEL COMES FROM THE STORE, not from a `boards` prop. The first draft
-  // took the columns as a prop because `TasksBoard` already had them — and that put
-  // TWO owners on one fact, because `store/taskLaunch` reads the SAME columns out of
-  // the same store to decide whether a Research move is legal. The two can disagree
-  // (a modal rendered from a stale prop would print `Research` while the orchestrator
-  // refused the move for want of a `research` column), and this repo's own defect
-  // log is a list of surfaces that disagreed with the write beneath them. One read,
-  // one source.
-  //
-  // A slice that no longer holds the card's column prints the SLUG rather than
-  // nothing: "we could not name it" is a different claim from "it has no column".
-  const columns = useTasks(
-    (state) => (spacePath ? state.boardsBySpace[spacePath] : undefined),
+  // THE COLUMN LABEL COMES FROM THE STORE. `store/taskLaunch` reads the same slice to
+  // decide whether a move is legal, so the two can never disagree. A slice that no longer
+  // holds the column prints the SLUG: "we could not name it" differs from "no column".
+  const columns = useTasks((state) =>
+    spacePath ? state.boardsBySpace[spacePath] : undefined,
   );
-  const stageLabel =
-    columns?.find((c) => c.stage.slug === task.stageSlug)?.stage.label ??
-    task.stageSlug;
-
-  // THE SAME SLICE THE HEADER READS. A session's `stageSlug` is what the wire carries;
-  // printing it here while the header three lines above says "Stage Backlog" would put
-  // two answers to one question in one modal — and this dialog is the surface that
-  // already resolved the label, so the fix costs one lookup and no new read. Falls back
-  // to the SLUG, on the same argument `stageLabel` carries: "we could not name it" is a
-  // different claim from "it has no Stage". Both read `columns`, which is what guarantees
-  // they agree rather than two rules that happen to match today.
   const stageLabelOf = (slug: string): string =>
     columns?.find((c) => c.stage.slug === slug)?.stage.label ?? slug;
-  const money = moneyOf(costUsd);
 
-  // THE SESSION ROWS' LABELS. The four slices `titleFor` / `sessionFieldOf` walk.
-  // Each selector returns the store's OWN reference (never a fresh object literal),
-  // which is the zustand v5 rule `lib/sessionLookup.ts` records: a selector yielding
-  // a fresh object re-runs forever — a symptom that HANGS the suite rather than
-  // failing it.
-  //
-  // `messages` is ONE selector for the whole map, not one per row: the rows are
-  // rendered by `sessions.map(...)` below, so a per-id selector would be a hook call
-  // inside a loop. The cost is that this dialog re-renders when any transcript
-  // appends — accepted, and bounded: it is mounted only while a card is open, and
-  // `titleFor` reads the FIRST user message, which never changes once it exists. The
-  // alternative (a `useSessionTitles`-style batch hook) does not exist in this tree
-  // and inventing one is a `src/hooks/` change this task does not own.
+  // THE SESSION ROWS' LABELS. Each selector returns the store's own reference, the zustand
+  // v5 rule `lib/sessionLookup.ts` records; a fresh object here re-runs forever.
   const liveSessions = useSessions((s) => s.sessions);
   const historySessions = useSessions((s) => s.historySessions);
   const archivedSessions = useSessions((s) => s.archivedSessions);
   const sessionMessages = useSessions((s) => s.messages);
 
-  // ONE call for the whole list, never one per row: a hook cannot be called inside the
-  // `sessions.map(...)` below at a changing list length — the reason the pure
-  // `sessionStatusOf` and this batch projection exist as a pair. `useSessionStatuses`
-  // subscribes to `sessions` / `inTurn` / `prompts` / `requests` / `subagents.entries`
-  // ONCE and applies the rule per id, so the dialog's marks are derived by the SAME
-  // rule the sidebar row and the Space tab draw.
+  // ONE batch call for the whole list. A hook cannot be called inside the `map` below.
   const statusById = useSessionStatuses(sessions.map((row) => row.sessionId));
-
-  // The three-list walk takes one source object. Built in the render body (NOT inside
-  // a selector), so it is not a zustand return value and its freshness costs nothing.
   const lookupSource = {
     sessions: liveSessions,
     historySessions,
     archivedSessions,
   };
 
-  // THE OUTGOING EDGES, i.e. the buttons. Read from the SAME slice `stageLabel` came
-  // from — one read, one source, for the reason that block already records: a modal
-  // that painted buttons from a prop while the orchestrator read the store would be
-  // two answers to "where can this card go", and the failure it prevents is a button
-  // that the click beneath it refuses.
-  //
-  // `next_slugs` is the graph (ADR 0099) and is rendered IN ITS OWN ORDER — the row's
-  // author decided that order, so it is not re-sorted here.
-  //
-  // The slug LIST comes from `lib/workflowGraph`'s `nextStepSlugs` — the ONE
-  // derivation, now shared with the board's launch pill and with the auto-advance
-  // runtime. This file used to spell the fallback itself and `TasksBoard` spelled it
-  // again; the extraction happened when the runtime became the third surface that
-  // needed the same answer. What that helper owns is the three-way reading of the
-  // column: `["a","b"]` in the row's own order, `null` = UNCONFIGURED falling back to
-  // the column at `sortOrder + 1` (so an existing install keeps its launch button
-  // after the upgrade — the migration backfills, but a Space never read has no rows to
-  // backfill from), and `[]` = "configured, leads nowhere" rendering nothing. The
-  // `??` that keeps the last two apart, rather than a `||` that would fold an empty
-  // array into "no opinion", lives in that one place now.
-  //
-  // What stays HERE is this surface's own verdict on an edge whose slug is no longer a
-  // column: it is KEPT and labelled with the SLUG, on the same argument `stageLabel`
-  // above carries — "we could not name it" is a different claim from "it has no
-  // column" — and it is what keeps `store/taskLaunch`'s skipped-column note REACHABLE
-  // from this surface, since the click starts the Session it was asked for, skips the
-  // move it could not perform, and the note says so. `nextStepOf`, the pill's reader
-  // of the same list, DROPS such an edge instead, because a pill has no note to fall
-  // back on. Two verdicts on one list, both deliberate, both documented on the helper.
+  // THE OUTGOING EDGES, from the same slice the Stage control reads. `nextStepSlugs` is the
+  // one derivation shared with the board's launch pill. An edge whose slug is no longer a
+  // column is KEPT and labelled with the slug, so a stale edge still reaches the skipped-
+  // column note; the pill drops such an edge instead, because it has no note to show.
   const edges = useMemo(() => {
     const current = columns?.find((c) => c.stage.slug === task.stageSlug);
     if (!current) return [];
@@ -250,18 +172,15 @@ export default function TaskDetailDialog({
       return {
         slug,
         label: stage?.label ?? slug,
-        // An unresolvable row contributes NO Skill — we never invent one for a row we
-        // cannot read, which also means such a button is not gated and cannot fail.
+        // An unresolvable row contributes NO Skill, so its button is never gated.
         onEnterSkill: stage?.onEnterSkill ?? null,
-        // ...and the same rule for the extra prompt: no row, no prose. The store
-        // re-resolves the destination from this very slice when the click lands, so
-        // nothing here decides the message — but a `TaskLaunchDestination` that left a
-        // REQUIRED field out would be a destination claiming to be a row it did not
-        // read, which is the two-answers-to-one-fact shape this file argues against.
         promptPrefix: stage?.promptPrefix ?? null,
       };
     });
   }, [columns, task.stageSlug]);
+
+  // The Stage's rollup for the Properties Status row: the same rule the board paints.
+  const rollup = sessionStatusRollupOf(sessions.map((r) => statusById[r.sessionId]));
 
   const launch = async (toStageSlug: string): Promise<void> => {
     if (spacePath === null) return;
@@ -270,44 +189,90 @@ export default function TaskDetailDialog({
     setError(null);
     setNote(null);
     try {
-      const outcome = await launchTaskSession(
-        spacePath,
-        task,
-        toStageSlug,
-        catalogs,
-      );
+      const outcome = await launchTaskSession(spacePath, task, toStageSlug, catalogs);
       if (outcome.note !== null) {
-        // THE NOTE WINS OVER THE NAVIGATION. The Session did start — this is a
-        // warning, not a failure — but the thing the user clicked for (the card
-        // moving to Research) did not happen, and a note about a CARD belongs on the
-        // surface showing the card. Navigating to the new transcript would bury the
-        // only sentence explaining why the column did not change, which is this
-        // repo's silent-green shape arriving through a `setTimeout`-free code path.
-        //
-        // It is not a dead end: the Session list is hoisted above `App`'s view
-        // ternary (ADR 0094), so the new Session's row is already on screen beside
-        // this dialog and is one click from the transcript.
+        // THE NOTE WINS OVER THE NAVIGATION: the Session started, but the card did not move,
+        // and a note about a card belongs on the surface showing the card.
         setNote(outcome.note);
         return;
       }
-      // Leave the board FIRST so the transcript is already the thing on screen when
-      // this frame paints, then close.
+      // Leave the board first so the transcript is on screen when this frame paints.
       onLaunched();
       onClose();
     } catch (err) {
-      // Stay open, say why. A dialog that closes on failure takes the error line and
-      // the card with it.
+      // Stay open and say why.
       setError(describeIpcError(err));
     } finally {
       setBusy(false);
     }
   };
 
-  // EACH BUTTON IS GATED ON THE SKILL ITS OWN DESTINATION NEEDS — see the footer,
-  // where that gate is spelled once per edge. What used to live here was a
-  // `discussReady` / `researchReady` pair, i.e. two skill names hardcoded in the
-  // component beside the two buttons that consumed them; both are gone, and the
-  // catalog race they existed for is documented at the predicate that replaced them.
+  // THE STAGE SWITCH. `moveTask` returns the slug the card is in AFTER the attempt; a
+  // different slug means the move was refused (the store has already written the sentence
+  // to `error`, and the optimistic slice was reverted, so the control re-reads the old Stage).
+  const moveStage = async (slug: string): Promise<void> => {
+    if (spacePath === null) return;
+    setMoveError(null);
+    const landed = await moveTask(spacePath, task.id, slug);
+    if (landed !== slug) {
+      setMoveError(useTasks.getState().error ?? "Could not move this task.");
+    }
+  };
+
+  // THE HEADER TITLE. Rejects on failure so the header keeps its draft open.
+  const saveTitle = async (title: string): Promise<void> => {
+    setTitleError(null);
+    try {
+      await editTask(editSpace, task.id, { title });
+    } catch (err) {
+      setTitleError(describeIpcError(err));
+      throw err;
+    }
+  };
+
+  // THE SPEC PATH. Rejects on failure so the editor keeps its draft open.
+  const saveSpecPath = async (specPath: string | null): Promise<void> => {
+    setSpecError(null);
+    try {
+      await editTask(editSpace, task.id, { specPath });
+    } catch (err) {
+      setSpecError(describeIpcError(err));
+      throw err;
+    }
+  };
+
+  // THE DESCRIPTION. Never rejects: on failure it keeps the draft and shows the error.
+  const saveBody = async (body: string | null): Promise<void> => {
+    setBodyError(null);
+    try {
+      await editTask(editSpace, task.id, { body });
+      setBodyDraft(null);
+    } catch (err) {
+      setBodyError(describeIpcError(err));
+    }
+  };
+  const startBodyEdit = (): void => {
+    setBodyError(null);
+    setBodyDraft(task.body ?? "");
+  };
+  const cancelBodyEdit = (): void => {
+    setBodyError(null);
+    setBodyDraft(null);
+  };
+
+  // The Description editor counts only while its textarea is mounted, which is Overview
+  // showing. On an artifact tab a held draft is in memory but invisible, so it must not
+  // block Escape from closing the modal.
+  const bodyEditorMounted = bodyDraft !== null && shownKey === null;
+
+  // Open an artifact tab. A tab whose document is already loaded is not refetched.
+  const openTab = (key: string | null): void => {
+    setActiveKey(key);
+    if (key !== null && !(selectedKey === key && selectedArtifact !== null)) {
+      void select(key);
+    }
+  };
+
   const noSpace = spacePath === null;
 
   return (
@@ -318,319 +283,176 @@ export default function TaskDetailDialog({
       }}
     >
       <DialogContent
-        className={cn(
-          "flex max-h-[80vh] w-full flex-col gap-3",
-          // THE WIDTH IS DECIDED AT OPEN, never on selection. `artifactKeys` arrive
-          // with the card on the board read, so an artifact-bearing card opens wide and
-          // an artifact-less one opens exactly as it does today — the common case is
-          // untouched, and no dialog ever resizes itself under the cursor.
-          //
-          // The `sm:` form is required: the base `DialogContent` declares `sm:max-w-md`,
-          // and a bare `max-w-*` lands in a different tailwind-merge group and loses to
-          // it in the generated stylesheet. Composed through `cn()` rather than a bare
-          // ternary, which is what `classNameConvention.test.ts` scans for.
-          artifactKeys.length > 0 ? "sm:max-w-4xl" : "sm:max-w-2xl",
-        )}
+        aria-describedby={undefined}
+        className={cn("flex max-h-[85vh] w-full flex-col gap-3 sm:max-w-4xl")}
+        onEscapeKeyDown={(e) => {
+          // THE BLURRED-DESCRIPTION CASE. The Description editor has no `onBlur`, so a
+          // click elsewhere leaves its draft open with the textarea unfocused, and the
+          // Escape keydown never reaches the textarea. So cancel the draft HERE, directly.
+          // The first Escape cancels; a second one (no editor open) closes the modal.
+          if (bodyEditorMounted) {
+            e.preventDefault();
+            cancelBodyEdit();
+            return;
+          }
+          // Title and spec-path inputs COMMIT on blur, so they can never be open-but-blurred.
+          // Keeping the modal open is enough for them.
+          if (titleEditing || specEditing) e.preventDefault();
+        }}
       >
-        <DialogHeader className="shrink-0">
-          {/* `T{n}` in the heading, because a person says the number out loud and two
-              open dialogs must be distinguishable. The `tsk_` id never appears as
-              visible text anywhere in this app (ADR 0090: the number is the label,
-              the id is the key). */}
-          <DialogTitle className="flex items-baseline gap-2">
-            <span className="font-mono text-ui-sm text-foreground-subtle">
-              T{task.number}
-            </span>
-            <span className="min-w-0">{task.title}</span>
-          </DialogTitle>
-          <DialogDescription>
-            Stage <span className="font-medium">{stageLabel}</span>
-            {" · "}
-            {sessions.length} {sessions.length === 1 ? "session" : "sessions"}
-            {/* ADR 0082 through the ONE rule: `null` prints NOTHING rather than
-                inventing `$0.00` for a cost nobody measured. Its OWN element so the
-                figure is one addressable node rather than half of a concatenated
-                sentence — the same reason `SessionCostLine` keeps it separate. */}
-            {money !== null && <> · {money}</>}
-            {" · "}
-            updated {relativeTimeFromInstant(task.updatedAt)}
-          </DialogDescription>
-        </DialogHeader>
+        <TaskDetailHeader
+          number={task.number}
+          title={task.title}
+          onSaveTitle={saveTitle}
+          onEditingChange={setTitleEditing}
+          error={titleError}
+        />
 
-        {/* THE SCROLLER. Everything between the header and the footer sits inside it.
-
-            The shell is capped at `max-h-[80vh]` and every child carried `shrink-0`,
-            so a long body did not compress the dialog — it CLIPPED it, and the element
-            that fell off the bottom was the footer: the launch buttons, i.e. the only
-            reason to open the modal. A modal whose whole job is to show the card the
-            card view truncates cannot be allowed to truncate it in turn.
-
-            `min-h-0` is load-bearing and easy to drop: a flex item's initial
-            `min-height` is `auto`, which refuses to shrink below its content, so
-            `flex-1` + `overflow-y-auto` alone still grows the box past the cap and
-            clips exactly as before. `flex-1` takes the leftover height, `overflow-y-auto`
-            turns the overflow into scrolling instead of a cut-off edge.
-
-            The header and the footer stay OUTSIDE on purpose: a squeezed header
-            ellipsises the title, and a footer inside the scroller means the buttons are
-            only reachable by scrolling past a 5000-character body — the same loss with a
-            scrollbar attached.
-
-            `gap-3` repeats the shell's own gap because these nodes are no longer direct
-            children of `DialogContent`. */}
-        <div
-          data-testid="detail-scroll"
-          className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto"
-        >
-        {/* The body, UNCLAMPED and rendered as MARKDOWN (spec §1). This is the field
-            the card clips, so clipping it here would put the card's limitation in the
-            surface that exists to remove it — and printing it as inert pre-formatted
-            prose clipped it a second way: no headings, no lists, no tables, and a
-            link a person wrote was text, not a control.
-
-            `AgentMarkdown` is the transcript's renderer, so the URL policy
-            (`safeUrlTransform`, ADR 0051) and the External-open routing
-            (`OpenAnchor`) stay in ONE place rather than being re-spelled per surface.
-
-            The wrapper keeps the `<p>`'s old classes so the body's INK is unchanged:
-            `AgentMarkdown`'s root sets `text-ui-base` and no colour, so
-            `text-foreground-subtle` cascades from here. The old pre-formatted
-            whitespace class is deliberately GONE — with it a markdown document renders
-            its own source newlines as gaps between every block. ADR 0101 accepted the
-            cost that a single newline collapses to a space; `remark-breaks` was
-            considered and rejected, and a body that wants line breaks uses a list.
-
-            An EMPTY STRING renders NOTHING here, not an empty region: the card hides
-            `""` through truthiness (`{task.body && …}`) and the dialog now agrees, so
-            the two surfaces give ONE answer to "does this card have a body". */}
-        {task.body !== null && task.body !== "" && (
-          <div
-            data-testid="task-body"
-            className="min-h-0 shrink-0 text-ui-base text-foreground-subtle"
-          >
-            <AgentMarkdown text={task.body} />
-          </div>
-        )}
-
-        {/* THE ARTIFACT REGION (issue #180, spec §3): the key rail, and the selected
-            key's markdown rendered as a DOCUMENT beside it.
-
-            A Task artifact is markdown, so it goes through `AgentMarkdown` — the
-            component extracted from the transcript for exactly this. Rendering it as
-            inert pre-formatted prose (the shape `task.body` used to wear, and which
-            this change moves the body off as well) would put the card's limitation
-            in the one surface built to remove it: no headings, no lists, no tables,
-            no links.
-
-            The KEYS came from the board read; the CONTENT is fetched for the ONE key
-            the human selects (spec §1's split — the board read runs for every card on
-            every mount, so a document on that payload would be every Task's every
-            document on the wire). Nothing is fetched on open.
-
-            Gated on `artifactKeys.length > 0`, and the WHOLE section sits behind it —
-            no header, no rail, no pane, no placeholder for a Task with no artifacts.
-            A `Vec<String>` answers `[]` for that card, so this is the common shape of
-            real data and it must read as nothing at all.
-
-            A real `<button type="button">` per key and NOT a `RowButton`: this dialog
-            is inside a Radix `Dialog`, so `RowButton`'s one-`role="button"`-per-row
-            rule does not apply here, but the plain-button convention matches the
-            sessions rows below and keeps the row resolvable. */}
-        {artifactKeys.length > 0 && (
-          <TaskArtifactSection
-            artifactKeys={artifactKeys}
-            selectedKey={selectedKey}
-            selectedArtifact={selectedArtifact}
-            artifactError={artifactError}
-            onSelect={select}
-          />
-        )}
-
-        {sessions.length > 0 && (
-          // NOT a scroll container, and it used to be one. `overflow-y-auto` and the
-          // now-inert `min-h-0` are OUT and `shrink-0` is IN, and the tempting argument
-          // for leaving this alone — "it has no `max-h` and no `flex-1`, so its height is
-          // content-driven and it can never scroll" — is wrong about how a flex column
-          // resolves overflow. `detail-scroll` is a column flex container whose height IS
-          // definite (`flex-1` inside the `max-h-[80vh]` shell), so when its children's
-          // combined height exceeds it the free space is NEGATIVE and every child still
-          // holding `flex-shrink: 1` is compressed to fit. The floor that would normally
-          // refuse that is a flex item's initial `min-height: auto`, and `min-h-0` is
-          // precisely the token that removes it — so `min-h-0` + no `shrink-0` +
-          // `overflow-y-auto` meant this wrapper got squeezed the moment anything else in
-          // the scroller was tall, and a squeezed `overflow-y-auto` box is a real SECOND
-          // scrollbar inside one wheel gesture. Latent only while the artifact reader was
-          // capped at `max-h-72` + `shrink-0`; with an unbounded pane the common case it
-          // becomes the visible one. `shrink-0` is spelled rather than relied on as a
-          // default so this wrapper states what every other direct child of this scroller
-          // states (the body div, the artifact section, the `MetaRow`s, the note, the
-          // error line). A list that cannot be scrolled and a list that never needed to
-          // are the same list once the scroller owns the scroll.
-          <div className="flex shrink-0 flex-col gap-1">
-            <MutedCaption className="shrink-0">
-              Sessions on this task
-            </MutedCaption>
-            {sessions.map((row) => {
-              // THE ONE LABEL RULE, walked rather than re-derived. `sessionFieldOf`
-              // goes live → history → archived, which is what makes an archived
-              // Session's title reachable at all; `titleFor` then applies
-              // title → first user message truncated → Space folder name, the same
-              // rule the sidebar rows print, so the two surfaces cannot name one
-              // Session differently.
-              const storedTitle =
-                sessionFieldOf(lookupSource, row.sessionId, "title") ?? null;
-              // The Session's OWN Space folder (its `cwd` basename) is the last
-              // resort `titleFor` falls back to — the same field `SpacesList`'s row
-              // resolves through `spaceNameFor`. The dialog has no `cwd` on
-              // `TaskSessionRow`, so the walk supplies it.
-              const sessionCwd = sessionFieldOf(
-                lookupSource,
-                row.sessionId,
-                "cwd",
-              );
-              // THE CHAIN, and why each step is a PAIR. `basenameOfPath`'s own doc
-              // (`lib/paths.ts`) says it returns `""` for empty input AND for a bare
-              // root, and that "the caller falls back to the full path" — so every
-              // step is `basenameOfPath(x) || x`, because a Space opened at `/` must
-              // print `/` and not an empty label. When no list knows the id (a link to
-              // a Session that has been deleted) the board's own Space is the honest
-              // fallback, resolved by the same rule. The trailing `|| ""` is what
-              // types the chain as `string`, which `titleFor`'s `spaceName` needs.
-              //
-              // THE ID IS DELIBERATELY NOT IN THIS CHAIN. Printing `row.sessionId` as
-              // the label is the defect spec §2 removes; every other surface that names
-              // a Session goes through `titleFor` and ends at a folder name. The id
-              // lives in the row's `title` attribute and `data-session-id`, which is
-              // where it stays reachable. The terminal `""` is only reachable when
-              // NOTHING is known about the Session and no Space is selected at all,
-              // and that honest "we could not name it" is not a blank to paper over.
-              const spaceName =
-                basenameOfPath(sessionCwd ?? "") ||
-                sessionCwd ||
-                basenameOfPath(spacePath ?? "") ||
-                spacePath ||
-                "";
-              const title = titleFor(
-                sessionMessages[row.sessionId],
-                spaceName,
-                storedTitle,
-              );
-              // `statusById` is `Record<string, SessionStatus>` and `tsconfig.json`
-              // does not set `noUncheckedIndexedAccess`, so the `?? "stored"` is a
-              // runtime belt for an id the map cannot miss, not a type fix.
-              const status = statusById[row.sessionId] ?? "stored";
-              return (
-                // A real `<button>` and NOT a `RowButton`: this dialog is inside a Radix
-                // `Dialog`, and `RowButton`'s ONE-`role="button"`-per-row constraint
-                // exists for the sidebar's `.closest('[role="button"]')` reads. A plain
-                // button needs no role spelled and adds no selector match — the same
-                // reasoning the card's chip records.
-                <button
-                  key={row.sessionId}
-                  type="button"
-                  data-testid="task-session-row"
-                  data-session-id={row.sessionId}
-                  // The id is DEMOTED out of the text flow, not deleted: a task being
-                  // discussed across two windows is named by a session id, so it stays
-                  // reachable on hover and by copy. It is no longer what a person reads
-                  // first — the title is.
-                  title={row.sessionId}
-                  onClick={() => onOpenSession(row.sessionId)}
-                  className={cn(
-                    "flex shrink-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-ui-sm text-foreground-subtle hover:bg-surface-hover hover:text-foreground",
-                  )}
-                >
-                  {/* THE ONE SESSION-STATE GLYPH, at the sidebar row's own size and
-                      relative weight (`SpacesList.tsx:926`). No `active` — no Session is
-                      "the open one" in this modal, so the mark wears the quiet ink a
-                      non-active sidebar row wears. No `className` with ink either: the
-                      mark owns the ink and its `className` is geometry-only. And NOT
-                      `announce={false}`: in the sidebar the glyph IS the statement (its
-                      "Waiting" pill was deleted), and the mark keeps that here. */}
-                  <SessionStatusMark
-                    status={status}
-                    size={16}
-                    dotSize={8}
-                    testId="session-status-mark"
+        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {artifactKeys.length > 0 && (
+              <div
+                role="tablist"
+                data-testid="detail-tabs"
+                className="flex shrink-0 gap-1 border-b border-border"
+              >
+                <TabButton
+                  dataKey="overview"
+                  label="Overview"
+                  active={shownKey === null}
+                  onClick={() => openTab(null)}
+                />
+                {artifactKeys.map((key) => (
+                  <TabButton
+                    key={key}
+                    dataKey={key}
+                    label={key}
+                    active={shownKey === key}
+                    onClick={() => openTab(key)}
                   />
-                  {/* `font-mono text-ui-xs` (the id's type treatment) is GONE because this
-                      span now holds a human title; `truncate` stays so a long title
-                      cannot push the "from Stage" caption off the row. */}
-                  <span className="min-w-0 flex-1 truncate">{title}</span>
-                  {/* `MutedCaption` rather than the hand-spelled pair: the census in
-                      `mutedCaption.test.ts` keeps that class pair to ONE file, and this
-                      is exactly that caption — a quiet qualifier beside a bolder value. */}
-                  {row.stageSlug !== null && (
-                    <MutedCaption className="shrink-0">
-                      from {stageLabelOf(row.stageSlug)}
-                    </MutedCaption>
+                ))}
+              </div>
+            )}
+
+            {/* THE ONE SCROLLER. Everything between the header and the footer sits inside
+                it. `min-h-0` is load-bearing: a flex item's default `min-height: auto`
+                refuses to shrink below its content, so without it the box grows past the
+                cap and clips. */}
+            <div
+              data-testid="detail-scroll"
+              role="tabpanel"
+              className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto py-3"
+            >
+              {shownKey === null ? (
+                <>
+                  <TaskDescription
+                    body={task.body}
+                    draft={bodyDraft}
+                    onDraftChange={setBodyDraft}
+                    onStartEdit={startBodyEdit}
+                    onCancel={cancelBodyEdit}
+                    onSave={saveBody}
+                    error={bodyError}
+                  />
+                  {sessions.length > 0 && (
+                    <div className="flex shrink-0 flex-col gap-1">
+                      <MutedCaption className="shrink-0">Sessions on this task</MutedCaption>
+                      {sessions.map((row) => {
+                        // THE ONE LABEL RULE, walked: live → history → archived, then
+                        // title → first user message → Space folder, the same rule the
+                        // sidebar prints. The id is demoted to `title`/`data-session-id`.
+                        const storedTitle =
+                          sessionFieldOf(lookupSource, row.sessionId, "title") ?? null;
+                        const sessionCwd = sessionFieldOf(lookupSource, row.sessionId, "cwd");
+                        const spaceName =
+                          basenameOfPath(sessionCwd ?? "") ||
+                          sessionCwd ||
+                          basenameOfPath(spacePath ?? "") ||
+                          spacePath ||
+                          "";
+                        const title = titleFor(
+                          sessionMessages[row.sessionId],
+                          spaceName,
+                          storedTitle,
+                        );
+                        const status = statusById[row.sessionId] ?? "stored";
+                        return (
+                          <button
+                            key={row.sessionId}
+                            type="button"
+                            data-testid="task-session-row"
+                            data-session-id={row.sessionId}
+                            title={row.sessionId}
+                            onClick={() => onOpenSession(row.sessionId)}
+                            className="flex shrink-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-ui-sm text-foreground-subtle hover:bg-surface-hover hover:text-foreground"
+                          >
+                            <SessionStatusMark
+                              status={status}
+                              size={16}
+                              dotSize={8}
+                              testId="session-status-mark"
+                            />
+                            <span className="min-w-0 flex-1 truncate">{title}</span>
+                            {row.stageSlug !== null && (
+                              <MutedCaption className="shrink-0">
+                                from {stageLabelOf(row.stageSlug)}
+                              </MutedCaption>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
-                </button>
-              );
-            })}
+                </>
+              ) : (
+                <TaskArtifactTabPane
+                  artifactKey={shownKey}
+                  artifact={selectedKey === shownKey ? selectedArtifact : null}
+                  artifactError={selectedKey === shownKey ? artifactError : null}
+                />
+              )}
+            </div>
           </div>
-        )}
 
-        {/* META, DEMOTED TO THE BOTTOM (spec §4). These two rows used to sit ABOVE the
-            artifacts, so a task id outranked the spec document — reading order should
-            follow what a person came to do, and it is Body → Artifacts → Sessions →
-            Meta. Both are read-only, both wear NO leading glyph (see `MetaRow`), and
-            that absence is what makes "has a glyph" mean "clickable" anywhere above
-            them in this list. */}
-        {task.specPath !== null && task.specPath !== "" && (
-          <MetaRow label="spec">{task.specPath}</MetaRow>
-        )}
-        {/* The id, in the one place it is useful: a card being discussed across two
-            windows is named by its id, not by a per-Space number that repeats. It is
-            quiet, it is selectable, and it is the LAST thing in the scroller. */}
-        <MetaRow label="id">{task.id}</MetaRow>
-
-        {/* A WARNING, not a failure — the Session started, the card did not move. NOT
-            an `IpcErrorLine`: that component's whole contract is `role="alert"`, and
-            announcing a successful launch as an alert is the mislabel `TasksBoard`'s
-            boost note documents for the same reason. */}
-        {note !== null && (
-          <div
-            className="shrink-0 text-ui-sm text-warning"
-            data-testid="launch-note"
-            role="status"
-          >
-            {note}
-          </div>
-        )}
-        <IpcErrorLine error={error} className="shrink-0" />
-
-        {sessions.length === 0 && task.body === null && artifactKeys.length === 0 && (
-          <EmptyListLine>This task has no detail yet.</EmptyListLine>
-        )}
+          <TaskDetailProperties
+            task={task}
+            columns={columns}
+            stageDisabled={spacePath === null}
+            status={rollup}
+            ready={ready}
+            sessionCount={sessions.length}
+            costUsd={costUsd}
+            onMoveStage={moveStage}
+            onSaveSpecPath={saveSpecPath}
+            onEditingChange={setSpecEditing}
+            moveError={moveError}
+            moveNote={boostNote}
+            specError={specError}
+          />
         </div>
-        {/* /detail-scroll — everything below this line (the footer) stays pinned. */}
+
+        {/* A WARNING, not a failure. Outside `detail-scroll`, directly above the footer. Not
+            an `IpcErrorLine`: that is `role="alert"`, and a successful launch is not an alert. */}
+        {(note !== null || error !== null) && (
+          <div className="flex shrink-0 flex-col gap-1">
+            {note !== null && (
+              <div
+                className="shrink-0 text-ui-sm text-warning"
+                data-testid="launch-note"
+                role="status"
+              >
+                {note}
+              </div>
+            )}
+            <IpcErrorLine error={error} className="shrink-0" />
+          </div>
+        )}
 
         <DialogFooter className="shrink-0 gap-2">
-          {/* ONE BUTTON PER OUTGOING EDGE (issue #179, spec §7.2). The pair that used
-              to sit here — `discussReady` / `researchReady` and two hardcoded buttons —
-              was the component asserting what the Stage rows assert, which is the split
-              ADR 0098 exists to remove. The edges come from the SAME slice the stage
-              label above is read from, so a Space that renames, reorders or rewires its
-              columns changes these buttons with no code touched. With no outgoing edge
-              the footer renders NOTHING: a last column offers no launch, and an empty
-              footer beats a disabled button that can never be made to work.
-
-              `variant="outline"` for all of them, keeping the pre-#179 choice and
-              extending it: none of these is the safe default over the others, so none
-              gets the filled treatment. */}
-          {edges.map((dest) => {
-            // EACH BUTTON IS GATED ON THE SKILL ITS OWN DESTINATION NEEDS, and not
-            // merely on there being a catalog. The reasoning is the race this file
-            // already documented: the catalog is an async fetch that starts EMPTY, so a
-            // button enabled from the first paint is clickable before the catalog lands,
-            // and that first click fails with "This Space has no `x` skill" — a sentence
-            // that is FALSE two frames later. Gating on the same predicate
-            // `store/taskLaunch` refuses on removes the race rather than narrowing it.
-            //
-            // A destination with NO Skill is NOT gated and never disabled: it has
-            // nothing to wait for, so a gate here would disable a launch that cannot
-            // fail. Moving a card is still useful with nothing to load.
+          {/* ONE BUTTON PER OUTGOING EDGE. The first is the Primary next step; the rest are
+              outline. Each is disabled while busy, when the Space is absent, or when its own
+              destination's skill is not in the catalog. */}
+          {edges.map((dest, index) => {
             const disabled =
               noSpace ||
               busy ||
@@ -640,7 +462,7 @@ export default function TaskDetailDialog({
               <Button
                 key={dest.slug}
                 type="button"
-                variant="outline"
+                variant={index === 0 ? "default" : "outline"}
                 onClick={() => void launch(dest.slug)}
                 disabled={disabled}
                 aria-label={dest.label}
@@ -662,23 +484,36 @@ export default function TaskDetailDialog({
   );
 }
 
-/** One quiet `label: value` line, for the fields that are data and not prose.
- *
- * `MutedCaption` owns the caption class pair (its own test censuses that pair to one
- * file), so the LABEL goes through it and the value wears the ink one step up.
- *
- * `data-testid` / `data-meta-label` exist so the READ-ONLY-ness of these rows is
- * assertable: spec §2's whole signal is "has a leading glyph" ⇒ "clickable", so the
- * rows that are not actionable must be provably glyph-free, and an absence cannot be
- * pinned on a node with no addressable handle. This renders NO `<svg>` — that absence
- * is the point. */
-function MetaRow({ label, children }: { label: string; children: string }) {
+/** One tab in the Document-First strip. Visible text and a `title`, never an `aria-label`,
+ *  so the footer's `aria-label` census still lists exactly the launch buttons. */
+function TabButton({
+  dataKey,
+  label,
+  active,
+  onClick,
+}: {
+  dataKey: string;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
   return (
-    <div data-testid="meta-row" data-meta-label={label} className="flex min-w-0 shrink-0 items-baseline gap-2">
-      <MutedCaption className="shrink-0">{label}</MutedCaption>
-      <span className="min-w-0 break-all font-mono text-ui-xs text-foreground-subtle">
-        {children}
-      </span>
-    </div>
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      data-testid="detail-tab"
+      data-tab-key={dataKey}
+      title={label}
+      onClick={onClick}
+      className={cn(
+        "-mb-px cursor-pointer border-b-2 px-3 py-1.5 text-ui-sm",
+        active
+          ? "border-brand text-foreground"
+          : "border-transparent text-foreground-subtle hover:text-foreground",
+      )}
+    >
+      {label}
+    </button>
   );
 }
