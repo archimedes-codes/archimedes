@@ -1067,8 +1067,17 @@ describe("the scanner actually reads the tree", () => {
     // `src-tauri/` change: a model-facing verb would need one, which is exactly why the
     // mark is a convention (ADR 0102 / #183 is the real fix). See
     // `docs/features/session-ready-marker.md`.
-    expect(mockers).toHaveLength(69);
-    // 68 of the 69 SPREAD `vi.importActual`, which is the shape that makes the
+    // 69 -> 70 for `src/store/tasks.edit.test.ts`, the store suite for the card-text
+    // write `useTasks.editTask`: ONE new mocker, mocking the barrel the documented way
+    // because the action it pins IS a barrel call and its whole subject is WHICH
+    // positional arguments reach the wire (`undefined` keep / `null` clear / string
+    // write). It spreads `vi.importActual`, so the spread half moves 68 -> 69 and the
+    // one wholesale replacement is STILL `hooks/useWindowMaximized.test.ts`. The
+    // barrel's OWN surface is UNCHANGED: `editTask` was already exported and is
+    // already in both pinned API lists below.
+    // 70 -> 71 for the Task detail modal redesign: `components/TaskDetailDialog.edit.test.tsx`, which mocks the barrel the documented way and spreads `vi.importActual` (the spread half moves 69 -> 70); the four `components/tasks/*` child tests are presentational and NOT mockers.
+    expect(mockers).toHaveLength(71);
+    // 69 of the 70 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. The new mockers spread
     // too (they list the arms their own tests drive and leave every other barrel
     // export — `invoke` included — to the real module), so the remaining one
@@ -1079,7 +1088,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(sweep.listed(f) ?? ""),
       ).length,
-).toBe(68);
+).toBe(70);
   });
 });
 

@@ -651,6 +651,7 @@ export default function TasksBoard({
           costUsd={detailCard.costUsd}
           artifactKeys={detailCard.artifactKeys}
           spacePath={activeSpacePath}
+          ready={readyFor(detailCard)}
           onClose={() => setDetailTaskId(null)}
           onOpenSession={openSessionAndLeave}
           onLaunched={() => onReturnToWorkspace?.()}

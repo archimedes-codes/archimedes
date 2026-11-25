@@ -1,254 +1,264 @@
 ---
 status: live
-last-verified: 2026-11-13
-verified-by: every claim below re-read against the shipped tree at the tip of PR #187 (squash commit `698397cd`), not lifted from the plan that designed it. Gates re-measured in the primary checkout at that commit — `pnpm test` 4498 passed / 187 files / 1 skipped, `pnpm build` green, `npx tsc --noEmit` clean. `TaskDetailDialog.test.tsx` measured with the RUNNER (`npx vitest list src/components/TaskDetailDialog.test.tsx | wc -l` → 61, and `grep -c '^\s*it('` on the same file agrees at 61 because the file holds no `it.each`), against 38 at the commit before the design pass, so the count only grew as the plan's verification rule required. Per-describe counts came from the same runner list, never from a grep. The census claims were re-run — `grep -c 'rounded-full' src/components/TaskDetailDialog.tsx` → 0 and the `PILLS` array in `src/lib/slabFloatSeparation.test.ts` names `TaskCard.tsx` and `TasksBoard.tsx` and no third board file, so the dialog really is outside that gate; `grep -c MutedCaption src/components/TaskDetailDialog.tsx` → 9 and `grep -c 'cn(' ` → 7. Rust was not touched by this change and `cargo` was deliberately not run.
+last-verified: 2026-11-25
+verified-by: every claim below re-read against the tree on `feature/task-card-redesign` after the Greptile review fixes, not lifted from the plan that designed it. Runner counts from `npx vitest run` (62 in `TaskDetailDialog.test.tsx`, 30 in `TaskDetailDialog.edit.test.tsx`, 14 + 23 + 6 + 36 in the four `components/tasks/*` children, 171 across the modal-owned set). Code-line counts from `grep -vcE '^[[:space:]]*(//|\*|/\*|$)'`, the ratchet's classifier, never `wc -l`: `TaskDetailDialog.tsx` 440, `TaskDetailDialog.test.tsx` 871 (test gate 1,000), `TaskDetailDialog.edit.test.tsx` 467, and the children `TaskDetailHeader.tsx` 116, `TaskDescription.tsx` 124, `TaskDetailProperties.tsx` 282. `npx tsc --noEmit` clean. `bash scripts/check-file-size.sh` passes with the baseline unchanged. The `tauriBarrel` mocker census is unchanged (70 → 71 from the one edit-file mocker, already recorded).
 ---
 
-# The Task detail modal — one document surface, and what makes a row clickable
+# The Task detail modal — a wide, Document-First two-column surface
 
 `src/components/TaskDetailDialog.tsx` is the surface that exists to **unclip** what a **Task** card
-truncates. That purpose is the whole design brief, and it is the test any change here should be
-judged against: a limitation of the card that reappears in the dialog is a bug in the dialog, not a
-shared constraint. It was designed in one pass (issue #182, PR #187, ADR 0101) and it changed no
-schema, no wire shape, no IPC command, and no dependency.
+truncates. That purpose is the design brief, and it is the test any change here should be judged
+against: a limitation of the card that reappears in the dialog is a bug in the dialog, not a shared
+constraint.
+
+The modal is a wide (`sm:max-w-4xl`) two-column surface. The left column is a **Document-First** tab
+strip — `Overview` plus one tab per **Task artifact** — over ONE scroller. The right column is a
+compact **Properties** column. The header and the launch footer stay pinned. Title, Description and
+spec path edit inline through `useTasks.editTask`, and the Stage is a dropdown over `moveTask`.
+
+## Layout: one scroller, two columns, pinned header and footer
+
+- **Width is always `sm:max-w-4xl`**, with or without artifacts. The `sm:` form is required: the base
+  `DialogContent` declares `sm:max-w-md`, and a bare `max-w-*` loses to it.
+- **The shell is a flex column, capped at `max-h-[85vh]`.** `DialogContent` ships as `grid`; the
+  override to `flex` survives `cn()`'s merge, and a test pins it.
+- **The tab strip is omitted when there are no artifacts.** With keys, it is `role="tablist"`:
+  `Overview` (`data-tab-key="overview"`) and then one tab per key, in the order the card lists them.
+  The active tab wears `border-brand text-foreground`; an inactive one wears `text-foreground-subtle`.
+  Tabs are visible text with a `title`, never an `aria-label`, so the footer's `aria-label` census
+  stays exact.
+- **The tabs are a full WAI-ARIA tablist.** Each `role="tab"` has a unique `id` (namespaced by kind, so an
+  artifact keyed `overview` cannot collide with the Overview tab) and an `aria-controls` naming the one
+  `role="tabpanel"`. The panel carries `aria-labelledby` pointing at the SELECTED tab. Only the selected tab
+  is in the Tab order (`tabIndex` 0); the rest are `-1`. `ArrowRight` and `ArrowLeft` move between tabs
+  with wrap-around, `Home` and `End` jump to the ends, and each calls `preventDefault`, selects the target,
+  and moves DOM focus to it. Keyboard and click select the same tab.
+- **`detail-scroll` is the only element with `overflow-y-auto` inside the dialog, and it holds BOTH the
+  document and the Properties column.** It is the one scroll container, so there is exactly one
+  scrollbar at every window size. Inside it, the `role="tabpanel"` document (Overview: Description then
+  Sessions, or the open artifact pane) sits beside the Properties `<aside>` at `md:` and stacks above it
+  on a narrow window. `min-h-0` is load-bearing: a flex item's default `min-height: auto` refuses to
+  shrink, so `flex-1` alone clips.
+- **The tab strip sits ABOVE the scroller, not inside it, so it never scrolls away.** `detail-tabs` is a
+  `shrink-0` sibling of `detail-scroll`, so the tabs stay visible while a long artifact scrolls beneath
+  them. It is `flex-wrap min-w-0`: a 40-character key is capped at `max-w-[14rem]` and truncates with its
+  full name in `title`, and many keys wrap onto a second row inside the column. Nothing leaves the window.
+- **Why Properties is inside the scroller, and why that is the fix.** It used to sit outside `detail-scroll`
+  as a `shrink-0` sibling with no overflow. Below `md` it stacked under the document and consumed all the
+  available height, and at `md+` an overflowing Properties column could not be scrolled at all. Putting it
+  inside the one scroller makes both cases scroll cleanly.
+- **The Properties column is an `<aside>` with no `overflow-*`, `md:w-64 md:shrink-0`.** It carries
+  `min-w-0 break-words`, so a long spec path or id wraps inside its 16rem column instead of widening the
+  modal, and it never shrinks, so the document absorbs any squeeze.
+- **The launch note and the launch error sit between the scroller and the footer**, outside
+  `detail-scroll` and outside `[data-slot="dialog-footer"]`. The note is `role="status"`; the error is
+  `IpcErrorLine`, `role="alert"`.
+- **The footer is one button per outgoing workflow edge.** `edges[0]` is the **Primary next step** and
+  is `variant="default"`; the rest are `variant="outline"`. Each keeps its skill gate and its
+  `aria-label`, and the footer buttons are still the only `aria-label`ed buttons in the dialog.
+
+## The four children are props-only
+
+`src/components/tasks/` holds the four pieces the dialog composes. None of them reads a store or calls
+IPC, so none needs a barrel mock, and the dialog remains the only file that does (ADR 0074).
+
+| Child | Owns | Notes |
+| --- | --- | --- |
+| `TaskDetailHeader` | `T{n}` and the title, click-to-edit | Enter commits, Escape cancels, blur commits; a rejected save keeps the draft. |
+| `TaskDescription` | The Description, as markdown or an editor | The draft is held by the **dialog**, so it survives a tab switch. No `onBlur`. |
+| `TaskArtifactTabPane` | One artifact's document | No scroller of its own. Shows `updated <relative>` with the absolute time as its tooltip. |
+| `TaskDetailProperties` | Stage, Status, Activity, spec path, Updated/Created, id | The Stage is a `Select` over `moveTask`; the spec path edits inline. |
 
 ## The body is markdown, rendered by the transcript's renderer
 
-`task.body` goes through `AgentMarkdown` — the same component the **Task artifact** reader two
-sections below it uses. This is a decision with a cost, recorded in
-`docs/decisions/0101-task-prose-is-markdown-and-one-renderer-serves-it.md`: nothing in the schema
-says a `body` is markdown (`tasks.body` is a nullable `TEXT`, the New Task dialog writes a plain
-`<textarea>` into it, the model's `create_task` writes a sentence), so the field's type is unchanged
-and its *meaning* moved by convention. A reader who inspects only `db.rs` will still believe a body
-is a blurb. Do not describe it as one in new prose.
+`task.body` goes through `AgentMarkdown` — the same component the **Task artifact** pane uses. This is
+a decision with a cost, recorded in
+`docs/decisions/0101-task-prose-is-markdown-and-one-renderer-serves-it.md`: nothing in the schema says a
+`body` is markdown (`tasks.body` is a nullable `TEXT`, and the model's `create_task` writes a sentence),
+so the field's type is unchanged and its *meaning* moved by convention. Do not describe it as a blurb in
+new prose.
 
-What that buys, all with zero new code: `safeUrlTransform`'s ADR 0051 denylist (`javascript` /
-`data` / `vbscript` / `blob` / `filesystem`), `OpenAnchor` routing activation to `external_open`
-rather than navigating the Client's own webview, `remark-gfm` (tables, strikethrough, `- [ ]`), and
-relative links resolving against the board's own **Space** because `App.tsx` mounts
-`SpaceCwdProvider` above the view ternary and `TasksBoard` receives that same `spaceCwd`.
+What that buys, with zero new code: `safeUrlTransform`'s ADR 0051 denylist, `OpenAnchor` routing
+activation to `external_open` rather than navigating the Client's own webview, `remark-gfm` (tables,
+strikethrough, `- [ ]`), and relative links resolving against the board's own **Space**.
 
-**The accepted cost is visible immediately:** markdown collapses a single newline to a space, so a
-body typed as two short lines in the textarea becomes one wrapped sentence. `remark-breaks` was
-considered and rejected — it would be the repo's first new markdown dependency and it would make a
-**Task** body render differently from the transcript and from a **Task artifact**, three prose
-surfaces with two newline rules. A body that wants line breaks uses a list. Re-open only if
-collapsed bodies turn out to be common in practice rather than hypothetical.
+**The accepted cost is visible.** Markdown collapses a single newline to a space, so a body typed as two
+short lines becomes one wrapped sentence. `remark-breaks` was considered and rejected: it would be the
+repo's first new markdown dependency and it would make a **Task** body render differently from the
+transcript and from a **Task artifact**. A body that wants line breaks uses a list.
 
-`taskBlock` is unaffected and that boundary is worth naming: the `<task>` launch block has always
-sent the body to the model as escaped element content, so the model was already receiving markdown.
-Making the human surface agree is the whole change; no prompt or escaping rule moved.
+**The body is now editable inline.** Click the Description (or the `Edit` button, or the "Add a
+description…" placeholder) to open a textarea. Cmd/Ctrl+Enter saves; Escape cancels; Save and Cancel are
+visible buttons. Saving an empty or whitespace-only draft writes `null` (a clear). A link inside the
+rendered body is still a link: a click on an `<a>` does not open the editor.
+
+`NewTaskDialog`'s body hint reads **"Optional. Supports Markdown."**, which replaced the older "Newlines
+are kept." — that wording described the pre-markdown `<pre>` rendering and was stale the moment
+the body became markdown.
 
 ## A leading glyph means clickable, and read-only rows carry none
 
-Before this pass an artifact-key `<button>` and the read-only `id` `<div>` wore the same
-`font-mono text-ui-xs text-foreground-subtle`, differing only by `hover:bg-surface-hover` — a 5%
-`color-mix` wash. "It doesn't look like something I can click" was the correct read of the screen.
-
-- **Artifact key rows** lead with `fileIconFor("x.md")` (the `FileTextIcon` in `text-file-md`, the
-  same icon and ink the transcript's `FileChip` draws) and trail a `ChevronRightIcon` — already the
-  app's "this goes somewhere" mark in `Reasoning`, `ChangesGroupCard`, `ToolCallCardHeader` and
-  `SpacesList`. Selection moved off the 5% wash onto `bg-selected`, the sidebar's active-row token.
-- **Session rows** lead with `SessionStatusMark` (spinner / `?` / ring / dim ring), then the
-  **title**, then the id demoted out of the text flow. `sessionFieldOf` walks live → history →
-  archived (which is what makes an archived session's title reachable at all), `titleFor` is the one
-  label rule so the modal and the sidebar cannot name one **Session** differently, and status comes
-  from the batch `useSessionStatuses` because a hook cannot be called once per row in a list of
-  changing length.
-- **Read-only rows (`id`, `spec`) carry no leading glyph.** This is what makes "has a glyph" mean
-  anything at all. A change that paints every row identically again is the regression to watch for.
-
-**Do not re-file this as a bug:** `aria-current={selectedKey === key || undefined}` does *not*
-serialise to `aria-current="false"` for an unselected row. `false || undefined` evaluates to
-`undefined`, React omits the attribute, and the expression was evaluated directly rather than read.
-An earlier draft of the design claimed otherwise and was retracted.
-
-## The reading pane is one scroller with a sticky rail
-
-A card **with** artifacts opens at `sm:max-w-4xl`, one without opens at `sm:max-w-2xl` — exactly as
-before. **Width is decided at open, never on selection**: `artifactKeys` arrive with the card on the
-board read, so no dialog ever resizes itself under the cursor, and the common artifact-less case is
-untouched.
-
-The `max-h-72` nested scroll is gone; `detail-scroll` is the only scroll container in the dialog and
-the rail is `sticky` so it survives a long document. `max-h-[80vh]`, the pinned header and footer and
-the scroller's `min-h-0` all stay as issue #180's follow-up fixed them — a flex item's initial
-`min-height: auto` is what clipped the dialog before, and `min-h-0` is the token that removes it. The
-inverse rule governs the sections *inside* the scroller: `shrink-0` and **no** `min-h-0`, because a
-section that opts out of the min-height floor inside a definite-height column flex box is a section
-that gets crushed by the one beside it.
-
-**Below the dialog's breakpoint the rail stacks above the document instead of beside it.** At 400px
-the dialog runs `max-w-[calc(100%-2rem)]` = 368px, and a 176px rail plus padding and the pane's own
-padding left roughly 126px of document measure. Three tokens had to move to the `sm:` arm *with* the
-width, because flipping the row's direction silently moved their axes — each of these would have been
-a new defect left unconditional:
-
-- `sticky` → `sm:sticky`. A stuck element paints over its stuck position, so a rail stacked **above**
-  the document would cover the document's first lines for the whole scroll.
-- `items-start` → `sm:items-start` over `items-stretch`. `align-items` is the **cross** axis, so in a
-  stacked row that token shrinks the document to content width instead of stopping the rail from
-  stretching — crushing the measure exactly like the bug being fixed.
-- `flex-1` → `sm:flex-1` on the pane wrapper. `flex: 1 1 0%`, so stacked, the `0%` basis lands on
-  **height** and the layout rests on whether a percentage resolves against an indefinite container
-  height.
-
-`w-full` + `sm:w-44` survives both directions on media-query ordering, not on tailwind-merge — that
-`className` is a plain literal with no `cn()` in it. `bg-popover` on the rail is load-bearing rather
-than decorative, for the same sticky-painting reason.
-
-**No nested navigation.** A card-view / document-view swap with a Back control was rejected: ADR 0095
-retired the app's `Back` button on the rule that *a modal is not a location*. A rail plus a pane is
-one surface with one selection.
+- **Artifact tabs** are the clickable grammar for artifacts. The active one is marked by the brand
+  underline, not by a fill, so it reads as a section switch rather than a row selection.
+- **Session rows** lead with `SessionStatusMark` (spinner / `?` / ring / dim ring), then the **title**,
+  then a trailing `from <Stage label>` caption. `sessionFieldOf` walks live → history → archived,
+  `titleFor` is the one label rule so the modal and the sidebar cannot name one **Session** differently,
+  and status comes from the batch `useSessionStatuses`, because a hook cannot be called once per row in
+  a list of changing length.
+- **The spec path is inert text that click-to-edits.** It is not a `FileChip` (ADR 0101's sibling rule:
+  two surfaces for one path with two behaviours is the disagreement this repo's defect log is made of).
+  Read-only rows carry no leading glyph, so "has a glyph" still means "clickable" anywhere it appears.
 
 ## Reading order follows what a person came to do
 
-Inside `detail-scroll`, in order: **Body** (markdown, full width, no rail beside it) → **Artifacts**
-(the only two-column region) → **Sessions** → **Meta** (`spec`, then `id`). Previously `id` and `spec`
-sat above the artifacts, so a task id outranked the spec document.
+On the Overview: **Description** (markdown, or the placeholder) → **Sessions on this task**. Each
+artifact tab is its own document. The **Properties** column is inside the same scroller, beside the document at
+`md:` and below it on a narrow window, so the whole body scrolls and nothing is unreachable.
 
-One correctness fix came with the rows: a session link used to print `from <slug>` while the same
-dialog's header printed the **Stage**'s `label` a few lines above it, so the modal contradicted itself
-about what a **Stage** is called. Both now read the one `columns` slice through `stageLabelOf`, and
-both fall back to the **slug** when a lookup misses — "we could not name it" is a different claim from
-"it has no **Stage**".
+One correctness fix is kept from the previous pass: a session link prints `from <Stage label>`, and the
+Stage control prints the same label. Both read the one `columns` slice through `stageLabelOf`, and both
+fall back to the **slug** when a lookup misses — "we could not name it" is a different claim from "it has
+no **Stage**".
 
-## The race is the rail's problem, not the reader's
+## Inline editing and Escape
 
-`select` in `src/hooks/useArtifactReader.ts` keeps two locks, clear `selectedArtifact` before the
-fetch and the `requestEpochRef` identity check after the `await`. The rail makes that race **more**
-reachable, not less — two reads can be in flight and the older one can answer last, painting one
-key's document under another. Any change that adds a second way to select an artifact has to keep
-both.
+Title, Description and spec path save through the store's `editTask` action. Its positional mapping is
+`(taskId, title, body, specPath)`, with `undefined` meaning **keep** and `null` meaning **clear**; the
+dialog sends only the field it changed, so a title edit never blanks the body or the spec path.
+
+**The Escape seam.** Radix dismisses on Escape from a capture-phase document listener that runs before
+any React `onKeyDown`, and it only dismisses when `!event.defaultPrevented`. So a child that calls
+`stopPropagation()` cannot keep the modal open. The fix is the dialog's `onEscapeKeyDown`, which calls
+`preventDefault()` while an editor is open:
+
+- **Title and spec-path editors** keep the modal open with `preventDefault()` alone. Their inputs commit
+  on blur, so they can never be open-but-blurred, and the Escape keydown reaches their own `onKeyDown`,
+  which cancels them.
+- **The Description editor** is the exception, and the reason for the dialog-level branch. It has no
+  `onBlur`, so a click elsewhere leaves its draft open with the textarea unfocused, and the Escape keydown
+  never reaches the textarea. A `preventDefault()`-only handler would deadlock: the modal would neither
+  close nor cancel. So the dialog cancels the draft **directly**. The first Escape cancels the draft; a
+  second Escape, with no editor open, closes the modal.
+
+The lifted state that makes this decidable is in the dialog: `titleEditing` and `specEditing` (each child
+reports every open and close, including unmount), and `bodyDraft` together with `shownKey`. The
+Description draft only counts while its textarea is mounted (Overview showing). On an artifact tab a held
+draft is in memory but invisible, so it does not block Escape from closing the modal.
+
+A draft **survives a tab switch**: type a Description, open an artifact, return to Overview, and the
+textarea still holds the text.
+
+## Stage switching
+
+The Stage control is a `Select` over the columns. Choosing another column calls `moveTask(spacePath, id,
+slug)`. The store answers with the slug the card is in **after** the attempt: a different slug means the
+move was refused (for example a Strict workflow), and the store has already reverted the optimistic slice
+and written the sentence to its `error` cell. The dialog then shows that sentence as a `role="alert"`
+under the control, and the control shows the original Stage again.
+
+A `boostNote` (a warning, not a failure: the card moved, but a `compact` column with no live Session
+compacted nothing) renders as a `role="status"` line, `data-testid="move-note"`, in the Properties column.
+
+With no Space the Stage control is disabled.
+
+## Properties column
+
+- **Status** shows exactly ONE mark, chosen by `cardMarkOf({ sessionStatus, ready })`, which is the same
+  function the card paints with. The precedence is `waiting` > `ready` > `running`:
+  - `waiting` → `SessionStatusMark` and "Waiting for you";
+  - `ready` → `BellRingIcon` in `text-warning` (`data-testid="property-ready-glyph"`) and "Ready";
+  - `running` → `SessionStatusMark` and "Running".
+
+  The whole row is omitted when the mark is `null`. The ready glyph is `text-warning`, not
+  `CircleCheckIcon` in `text-success`: the board paints `BellRing` in `text-warning`, and a green check
+  in the modal would contradict the glyph on the card the user just clicked. `TasksBoard` passes
+  `ready={readyFor(detailCard)}`, so the modal and the card read the same marker.
+- **Activity** is `N session(s)`, plus `moneyOf(costUsd)` when the cost is reported. `null` prints no
+  dollar figure; `0` prints `$0.00` (ADR 0082).
+- **Updated** and **Created** read `relativeTimeFromInstant`, with `absoluteTimeFromInstant` as the
+  `title` tooltip.
+- **ID** prints the `tsk_` id and a Copy control. The control is icon-only, so its accessible name is an
+  `sr-only` span rather than an `aria-label`, which keeps the footer census exact.
 
 ## Deliberately absent
 
-- **Editing a Task from the modal.** `edit_task` exists on the wire and `store/tasks.ts`
-  deliberately omits `editTask` ("no board action rewrites a card"), with zero UI callers. Adding an
-  edit mode would make this component the owner of a write path the store refuses to own.
-- **Per-session cost.** The header already shows the sum through `moneyOf`, which owns the
-  null-vs-zero rule (ADR 0082).
-- **`specPath` as a clickable `FileChip`.** A markdown body can now link to a spec; the `specPath`
-  field renders as a read-only row. Two surfaces for one path with two behaviours is the disagreement
-  this repo's defect log is made of, so if the chip ever becomes a link it **replaces** the row rather
-  than joining it.
+- **Per-session cost.** The Activity row shows the sum through `moneyOf`, which owns the null-vs-zero
+  rule (ADR 0082).
+- **`specPath` as a clickable `FileChip`.** The spec path is inert text that edits inline. If it ever
+  becomes a link it **replaces** the editable value rather than joining it.
 - **Nothing for `getArtifact` answering `null`.** `null` is an answer, so there is no document and no
-  error sentence. A read *failure* is different and goes in the pane slot through `IpcErrorLine`,
-  never in the launch `error` cell — and a launch failure keeps the dialog open with its own line.
+  error sentence. A read *failure* goes in the pane slot through `IpcErrorLine`, never in the launch
+  `error` cell.
+- **No nested navigation.** A card-view / document-view swap with a Back control was rejected: ADR 0095
+  retired the app's Back button on the rule that a modal is not a location. The tab strip is one surface
+  with one selection, not a second place to go.
 
-## Unheld after the artifact split
+## The artifact race is the reader's, and the tab gates on the dialog's key
 
-Facts about this surface that are true at HEAD and held by **no** automated check. Each is labelled
-**pre-existing** — also true of `main`, so the split neither caused nor worsened it — or **of this
-branch**, because that is the distinction a future reader needs before deciding what to fix. None of
-this is a verdict on the split; it is the list of which invariants review is carrying.
+`select` in `src/hooks/useArtifactReader.ts` keeps two locks: it clears `selectedArtifact` before the
+fetch, and the `requestEpochRef` identity check drops a late answer for a key the reader has moved on
+from. Both are pinned by `TaskDetailDialog.test.tsx` (the in-flight gap and the out-of-order resolution).
 
-- **The request epoch orders by key alone — it carries no `taskId`.** `select` in
-  `src/hooks/useArtifactReader.ts` mints the epoch from the artifact **key**
-  (`requestEpochRef.current = key`) and both locks after the `await` compare that one value
-  (`grep -c 'requestEpochRef.current !== key' src/hooks/useArtifactReader.ts` → **2**). `taskId` reaches
-  the hook on one path only, the fetch argument
-  (`grep -vE '^[[:space:]]*(//|\*|/\*|$)' src/hooks/useArtifactReader.ts | grep -c taskId` → **4** code
-  lines: the option, the injected action's signature, the destructure, the call), and no comparison reads
-  it. So a read belonging to a **previous** card can pass both locks and paint, because the keys match:
-  `select("spec.md")` on one card and `select("spec.md")` on the next are the same epoch. The mount site
-  declines to help — `src/components/TasksBoard.tsx` renders the dialog with **no `key` prop**
-  (`grep -A9 '<TaskDetailDialog' src/components/TasksBoard.tsx | grep -c 'key='` → **0**), so React reuses
-  the instance, and with it the hook's state and its ref, if the detail id changes without an unmount.
-  **Reachability: no path found — theoretical at HEAD.** `setDetailTaskId` has three writers and all three
-  are in `TasksBoard.tsx` (`grep -rn 'setDetailTaskId' src/` → **3**): the `useState(null)`, the card click
-  behind `onOpenTask`, the close behind `onClose`. The dialog is a Radix `Dialog.Root` with `open` and no
-  `modal={false}` (`grep -c 'modal={' src/components/TaskDetailDialog.tsx` → **0**), so `modal` is Radix's
-  default `true` and `react-dismissable-layer` sets the body to `pointer-events: none` — the board behind
-  is unclickable while the dialog is up, the id therefore cannot move card-to-card without an intervening
-  close, and a close writes `null`, which drops `detailCard` to `undefined` and unmounts. It becomes
-  reachable the moment anyone adds a next/prev control inside the dialog, a `modal={false}` mount, or a
-  second opener that writes an id while one is already set. **Pre-existing and unchanged by the split:**
-  `git show main:src/components/TaskDetailDialog.tsx` held the identical shape under the older name
-  `requestKey` — minted from `key`, compared `!== key`, no `taskId` anywhere in the comparison — and
-  `git show main:src/components/TasksBoard.tsx` mounts the dialog without a `key` prop as well. The split
-  moved the epoch; it did not choose how wide the epoch is.
-- **Reader state is not reset when the card changes.** The hook has **zero `useEffect`s**
-  (`grep -vE '^[[:space:]]*(//|\*|/\*|$)' src/hooks/useArtifactReader.ts | grep -c useEffect` → **0**), so
-  nothing clears `selectedKey` / `selectedArtifact` / `artifactError` on a card switch: a switch would
-  leave the previous card's key selected with its document under it. Reachable only on the same
-  never-unmounted path as the entry above. **Pre-existing** — the three `useState` cells sat in the dialog
-  body on `main` with no effect beside them either
-  (`git show main:src/components/TaskDetailDialog.tsx | grep -vE '^[[:space:]]*(//|\*|/\*|$)' | grep -c useEffect`
-  → **0**). Use the stripped classifier and not the bare grep: `grep -c useEffect` on the hook prints **2**,
-  both inside its own doc comment, one of them the sentence "This hook has zero `useEffect`s".
-- **The no-wrapper rule on `TaskArtifactSection` is held by review, not by the suite.** A child that adds a
-  wrapper `<div>` is invisible to `TaskDetailDialog.test.tsx`. Measured three times independently during
-  PR #213's review: a bare inert wrapper leaves the file **63/63 green**, and so does a
-  wrapper wearing the section's own `flex shrink-0 flex-col gap-1`. The only wrapper any test catches is one
-  carrying `overflow-y-auto`, and it reddens exactly **1** test (`detail-scroll is the ONLY scroll container
-  in the dialog, and the rail and pane resolve to it`). Those zeroes are a result and not a blind suite — the
-  falsification control, dropping `shrink-0` from the section's **own** `className`, reddens **1**. Verified
-  at HEAD rather than inherited: `grep -c 'data-testid="artifact-section"' src/components/tasks/TaskArtifactSection.tsx`
-  → **1** (one root, no second carrier) and `grep -c 'React.memo' src/components/tasks/TaskArtifactSection.tsx`
-  → **0**. A one-line assertion would close the gap — `artifact-section`'s `parentElement` is the scroller, by
-  identity against `.overflow-y-auto`, the same instrument the pane pins already use — and it was deliberately
-  **not** added, because adding it means editing `TaskDetailDialog.test.tsx`, whose byte-identity to `main`
-  (`git diff main --exit-code -- src/components/TaskDetailDialog.test.tsx` → exit **0**) is this split's proof.
-  **Of this branch**, in the sense that the file it guards did not exist before it; the rule it guards is the
-  scroller's, and older than the split.
-- **Two subjects still live in `TaskDetailDialog.tsx`.** It measures **385** code lines under the ratchet's
-  own classifier (`grep -vcE '^[[:space:]]*(//|\*|/\*|$)' src/components/TaskDetailDialog.tsx` → **385**),
-  against **500** on `main` under the same classifier; the two files the split took out carry **130**
-  (`src/components/tasks/TaskArtifactSection.tsx`) and **37** (`src/hooks/useArtifactReader.ts`). Do not
-  quote `wc -l` (**677**) as the figure — the ratchet's unit is code lines, comments and blanks stripped.
-  What remains is the **sessions list** (`sessions.map`, `SessionStatusMark`, `useSessionStatuses`) and the
-  **launch/edge footer** (`DialogFooter`, `launchTaskSession`, `const launch`), **11** code lines naming
-  those symbols
-  (`grep -vE '^[[:space:]]*(//|\*|/\*|$)' src/components/TaskDetailDialog.tsx | grep -cE 'sessions\.map|SessionStatusMark|useSessionStatuses|DialogFooter|launchTaskSession|const launch ='`
-  → **11** — one instrument for "both are still here", rather than a grep per symbol). ADR 0114's precedent
-  now exists for taking them. The file sits below the 1,000-code-line tripwire and is named nowhere in
-  `scripts/file-size-baseline.txt` (`grep -c 'TaskDetailDialog' scripts/file-size-baseline.txt` → **0**), so
-  this is a **subject-count** observation and not a ratchet claim — `AGENTS.md` is explicit that size is not
-  a defect predictor here, and a future reader should not upgrade this bullet into a size argument.
-- **No gate reads this doc, so a citation here can orphan silently.** A doc that names a symbol the tree no
-  longer carries fails nothing: `grep -rln "docs/features" src/ --include="*.test.ts*"` → **4** files, and
-  on inspection **3** of them name docs in prose comments only (`CodemodeCard.test.tsx` and
-  `paletteTestKit.test.ts` contain no `readFileSync` at all, and `paletteCompleteness.test.ts`'s two
-  `readFileSync` matches are comments describing a read that was dropped). One **partial** gate exists and
-  it is worth naming precisely rather than dismissing: `src/lib/subagentSheetLayout.test.ts` keeps a `PROSE`
-  list, reads `docs/features/subagent-sessions.md` from disk, and fails on an offender line — but it is
-  one doc, one topic, and its offenders are bracketed **Tailwind class syntax**, not symbol names, and its
-  own comment calls itself "the suite's only doc↔code coupling". Nothing scans for a renamed symbol
-  (`grep -rln 'docs/features' scripts/*.sh` → **0** matches; the `docs/` hits across those scripts are
-  comments plus one allowlist string, not a scan), and nothing reads this file at all
-  (`grep -rln 'task-detail-modal' src/ scripts/ .github/` → **0** matches). This branch caught its
-  orphans by hand, in two species: one commit on PR #213 re-pointed this doc's `selectArtifact` /
-  `requestKey` to `select` / `requestEpochRef` — accurate on `main`, orphaned here — and another commit
-  in that PR removed line numbers that had already drifted out from under the prose. Both are **of this
-  branch**, because both were the split's own renames; the absence of a gate is **pre-existing** and
-  applies to every doc in the tree.
+`useArtifactReader` has **no cache and no deselect**, so `selectedKey` stays set after the reader returns
+to Overview. The pane is therefore gated on the dialog's own `shownKey`, never on `selectedKey`. Re-opening
+a tab whose document is already loaded does not refetch, because the dialog skips the call when the
+document on screen is the one it would ask for.
+
+No artifact is fetched on open (ADR 0100). The first fetch happens on the first click of a tab.
 
 ## Pin map
 
-`src/components/TaskDetailDialog.test.tsx`, 63 tests, one `describe` per subject (counts from
-`npx vitest list`, which is the only instrument that expands an `it.each` — this file happens to hold
-none today, and `npx vitest list src/components/TaskDetailDialog.test.tsx | wc -l` → 63):
-`the graph buttons` 16 · `the artifact reader (issue #180)` 8 · `the artifact rail and
-pane` 8 · `the clickable grammar` 6 · `the body renders as markdown` 6 · `what the card cannot show` 7
-· `the modal scrolls (issue #180 follow-up)` 4 · `the session's Stage label` 3 · `the sessions list` 3
-· `closing` 2.
+`src/components/TaskDetailDialog.test.tsx` — **62 tests**, one `describe` per subject, measured with the
+runner (`npx vitest run`, which lists every test, and not a grep):
+`what the card cannot show` 5 · `the sessions list` 3 · `the graph buttons` 16 · `the artifact tabs
+(issue #180)` 8 · `closing` 2 · `the modal scrolls` 9 · `the body renders as markdown` 6 · `the clickable
+grammar` 3 · `the session's Stage label` 3 · `the wide two-column shell` 5 · `the Status row` 2.
 
-Two gates this file is subject to and one it is not: a dynamic `className` must compose through `cn()`
-(`classNameConvention.test.ts`), and the quiet caption pair `text-ui-xs text-foreground-subtlest` has
-one carrier, `MutedCaption` (`mutedCaption.test.ts`). The artifact split moved part of the dialog's
-share of both into `src/components/tasks/TaskArtifactSection.tsx`, so the sites live in two files now,
-counted as **JSX uses**: `grep -c 'className={cn(' ` → **2** in `TaskDetailDialog.tsx` + **2** in
-`TaskArtifactSection.tsx`, and `grep -c '<MutedCaption' ` → **3** + **1**. Both instruments reconcile
-against `main`, where the dialog held all of it alone (**4** and **4**). Do not reach for
-`grep -c MutedCaption` as the instrument: it counts the `import` line and the prose mentions beside the
-uses, and one line can carry an opening and a closing tag, so it prints 9 on `main` and 8 + 2 here and
-adds up to neither. It holds **zero** `rounded-full` literals (`grep -c 'rounded-full'
-src/components/TaskDetailDialog.tsx` → **0**, and 0 in the split-out section too) and is not in
-`slabFloatSeparation.test.ts`'s `PILLS` census, whose two entries are `TaskCard.tsx` (5 literals) and
-`src/components/tasks/TaskColumn.tsx` (1) — the column pill moved to that file when the board was split,
-so `TasksBoard.tsx` now holds 0.
+`src/components/TaskDetailDialog.edit.test.tsx` — **30 tests**, the store-backed integration: a real
+`useTasks` slice and a `Harness` that re-derives the dialog's `task` the way `TasksBoard` does. It covers
+inline editing (title, Description, spec path), the Escape seam including the **blurred Description draft
+cancelled by the first Escape, with a second Escape closing the modal**, the Stage switch (a successful
+move, a refused move that reverts with a `role="alert"`, a `boostNote`, and a disabled control with no Space),
+and the **WAI-ARIA tablist** (unique ids, `aria-controls`/`aria-labelledby`, roving `tabIndex`, arrow/Home/End
+keys moving selection and DOM focus, the `overview`-key id collision, and the wrapping tab strip).
+It mocks the barrel the documented way and spreads `vi.importActual`, which is why it is the one new mocker
+in the `tauriBarrel` census (70 → 71).
 
-One behaviour to pin rather than "fix": `AgentMarkdown` renders fine with no `SpaceCwdProvider`, but a
-**relative** link inside it refuses as `relative-without-cwd`, because `useSpaceCwd()` answers `null`
-and `classify` refuses to guess. A test that mounts this dialog without a provider will see that.
+The four `components/tasks/*.test.tsx` files — **14** (Header), **23** (Description), **6** (ArtifactTabPane)
+and **36** (Properties) — have **no** `vi.mock` of `lib/tauri` and use **no** jest-dom matchers. They are
+presentational, so they are not barrel mockers and do not move the census. The Header, Description and
+Properties files now also pin the **pending-save disable** (the input is `disabled` while a save is in flight
+and re-enables with the draft on rejection) and, for Description, the **StrictMode** cases.
+
+**Mutate-check.** Disabling the dialog's `onEscapeKeyDown` guard reddens exactly the four Escape cases that
+depend on it (the title, the Description, the blurred Description, and the spec path), and the artifact-tab
+Escape case stays green as it should. The guard was restored and the suite re-run green.
+
+Two gates this area is subject to: a dynamic `className` composes through `cn()`
+(`classNameConvention.test.ts`), and the quiet caption pair `text-ui-xs text-foreground-subtlest` has one
+carrier, `MutedCaption` (`mutedCaption.test.ts`). The new children use `MutedCaption` for every caption.
+
+## Unheld by a gate
+
+Facts about this surface that are true and held by **no** automated check:
+
+- **The request epoch orders by key alone, and carries no `taskId`.** `select` mints the epoch from the
+  artifact **key** and both locks compare that one value. A read from a previous card whose key matches
+  could pass both locks. **Reachability: no path found at HEAD.** The dialog is a Radix `Dialog` with the
+  default `modal`, so the board behind it is unclickable while it is open, and a close unmounts it. It
+  becomes reachable the moment a card-to-card control is added inside the dialog. Pre-existing.
+- **Reader state is not reset when the card changes.** The hook has no `useEffect`, so a card switch on a
+  never-unmounted instance would leave the previous card's key and document under it. Reachable only on the
+  same path as the entry above. Pre-existing.
+- **The no-wrapper rule on the artifact pane is held by review.** A child that adds a wrapper `<div>` is not
+  caught by the suite unless the wrapper carries `overflow-y-auto`. The suite pins that one case
+  (`detail-scroll is the ONLY scroll container in the dialog`).
+- **No gate reads this document.** A doc that names a symbol the tree no longer carries fails nothing. This
+  rewrite was checked by hand against the tree.
+
+## Editing inside the modal: what the store refuses
+
+`editTask` writes the three card-text fields only. The stage, the `number` and the within-column position
+are not writable through it: the stage moves through `moveTask` (which runs the destination's `on_enter`),
+and the order through `reorderTasks`. The modal therefore has a Stage control and no order control.
+</content>

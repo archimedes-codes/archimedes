@@ -257,7 +257,7 @@ export default function NewTaskDialog({
         {/* The hint sits OUTSIDE the `<label>`, and that placement is a correctness
             detail rather than layout: a wrapping label's accessible name is its whole
             text content, so a hint nested inside would name this field
-            "Body Optional. Newlines are kept." — which is both what a screen reader
+            "Body Optional. Supports Markdown." — which is both what a screen reader
             would say and what the tests resolve it by. */}
         <div className="flex flex-col gap-1">
           <label className="flex flex-col gap-1 text-ui-base">
@@ -273,7 +273,7 @@ export default function NewTaskDialog({
             />
           </label>
           <span className="text-ui-sm text-foreground-subtlest">
-            Optional. Newlines are kept.
+            Optional. Supports Markdown.
           </span>
         </div>
 

@@ -4,6 +4,7 @@ import TaskCard, { type TaskCardProps } from "./TaskCard";
 import type { DragCardHandlers } from "../hooks/useDragCard";
 import type { TaskLaunchDestination } from "../lib/taskPrompt";
 import type { TaskRow, TaskSessionRow } from "../lib/tauri";
+import { absoluteTimeFromInstant, relativeTimeFromInstant } from "../lib/sessionTime";
 
 // Node's `fs` through a COMPUTED specifier — this app ships no `@types/node`, so a
 // bare `import "node:fs"` does not typecheck. The idiom `classNameConvention.test.ts`
@@ -35,10 +36,12 @@ const stripJsComments = (source: string): string =>
  * a component that quietly imported the wrong hook would still typecheck if someone
  * widened a type, and the DOM is what the contract is about.
  *
- * It is also NOT a `RowButton`, and the tests pin that: a `role="button"` here
- * would collide with `RowButton`'s one-role-per-row rule (`SpacesList.test.tsx`
- * reaches rows through `.closest('[role="button"]')` at eight sites), and a card is
- * not one of the five row affordances that component owns.
+ * The card IS a `RowButton` (PR #178), so it owns the ONE `role="button"` in its
+ * subtree. The `T{n}` badge is its only `rounded-full` pill; the spec and artifact
+ * chips are `rounded-md` spans, and the sessions link and the next-step control are
+ * role-less `<button>`s in the footer, so none of them adds a selector match
+ * (`SpacesList.test.tsx` reaches rows through `.closest('[role="button"]')` at
+ * eight sites).
  */
 
 const task = (over: Partial<TaskRow> = {}): TaskRow => ({
@@ -218,14 +221,31 @@ describe("TaskCard — what it renders", () => {
     expect(screen.queryByText("tsk_1")).toBeNull();
   });
 
-  it("renders a card with a body and one without (body is nullable on the wire)", () => {
+  it("never renders the body on a board card (compact card, no preview)", () => {
     const { unmount } = render(
       <TaskCard task={task({ body: "the details" })} {...NO_LINKS} />,
     );
-    expect(screen.getByText("the details")).toBeTruthy();
+    expect(screen.queryByText("the details")).toBeNull();
+    expect(screen.getByTestId("task-card").textContent).not.toContain("the details");
+    expect(screen.getByText("Ship the board")).toBeTruthy();
     unmount();
     render(<TaskCard task={task({ body: null })} {...NO_LINKS} />);
     expect(screen.getByText("Ship the board")).toBeTruthy();
+  });
+
+  it("the header caption shows the relative time with the absolute time as its tooltip", () => {
+    render(<TaskCard task={task({ updatedAt: 1 })} {...NO_LINKS} />);
+    // Expected strings come from the SAME helpers so the case is locale-independent.
+    // Locate by TEXT, then compare the `title` attribute with `===`: `getByTitle`
+    // would run the absolute string through Testing Library's whitespace matcher,
+    // which collapses U+202F on the node side but not on ours.
+    const caption = screen.getByText(relativeTimeFromInstant(1));
+    expect(caption.getAttribute("title") === absoluteTimeFromInstant(1)).toBe(true);
+    expect(caption.textContent).toBe(relativeTimeFromInstant(1));
+    // It stays its own element, beside (never inside) the title and the `T3` pill.
+    expect(caption.closest('[data-testid="task-card"]')).toBe(screen.getByTestId("task-card"));
+    expect(caption).not.toBe(screen.getByText("Ship the board"));
+    expect(caption).not.toBe(screen.getByText("T3"));
   });
 
   it("a card title wraps instead of clipping", () => {
@@ -260,16 +280,17 @@ describe("TaskCard — what it renders", () => {
     );
     const chip = screen.getByText("spec");
     const tokens = classTokens(chip);
-    expect(tokens).toContain("rounded-full");
+    // A chip, not a pill: `rounded-md`, so the `T{n}` badge stays the card's only
+    // `rounded-full` literal (the census in `slabFloatSeparation.test.ts`).
+    expect(tokens).toContain("rounded-md");
+    expect(tokens).not.toContain("rounded-full");
     // The fill must differ from BOTH surfaces a chip can land on — the column's
-    // `bg-panel` and this card's `bg-card` — IN EVERY PALETTE, and `bg-chat` fails
-    // that: its default-dark `color-mix` base (`--color-background-win-alt`, `#2b2b2b`)
-    // IS `--color-card`, so a chip wearing it over a card composites to the card —
-    // contrast 1.00, invisible. The 1.22 / 1.21 figures that justified it were
-    // Dracula-only (ADR 0096's single-palette-check error). `bg-background`
-    // measures 1.10/1.34 Dracula, 1.11/1.28 default-dark, 1.06/1.06 default-light; the
-    // per-palette census is `src/lib/slabFloatSeparation.test.ts`.
+    // `bg-panel` and this card's `bg-card` — IN EVERY PALETTE. `bg-chat` is the
+    // island plane and fails that (1.00 in default-dark). `bg-background` is the
+    // measured page step; the per-palette census is
+    // `src/lib/slabFloatSeparation.test.ts`.
     expect(tokens).toContain("bg-background");
+    expect(tokens).not.toContain("bg-chat");
     // The path itself is not the chip's text — it is a pointer, not a title, and
     // rendering it would put an absolute filesystem path on every card.
     expect(chip.textContent).toBe("spec");
@@ -309,64 +330,89 @@ describe("TaskCard — the artifact key chips (issue #180)", () => {
       screen.getByTestId("task-card").querySelectorAll('[class*="rounded-full"]'),
     );
 
-  it("a card with artifact keys renders one chip per key, beside the spec chip", () => {
-    // The keys are NAMES and nothing else — the board read carries `artifactKeys`
-    // alone (spec §1: one `markdown` column on that payload would put every Task's
-    // every document on the wire just to render a chip), and reading a document is
-    // the detail modal's job. So the card's whole artifact surface is this label
-    // row, and it must not grow one.
+  const CHIP_TOKENS = ["rounded-md", "bg-background", "px-1.5", "py-0.5", "text-ui-xs", "text-foreground-subtle"];
+  const chipRow = (chip: Element): HTMLElement => chip.parentElement as HTMLElement;
+
+  it("artifact keys and the spec pointer render as chips in ONE wrapping row", () => {
     render(
-      <TaskCard
-        task={task({ specPath: "/tmp/spec.md" })}
-        {...NO_LINKS}
-        artifactKeys={["plan", "research"]}
-      />,
+      <TaskCard task={task({ specPath: "/tmp/spec.md" })} {...NO_LINKS} artifactKeys={["plan"]} />,
     );
-    for (const key of ["plan", "research"]) {
-      const chip = screen.getByText(key);
-      // A LABEL, not the document: the chip's whole text is the key.
-      expect(chip.textContent).toBe(key);
-      const tokens = classTokens(chip);
-      expect(tokens).toContain("rounded-full");
-      // The fill is the card's ONE pill recipe — the page step, because a chip has
-      // to differ from both surfaces it can land on (`bg-panel` column, `bg-card`
-      // card) in every palette, and `bg-chat` is exactly `bg-card` in default-dark.
-      expect(tokens).toContain("bg-background");
-      expect(tokens).not.toContain("bg-chat");
-      expect(chip.tagName).toBe("SPAN");
-    }
-    // BESIDE the spec chip: the same sibling flow inside the card, and the spec chip
-    // is still the spec chip — an artifact key never replaces it or borrows its
-    // label.
+    // keys first, `spec` appended
+    const plan = screen.getByText("plan");
     const spec = screen.getByText("spec");
-    expect(spec.tagName).toBe("SPAN");
-    expect(spec.parentElement).toBe(screen.getByTestId("task-card"));
-    expect(screen.getByText("plan").parentElement).toBe(spec.parentElement);
-    // Two keys, TWO pills, and the spec chip is untouched: `T{n}` + spec + 2 keys.
-    expect(pillNodes()).toHaveLength(4);
+    for (const chip of [plan, spec]) {
+      expect(chip.tagName).toBe("SPAN");
+      expect(chip.getAttribute("role")).toBeNull();
+      const tokens = classTokens(chip);
+      for (const t of CHIP_TOKENS) expect(tokens).toContain(t);
+      expect(tokens).not.toContain("rounded-full");
+      expect(tokens).not.toContain("bg-chat");
+    }
+    const row = chipRow(plan);
+    expect(chipRow(spec)).toBe(row);
+    expect(row).not.toBe(screen.getByTestId("task-card"));
+    expect(row.closest('[role="button"]')).toBe(screen.getByTestId("task-card"));
+    for (const t of ["flex", "flex-wrap", "items-center", "gap-1"]) expect(classTokens(row)).toContain(t);
+    // document order: plan before spec
+    expect(plan.compareDocumentPosition(spec) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // exactly two chips, no overflow chip
+    expect(row.children).toHaveLength(2);
+    // `T{n}` is the ONLY rounded-full pill
+    expect(pillNodes()).toHaveLength(1);
   });
 
-  it("a card with NO artifact keys renders NO artifact chip at all", () => {
-    // The empty set is not a state to announce. The gate is `artifactKeys.length >
-    // 0`, so an artifact-less card — the common case, and what the `NO_LINKS`
-    // fixture default spells — renders no header line, no placeholder, no empty
-    // pill. The same rule the spec chip already follows for an absent `specPath`.
-    // `artifactKeys={[]}` spelled explicitly AFTER the spread (the spread would
-    // overwrite a prop written before it) so the case states its own subject rather
-    // than inheriting the fixture default silently.
+  it("shows at most two chips and folds the rest into a +N chip whose title lists every name", () => {
+    // spec is APPENDED, so with two keys it is the one that overflows
     const { unmount } = render(
-      <TaskCard
-        task={task({ specPath: "/tmp/spec.md" })}
-        {...NO_LINKS}
-        artifactKeys={[]}
-      />,
+      <TaskCard task={task({ specPath: "/tmp/spec.md" })} {...NO_LINKS} artifactKeys={["plan", "research"]} />,
     );
-    expect(pillNodes()).toHaveLength(2);
+    expect(screen.getByText("plan")).toBeTruthy();
+    expect(screen.getByText("research")).toBeTruthy();
+    expect(screen.queryByText("spec")).toBeNull();
+    const more = screen.getByText("+1");
+    expect(more.tagName).toBe("SPAN");
+    expect(more.getAttribute("role")).toBeNull();
+    expect(more.getAttribute("title")).toBe("plan, research, spec");
+    for (const t of CHIP_TOKENS) expect(classTokens(more)).toContain(t);
+    expect(chipRow(more).children).toHaveLength(3);
     unmount();
+
     render(
+      <TaskCard task={task()} {...NO_LINKS} artifactKeys={["plan", "research", "adr", "notes"]} />,
+    );
+    expect(screen.queryByText("adr")).toBeNull();
+    expect(screen.queryByText("notes")).toBeNull();
+    expect(screen.getByText("+2").getAttribute("title")).toBe("plan, research, adr, notes");
+    expect(pillNodes()).toHaveLength(1);
+  });
+
+  it("exactly two names render with NO overflow chip", () => {
+    render(<TaskCard task={task()} {...NO_LINKS} artifactKeys={["plan", "research"]} />);
+    expect(screen.queryByText(/^\+\d+$/)).toBeNull();
+    expect(chipRow(screen.getByText("plan")).children).toHaveLength(2);
+  });
+
+  it("an artifact literally named `spec` is not duplicated by the spec pointer", () => {
+    render(
+      <TaskCard task={task({ specPath: "/tmp/spec.md" })} {...NO_LINKS} artifactKeys={["spec", "plan"]} />,
+    );
+    expect(screen.getAllByText("spec")).toHaveLength(1);
+    expect(screen.queryByText(/^\+\d+$/)).toBeNull();
+    expect(chipRow(screen.getByText("plan")).children).toHaveLength(2);
+  });
+
+  it("a spec alone is one chip, and a card with neither keys nor a spec renders NO chip row", () => {
+    const { unmount } = render(
+      <TaskCard task={task({ specPath: "/tmp/spec.md" })} {...NO_LINKS} artifactKeys={[]} />,
+    );
+    // spec alone is one chip in the row
+    expect(chipRow(screen.getByText("spec")).children).toHaveLength(1);
+    expect(pillNodes()).toHaveLength(1);
+    unmount();
+    const { container } = render(
       <TaskCard task={task({ specPath: null })} {...NO_LINKS} artifactKeys={[]} />,
     );
-    // Just the `T{n}` pill: no spec chip, no artifact chip.
+    expect(container.querySelector(".flex-wrap")).toBeNull();
     expect(pillNodes()).toHaveLength(1);
   });
 
@@ -417,6 +463,60 @@ describe("TaskCard — the artifact key chips (issue #180)", () => {
     fireEvent.click(chip);
     expect(onOpenTask).toHaveBeenCalledTimes(1);
     expect(onOpenTask).toHaveBeenCalledWith("tsk_1");
+  });
+});
+
+describe("TaskCard — the footer row", () => {
+  const footerOf = (): Element | null =>
+    screen.getByTestId("task-card").querySelector("div.border-t");
+
+  it("paints no footer when there are no sessions and no launchable next step", () => {
+    const { unmount } = render(<TaskCard task={task()} {...NO_LINKS} />);
+    expect(footerOf()).toBeNull();
+    unmount();
+    // a next step whose Skill has not landed (launchReady false) is NOT a footer either
+    render(<TaskCard task={task()} {...NO_LINKS} launchStep={launchStep({ launchReady: false })} />);
+    expect(footerOf()).toBeNull();
+  });
+
+  it("paints the footer with the card-border top rule when either control will render", () => {
+    const { unmount } = render(
+      <TaskCard task={task()} {...NO_LINKS} sessions={[link("sess_1")]} />,
+    );
+    const footer = footerOf()!;
+    for (const t of ["flex", "items-center", "justify-between", "gap-2", "border-t", "border-card-border", "pt-2"]) {
+      expect(classTokens(footer)).toContain(t);
+    }
+    unmount();
+    render(<TaskCard task={task()} {...NO_LINKS} launchStep={launchStep()} />);
+    expect(footerOf()).not.toBeNull();
+  });
+
+  it("the lone next-step button stays right-aligned (ml-auto)", () => {
+    render(<TaskCard task={task()} {...NO_LINKS} launchStep={launchStep()} />);
+    expect(classTokens(controlNamed("Approved"))).toContain("ml-auto");
+  });
+
+  it("holds the sessions link and the next step side by side, in that order", () => {
+    render(
+      <TaskCard task={task()} {...NO_LINKS} sessions={[link("sess_1")]} launchStep={launchStep()} />,
+    );
+    const footer = footerOf()!;
+    const buttons = Array.from(footer.querySelectorAll("button"));
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0]!.textContent).toContain("1 session");
+    expect(buttons[1]!.textContent).toContain("Approved");
+  });
+
+  it("the sessions link carries a decorative 12px icon and still reads as its own text", () => {
+    render(<TaskCard task={task()} {...NO_LINKS} sessions={[link("sess_1")]} />);
+    const btn = screen.getByText("1 session");
+    expect(btn.tagName).toBe("BUTTON");
+    const icon = btn.querySelector("svg")!;
+    expect(icon).not.toBeNull();
+    expect(icon.getAttribute("aria-hidden")).toBe("true");
+    expect(icon.textContent).toBe("");
+    expect(btn.textContent).toBe("1 session");
   });
 });
 
@@ -640,28 +740,23 @@ describe("TaskCard — the card is a control (PR #178 inverts this)", () => {
 });
 
 describe("TaskCard — the primary-next-step pill (issue #179 §7.1)", () => {
-  it("renders the destination label as a real control with the card's pill recipe", () => {
-    // The pill is the card's ONE launch affordance: the primary next step, labelled
-    // with the DESTINATION Stage's label (not the card's, not the current column's)
-    // because the destination is what the click acts on.
-    //
-    // The class tokens are asserted because the recipe is a measured decision, not a
-    // taste one: `bg-background` is the only fill that differs from BOTH the column's
-    // `bg-panel` and the card's `bg-card` in every palette (`bg-chat` is EXACTLY
-    // `bg-card` in default-dark — contrast 1.00, an invisible pill), and
-    // `slabFloatSeparation.test.ts` censuses this literal. `transition-*` is absent on
-    // the `FileChip` reasoning that file records.
+  it("renders the destination label as a real control with the bordered-button recipe", () => {
+    // The next-step control is a BORDERED button, not a pill. It wears `bg-surface`
+    // (the raised-control rung, not the page step) and sits OUTSIDE the
+    // `rounded-full` census, so the card keeps `T{n}` as its only pill. `transition-*`
+    // stays absent on the `FileChip` reasoning.
     render(<TaskCard task={task()} {...NO_LINKS} launchStep={launchStep()} />);
     const pill = controlNamed("Approved");
     expect(pill.tagName).toBe("BUTTON");
     expect(pill.getAttribute("type")).toBe("button");
     const tokens = classTokens(pill);
-    expect(tokens).toContain("self-start");
-    expect(tokens).toContain("rounded-full");
-    expect(tokens).toContain("bg-background");
+    for (const t of ["ml-auto", "cursor-pointer", "rounded-md", "border", "border-border", "bg-surface", "px-2", "py-0.5", "text-ui-xs", "font-medium", "text-foreground", "hover:bg-surface-hover"]) {
+      expect(tokens).toContain(t);
+    }
+    expect(tokens).not.toContain("rounded-full");
+    expect(tokens).not.toContain("bg-background");
     expect(tokens).not.toContain("bg-chat");
-    expect(tokens).not.toContain("bg-card");
-    expect(tokens.filter((t) => /^bg-/.test(t))).toEqual(["bg-background"]);
+    expect(tokens.filter((t) => /^bg-/.test(t))).toEqual(["bg-surface"]);
     expect(tokens.some((t) => t.startsWith("transition-"))).toBe(false);
   });
 
@@ -1103,23 +1198,13 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
     expect(src).toContain("export default function TaskCard");
   });
 
-  it("the sessions chip wears the page-step fill, never the island plane", () => {
-    // The same pill rule the board enforces for the `T{n}` pill, the spec chip and
-    // the column count, now with a THIRD carrier: the fill has to differ from BOTH
-    // surfaces it can sit on — the column's `bg-panel` and this card's `bg-card` —
-    // in EVERY palette. `bg-chat` is the island plane and is exactly `bg-card` in
-    // default-dark (its `color-mix` base is `--color-background-win-alt` `#2b2b2b`,
-    // which IS `--color-card` there), so a chip wearing it over a card composites
-    // to the card: 1.00, invisible. The per-palette census is
-    // `src/lib/slabFloatSeparation.test.ts`, whose pill count this chip moves from
-    // 2 to 3 for this file.
-    //
-    // It is a real `<button type="button">` and not a `<span>` with a click
-    // handler: it activates from the keyboard and it says what it is to a screen
-    // reader. It does NOT carry a `role` of its own: a `<button>` needs no role
-    // spelled, and the card wears the row's ONE role (see the case above), so a role
-    // here would be a second `[role="button"]` match in the tree the sidebar
-    // resolves rows through.
+  it("the sessions control is a quiet inline link, not a pill", () => {
+    // The sessions control is a quiet inline LINK now: an inline-flex row of 12px
+    // icon + text, no fill and no border, and a hover that changes only the ink.
+    // It is a real `<button type="button">` (keyboard-focusable, named to a screen
+    // reader) and carries NO `role` of its own, so it contributes nothing to the
+    // one-`role="button"`-per-row selector. It is NOT a `rounded-full` pill, so it
+    // sits outside the `slabFloatSeparation.test.ts` census.
     render(
       <TaskCard
         task={task()}
@@ -1138,8 +1223,11 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
     expect(chip.tagName).toBe("BUTTON");
     expect(chip.getAttribute("type")).toBe("button");
     const tokens = classTokens(chip);
-    expect(tokens).toContain("rounded-full");
-    expect(tokens).toContain("bg-background");
+    for (const t of ["inline-flex", "items-center", "gap-1", "rounded", "px-1.5", "py-0.5", "-ml-1.5", "text-ui-xs", "text-foreground-subtle", "hover:bg-surface-hover", "hover:text-foreground"]) {
+      expect(tokens).toContain(t);
+    }
+    expect(tokens).not.toContain("rounded-full");
+    expect(tokens).not.toContain("bg-background");
     expect(tokens).not.toContain("bg-chat");
     // No role ON THE CHIP (the card's role is the row's one role — see the case
     // above). This used to be `closest(…).toBeNull()`, which PR #178 inverted.
@@ -1315,13 +1403,10 @@ describe("TaskCard — the live session-status mark", () => {
   });
 
   it("the mark adds no pill to the card's census, and no WORD to the card", () => {
-    // `slabFloatSeparation.test.ts` counts the card's `rounded-full` +
-    // `bg-background` class LITERALS at FIVE, because every one of them is a pill
-    // that has to differ from both the `bg-panel` column and the `bg-card` card in
-    // every palette. A status glyph is not a pill: it wears no fill, so the census
-    // must not move. Asserted on the RENDERED nodes (the source-side count is that
-    // file's job): `T{n}` + spec + one artifact key + the sessions chip = 4, and the
-    // mark is not a fifth.
+    // `slabFloatSeparation.test.ts` pins the card's `bg-background` `rounded-full`
+    // literal at ONE (the `T{n}` badge). A status glyph is not a pill: it wears no
+    // fill, so the rendered census is ONE and the mark is not a second. Asserted on
+    // the RENDERED nodes (the source-side count is that file's job).
     render(
       <TaskCard
         task={task({ specPath: "/tmp/spec.md" })}
@@ -1337,7 +1422,7 @@ describe("TaskCard — the live session-status mark", () => {
         .getByTestId("task-card")
         .querySelectorAll('[class*="rounded-full"]'),
     );
-    expect(pills).toHaveLength(4);
+    expect(pills).toHaveLength(1);
     expect(pills.some((p) => p.contains(mark()))).toBe(false);
     // And the state is a GLYPH with no text beside it. `WorkflowNodes.tsx` records
     // `text-warning` as 12px TEXT as a live defect (2.12 Everforest light, 2.16

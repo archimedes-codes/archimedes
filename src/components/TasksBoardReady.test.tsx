@@ -320,11 +320,10 @@ describe("the board wires the ready mark to its cards", () => {
     ).toHaveLength(2);
     for (const card of cards()) {
       expect(readyGlyphOf(card)!.tagName).not.toBe("BUTTON");
-      // TWO pills per card and the mark is not a third: the `T{n}` badge and the
-      // sessions chip (this card has one link, so the chip renders). `slabFloatSeparation.test.ts`
-      // gates the SOURCE count of `bg-background`-filled `rounded-full` literals at
-      // FIVE for this file; the mark adds neither a literal nor a rendered pill.
-      expect(card.querySelectorAll('[class*="rounded-full"]')).toHaveLength(2);
+      // ONE pill per card: the `T{n}` badge. The sessions control is a quiet link
+      // now, not a pill, and the ready mark is not a second. `slabFloatSeparation.test.ts`
+      // gates the SOURCE count at ONE for this file.
+      expect(card.querySelectorAll('[class*="rounded-full"]')).toHaveLength(1);
       expect(
         Array.from(card.querySelectorAll('[class*="rounded-full"]')).some(
           (pill) => pill.contains(readyGlyphOf(card)!),

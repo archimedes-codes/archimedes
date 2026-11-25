@@ -1,4 +1,4 @@
-import { BellRingIcon } from "lucide-react";
+import { BellRingIcon, MessageSquareIcon } from "lucide-react";
 import { MutedCaption } from "./MutedCaption";
 import { RowButton } from "./RowButton";
 import { moneyOf } from "./SessionCostLine";
@@ -7,7 +7,7 @@ import type { DragCardHandlers } from "../hooks/useDragCard";
 import type { SessionStatus } from "../hooks/useSessionStatus";
 import type { TaskLaunchDestination } from "../lib/taskPrompt";
 import type { TaskRow, TaskSessionRow } from "../lib/tauri";
-import { relativeTimeFromInstant } from "../lib/sessionTime";
+import { absoluteTimeFromInstant, relativeTimeFromInstant } from "../lib/sessionTime";
 import { cardMarkOf } from "../lib/sessionStatusRollup";
 import { cn } from "./lib/utils";
 
@@ -32,6 +32,17 @@ const READY_GLYPH_SIZE_PX = 14;
  *  pair: if the mark's weight changes, change both, and the comment in each names
  *  the other. */
 const READY_GLYPH_STROKE_WIDTH = (1.25 * 24) / READY_GLYPH_SIZE_PX;
+
+/** Artifact/spec chips shown on a card before the rest collapse into `+N`. */
+const MAX_VISIBLE_CHIPS = 2;
+
+/** The ONE chip recipe for the name chips and the `+N` overflow chip. `rounded-md`
+ *  on purpose: the `T{n}` badge is the card's only `rounded-full` pill
+ *  (`slabFloatSeparation.test.ts` censuses that literal at ONE). `bg-background` +
+ *  `text-foreground-subtle` is the same measured page-step recipe the pills used,
+ *  so contrast is unchanged. */
+const CHIP_CLASS =
+  "rounded-md bg-background px-1.5 py-0.5 text-ui-xs text-foreground-subtle";
 
 /**
  * One **Task** card on the board.
@@ -62,7 +73,7 @@ const READY_GLYPH_STROKE_WIDTH = (1.25 * 24) / READY_GLYPH_SIZE_PX;
  * for this affordance (five surfaces already use it), and its header's constraint is
  * the thing this change has to respect rather than escape: EXACTLY ONE
  * `role="button"` per row, because `SpacesList.test.tsx` resolves rows through
- * `.closest('[role="button"]')` at eight sites. The sessions chip therefore stays a
+ * `.closest('[role="button"]')` at eight sites. The sessions link therefore stays a
  * plain `<button type="button">` with NO role, so it contributes zero selector
  * matches — `RowButton.test.tsx` proves that shape contributes nothing, and
  * `TaskCard.test.tsx` re-pins it for the card.
@@ -306,6 +317,21 @@ export default function TaskCard({
   // dependency to buy nothing.
   const newest =
     sessions.length > 0 ? sessions[sessions.length - 1] : undefined;
+  // One combined, ordered label list for the chip row: the artifact KEYS first, then
+  // `spec` appended only when the card has a real spec pointer (non-null AND
+  // non-empty — `""` is a cleared field, not a pointer) and a real artifact named
+  // `spec` has not already put that word in the list (no duplicate chip).
+  const labels = [...artifactKeys];
+  if (
+    task.specPath !== null &&
+    task.specPath !== "" &&
+    !artifactKeys.includes("spec")
+  ) {
+    labels.push("spec");
+  }
+  // How many names the `+N` chip stands for. Clamped so it can never go negative;
+  // it is only RENDERED inside the `labels.length > MAX_VISIBLE_CHIPS` guard below.
+  const hiddenLabels = Math.max(0, labels.length - MAX_VISIBLE_CHIPS);
   return (
     <RowButton
       data-testid="task-card"
@@ -353,8 +379,8 @@ export default function TaskCard({
         "cursor-pointer",
       )}
     >
-      {/* THREE ROWS: meta / title / chips-and-body. The reference board's anatomy,
-          with our ladder and our tokens rather than its. */}
+      {/* FOUR ROWS: header / title / artifact chips (optional) / footer (optional).
+          No body preview on a board card — the detail modal is where the body is read. */}
       <div className="flex items-center justify-between gap-2">
         {/* The number and the LIVE MARK, grouped so `justify-between` keeps the
             timestamp right-aligned with TWO facts on the left instead of spreading
@@ -472,8 +498,13 @@ export default function TaskCard({
             Rendered through `MutedCaption` rather than by spelling the quiet-caption
             pair here, because `mutedCaption.test.ts` censuses that pair to ONE file
             and a card's timestamp IS that caption. `cn()` emits exactly the classes
-            the anatomy calls for (`text-ui-xs text-foreground-subtlest shrink-0`). */}
-        <MutedCaption className="shrink-0">
+            the anatomy calls for (`text-ui-xs text-foreground-subtlest shrink-0`).
+            The `title` is the ABSOLUTE timestamp, so hovering the relative bucket
+            shows the exact instant behind it. */}
+        <MutedCaption
+          className="shrink-0"
+          title={absoluteTimeFromInstant(task.updatedAt)}
+        >
           {relativeTimeFromInstant(task.updatedAt)}
         </MutedCaption>
       </div>
@@ -484,184 +515,74 @@ export default function TaskCard({
       <span className="line-clamp-2 font-medium leading-snug text-ui-base">
         {task.title}
       </span>
-      {/* The chips row, and it renders ONLY when there is a chip to render — no
-          placeholder for an absent field. `specPath` is stored and crosses IPC and
-          nothing rendered it at all, so this is the field's first consumer; the path
-          itself stays off the card (an absolute filesystem path on every card is not
-          information, it is noise) and the chip says what it is. An EMPTY STRING is
-          not a pointer either, so the gate asks for both halves — and this is the
-          surface where that matters most, because the chip shows the word `spec` and
-          never the path, which means `""` would paint a chip indistinguishable from
-          a real one. */}
-      {task.specPath !== null && task.specPath !== "" && (
-        <span className="inline-flex items-center gap-1 rounded-full bg-background px-2 py-0.5 text-ui-xs text-foreground-subtle">
-          spec
-        </span>
-      )}
-      {/* THE ARTIFACT KEY CHIPS (issue #180, spec §3): the KEYS, and nothing else.
-          The board read carries `artifactKeys` alone — names, never the markdown —
-          because that read runs for every card on every mount, and the card is a
-          two-line summary by construction; the detail modal is the surface built to
-          unclip, and it is where a document gets read.
-
-          Spans and not buttons, exactly like the spec chip above: these are LABELS,
-          so they contribute ZERO `[role="button"]` matches and cannot disturb
-          `RowButton`'s one-per-row rule that this file's own test re-pins (and that
-          `SpacesList.test.tsx` reads through `.closest('[role="button"]')` at eight
-          sites). A click on one therefore belongs to the row, which opens the modal
-          — the path from a key to its content, with no second control added.
-
-          Gated on `artifactKeys.length > 0` so an artifact-less card — the common
-          case — renders NO artifact row at all: no placeholder, no empty pill, no
-          header line that would then have nothing under it. Same rule the spec chip
-          above follows for an absent `specPath`. (`.map` over the empty set already
-          renders nothing; the guard is spelled because "no artifacts, no chips" is
-          the contract and should read like one rather than like a property of
-          `Array.prototype.map`.)
-
-          The fill and geometry are the card's ONE pill recipe (see the `T{n}` pill):
-          `bg-background` because a pill has to differ from BOTH surfaces it can sit
-          on (`bg-panel` column, `bg-card` card) in EVERY palette, and `bg-chat` is
-          exactly `bg-card` in default-dark (contrast 1.00). ONE literal serves every key
-          in the list, so the `slabFloatSeparation.test.ts` census moves by exactly
-          ONE, not by the number of chips a card happens to render. */}
-      {artifactKeys.length > 0 &&
-        artifactKeys.map((key) => (
-          <span
-            key={key}
-            className="inline-flex items-center gap-1 rounded-full bg-background px-2 py-0.5 text-ui-xs text-foreground-subtle"
-          >
-            {key}
-          </span>
-        ))}
-      {/* The Sessions chip (issue #174): one clickable mark saying how many
-          Sessions this card owns and what they cost in total — NOT a session list.
-          The card is small, it is already a drag surface, and a per-session row is
-          a different design (the issue records that as out of scope).
-
-          A real `<button type="button">` and not a `<span>` with a click handler:
-          it activates from the keyboard and it names itself to a screen reader. It
-          carries NO `role`, so the card's own `role` stays absent (the card is
-          dragged and not clicked, and `RowButton`'s one-`role="button"`-per-row
-          rule is pinned above) — a `<button>` needs no role spelled, and spelling
-          one would put a SECOND `[role="button"]` node in the tree the sidebar
-          resolves rows through.
-
-          GATED on the resolved link (`newest !== undefined`) rather than on a fresh
-          `sessions.length > 0` written here at the JSX: the non-emptiness check
-          belongs to the RESOLUTION above, and repeating it at the render site would
-          put two conditions where one value already decides both "is there a chip"
-          and "what does the click open". The value the click reads IS the value that
-          decided to render. The behaviour is unchanged: no links, no chip at all
-          (pinned in the card's own test), no placeholder and no disabled affordance.
-
-          NO `e.stopPropagation()`, and that is a measurement rather than an
-          oversight: there is nothing to stop. This component has no other
-          `onClick`; `useDragCard`'s five keys and `useDragReorder`'s six are all
-          `DragEventHandler`s with no click or mouse handler; the board's two
-          `onClick`s are the header's New-Task and the boost note's Dismiss, neither
-          an ancestor of a card; and the only window-level mouse listeners in the
-          app are `SidePane`'s pane resize. A handler that stops nothing is dead
-          code that reads as load-bearing.
-
-          `self-start` because the card is a `flex-col`: without it the button is
-          stretched to the card's width and reads as a full-width action rather than
-          the quiet mark it is. The fill is the page step (`bg-background`) for the
-          same reason as the `T{n}` pill above — it has to differ from BOTH surfaces
-          it can sit on (`bg-panel` column, `bg-card` card) in EVERY palette, and
-          `bg-chat` is exactly `bg-card` in default-dark. The ink-only hover is the
-          `FileChip` idiom: an affordance that says "clickable" without gaining a
-          second fill. */}
-      {newest !== undefined && (
-        <button
-          type="button"
-          // STOPPED, and that reverses the measurement this comment used to carry
-          // ("NO `e.stopPropagation()`, because there is nothing to stop"). There IS
-          // something to stop now: the card became a `RowButton`, so an unstopped
-          // chip click bubbles into the row's `onClick` and opens the detail modal ON
-          // TOP of the Session the click just asked to see. This is the one place in
-          // the app where a nested control sits inside a `RowButton` that this file
-          // owns, and it is the reason `RowButton`'s one-role-per-row rule and this
-          // call live in the same file.
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpenSession(newest.sessionId);
-          }}
-          className={cn(
-            // The fill and geometry are the card's own pill recipe (see the `T{n}`
-            // pill above). `self-start` is the chip's own addition: the card is a
-            // `flex-col`, so without it the button stretches to the card's width and
-            // reads as a full-width action instead of a quiet mark.
-            //
-            // The INK changes on hover and nothing else — no hover FILL, because a
-            // second pill-shaped patch on a card that is itself the raised surface is
-            // the "second button on the card" Dracula visual pass warns about, and no
-            // `transition-*`, the same call `FileChip` records for its chip.
-            "self-start cursor-pointer rounded-full bg-background px-2 py-0.5 text-ui-xs text-foreground-subtle hover:text-foreground",
+      {/* ROW 3 — spec / artifact chips. ONE row, only when there is a name to show.
+          At most MAX_VISIBLE_CHIPS names; the rest collapse into a `+N` chip whose
+          `title` lists EVERY name so hover reveals them. They are SPANS (labels, not
+          controls): zero `[role="button"]` matches, and a click on one bubbles to the
+          row, which opens the detail modal. The path itself never renders. */}
+      {labels.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          {labels.slice(0, MAX_VISIBLE_CHIPS).map((label) => (
+            <span key={label} className={CHIP_CLASS}>
+              {label}
+            </span>
+          ))}
+          {labels.length > MAX_VISIBLE_CHIPS && (
+            <span className={CHIP_CLASS} title={labels.join(", ")}>
+              {`+${hiddenLabels}`}
+            </span>
           )}
-        >
-          {/* The count is the fact and the money is a segment of it, so they are ONE
-              label and not two controls. `money` is `null` for "never reported" and
-              the segment is then ABSENT rather than empty — ADR 0082's rule, owned by
-              `moneyOf` and imported, never re-spelled here. */}
-          {sessions.length} {sessions.length === 1 ? "session" : "sessions"}
-          {money !== null && ` · ${money}`}
-        </button>
+        </div>
       )}
-      {/* THE PRIMARY-NEXT-STEP PILL (issue #179 §7.1) — the card's one launch
-          affordance, and it follows the sessions chip's precedent EXACTLY because that
-          precedent is the one place in the app where a nested control sits inside a
-          `RowButton` this file owns.
-
-          A plain `<button type="button">` with NO `role`. `RowButton`'s constraint is
-          ONE `role="button"` per row — `SpacesList.test.tsx` resolves rows through
-          `.closest('[role="button"]')` at eight sites — and a `<button>` needs no role
-          spelled, so this node contributes zero selector matches. Spelling one here
-          would put a second match in the tree the sidebar reads, and no test outside
-          this file could see it (that file never mounts a card), which is why the card
-         's own test carries that pin.
-
-          `e.stopPropagation()` is LOAD-BEARING, not the dead code the chip's original
-          comment once called its own: the card IS a `RowButton` now, so an unstopped
-          pill click opens the detail modal ON TOP of the Session the click asked to
-          start — and the modal covers the very board the launch is meant to leave.
-
-          Gated on `launchReady` for a Skill-bearing destination, and the board has
-          already answered "is that Skill in the catalog". The catalog is an async fetch
-          that starts EMPTY, so an ungated pill is clickable before it lands and fails
-          with a sentence that is false two frames later; the card paints NOTHING in
-          that frame rather than a disabled pill, because a greyed control on every card
-          during a fetch is the loud-on-quiet-surface pass this file's own chips avoid.
-          A destination with NO Skill is never in that state — nothing is waiting — so
-          the pill shows immediately and starts a Session with no `$token`.
-
-          The fill and geometry are the card's own pill recipe (see the `T{n}` pill
-          above): `self-start` because the card is a `flex-col` and without it the
-          button stretches to full width, and `bg-background` because the fill has to
-          differ from BOTH surfaces it can sit on (`bg-panel` column, `bg-card` card) in
-          EVERY palette — `bg-chat` is exactly `bg-card` in default-dark. Ink-only hover, no
-          `transition-*`, the `FileChip` idiom. */}
-      {launchStep !== undefined && launchStep.launchReady && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            launchStep.onLaunch(launchStep.destination);
-          }}
-          className={cn(
-            "self-start cursor-pointer rounded-full bg-background px-2 py-0.5 text-ui-xs text-foreground-subtle hover:text-foreground",
+      {/* ROW 4 — footer: the card's two controls, only when at least one will paint
+          (no empty bordered strip). The sessions link is resolved through `newest`
+          (guard-then-index above), so "is there a link" and "what does the click open"
+          read ONE value. */}
+      {(newest !== undefined ||
+        (launchStep !== undefined && launchStep.launchReady)) && (
+        <div className="flex items-center justify-between gap-2 border-t border-card-border pt-2">
+          {newest !== undefined && (
+            <button
+              type="button"
+              // STOPPED: the card is a RowButton, so an unstopped click would also
+              // open the detail modal on top of the Session just asked for. No `role`
+              // — a `<button>` needs none, and a second `[role="button"]` would break
+              // RowButton's one-per-row rule.
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenSession(newest.sessionId);
+              }}
+              className={cn(
+                "inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 -ml-1.5 text-ui-xs text-foreground-subtle hover:bg-surface-hover hover:text-foreground",
+              )}
+            >
+              <MessageSquareIcon aria-hidden size={12} className="shrink-0" />
+              {/* DIRECT text nodes of the <button> (never a wrapper span): the board
+                  test resolves this control with getByText + tagName === "BUTTON".
+                  `money` is null for "never reported" -> segment ABSENT (ADR 0082,
+                  owned by `moneyOf`). */}
+              {sessions.length} {sessions.length === 1 ? "session" : "sessions"}
+              {money !== null && ` · ${money}`}
+            </button>
           )}
-        >
-          {/* The destination's LABEL, never the card's own — the click acts on where
-              the card goes next. The arrow is the "this moves" half of the sentence and
-              is part of the button's accessible name. */}
-          {launchStep.destination.label} →
-        </button>
-      )}
-      {task.body && (
-        <span className="line-clamp-2 text-ui-sm text-foreground-subtlest">
-          {task.body}
-        </span>
+          {launchStep !== undefined && launchStep.launchReady && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                launchStep.onLaunch(launchStep.destination);
+              }}
+              className={cn(
+                // `ml-auto`: with `justify-between` a LONE footer child would sit at
+                // the start; the next step must stay right-aligned when the card
+                // has no sessions (the common case on a fresh board).
+                "ml-auto cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-ui-xs font-medium text-foreground hover:bg-surface-hover",
+              )}
+            >
+              {launchStep.destination.label} →
+            </button>
+          )}
+        </div>
       )}
     </RowButton>
   );
