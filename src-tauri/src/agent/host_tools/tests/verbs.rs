@@ -476,10 +476,17 @@ async fn a_board_call_still_running_at_the_deadline_answers_an_io_error_naming_t
     // `contains(&format!("{TASK_BOARD_CALL_TIMEOUT:?}"))` — rebuilds the expected
     // substring from the SAME const the production sentence interpolates, so the two
     // can never disagree and the assertion is tautological; only a literal can fail
-    // here (and `30s` is what that const renders as).
+    // here (and `30s` is what that const renders as). And the literal is the WHOLE
+    // PHRASE and not bare `"30s"`: a bare `30s` is a substring of `130s` and `230s`,
+    // so it would still pass if the const were lengthened past the value this doc
+    // argues for. Pinning `"timed out after 30s"` pins the sentence AND the number in
+    // one assertion. (This is the spelling `main` carried; the move to `host_tools`
+    // briefly dropped it to bare `"30s"` and a const of `from_secs(130)` then passed
+    // this test — the measurement that put the whole phrase back.)
     assert!(
-        sentence.contains("30s"),
-        "the sentence names the bound itself — got {sentence}"
+        sentence.contains("timed out after 30s"),
+        "the sentence names the DURATION too, so a supporter can tell a wedged `Db` \
+         from a misrouted frame without a stopwatch — got {sentence}"
     );
 }
 
