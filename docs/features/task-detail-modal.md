@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-11-25
-verified-by: every claim below re-read against the tree on `feature/task-card-redesign` after the Greptile review fixes, not lifted from the plan that designed it. Runner counts from `npx vitest run` (62 in `TaskDetailDialog.test.tsx`, 30 in `TaskDetailDialog.edit.test.tsx`, 13 + 23 + 6 + 35 in the four `components/tasks/*` children, 169 across the modal-owned set). Code-line counts from `grep -vcE '^[[:space:]]*(//|\*|/\*|$)'`, the ratchet's classifier, never `wc -l`: `TaskDetailDialog.tsx` 440, `TaskDetailDialog.test.tsx` 871 (test gate 1,000), `TaskDetailDialog.edit.test.tsx` 467, and the children `TaskDetailHeader.tsx` 116, `TaskDescription.tsx` 124, `TaskDetailProperties.tsx` 282. `npx tsc --noEmit` clean. `bash scripts/check-file-size.sh` passes with the baseline unchanged. The `tauriBarrel` mocker census is unchanged (70 → 71 from the one edit-file mocker, already recorded).
+verified-by: every claim below re-read against the tree on `feature/task-card-redesign` after the Greptile review fixes, not lifted from the plan that designed it. Runner counts from `npx vitest run` (62 in `TaskDetailDialog.test.tsx`, 30 in `TaskDetailDialog.edit.test.tsx`, 14 + 23 + 6 + 36 in the four `components/tasks/*` children, 171 across the modal-owned set). Code-line counts from `grep -vcE '^[[:space:]]*(//|\*|/\*|$)'`, the ratchet's classifier, never `wc -l`: `TaskDetailDialog.tsx` 440, `TaskDetailDialog.test.tsx` 871 (test gate 1,000), `TaskDetailDialog.edit.test.tsx` 467, and the children `TaskDetailHeader.tsx` 116, `TaskDescription.tsx` 124, `TaskDetailProperties.tsx` 282. `npx tsc --noEmit` clean. `bash scripts/check-file-size.sh` passes with the baseline unchanged. The `tauriBarrel` mocker census is unchanged (70 → 71 from the one edit-file mocker, already recorded).
 ---
 
 # The Task detail modal — a wide, Document-First two-column surface
@@ -224,8 +224,8 @@ keys moving selection and DOM focus, the `overview`-key id collision, and the wr
 It mocks the barrel the documented way and spreads `vi.importActual`, which is why it is the one new mocker
 in the `tauriBarrel` census (70 → 71).
 
-The four `components/tasks/*.test.tsx` files — **13** (Header), **23** (Description), **6** (ArtifactTabPane)
-and **35** (Properties) — have **no** `vi.mock` of `lib/tauri` and use **no** jest-dom matchers. They are
+The four `components/tasks/*.test.tsx` files — **14** (Header), **23** (Description), **6** (ArtifactTabPane)
+and **36** (Properties) — have **no** `vi.mock` of `lib/tauri` and use **no** jest-dom matchers. They are
 presentational, so they are not barrel mockers and do not move the census. The Header, Description and
 Properties files now also pin the **pending-save disable** (the input is `disabled` while a save is in flight
 and re-enables with the draft on rejection) and, for Description, the **StrictMode** cases.
