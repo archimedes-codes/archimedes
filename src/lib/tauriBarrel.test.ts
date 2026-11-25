@@ -1075,7 +1075,8 @@ describe("the scanner actually reads the tree", () => {
     // one wholesale replacement is STILL `hooks/useWindowMaximized.test.ts`. The
     // barrel's OWN surface is UNCHANGED: `editTask` was already exported and is
     // already in both pinned API lists below.
-    expect(mockers).toHaveLength(70);
+    // 70 -> 71 for the Task detail modal redesign: `components/TaskDetailDialog.edit.test.tsx`, which mocks the barrel the documented way and spreads `vi.importActual` (the spread half moves 69 -> 70); the four `components/tasks/*` child tests are presentational and NOT mockers.
+    expect(mockers).toHaveLength(71);
     // 69 of the 70 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. The new mockers spread
     // too (they list the arms their own tests drive and leave every other barrel
@@ -1087,7 +1088,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(sweep.listed(f) ?? ""),
       ).length,
-).toBe(69);
+).toBe(70);
   });
 });
 
