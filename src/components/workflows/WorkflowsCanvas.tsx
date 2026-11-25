@@ -1,4 +1,10 @@
-import { type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { Wand2Icon } from "lucide-react";
 import {
   Panel,
@@ -26,9 +32,13 @@ import {
   storedPositionOf,
   type WorkflowFlowNode,
 } from "./workflowGraphLayout";
-import { canConnectStages, nextSlugsAfterConnect } from "../../lib/workflowEdgeWrite";
+import {
+  canConnectStages,
+  nextSlugsAfterConnect,
+} from "../../lib/workflowEdgeWrite";
 import { useSessions } from "../../store/sessions";
 import { useTasks } from "../../store/tasks";
+import { useTaskBoardAutoRefresh } from "../../hooks/useTaskBoardAutoRefresh";
 
 /**
  * The **Workflows editor** — the graph the Task board's columns form, which is what
@@ -331,6 +341,12 @@ export default function WorkflowsCanvas() {
     void useTasks.getState().load(activeSpacePath);
   }, [activeSpacePath]);
 
+  // The canvas shows the same `boardsBySpace` slice the board does — including each
+  // column's CARD COUNT — so it takes the same re-read on a turn settle. Without this
+  // the canvas would be the one surface where a model-written card stayed invisible
+  // until a remount, and its node labels are the fact that would go stale.
+  useTaskBoardAutoRefresh(activeSpacePath);
+
   /** The graph. `undefined` (no Space, or a slice never loaded) is NOT the same state
    *  as an empty array — the empty array is "this Space has no columns" and gets its own
    *  sentence below, so the layout is only run when there is a slice to lay out. */
@@ -402,30 +418,27 @@ export default function WorkflowsCanvas() {
    *  element Tab cannot reach is the same as not restoring it. The `?.` is not decoration
    *  — a column deleted while its panel was open has no node to return to, and the choice
    *  then is a silent no-op or a TypeError in a click handler. */
-  const clearSelection = useCallback(
-    (): void => {
-      // Read the subject BEFORE the write: this is the column whose panel is closing,
-      // and it is the only place the two halves of the gesture agree on it.
-      const opened = selectedSlug;
-      setNodes((previous) =>
-        previous.some((node) => node.selected)
-          ? previous.map((node) =>
-              node.selected ? { ...node, selected: false } : node,
-            )
-          : previous,
-      );
-      if (opened !== null) {
-        // `HTMLElement` and not the default `Element`: `Element` has no `focus()`, and
-        // `tsc` says so. A `<button>` is the widest thing the selector can match.
-        document
-          .querySelector<HTMLElement>(
-            `[data-testid="workflow-node-${opened}"] button`,
+  const clearSelection = useCallback((): void => {
+    // Read the subject BEFORE the write: this is the column whose panel is closing,
+    // and it is the only place the two halves of the gesture agree on it.
+    const opened = selectedSlug;
+    setNodes((previous) =>
+      previous.some((node) => node.selected)
+        ? previous.map((node) =>
+            node.selected ? { ...node, selected: false } : node,
           )
-          ?.focus();
-      }
-    },
-    [setNodes, selectedSlug],
-  );
+        : previous,
+    );
+    if (opened !== null) {
+      // `HTMLElement` and not the default `Element`: `Element` has no `focus()`, and
+      // `tsc` says so. A `<button>` is the widest thing the selector can match.
+      document
+        .querySelector<HTMLElement>(
+          `[data-testid="workflow-node-${opened}"] button`,
+        )
+        ?.focus();
+    }
+  }, [setNodes, selectedSlug]);
 
   /** Escape inside the viewport is the keyboard's route from node mode back to
    *  workflow mode, and it calls the SAME `clearSelection` the panel's Close control
@@ -471,7 +484,9 @@ export default function WorkflowsCanvas() {
         connection.target,
       );
       if (next === null) return;
-      void setStageNext(activeSpacePath, connection.source, next).catch(() => {});
+      void setStageNext(activeSpacePath, connection.source, next).catch(
+        () => {},
+      );
     },
     [activeSpacePath, columns, setStageNext],
   );

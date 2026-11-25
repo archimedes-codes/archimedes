@@ -11,6 +11,7 @@ import { Spinner } from "./ui/spinner";
 import { useDragCard } from "../hooks/useDragCard";
 import { useTasks } from "../store/tasks";
 import { useSessions } from "../store/sessions";
+import { useInteractive } from "../store/interactive";
 import { launchTaskSession } from "../store/taskLaunch";
 import { useMentionCatalogs } from "../hooks/useMentionCatalogs";
 import { describeIpcError } from "../lib/ipcError";
@@ -18,6 +19,7 @@ import type { TaskLaunchDestination } from "../lib/taskPrompt";
 import { nextStepOf } from "../lib/workflowGraph";
 import { sessionStatusRollupOf } from "../lib/sessionStatusRollup";
 import { useSessionStatuses } from "../hooks/useSessionStatus";
+import { useTaskBoardAutoRefresh } from "../hooks/useTaskBoardAutoRefresh";
 import type { SessionStatus } from "../hooks/useSessionStatus";
 import type { StageWithTasks, TaskCardView, TaskRow } from "../lib/tauri";
 
@@ -216,7 +218,12 @@ export default function TasksBoard({
   ): Promise<void> => {
     if (activeSpacePath === null) return;
     try {
-      await launchTaskSession(activeSpacePath, task, destination.slug, catalogs);
+      await launchTaskSession(
+        activeSpacePath,
+        task,
+        destination.slug,
+        catalogs,
+      );
     } catch (err) {
       useTasks.setState({ error: describeIpcError(err) });
     }
@@ -286,7 +293,10 @@ export default function TasksBoard({
    *  `onClose`, so the flag has one owner; closing here too would be a second write of
    *  the same cell, and a flag with two writers is the shape that hides which path
    *  left it open. */
-  const handleTaskCreated = (_task: TaskRow, sessionId: string | null): void => {
+  const handleTaskCreated = (
+    _task: TaskRow,
+    sessionId: string | null,
+  ): void => {
     if (sessionId !== null) onReturnToWorkspace?.();
   };
 
@@ -310,11 +320,23 @@ export default function TasksBoard({
     void load(activeSpacePath);
   }, [activeSpacePath, load]);
 
+  // …AND it re-reads when a TURN SETTLES, which is what makes a card the MODEL wrote
+  // show up without a visit. Gap §2 item 3 of `docs/features/task-board-known-gaps.md`;
+  // the trigger's evidence, the debounce and the silent-read decision are all at
+  // `hooks/useTaskBoardAutoRefresh`, and the non-vacuity proof is
+  // `TasksBoardAutoRefresh.test.tsx`. The board already subscribes to the sessions
+  // store for `activeSpacePath`, so this hook adds a map to a subscription the surface
+  // already holds rather than a new store.
+  useTaskBoardAutoRefresh(activeSpacePath);
+
   // A STABLE array identity across renders that did not change the board. Both drag
   // hooks take the board as an argument and their handlers close over it, so a fresh
   // `?? []` every render would rebuild every handler every render — the same reason
   // `SpacesList` hoists `NO_SESSION_IDS` to module scope.
-  const stages: readonly StageWithTasks[] = useMemo(() => columns ?? [], [columns]);
+  const stages: readonly StageWithTasks[] = useMemo(
+    () => columns ?? [],
+    [columns],
+  );
 
   // THE LIVE SESSION MARK, computed ONCE for the whole board.
   //
@@ -374,6 +396,41 @@ export default function TasksBoard({
     sessionStatusRollupOf(
       card.sessions.map((link) => statusById[link.sessionId]),
     );
+
+  // THE `ready` MARK, read ONCE for the whole board — one subscription, the same
+  // shape `statusById` above takes.
+  //
+  // A SELECTOR returning a PRIMITIVE (`boolean`), not an object or an array: a
+  // selector whose result is a fresh reference every call makes zustand re-render
+  // forever (the rule `useActiveSpaceCwd.ts` and `lib/sessionLookup.ts` record).
+  // The map itself is what is subscribed, because the per-card answer needs every
+  // card's links, which the selector does not have at selector time.
+  //
+  // The interactive store is one this board ALREADY subscribes to — through
+  // `useSessionStatuses`, which reads `requests` out of it — so this is not a new
+  // store on the board, it is a second map out of a store the board is already
+  // bound to.
+  const readyBySession = useInteractive((s) => s.ready);
+
+  /** The `ready` prop for one card: does ANY linked Session's board carry the
+   *  marker?
+   *
+   *  ANY, and the reason is the same one the sessions chip and the money give: a
+   *  card is a Task and it can own several Sessions, and "one of my Sessions is
+   *  finished and waiting for a look" is the fact a person acts on. Two Sessions
+   *  marked ready is one mark, not two — the card is a two-line summary by
+   *  construction and `TaskDetailDialog` is the surface that lists the Sessions
+   *  individually.
+   *
+   *  A FUNCTION and not a pre-built map, for the identical reason `sessionStatusFor`
+   *  gives: the column renders N cards and each card's answer is its own. The card
+   *  stays presentational and takes the value.
+   *
+   *  `ready` is ADDITIVE and takes no precedence slot against `sessionStatus` — see
+   *  `TaskCardProps.ready` for the argument. Both marks render whenever both are
+   *  true, and `sessionStatusRollupOf`'s 3-way answer is untouched. */
+  const readyFor = (card: TaskCardView): boolean =>
+    card.sessions.some((link) => readyBySession[link.sessionId] === true);
 
   /** The cross-column gesture, ONE instance for the whole board: it has to see every
    *  column to answer "is the pointer over a different one", so one instance per
@@ -497,7 +554,9 @@ export default function TasksBoard({
           // announce a successful drag as a failure.
           role="status"
         >
-          <span className="min-w-0 flex-1 text-ui-sm text-warning">{boostNote}</span>
+          <span className="min-w-0 flex-1 text-ui-sm text-warning">
+            {boostNote}
+          </span>
           <Button
             type="button"
             variant="ghost"
@@ -564,6 +623,7 @@ export default function TasksBoard({
                 onOpenSession={openSessionAndLeave}
                 onOpenTask={setDetailTaskId}
                 sessionStatusFor={sessionStatusFor}
+                readyFor={readyFor}
                 launchStepFor={launchStepFor}
                 onReorder={(ids) =>
                   reorderInStage(activeSpacePath, column.stage.slug, ids)
@@ -603,4 +663,3 @@ export default function TasksBoard({
     </section>
   );
 }
-

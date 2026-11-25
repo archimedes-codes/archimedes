@@ -1038,10 +1038,39 @@ describe("the scanner actually reads the tree", () => {
     // here either (the new cases go in the two existing files above, one of which is
     // baselined and one of which has room), so this is the census moving for the only
     // reason the pin allows: test files removed, in a commit that says so.
-    expect(mockers).toHaveLength(65);
-    // 64 of the 65 SPREAD `vi.importActual`, which is the shape that makes the
-    // seam forgiving: an unlisted export still resolves. The new mocker spreads
-    // too (it lists the arms its own tests drive and leaves every other barrel
+    // 65 -> 69 for the **session `ready` mark and the board's silent refresh**, FOUR
+    // new mockers. All FOUR mock the barrel the documented way and all FOUR spread
+    // `vi.importActual`, so the spread half moves 64 -> 68 and the one wholesale
+    // replacement is STILL `hooks/useWindowMaximized.test.ts`.
+    // WHY each one needs the seam rather than taking the cheaper no-mock shape:
+    // `src/store/tasksRefresh.test.ts` pins `useTasks.refresh()`, whose entire subject
+    // is that it re-runs the board read WITHOUT writing `loading` — the assertion is
+    // about the call and about what the store does not do, so it needs a spy on the
+    // wrapper, not a real `invoke`. `src/components/TasksBoardAutoRefresh.test.tsx`
+    // pins the debounced settle-triggered refresh, which is unobservable unless the
+    // board read is countable. `src/components/TasksBoardReady.test.tsx` mounts the
+    // board, and an un-mocked `getBoard` rejects in jsdom and writes its sentence into
+    // the store's `error` cell the render then paints — the noisy-green shape the seam
+    // exists to refuse. `src/store/sessionReadyMark.test.ts` drives the history seed
+    // that restores a `ready` mark after a restart, and that seed IS a barrel call.
+    // The feature's FIFTH new test file, `src/components/TaskCardReady.test.tsx`, is
+    // NOT a mocker: `TaskCard` is presentational and subscribes to no store, so the
+    // glyph is pinned by handing the card a prop and mounting it directly — the shape
+    // the seam prefers, and the same reading `workflowEdgeWrite.test.ts` and
+    // `workflowGraphLayout.test.ts` carry above. That asymmetry is the point: the one
+    // file testing the MARK itself needs no IPC at all, and the four testing the
+    // plumbing around it do.
+    // The barrel's OWN surface is UNCHANGED by this commit: the `ready` mark is a
+    // convention read off todos that already cross the wire, and the refresh reuses the
+    // existing `get_board` wrapper — so no IPC wrapper and no wire type is added or
+    // removed, and both pinned API lists below are untouched. NO migration and NO
+    // `src-tauri/` change: a model-facing verb would need one, which is exactly why the
+    // mark is a convention (ADR 0102 / #183 is the real fix). See
+    // `docs/features/session-ready-marker.md`.
+    expect(mockers).toHaveLength(69);
+    // 68 of the 69 SPREAD `vi.importActual`, which is the shape that makes the
+    // seam forgiving: an unlisted export still resolves. The new mockers spread
+    // too (they list the arms their own tests drive and leave every other barrel
     // export — `invoke` included — to the real module), so the remaining one
     // is still `hooks/useWindowMaximized.test.ts`, which replaces the module
     // wholesale — so a name it forgets is `undefined`, the case the pinned-surface
@@ -1050,7 +1079,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(sweep.listed(f) ?? ""),
       ).length,
-).toBe(64);
+).toBe(68);
   });
 });
 

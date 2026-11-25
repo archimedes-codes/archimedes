@@ -1,3 +1,4 @@
+import { CircleCheckIcon } from "lucide-react";
 import { MutedCaption } from "./MutedCaption";
 import { RowButton } from "./RowButton";
 import { moneyOf } from "./SessionCostLine";
@@ -8,6 +9,27 @@ import type { TaskLaunchDestination } from "../lib/taskPrompt";
 import type { TaskRow, TaskSessionRow } from "../lib/tauri";
 import { relativeTimeFromInstant } from "../lib/sessionTime";
 import { cn } from "./lib/utils";
+
+/** The `ready` glyph's box in px — the same box the session mark uses on this card
+ *  (`size={14}`), so the two marks in this row are one size and a card that changed
+ *  state as it gained a mark would read as jitter. */
+const READY_GLYPH_SIZE_PX = 14;
+
+/** The `ready` glyph's `stroke-width` attribute for that box.
+ *
+ *  Lucide draws on a 24-unit viewBox at `stroke-width: 2`, so sizing an icon by
+ *  width scales the stroke with it and a 14px box renders ~1.17px — a hairline, on
+ *  the one mark that has no text beside it to fall back on. The compensation is the
+ *  same arithmetic `SessionStatusMark`'s `questionStrokeWidth` applies to its `?`,
+ *  with the same rendered weight (1.25 device px), so the two marks on this row
+ *  carry the same stroke.
+ *
+ *  It is spelled HERE rather than imported because `questionStrokeWidth` and its
+ *  constant are module-PRIVATE to that component, and exporting them would widen a
+ *  file this change deliberately does not touch. The two are therefore a deliberate
+ *  pair: if the mark's weight changes, change both, and the comment in each names
+ *  the other. */
+const READY_GLYPH_STROKE_WIDTH = (1.25 * 24) / READY_GLYPH_SIZE_PX;
 
 /**
  * One **Task** card on the board.
@@ -151,6 +173,35 @@ export interface TaskCardProps {
    *  takes the value and paints the glyph. That is the whole contract, and
    *  `TaskCard.test.tsx` pins the file against importing a store. */
   sessionStatus: SessionStatus | null;
+  /** This card's Session has **marked itself ready** — a linked Session's todo
+   *  board carries a `completed` item whose content is `ready`.
+   *
+   *  REQUIRED, on this file's standing argument, with a sharper edge than the rest:
+   *  `TasksBoard` computes this for every card from the interactive store's `ready` map, and the
+   *  value it produces is a `boolean` — never `undefined`. A caller that omitted the
+   *  prop would paint a card the model has finished working on exactly like a card
+   *  nobody has touched, and nothing would fail. `undefined` is not a state the
+   *  board produces; it is only ever a caller that forgot.
+   *
+   *  It is a SEPARATE prop from `sessionStatus` and it renders a SEPARATE glyph, and
+   *  that is a decision rather than laziness. `SessionStatus` answers what a Session
+   *  is DOING RIGHT NOW, derived by `sessionStatusOf` from four stores; `ready`
+   *  answers "the model says the work is finished", and it is AUTHORED by the model
+   *  as a todo item. Riding the existing prop would mean adding a fifth value to
+   *  `SessionStatus` — which drags in `sessionStatusOf`, `useSessionStatus`,
+   *  `SpaceTabs`, `TaskDetailDialog`, the rollup's 3-way precedence and
+   *  `TasksBoard.test.tsx`'s dot census — and it would force the two facts into one
+   *  slot, so a Session that marked itself ready and then parked on a permission
+   *  could only report one of them. Both are true and the pair is more actionable
+   *  than either half, so the mark is ADDITIVE and takes no precedence slot.
+   *  `sessionStatusRollupOf` is untouched.
+   *
+   *  The card does NOT derive it, does not read a store for it, and does not know
+   *  what a todo item is. The marker convention lives in
+   *  `store/interactive.ts` (`READY_MARKER_TEXT`) and the doc
+   *  `docs/features/session-ready-marker.md`; this component paints a boolean.
+   */
+  ready: boolean;
   /** This card's `useDragCard` spread (`dragProps(task.id)`), or nothing when the
    *  board cannot drag (no board loaded yet). Absent means NO gesture at all —
    *  `draggable` is not spelled without the handlers that would answer it. */
@@ -192,6 +243,7 @@ export default function TaskCard({
   costUsd,
   artifactKeys,
   sessionStatus,
+  ready,
   onOpenSession,
   onOpenTask,
   drag,
@@ -231,7 +283,8 @@ export default function TaskCard({
   // and reaches for a `[length - 1]` index for the same reason. Do not "tidy" this
   // line into a call to `Array.prototype.at`: that re-adds an unverified runtime
   // dependency to buy nothing.
-  const newest = sessions.length > 0 ? sessions[sessions.length - 1] : undefined;
+  const newest =
+    sessions.length > 0 ? sessions[sessions.length - 1] : undefined;
   return (
     <RowButton
       data-testid="task-card"
@@ -368,12 +421,92 @@ export default function TaskCard({
           {sessionStatus !== null &&
             sessionStatus !== "live" &&
             sessionStatus !== "stored" && (
-            <SessionStatusMark
-              status={sessionStatus}
-              size={14}
-              testId="task-card-status"
-              announce={false}
-              className="shrink-0"
+              <SessionStatusMark
+                status={sessionStatus}
+                size={14}
+                testId="task-card-status"
+                announce={false}
+                className="shrink-0"
+              />
+            )}
+          {/* THE `ready` MARK — the card's second mark, and a GLYPH for every one
+              of the reasons the first one is.
+
+              WHY A GLYPH AND NOT A WORD. `text-foreground-subtlest` on `bg-card`
+              measures 2.36 default-light / 2.18 default-dark and NO palette gate can
+              see it (both Default readings declare that token `textUngradeable`, and
+              `--color-card` is in the graded `raised` text-surface set in only 8 of
+              the 13 readings, so anything placed on the card is graded). A faint word
+              on the card is the explicitly-refused shape. And `text-success` is NOT a
+              free pass for a WORD either — `palettes/default.ts` records it as a worst
+              resting reading at 3.87 on the `#f0f0f0` band — so the ink goes on an
+              OUTLINE and never on a caption.
+
+              WHY `text-success` FOR THE OUTLINE, measured against `--color-card` in
+              all 13 palette readings: 4.41 default-light, 6.04 default-dark, 8.59
+              Dracula, 2.69 Everforest-light, 6.01 Everforest-dark, 2.96
+              Catppuccin-light, 8.46 Catppuccin-dark, 3.43 Ayu-light, 10.77 Ayu-dark,
+              5.88 Rosé Pine-light, 8.91 Rosé Pine-dark, 3.26 Kanagawa-light, 5.45
+              Kanagawa-dark. The worst is 2.69 (Everforest light), and every reading
+              clears that palette's OWN recorded raised-step floor for `color-success`
+              (Everforest light records 2.1 on its chip step, Catppuccin light 1.8,
+              Kanagawa light 2.45, Ayu light 3.4, Default light 3.5, Rosé Pine light
+              4.4, Everforest dark 4.47) — i.e. the mark is graded by the same numbers
+              the palette already publishes for itself, and it is BETTER than the two
+              marks already on this card: `text-warning`'s `?` is 2.12 Everforest
+              light / 2.16 Rosé Pine light / 2.31 Catppuccin light, and the `running`
+              spinner's inherited `text-foreground-subtlest` is 2.36 default-light /
+              2.18 default-dark. A 14px stroked OUTLINE is also WCAG non-text UI (the
+              3:1 class `fileIconContrast.test.ts` grades), not 12px text (the 4.5
+              class), which is the distinction `WorkflowNodes.tsx` records.
+
+              WHY A NEW GLYPH AND NOT `SessionStatusMark` WITH A DIFFERENT INK. That
+              component's `className` is GEOMETRY-ONLY — `cn()` DROPS an ink utility a
+              caller passes, on purpose, so its four states cannot disagree between the
+              tab, the sidebar row and this card. So it cannot be re-inked from here,
+              and borrowing it for a fifth meaning would put a model-authored claim
+              into the derived-state glyph set. This is its own `<span>`-free `<svg>`,
+              and its ink is its own for every surface.
+
+              THE SHAPE: a check in a circle, because that is the app's ONE "finished"
+              shape — `SubagentStatusIcon`'s `completed` case draws `CheckCircle2` in
+              `text-success` and `ChecklistPanel`'s done indicator is a check circle in
+              `text-success` too. A third spelling of "done" would be a third glyph for
+              one fact; a third COLOUR would be worse.
+
+              `aria-hidden` + `role="presentation"`, i.e. DECORATION, and the reason is
+              the tab's reason rather than an invention: the card is a `RowButton` and a
+              `div[role="button"]`'s accessible name is computed RECURSIVELY from its
+              subtree, so an announced mark would rename the card under the user between
+              two frames ("Ship the board" → "Ship the board Ready"). A board can hold N
+              marks at once, which is a further argument for restraint. The detail
+              dialog and the checklist are where the state is READ; the card is where it
+              is glanced at.
+
+              NO FILL, so the pill census does not move: no `rounded-full`, no
+              `bg-background` (both counted by `slabFloatSeparation.test.ts`), and no
+              `text-ui-xs text-foreground-subtlest` pair (censused to one file by
+              `mutedCaption.test.ts`). Zero new literals of any of the three.
+
+              ORDER, beside the session mark: the session mark goes FIRST because it is
+              the time-critical half — a `?` is "blocked on you NOW", the check is
+              "finished at some point and nobody has looked". That is a READING ORDER,
+              not a precedence rule: neither mark suppresses the other, both render
+              whenever they are true, and `sessionStatusRollupOf`'s 3-way answer is
+              untouched by this mark. */}
+          {ready && (
+            <CircleCheckIcon
+              data-testid="task-card-ready"
+              aria-hidden
+              role="presentation"
+              // The stroke compensation `SessionStatusMark` documents for its own `?`:
+              // lucide draws on a 24-unit viewBox at `stroke-width: 2`, so a 14px box
+              // renders ~1.17px and the mark goes hairline exactly where there is no
+              // text beside it to fall back on. Same arithmetic, same constant, so the
+              // two marks on this row carry the same weight.
+              strokeWidth={READY_GLYPH_STROKE_WIDTH}
+              style={{ width: 14, height: 14 }}
+              className="shrink-0 text-success"
             />
           )}
         </div>

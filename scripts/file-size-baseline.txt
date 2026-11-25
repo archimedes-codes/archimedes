@@ -7,7 +7,7 @@
 2007	src-tauri/src/agent/session/naming.rs
 1714	src-tauri/src/agent/session/router.rs
 1584	src-tauri/src/agent/session/mod.rs
-1370	src/store/sessions.ts
+1372	src/store/sessions.ts
 1293	src-tauri/src/config.rs
 1135	src-tauri/src/agent/errors.rs
 1091	src-tauri/src/commands/settings.rs

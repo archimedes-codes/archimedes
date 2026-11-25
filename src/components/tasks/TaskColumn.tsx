@@ -29,6 +29,7 @@ export function TaskColumn({
   onOpenSession,
   onOpenTask,
   sessionStatusFor,
+  readyFor,
   launchStepFor,
   onReorder,
 }: {
@@ -57,6 +58,16 @@ export function TaskColumn({
    *  folds each card through the shared precedence; this column forwards, exactly as
    *  it forwards `onOpenSession`, so no store read and no derivation appears here. */
   sessionStatusFor: (card: TaskCardView) => TaskCardProps["sessionStatus"];
+  /** This card's **ready** mark, or `false`.
+   *
+   *  A FACTORY taking the CARD, exactly as `sessionStatusFor` above does, for the
+   *  same reason: the column renders N cards and each card's answer comes from ITS
+   *  OWN linked Sessions. It is a SEPARATE prop and not a widening of
+   *  `sessionStatusFor`, because the two marks answer two different questions and a
+   *  card can wear both — `TaskCardProps.ready` carries the argument, and this column
+   *  only forwards. No store read and no derivation appears here, as with every other
+   *  prop on this list. */
+  readyFor: (card: TaskCardView) => boolean;
   /** Builds this card's primary-next-step pill (issue #179 §7.1), or `undefined` for
    *  "this Stage leads nowhere".
    *
@@ -71,10 +82,7 @@ export function TaskColumn({
   ) => TaskCardProps["launchStep"];
   onReorder: (ids: string[]) => void;
 }) {
-  const ids = useMemo(
-    () => column.tasks.map((t) => t.task.id),
-    [column.tasks],
-  );
+  const ids = useMemo(() => column.tasks.map((t) => t.task.id), [column.tasks]);
   // The within-column gesture, reused UNCHANGED with the default `axis: "y"` — a
   // vertical strip, so the pointer's half of the target row is read off Y. Nothing
   // here computes an index: the hook already answers before-or-after for the
@@ -160,7 +168,8 @@ export function TaskColumn({
               `TasksBoard.test.tsx`) and `tsc` could not see it. A brace-wrapped
               block comment is the only spelling that stays out of the render. */}
           {column.tasks.map((card) => {
-            const edge = reorder.overId === card.task.id ? reorder.overEdge : null;
+            const edge =
+              reorder.overId === card.task.id ? reorder.overEdge : null;
             return (
               // The SLOT carries the within-column surface and the drop-edge class;
               // the CARD inside it carries the cross-column surface and `draggable`.
@@ -189,6 +198,10 @@ export function TaskColumn({
                   onOpenTask={onOpenTask}
                   // The board's ONE status read, read back for THIS card's links.
                   sessionStatus={sessionStatusFor(card)}
+                  // The board's ONE `ready` read, read back the same way. A SEPARATE
+                  // prop on purpose — see `TaskCardProps.ready` for why the two marks
+                  // never share a slot.
+                  ready={readyFor(card)}
                   launchStep={launchStepFor(column, card.task)}
                   drag={cardDrag(card.task.id)}
                   active={draggingTaskId === card.task.id}

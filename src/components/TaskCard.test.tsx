@@ -109,6 +109,7 @@ const NO_LINKS: Pick<
   | "onOpenTask"
   | "launchStep"
   | "sessionStatus"
+  | "ready"
 > = {
   sessions: [],
   costUsd: null,
@@ -122,6 +123,12 @@ const NO_LINKS: Pick<
   // `undefined`, so an omitted prop is a caller that forgot, and what it paints
   // is a card whose Session is blocked on a human with no mark saying so.
   sessionStatus: null,
+  // The same argument for the second mark: the board's `readyFor` answers a
+  // `boolean` for every card and never `undefined`. `false` is what a card with no
+  // linked Sessions gets, and the cases about the `ready` glyph live in
+  // `TaskCardReady.test.tsx` rather than here so this file stays the anatomy and
+  // the session mark's suite.
+  ready: false,
 };
 
 /** A card's primary next step (issue #179 §7.1), derived by the BOARD.
@@ -582,6 +589,7 @@ describe("TaskCard — the card is a control (PR #178 inverts this)", () => {
         onOpenTask={vi.fn()}
         // Not this case's subject: the board's rollup answers `null` = nothing to report.
         sessionStatus={null}
+        ready={false}
       />,
     );
     const chip = screen.getByText("1 session");
@@ -612,6 +620,7 @@ describe("TaskCard — the card is a control (PR #178 inverts this)", () => {
         onOpenTask={onOpenTask}
         // Not this case's subject: the board's rollup answers `null` = nothing to report.
         sessionStatus={null}
+        ready={false}
       />,
     );
     fireEvent.click(screen.getByText("1 session"));
@@ -681,6 +690,7 @@ describe("TaskCard — the primary-next-step pill (issue #179 §7.1)", () => {
         drag={dragSurface()}
         // Not this case's subject: the board's rollup answers `null` = nothing to report.
         sessionStatus={null}
+        ready={false}
       />,
     );
     expect(document.querySelectorAll('[role="button"]')).toHaveLength(1);
@@ -872,6 +882,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         onOpenTask={noopOpenTask}
         // Not this case's subject: the board's rollup answers `null` = nothing to report.
         sessionStatus={null}
+        ready={false}
       />,
     );
     expect(screen.getByText("2 sessions · $1.75")).toBeTruthy();
@@ -898,6 +909,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         onOpenTask={noopOpenTask}
         // Not this case's subject: the board's rollup answers `null` = nothing to report.
         sessionStatus={null}
+        ready={false}
       />,
     );
     expect(screen.getByText("1 session")).toBeTruthy();
@@ -923,6 +935,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         onOpenTask={noopOpenTask}
         // Not this case's subject: the board's rollup answers `null` = nothing to report.
         sessionStatus={null}
+        ready={false}
       />,
     );
     expect(screen.getByText("1 session · $0.00")).toBeTruthy();
@@ -947,6 +960,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         onOpenTask={noopOpenTask}
         // Not this case's subject: the board's rollup answers `null` = nothing to report.
         sessionStatus={null}
+        ready={false}
       />,
     );
     fireEvent.click(screen.getByText("3 sessions · $0.50"));
@@ -1042,6 +1056,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         onOpenTask={noopOpenTask}
         // Not this case's subject: the board's rollup answers `null` = nothing to report.
         sessionStatus={null}
+        ready={false}
       />,
     );
     const chip = screen.getByText("2 sessions · $2.50");
@@ -1116,6 +1131,7 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         onOpenTask={vi.fn()}
         // Not this case's subject: the board's rollup answers `null` = nothing to report.
         sessionStatus={null}
+        ready={false}
       />,
     );
     const chip = screen.getByText("1 session · $0.25");
@@ -1164,6 +1180,7 @@ describe("TaskCard — the live session-status mark", () => {
         costUsd={null}
         artifactKeys={[]}
         sessionStatus="waiting"
+       ready={false}
         onOpenSession={noopOpenSession}
         onOpenTask={noopOpenTask}
       />,
@@ -1190,6 +1207,7 @@ describe("TaskCard — the live session-status mark", () => {
         costUsd={null}
         artifactKeys={[]}
         sessionStatus="running"
+       ready={false}
         onOpenSession={noopOpenSession}
         onOpenTask={noopOpenTask}
       />,
@@ -1216,6 +1234,7 @@ describe("TaskCard — the live session-status mark", () => {
           costUsd={null}
           artifactKeys={[]}
           sessionStatus={status}
+         ready={false}
           onOpenSession={noopOpenSession}
           onOpenTask={noopOpenTask}
         />,
@@ -1232,7 +1251,7 @@ describe("TaskCard — the live session-status mark", () => {
     // sessions chip follow for an absent field. (And a reserved slot would indent
     // every idle card's `T{n}` pill by a glyph's width for a mark that never
     // appears.)
-    render(<TaskCard task={task()} {...NO_LINKS} sessionStatus={null} />);
+    render(<TaskCard task={task()} {...NO_LINKS} sessionStatus={null} ready={false} />);
     expect(mark()).toBeNull();
     expect(screen.getByTestId("task-card").textContent).toContain("T3");
   });
@@ -1254,6 +1273,7 @@ describe("TaskCard — the live session-status mark", () => {
         costUsd={null}
         artifactKeys={["plan"]}
         sessionStatus="waiting"
+       ready={false}
         onOpenSession={noopOpenSession}
         onOpenTask={noopOpenTask}
         launchStep={launchStep()}
@@ -1285,6 +1305,7 @@ describe("TaskCard — the live session-status mark", () => {
         costUsd={null}
         artifactKeys={[]}
         sessionStatus="waiting"
+       ready={false}
         onOpenSession={noopOpenSession}
         onOpenTask={onOpenTask}
       />,
@@ -1308,6 +1329,7 @@ describe("TaskCard — the live session-status mark", () => {
         sessions={[link("sess_1")]}
         artifactKeys={["plan"]}
         sessionStatus="waiting"
+       ready={false}
       />,
     );
     const pills = Array.from(
@@ -1351,6 +1373,7 @@ describe("TaskCard — the live session-status mark", () => {
         costUsd={null}
         artifactKeys={[]}
         sessionStatus="waiting"
+       ready={false}
         onOpenSession={noopOpenSession}
         onOpenTask={noopOpenTask}
       />,
@@ -1367,6 +1390,7 @@ describe("TaskCard — the live session-status mark", () => {
         costUsd={null}
         artifactKeys={[]}
         sessionStatus="running"
+       ready={false}
         onOpenSession={noopOpenSession}
         onOpenTask={noopOpenTask}
       />,

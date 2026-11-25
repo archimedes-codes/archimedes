@@ -6,13 +6,18 @@ const S2 = "s2";
 
 beforeEach(() => {
   const s = useInteractive.getState();
-  // Reset everything a previous test may have left behind.
+  // Reset everything a previous test may have left behind. `ready` is in the id
+  // set because it is a session-keyed map like the five above it, and a case that
+  // set the mark and left the board empty (a `todos_clear`, or a reset between two
+  // cases) would otherwise leak the mark into the next case — `dismissSession` is
+  // what drops the key, so an id present ONLY in `ready` still has to be visited.
   for (const id of new Set([
     ...Object.keys(s.requests),
     ...Object.keys(s.todos),
     ...Object.keys(s.agentState),
     ...Object.keys(s.cost),
     ...Object.keys(s.session),
+    ...Object.keys(s.ready),
   ])) {
     s.dismissSession(id);
   }
@@ -63,14 +68,12 @@ describe("addRequest / removeRequest", () => {
   });
 
   it("removes a request by requestId", () => {
-    useInteractive
-      .getState()
-      .addRequest(S1, {
-        requestId: "r1",
-        method: "ask",
-        source: "main",
-        params: {},
-      });
+    useInteractive.getState().addRequest(S1, {
+      requestId: "r1",
+      method: "ask",
+      source: "main",
+      params: {},
+    });
     useInteractive.getState().removeRequest(S1, "r1");
     expect(useInteractive.getState().requests[S1]).toHaveLength(0);
   });
@@ -144,7 +147,9 @@ describe("todos", () => {
     });
     for (const todos of ["nope", {}, null, undefined, 0, true]) {
       const before = useInteractive.getState();
-      useInteractive.getState().applyTodoUpdate(S1, { source: "native", todos });
+      useInteractive
+        .getState()
+        .applyTodoUpdate(S1, { source: "native", todos });
       // `toBe` on the STATE OBJECT, not `toEqual` on the slice: the guard
       // returns `state` untouched, so no store notification and no re-render
       // (an `toEqual` on `todos[S1]` would also pass for a write of the same
@@ -207,6 +212,221 @@ describe("todos", () => {
   });
 });
 
+/**
+ * THE `ready` MARK — a todo item that says the work on this Session is done.
+ *
+ * ## The convention, exactly
+ *
+ * A `ChecklistItem` whose `content`, **trimmed and lowercased**, equals `"ready"`
+ * **AND** whose `status` is `"completed"`. Nothing else fires it, and nothing else
+ * clears it but the next snapshot, a clear, a close, or the next turn.
+ *
+ * ## Why a convention and not a tool verb (do not "fix" this)
+ *
+ * A model-facing verb is engine-gated: `TaskCall` / `trait TaskStore` live in
+ * `fulcrum-harness`, a crates.io-pinned dependency, and `tool_specs()` is the
+ * crate's — the desktop contributes zero tool specs (ADR 0102; the unbuilt fix is
+ * roadmap item #183). And the engine CONSTRUCTS `TodoItem { content, status,
+ * description }` and emits the constructed vector, so an extra key on a todo item
+ * (`"ready": true`) is dropped before a frame exists. Only the model-authored
+ * STRING survives the engine. So the marker has to be a conventional item, read by
+ * desktop code. `docs/features/session-ready-marker.md` is the doc that records
+ * this and where the model learns the convention.
+ *
+ * ## Why `completed` is required
+ *
+ * A PENDING `"ready"` in a plan means "still need to make it ready" — the exact
+ * OPPOSITE of the fact the mark reports. The status half of the predicate is not
+ * belt-and-braces, it is the difference between the two readings of the same word.
+ *
+ * ## Why the match is EXACT and not a substring
+ *
+ * `"get the board ready"` is a plan item about readiness and is not a claim that
+ * anything is ready. A substring test would mark a card ready for half the English
+ * language.
+ */
+describe("the `ready` marker", () => {
+  /** One board, one item, whatever the case is about. */
+  const board = (...todos: Array<{ content: string; status: string }>) => ({
+    source: "native",
+    todos,
+  });
+
+  it("an exact `ready` item that is COMPLETED sets the mark", () => {
+    useInteractive
+      .getState()
+      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
+    expect(useInteractive.getState().ready[S1]).toBe(true);
+  });
+
+  it('a PENDING `ready` does NOT set the mark (it means "not ready yet")', () => {
+    // The half of the predicate a substring-only implementation would drop.
+    useInteractive
+      .getState()
+      .applyTodoUpdate(S1, board({ content: "ready", status: "pending" }));
+    expect(useInteractive.getState().ready[S1]).toBeUndefined();
+  });
+
+  it("an `in_progress` `ready` does NOT set the mark either", () => {
+    useInteractive
+      .getState()
+      .applyTodoUpdate(S1, board({ content: "ready", status: "in_progress" }));
+    expect(useInteractive.getState().ready[S1]).toBeUndefined();
+  });
+
+  it("a plan item that MERELY MENTIONS ready does not fire it", () => {
+    // The exact-match half. Every one of these is a real plan item a model writes;
+    // none of them is a claim that the Session's work is finished.
+    for (const content of [
+      "get the board ready",
+      "Ready for review",
+      "ready when you are",
+      "mark ready",
+      "not ready",
+    ]) {
+      useInteractive
+        .getState()
+        .applyTodoUpdate(S1, board({ content, status: "completed" }));
+      expect(
+        useInteractive.getState().ready[S1],
+        `content: "${content}"`,
+      ).toBeUndefined();
+    }
+  });
+
+  it('padding and case are tolerated (`" Ready "` fires)', () => {
+    // The model authors a STRING and nobody controls its whitespace or its case.
+    // Trimming and lowercasing is the whole normalisation — no other leniency, and
+    // the two cases above pin that.
+    for (const content of [" Ready ", "READY", "\tready\n", "Ready"]) {
+      useInteractive
+        .getState()
+        .applyTodoUpdate(S1, board({ content, status: "completed" }));
+      expect(
+        useInteractive.getState().ready[S1],
+        `content: ${JSON.stringify(content)}`,
+      ).toBe(true);
+    }
+  });
+
+  it("the marker can sit anywhere in the board", () => {
+    useInteractive
+      .getState()
+      .applyTodoUpdate(
+        S1,
+        board(
+          { content: "write the reducer", status: "completed" },
+          { content: "ready", status: "completed" },
+          { content: "ship it", status: "pending" },
+        ),
+      );
+    expect(useInteractive.getState().ready[S1]).toBe(true);
+  });
+
+  it("a later snapshot WITHOUT the marker CLEARS it (the slot is not sticky)", () => {
+    // `applyTodoUpdate` is a SNAPSHOT OVERWRITE, so the mark reads off the same
+    // snapshot: a board that no longer carries the item no longer asserts
+    // readiness. The alternative — a mark that survives until the next turn —
+    // would keep a card marked ready after the model had deleted the item that
+    // said so, and `manage_todo_list` rewrites the WHOLE list on every call, so
+    // "the model removed it" and "the model never wrote it" are the same frame.
+    useInteractive
+      .getState()
+      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
+    expect(useInteractive.getState().ready[S1]).toBe(true);
+    useInteractive
+      .getState()
+      .applyTodoUpdate(
+        S1,
+        board({ content: "keep going", status: "in_progress" }),
+      );
+    expect(useInteractive.getState().ready[S1]).toBeUndefined();
+  });
+
+  it("the marker flipping back to `pending` clears it", () => {
+    // Same snapshot rule, seen from the other side: the model re-opened the item,
+    // so the claim is withdrawn.
+    useInteractive
+      .getState()
+      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
+    useInteractive
+      .getState()
+      .applyTodoUpdate(S1, board({ content: "ready", status: "pending" }));
+    expect(useInteractive.getState().ready[S1]).toBeUndefined();
+  });
+
+  it("a clear drops the mark (a cleared checklist no longer asserts readiness)", () => {
+    // The decision, stated: `applyTodoClear` removes the BOARD, and the board was
+    // the only thing asserting the mark. Keeping the mark while the board is gone
+    // would leave a card claiming "ready" with nothing under the claim — and the
+    // `todos_clear` emitters are a child's teardown and a deleted Session, neither
+    // of which is a Session whose work is waiting to be reviewed.
+    useInteractive
+      .getState()
+      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
+    useInteractive.getState().applyTodoClear(S1);
+    expect(useInteractive.getState().ready[S1]).toBeUndefined();
+  });
+
+  it("the mark is keyed by SESSION and not by anything else", () => {
+    // ADR 0041 again: boards are session-keyed, and the mark is a fact about the
+    // board. `payload.source` is `"native"` for a Main session and a Subagent
+    // session alike, so a mark that consulted it would mis-file.
+    useInteractive
+      .getState()
+      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
+    useInteractive
+      .getState()
+      .applyTodoUpdate(S2, board({ content: "go", status: "pending" }));
+    expect(useInteractive.getState().ready[S1]).toBe(true);
+    expect(useInteractive.getState().ready[S2]).toBeUndefined();
+    // And S2's update did not disturb S1's mark (the write is a spread-copy).
+    useInteractive
+      .getState()
+      .applyTodoUpdate(S2, board({ content: "ready", status: "completed" }));
+    expect(useInteractive.getState().ready[S1]).toBe(true);
+    expect(useInteractive.getState().ready[S2]).toBe(true);
+  });
+
+  it("dismissSession drops the mark with the rest of the session's state", () => {
+    // A close ends the Session; the mark goes with its board, its money and its
+    // gates. `resetStores` cannot be relied on inside a run — this is the runtime
+    // path a real close takes.
+    useInteractive
+      .getState()
+      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
+    useInteractive.getState().dismissSession(S1);
+    expect(useInteractive.getState().ready[S1]).toBeUndefined();
+  });
+
+  it("a malformed payload leaves the mark exactly as it was", () => {
+    // `applyTodoUpdate` returns the SAME state object for a payload with no array,
+    // so a junk frame must neither set nor clear the mark.
+    useInteractive
+      .getState()
+      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
+    const before = useInteractive.getState();
+    useInteractive.getState().applyTodoUpdate(S1, { todos: "nope" });
+    useInteractive.getState().applyTodoUpdate(S1, null);
+    expect(useInteractive.getState()).toBe(before);
+    expect(useInteractive.getState().ready[S1]).toBe(true);
+  });
+
+  it("an item whose `content` is not a string does not fire the mark", () => {
+    // `useMainChecklistItems` documents that the board casts ANY model-authored
+    // value, so a non-string `content` is reachable. `trim` on one would throw
+    // inside a listener.
+    useInteractive.getState().applyTodoUpdate(S1, {
+      source: "native",
+      todos: [
+        { content: 42, status: "completed" },
+        { content: null, status: "completed" },
+      ],
+    });
+    expect(useInteractive.getState().ready[S1]).toBeUndefined();
+  });
+});
+
 describe("wired-but-not-rendered state", () => {
   it("applyState stores the agent state", () => {
     useInteractive.getState().applyState(S1, { state: "blocked" });
@@ -215,7 +435,9 @@ describe("wired-but-not-rendered state", () => {
 
   it("applySession stores the session payload", () => {
     useInteractive.getState().applySession(S1, { bridgeSession: "abc" });
-    expect(useInteractive.getState().session[S1]).toEqual({ bridgeSession: "abc" });
+    expect(useInteractive.getState().session[S1]).toEqual({
+      bridgeSession: "abc",
+    });
   });
 });
 
@@ -296,7 +518,9 @@ describe("applyCost (the session's cumulative USD figure, #87)", () => {
     // that reaches the store. Absence is still a state the reducer must handle
     // (a malformed or foreign frame), and it must land in the SAME unknown state
     // as `null`, never a manufactured `0`.
-    useInteractive.getState().applyCost(S1, { inputTokens: 100, outputTokens: 20 });
+    useInteractive
+      .getState()
+      .applyCost(S1, { inputTokens: 100, outputTokens: 20 });
     const entry = useInteractive.getState().cost[S1] as {
       costUsd: number | null;
       cost: number | null;
@@ -319,7 +543,9 @@ describe("applyCost (the session's cumulative USD figure, #87)", () => {
   it("a priced frame followed by an unknown frame keeps the figure (unknown is not a number to add)", () => {
     useInteractive.getState().applyCost(S1, { costUsd: 0.03 });
     useInteractive.getState().applyCost(S1, { costUsd: null });
-    const entry = useInteractive.getState().cost[S1] as { costUsd: number | null };
+    const entry = useInteractive.getState().cost[S1] as {
+      costUsd: number | null;
+    };
     expect(entry.costUsd).toBeCloseTo(0.03, 10);
   });
 
@@ -384,7 +610,9 @@ describe("applyCost (the session's cumulative USD figure, #87)", () => {
     // Rule R2: `costUsd` is D5's authoritative key; `cost` is the fallback for
     // a pre-D5 emitter. A frame carrying both must count the D5 one ONCE.
     useInteractive.getState().applyCost(S1, { cost: 0.005, costUsd: 0.007 });
-    const entry = useInteractive.getState().cost[S1] as { costUsd: number | null };
+    const entry = useInteractive.getState().cost[S1] as {
+      costUsd: number | null;
+    };
     expect(entry.costUsd).toBeCloseTo(0.007, 10);
   });
 
@@ -392,7 +620,9 @@ describe("applyCost (the session's cumulative USD figure, #87)", () => {
     useInteractive.getState().applyCost(S1, { costUsd: "0.05" });
     useInteractive.getState().applyCost(S1, { costUsd: Number.NaN });
     useInteractive.getState().applyCost(S1, { costUsd: -1 });
-    useInteractive.getState().applyCost(S1, { costUsd: Number.POSITIVE_INFINITY });
+    useInteractive
+      .getState()
+      .applyCost(S1, { costUsd: Number.POSITIVE_INFINITY });
     const entry = useInteractive.getState().cost[S1] as {
       costUsd: number | null;
       cost: number | null;

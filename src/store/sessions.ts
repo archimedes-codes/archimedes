@@ -2645,8 +2645,28 @@ export const useSessions = create<SessionsState>((set, get) => ({
       },
     })),
 
-  beginTurn: (sessionId) =>
-    set((state) => ({ inTurn: { ...state.inTurn, [sessionId]: true } })),
+  beginTurn: (sessionId) => {
+    set((state) => ({ inTurn: { ...state.inTurn, [sessionId]: true } }));
+    // THE `ready` MARK'S CLEAR RULE: "the next turn on that Session clears it".
+    //
+    // Why the clear lives HERE and not as a derivation: the mark cannot be read
+    // off `ready && !inTurn`, because that makes it vanish for the duration of a
+    // turn and REAPPEAR when the turn settles — the opposite of the rule, and
+    // pinned against by `the mark does NOT come back when the turn settles` in
+    // `sessionReadyMark.test.ts`. A turn that never calls `manage_todo_list` also
+    // leaves the board untouched, so nothing on the board could ever expire the
+    // mark. It has to be an explicit slot, and a turn start is the one event the
+    // rule names.
+    //
+    // Why a call into `useInteractive` from `sessions.ts` is not a new kind of
+    // edge: this file already writes across it twice, at `applyTodoUpdate` in
+    // `openSession` (~line 2223) and again in `resumeSession` (~line 2504), to
+    // seed a reopened Session's board, plus `applyTodoClear` in `deleteSession`.
+    // All of them go through the OTHER store's ACTION rather than poking its map,
+    // and this does the same — which is why `clearReady` exists as an action on
+    // `useInteractive` instead of a `setState` from here.
+    useInteractive.getState().clearReady(sessionId);
+  },
 
   // A Client-authored line, appended through the SAME reducer the harness's own
   // frames go through — see the interface doc for why the `messageId` has to be

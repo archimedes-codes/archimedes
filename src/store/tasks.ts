@@ -124,6 +124,40 @@ interface BoardState {
 
   /** Read one Space's board. Resolves either way — a rejection lands in `error`. */
   load: (spacePath: string) => Promise<void>;
+  /**
+   * Read one Space's board AGAIN, SILENTLY — the repaint a model-written card needs.
+   *
+   * ## The gap
+   *
+   * `docs/features/task-board-known-gaps.md` §2 item 3: a card the model creates
+   * with `create_task`, or an artifact it writes, reached no surface until the board
+   * remounted. `load` had exactly two call sites — `TasksBoard`'s and
+   * `WorkflowsCanvas`'s mount / Space-change effects — and nothing subscribes to a
+   * task tool's result, so the write landed in the database and the board kept
+   * showing the world from before it. The data was reachable; the repaint was not.
+   *
+   * ## The three things that make this not-`load`
+   *
+   *  1. **`loading` is never written.** A background refresh runs while rows are on
+   *     screen. Both consumers of the flag today gate on
+   *     `columns === undefined && loading` and so would not blank, but a refresh that
+   *     RELIES on that is a refresh that turns into a visible flash the day anyone
+   *     adds a skeleton or a dimming overlay gated on the flag alone. The promise is
+   *     that the flag is untouched, and it is pinned by sampling it mid-flight.
+   *  2. **`error` is not cleared on the way in** — a background re-read does not get
+   *     to wipe a message the user is still reading.
+   *  3. **A failure is silent.** Logged and nothing else: the rows already painted
+   *     are still the best answer the client has, and a board that says "failed to
+   *     load" because an opportunistic read the user never asked for tripped is a
+   *     worse board than one that says nothing.
+   *
+   * What it SHARES with `load`, deliberately: the same command, the same `loadEpoch`
+   * (so a refresh dispatched for a Space the user has left, or superseded by a newer
+   * read, is dropped), the same in-flight position merge (so a debounced refresh
+   * cannot undo a `set_stage_position` still in the air), and the same
+   * never-rejects contract. One body, two volumes — see `readBoard`.
+   */
+  refresh: (spacePath: string) => Promise<void>;
   /** The cross-column drop: writes `stage_slug` and runs the destination's
    *  `onEnter`. Optimistic, reverted on rejection.
    *
@@ -528,6 +562,102 @@ const orderBySlugs = (
   return [...ordered, ...columns.filter((c) => !seen.has(c.stage.slug))];
 };
 
+/** One board READ, in two volumes. `load` and `refresh` are the same command, the
+ *  same epoch and the same merge; what differs is how loudly they speak, and that
+ *  difference is the whole reason two actions exist.
+ *
+ *  `loud` means "nothing is on screen yet, so say so":
+ *   - `loading: true` for the duration (the two consumers gate on
+ *     `columns === undefined && loading`, so the spinner replaces an absent board
+ *     and nothing else), and
+ *   - `error: null` up front — a fresh read earns a fresh verdict.
+ *
+ *  `loud === false` means "rows are already painted", and then:
+ *   - `loading` is NEVER written, before, during or after. That is not a
+ *     micro-optimisation: both consumers happen to be safe against the flag today
+ *     (`TasksBoard.tsx` and `WorkflowsCanvas.tsx` each test `columns === undefined`
+ *     FIRST), and a refresh that depends on that is a refresh a future skeleton
+ *     turns into a board that blanks itself on every turn. The promise is the flag
+ *     is untouched, and `tasksRefresh.test.ts` samples it mid-flight to hold it.
+ *   - a FAILURE is logged and otherwise silent. Good rows stay on screen; the error
+ *     line the user was already reading stays as it was. A background read the user
+ *     never asked for does not get to relabel a healthy board as a failed one.
+ *
+ *  WHY ONE FUNCTION AND NOT A BOOLEAN ON `load`: an optional flag on `load` makes
+ *  every future reader of `load` ask "and which way does the caller want it?", and
+ *  the answer is never "I choose at the call site" — the mount effect wants loud and
+ *  the auto-refresh wants quiet, permanently. Two named actions say which one a call
+ *  site means, and they share this body so the parts that MUST agree (the epoch, the
+ *  position merge, the command, the never-rethrowing contract) cannot drift.
+ *
+ *  Never rejects, in either volume — the mount `useEffect` and a debounce timer
+ *  equally must not produce an unhandled rejection. */
+const readBoard = async (
+  // zustand's own setter, which takes EITHER an object or a callback (this body uses
+  // both: the loud arm's `{ loading: true, error: null }` and the callback that has
+  // to read the current slice for the position merge). Typed the way `paint` above
+  // types it — the store's `set` widens to this.
+  set: (
+    patch: Partial<BoardState> | ((state: BoardState) => Partial<BoardState>),
+  ) => void,
+  spacePath: string,
+  volume: "load" | "refresh",
+): Promise<void> => {
+  // The epoch is the whole answer to "which fetch is still current". Switching
+  // Space tabs fast fires two `get_board` calls and the SLOWER one can resolve
+  // last; without this guard it would repaint the new tab's columns with the old
+  // tab's board. Same shape as the `reorderEpoch` counters in `sessions.ts`.
+  //
+  // SHARED between both volumes ON PURPOSE, and it is the counter that makes a
+  // background refresh safe against a Space switch: a refresh dispatched for the
+  // Space the user just left loses its ticket to the mount read of the Space they
+  // arrived at, and is dropped.
+  loadEpoch += 1;
+  const epoch = loadEpoch;
+  if (volume === "load") set({ loading: true, error: null });
+  try {
+    const columns = await getBoardCommand(spacePath);
+    if (epoch !== loadEpoch) return; // a newer read owns the store
+    set((state) => {
+      // F3: a position write for THIS Space that is still in flight owns its column's two
+      // coordinates, and this read must not paint over them. See `positionWritesInFlight`
+      // for why the fix is a merge and not a suppressed `set`.
+      //
+      // This merge is the reason the two volumes share a body rather than each
+      // spelling the `set`. A DEBOUNCED background refresh lands a beat after a
+      // canvas drag, which is precisely the window the counter is open for.
+      const inFlight = inFlightPositionsOf(spacePath);
+      const held = state.boardsBySpace[spacePath];
+      const next =
+        inFlight === null || held === undefined
+          ? columns
+          : keepInFlightPositions(held, columns, inFlight);
+      return {
+        boardsBySpace: { ...state.boardsBySpace, [spacePath]: next },
+        // The quiet volume writes NOTHING else, so `loading` is absent from the
+        // patch — zustand shallow-merges, and an absent key keeps its current value
+        // AND its identity.
+        ...(volume === "load" ? { loading: false } : {}),
+      };
+    });
+  } catch (err) {
+    if (volume === "refresh") {
+      // Logged, and NOTHING else. See the header: the rows on screen are still the
+      // best answer the client has, and the error line belongs to whatever write
+      // actually failed.
+      console.error(`Failed to refresh the task board for ${spacePath}:`, err);
+      return;
+    }
+    // Captured, never rethrown (the `sessions.ts` command-failure pattern): the
+    // board renders this sentence, and an action that throws out of a mount
+    // `useEffect` produces an unhandled rejection instead of an error line.
+    const message = describeIpcError(err);
+    if (epoch === loadEpoch) set({ loading: false });
+    set({ error: message });
+    console.error(`Failed to load the task board for ${spacePath}:`, err);
+  }
+};
+
 export const useTasks = create<BoardState>((set, get) => ({
   boardsBySpace: {},
   boostNotes: {},
@@ -539,36 +669,21 @@ export const useTasks = create<BoardState>((set, get) => ({
     // Space tabs fast fires two `get_board` calls and the SLOWER one can resolve
     // last; without this guard it would repaint the new tab's columns with the old
     // tab's board. Same shape as the `reorderEpoch` counters in `sessions.ts`.
-    loadEpoch += 1;
-    const epoch = loadEpoch;
-    set({ loading: true, error: null });
-    try {
-      const columns = await getBoardCommand(spacePath);
-      if (epoch !== loadEpoch) return; // a newer load owns the store
-      set((state) => {
-        // F3: a position write for THIS Space that is still in flight owns its column's two
-        // coordinates, and this read must not paint over them. See `positionWritesInFlight`
-        // for why the fix is a merge and not a suppressed `set`.
-        const inFlight = inFlightPositionsOf(spacePath);
-        const held = state.boardsBySpace[spacePath];
-        const next =
-          inFlight === null || held === undefined
-            ? columns
-            : keepInFlightPositions(held, columns, inFlight);
-        return {
-          boardsBySpace: { ...state.boardsBySpace, [spacePath]: next },
-          loading: false,
-        };
-      });
-    } catch (err) {
-      // Captured, never rethrown (the `sessions.ts` command-failure pattern): the
-      // board renders this sentence, and an action that throws out of a mount
-      // `useEffect` produces an unhandled rejection instead of an error line.
-      const message = describeIpcError(err);
-      if (epoch === loadEpoch) set({ loading: false });
-      set({ error: message });
-      console.error(`Failed to load the task board for ${spacePath}:`, err);
-    }
+    //
+    // `load` is the LOUD half of `readBoard`: nothing is on screen yet, so
+    // `loading: true` → the spinner is the right answer and a fresh read earns a
+    // cleared error line. `refresh` is the quiet half and shares everything else.
+    await readBoard(set, spacePath, "load");
+  },
+
+  refresh: async (spacePath) => {
+    // THE SILENT HALF. Same read, same epoch, same in-flight position merge — and no
+    // `loading` write at any point, because rows are ALREADY on screen and a flag
+    // that a third file might render a spinner from is a board that flashes. The
+    // three differences from `load` (no `loading`, no error clear on the way in, no
+    // error write on failure) are each pinned in `tasksRefresh.test.ts`, and the
+    // reasoning is at the action's declaration.
+    await readBoard(set, spacePath, "refresh");
   },
 
   moveTask: async (spacePath, taskId, toStageSlug) => {
