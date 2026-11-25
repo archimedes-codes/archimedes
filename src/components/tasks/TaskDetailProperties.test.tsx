@@ -320,6 +320,49 @@ describe("TaskDetailProperties — spec path", () => {
     renderProperties({ specError: "Could not save the path." });
     expect(screen.getByRole("alert").textContent).toBe("Could not save the path.");
   });
+
+  // REGRESSION (Greptile P2, "Pending saves discard newer typing"), the SpecPathRow half.
+  // The same race as the header: the spec input stayed editable while the save was in
+  // flight. It must be disabled while pending and re-enable with the draft on rejection.
+  it("disables the spec input while the save is pending, so newer typing cannot be discarded", async () => {
+    let settle: () => void = () => {};
+    const onSaveSpecPath = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    renderProperties({ task: taskRow({ specPath: "/old.md" }), onSaveSpecPath });
+    fireEvent.click(screen.getByTestId("spec-path-value"));
+    const input = screen.getByRole("textbox") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "/new.md" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onSaveSpecPath).toHaveBeenCalledWith("/new.md"));
+    expect((screen.getByRole("textbox") as HTMLInputElement).disabled).toBe(true);
+    settle();
+  });
+
+  it("re-enables the spec input with the draft intact when the pending save rejects", async () => {
+    let reject: (err: Error) => void = () => {};
+    const onSaveSpecPath = vi.fn(
+      () =>
+        new Promise<void>((_resolve, rej) => {
+          reject = rej;
+        }),
+    );
+    renderProperties({ task: taskRow({ specPath: "/old.md" }), onSaveSpecPath });
+    fireEvent.click(screen.getByTestId("spec-path-value"));
+    const input = screen.getByRole("textbox") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "/bad.md" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onSaveSpecPath).toHaveBeenCalledWith("/bad.md"));
+    expect((screen.getByRole("textbox") as HTMLInputElement).disabled).toBe(true);
+    reject(new Error("bad path"));
+    await waitFor(() =>
+      expect((screen.getByRole("textbox") as HTMLInputElement).disabled).toBe(false),
+    );
+    expect(screen.getByDisplayValue("/bad.md")).toBeTruthy();
+  });
 });
 
 describe("TaskDetailProperties — Updated, Created and the id", () => {

@@ -442,3 +442,112 @@ describe("TaskDetailDialog — Stage switching", () => {
     expect((combobox as HTMLButtonElement).disabled).toBe(true);
   });
 });
+
+describe("TaskDetailDialog — the artifact tabs are a WAI-ARIA tablist", () => {
+  // REGRESSION (Greptile P2, "Tabs lack keyboard navigation"). `role="tab"` was declared
+  // with click-only behaviour: arrow keys did nothing, every tab was a separate Tab stop,
+  // and the panel had no link to its selected tab. These cases pin the full pattern.
+
+  /** The tab for one key (or Overview), by its `data-tab-key`. */
+  const tab = (key: string): HTMLElement =>
+    within(dialog()).getByTestId("detail-tabs").querySelector(
+      `[data-tab-key="${key}"]`,
+    ) as HTMLElement;
+
+  /** Every tab in document order. */
+  const allTabs = (): HTMLElement[] =>
+    within(dialog()).getAllByRole("tab") as HTMLElement[];
+
+  it("each tab's id is unique, and its aria-controls names the one shared panel", () => {
+    renderHarness({ artifactKeys: ["plan", "research"] });
+    const panel = within(dialog()).getByRole("tabpanel");
+    for (const t of allTabs()) {
+      expect(t.id).toBeTruthy();
+      expect(t.getAttribute("aria-controls")).toBe(panel.id);
+    }
+    const ids = allTabs().map((t) => t.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("an artifact keyed 'overview' does NOT collide with the Overview tab's id", () => {
+    // `overview` is a legal artifact key (`[a-z0-9][a-z0-9-]*`, ≤40 chars), so a tab id
+    // built from the raw key would duplicate the Overview tab's. Ids must stay distinct.
+    renderHarness({ artifactKeys: ["overview"] });
+    const ids = allTabs().map((t) => t.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(allTabs()).toHaveLength(2);
+  });
+
+  it("only the active tab is in the Tab order; the rest are tabIndex -1", () => {
+    renderHarness({ artifactKeys: ["plan", "research"] });
+    expect(tab("overview").getAttribute("tabindex")).toBe("0");
+    expect(tab("plan").getAttribute("tabindex")).toBe("-1");
+    expect(tab("research").getAttribute("tabindex")).toBe("-1");
+  });
+
+  it("ArrowRight moves selection AND DOM focus to the next tab, and wraps at the end", () => {
+    renderHarness({ artifactKeys: ["plan", "research"] });
+    tab("overview").focus();
+    fireEvent.keyDown(tab("overview"), { key: "ArrowRight" });
+    expect(tab("plan").getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(tab("plan"));
+    fireEvent.keyDown(tab("plan"), { key: "ArrowRight" });
+    fireEvent.keyDown(tab("research"), { key: "ArrowRight" });
+    expect(tab("overview").getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(tab("overview"));
+  });
+
+  it("ArrowLeft moves to the previous tab and wraps from the first to the last", () => {
+    renderHarness({ artifactKeys: ["plan", "research"] });
+    tab("overview").focus();
+    fireEvent.keyDown(tab("overview"), { key: "ArrowLeft" });
+    expect(tab("research").getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(tab("research"));
+  });
+
+  it("Home selects the first tab and End selects the last", () => {
+    renderHarness({ artifactKeys: ["plan", "research"] });
+    tab("overview").focus();
+    fireEvent.keyDown(tab("overview"), { key: "End" });
+    expect(tab("research").getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(tab("research"));
+    fireEvent.keyDown(tab("research"), { key: "Home" });
+    expect(tab("overview").getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(tab("overview"));
+  });
+
+  it("an arrow key calls preventDefault so the page does not scroll under the tablist", () => {
+    renderHarness({ artifactKeys: ["plan"] });
+    tab("overview").focus();
+    const ev = new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true });
+    tab("overview").dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it("the tabpanel is labelled by the ACTIVE tab and follows the selection", () => {
+    renderHarness({ artifactKeys: ["plan", "research"] });
+    const panel = within(dialog()).getByRole("tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe(tab("overview").id);
+    tab("overview").focus();
+    fireEvent.keyDown(tab("overview"), { key: "ArrowRight" });
+    expect(panel.getAttribute("aria-labelledby")).toBe(tab("plan").id);
+  });
+
+  it("the tab strip wraps or scrolls inside its column, never past the window", () => {
+    // REGRESSION (Greptile P1, "Artifact tabs leave the window"). A single unbroken row of
+    // 40-char keys ran off the right edge. The strip must wrap onto more rows within its
+    // column. jsdom has no layout, so this pins the class contract that makes it true.
+    renderHarness({ artifactKeys: ["a".repeat(40), "b".repeat(40)] });
+    const strip = within(dialog()).getByTestId("detail-tabs");
+    expect(strip.className).toContain("flex-wrap");
+    expect(strip.className).toContain("min-w-0");
+  });
+
+  it("a long artifact key truncates inside its tab and keeps the full name in title", () => {
+    const longKey = "a".repeat(40);
+    renderHarness({ artifactKeys: [longKey] });
+    const t = tab(longKey);
+    expect(t.getAttribute("title")).toBe(longKey);
+    expect(t.className).toContain("max-w-");
+  });
+});

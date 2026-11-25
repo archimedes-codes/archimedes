@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
@@ -265,5 +265,65 @@ describe("TaskDescription — editing", () => {
         (screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled,
       ).toBe(false),
     );
+  });
+
+  // REGRESSION (Greptile P2, "Description stays disabled after saving"). React 19
+  // StrictMode runs an effect's cleanup and then its setup AGAIN on mount. The unmount
+  // guard used to set `mounted.current = false` in cleanup and never set it back to
+  // `true` on setup, so after the StrictMode double-invoke every later save skipped
+  // `setSaving(false)` and the editor stayed disabled. These cases run under StrictMode
+  // and pin the two outcomes the review named: a failed save and a successful save.
+  it("StrictMode: a FAILED save re-enables Save and Cancel for the still-open editor", async () => {
+    // The `onSave` contract is "never rejects": a failure resolves with the editor still
+    // open, and the dialog sets `error`. That is the path that wedged, so model it exactly.
+    // Failure is signalled by resolving with the draft kept (`keepDraftOnSave`) and an error.
+    let settle: () => void = () => {};
+    const onSave = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    render(
+      <React.StrictMode>
+        <Harness body="Original" onSave={onSave} error={null} keepDraftOnSave />
+      </React.StrictMode>,
+    );
+    startEditing();
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Changed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    settle();
+    await vi.waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    expect(
+      (screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it("StrictMode: a SUCCESSFUL save resting the editor leaves Edit usable on the next edit", async () => {
+    const onSave = vi.fn(async () => {});
+    render(
+      <React.StrictMode>
+        <Harness body="Original" onSave={onSave} />
+      </React.StrictMode>,
+    );
+    startEditing();
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Saved" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    // The success closed the editor. Reopening must show ENABLED controls, not the
+    // disabled pair a stuck `saving` flag would leave behind.
+    await vi.waitFor(() => expect(screen.queryByRole("textbox")).toBeNull());
+    startEditing();
+    expect(
+      (screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(
+      (screen.getByRole("textbox") as HTMLTextAreaElement).disabled,
+    ).toBe(false);
   });
 });

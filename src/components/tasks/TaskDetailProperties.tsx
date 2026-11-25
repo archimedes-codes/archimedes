@@ -188,7 +188,17 @@ function SpecPathRow({
   const reportRef = useRef(onEditingChange);
   reportRef.current = onEditingChange;
   const cancelledRef = useRef(false);
+  // Set while a save is in flight. `saving` is the rendered mirror that disables the
+  // input, so newer typing cannot be discarded when the old save resolves (Greptile P2).
   const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const setEditingState = (next: boolean) => {
     if (editingRef.current === next) return;
@@ -219,13 +229,16 @@ function SpecPathRow({
       return;
     }
     savingRef.current = true;
+    setSaving(true);
     void onSave(next).then(
       () => {
         savingRef.current = false;
+        if (mounted.current) setSaving(false);
         setEditingState(false);
       },
       () => {
         savingRef.current = false;
+        if (mounted.current) setSaving(false);
       },
     );
   };
@@ -245,6 +258,7 @@ function SpecPathRow({
           autoFocus
           className="font-mono"
           value={draft}
+          disabled={saving}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.nativeEvent.isComposing) return;

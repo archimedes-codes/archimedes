@@ -41,8 +41,19 @@ export function TaskDetailHeader({
   reportRef.current = onEditingChange;
   // Set by Escape so the blur that follows does not save the discarded draft.
   const cancelledRef = useRef(false);
-  // Set while a commit is in flight so Enter-then-blur cannot save twice.
+  // Set while a commit is in flight so Enter-then-blur cannot save twice. The ref guards
+  // the handlers; `saving` is the RENDERED mirror, so the input is disabled while pending
+  // and newer typing cannot be discarded when the old save resolves (Greptile P2).
   const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  // Guards the post-await state updates: a successful save unmounts the editor.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const setEditingState = (next: boolean) => {
     if (editingRef.current === next) return;
@@ -73,14 +84,17 @@ export function TaskDetailHeader({
       return;
     }
     savingRef.current = true;
+    setSaving(true);
     void onSaveTitle(next).then(
       () => {
         savingRef.current = false;
+        if (mounted.current) setSaving(false);
         setEditingState(false);
       },
       () => {
         // Rejected: stay open with the draft. The caller renders `error`.
         savingRef.current = false;
+        if (mounted.current) setSaving(false);
       },
     );
   };
@@ -103,6 +117,7 @@ export function TaskDetailHeader({
             autoFocus
             className="min-w-0 flex-1"
             value={draft}
+            disabled={saving}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.nativeEvent.isComposing) return;

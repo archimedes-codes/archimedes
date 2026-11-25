@@ -192,4 +192,46 @@ describe("TaskDetailHeader", () => {
     unmount();
     expect(onEditingChange).toHaveBeenLastCalledWith(false);
   });
+
+  // REGRESSION (Greptile P2, "Pending saves discard newer typing"). The input stayed
+  // editable while `onSaveTitle` was in flight, so typing after Enter was lost when the
+  // old save resolved and closed the editor. The input must be DISABLED while the save is
+  // pending, and re-enable with the draft intact when the save rejects.
+  it("disables the input while the save is pending, so newer typing cannot be discarded", async () => {
+    let settle: () => void = () => {};
+    const onSaveTitle = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    renderHeader({ title: "Old", onSaveTitle });
+    const input = openEditor();
+    fireEvent.change(input, { target: { value: "Pending" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onSaveTitle).toHaveBeenCalledWith("Pending"));
+    expect((screen.getByRole("textbox") as HTMLInputElement).disabled).toBe(true);
+    settle();
+  });
+
+  it("re-enables the input with the draft intact when the pending save rejects", async () => {
+    let reject: (err: Error) => void = () => {};
+    const onSaveTitle = vi.fn(
+      () =>
+        new Promise<void>((_resolve, rej) => {
+          reject = rej;
+        }),
+    );
+    renderHeader({ title: "Old", onSaveTitle });
+    const input = openEditor();
+    fireEvent.change(input, { target: { value: "Doomed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onSaveTitle).toHaveBeenCalledWith("Doomed"));
+    expect((screen.getByRole("textbox") as HTMLInputElement).disabled).toBe(true);
+    reject(new Error("empty_title"));
+    await waitFor(() =>
+      expect((screen.getByRole("textbox") as HTMLInputElement).disabled).toBe(false),
+    );
+    expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe("Doomed");
+  });
 });

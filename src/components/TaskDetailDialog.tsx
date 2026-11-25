@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { Button } from "./ui/button";
 import { IpcErrorLine } from "./IpcErrorLine";
 import { MutedCaption } from "./MutedCaption";
@@ -103,6 +103,16 @@ export default function TaskDetailDialog({
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const shownKey =
     activeKey !== null && artifactKeys.includes(activeKey) ? activeKey : null;
+
+  // WAI-ARIA TABS: a stable per-dialog id prefix, so each tab can name the panel and the
+  // panel can name its selected tab. Tab ids are namespaced by kind, so an artifact keyed
+  // `overview` cannot collide with the Overview tab's id (keys are `[a-z0-9][a-z0-9-]*`).
+  const tabsId = useId();
+  const tabDomId = (key: string | null): string =>
+    key === null ? `${tabsId}-tab-overview` : `${tabsId}-tab-artifact-${key}`;
+  const panelDomId = `${tabsId}-panel`;
+  const activeTabDomId = tabDomId(shownKey);
+  const tablistRef = useRef<HTMLDivElement>(null);
 
   // The inline editors' open state, LIFTED here so the dialog's Escape handler can tell
   // "an editor is open" from "nothing is". Each child reports every transition.
@@ -308,40 +318,71 @@ export default function TaskDetailDialog({
           error={titleError}
         />
 
-        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {artifactKeys.length > 0 && (
-              <div
-                role="tablist"
-                data-testid="detail-tabs"
-                className="flex shrink-0 gap-1 border-b border-border"
-              >
-                <TabButton
-                  dataKey="overview"
-                  label="Overview"
-                  active={shownKey === null}
-                  onClick={() => openTab(null)}
-                />
-                {artifactKeys.map((key) => (
-                  <TabButton
-                    key={key}
-                    dataKey={key}
-                    label={key}
-                    active={shownKey === key}
-                    onClick={() => openTab(key)}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* THE ONE SCROLLER. Everything between the header and the footer sits inside
-                it. `min-h-0` is load-bearing: a flex item's default `min-height: auto`
-                refuses to shrink below its content, so without it the box grows past the
-                cap and clips. */}
+        <div className="flex min-h-0 flex-1 flex-col">
+          {artifactKeys.length > 0 && (
             <div
-              data-testid="detail-scroll"
+              ref={tablistRef}
+              role="tablist"
+              data-testid="detail-tabs"
+              onKeyDown={(e) => {
+                // WAI-ARIA tabs: Arrow keys move between tabs (wrapping), Home and End jump
+                // to the ends. The selection FOLLOWS focus, and focus moves to the new tab.
+                const order: (string | null)[] = [null, ...artifactKeys];
+                const current = order.indexOf(shownKey);
+                let next: number;
+                if (e.key === "ArrowRight") next = (current + 1) % order.length;
+                else if (e.key === "ArrowLeft")
+                  next = (current - 1 + order.length) % order.length;
+                else if (e.key === "Home") next = 0;
+                else if (e.key === "End") next = order.length - 1;
+                else return;
+                e.preventDefault();
+                const target = order[next]!;
+                openTab(target);
+                // Focus by POSITION in the tablist, not by building a selector from the key:
+                // the tabs render in `order`, so index N is tab N and no key is spliced in.
+                const tabs = tablistRef.current?.querySelectorAll<HTMLElement>('[role="tab"]');
+                tabs?.[next]?.focus();
+              }}
+              className="flex min-w-0 shrink-0 flex-wrap gap-1 border-b border-border"
+            >
+              <TabButton
+                id={tabDomId(null)}
+                panelId={panelDomId}
+                dataKey="overview"
+                label="Overview"
+                active={shownKey === null}
+                onClick={() => openTab(null)}
+              />
+              {artifactKeys.map((key) => (
+                <TabButton
+                  key={key}
+                  id={tabDomId(key)}
+                  panelId={panelDomId}
+                  dataKey={key}
+                  label={key}
+                  active={shownKey === key}
+                  onClick={() => openTab(key)}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* THE ONE SCROLLER. The document AND Properties sit inside it, so there is exactly
+              one scroll container in the dialog. Below `md` Properties stacks under the
+              document; at `md+` it sits beside it, and if it is taller than the viewport the
+              whole body scrolls to reach it. `min-h-0` is load-bearing: a flex item's default
+              `min-height: auto` refuses to shrink below its content, so without it the box
+              grows past the cap and clips. */}
+          <div
+            data-testid="detail-scroll"
+            className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto py-3 md:flex-row md:items-start md:gap-4"
+          >
+            <div
               role="tabpanel"
-              className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto py-3"
+              id={panelDomId}
+              aria-labelledby={activeTabDomId}
+              className="flex min-w-0 flex-1 flex-col gap-3"
             >
               {shownKey === null ? (
                 <>
@@ -412,23 +453,23 @@ export default function TaskDetailDialog({
                 />
               )}
             </div>
-          </div>
 
-          <TaskDetailProperties
-            task={task}
-            columns={columns}
-            stageDisabled={spacePath === null}
-            status={rollup}
-            ready={ready}
-            sessionCount={sessions.length}
-            costUsd={costUsd}
-            onMoveStage={moveStage}
-            onSaveSpecPath={saveSpecPath}
-            onEditingChange={setSpecEditing}
-            moveError={moveError}
-            moveNote={boostNote}
-            specError={specError}
-          />
+            <TaskDetailProperties
+              task={task}
+              columns={columns}
+              stageDisabled={spacePath === null}
+              status={rollup}
+              ready={ready}
+              sessionCount={sessions.length}
+              costUsd={costUsd}
+              onMoveStage={moveStage}
+              onSaveSpecPath={saveSpecPath}
+              onEditingChange={setSpecEditing}
+              moveError={moveError}
+              moveNote={boostNote}
+              specError={specError}
+            />
+          </div>
         </div>
 
         {/* A WARNING, not a failure. Outside `detail-scroll`, directly above the footer. Not
@@ -485,13 +526,21 @@ export default function TaskDetailDialog({
 }
 
 /** One tab in the Document-First strip. Visible text and a `title`, never an `aria-label`,
- *  so the footer's `aria-label` census still lists exactly the launch buttons. */
+ *  so the footer's `aria-label` census still lists exactly the launch buttons.
+ *
+ *  WAI-ARIA: `id` names the tab so the panel's `aria-labelledby` can point at it, and
+ *  `aria-controls` names the one panel. Only the SELECTED tab is in the Tab order
+ *  (`tabIndex` 0); the rest are `-1`, reached with the arrow keys on the tablist. */
 function TabButton({
+  id,
+  panelId,
   dataKey,
   label,
   active,
   onClick,
 }: {
+  id: string;
+  panelId: string;
   dataKey: string;
   label: string;
   active: boolean;
@@ -501,13 +550,16 @@ function TabButton({
     <button
       type="button"
       role="tab"
+      id={id}
       aria-selected={active}
+      aria-controls={panelId}
+      tabIndex={active ? 0 : -1}
       data-testid="detail-tab"
       data-tab-key={dataKey}
       title={label}
       onClick={onClick}
       className={cn(
-        "-mb-px cursor-pointer border-b-2 px-3 py-1.5 text-ui-sm",
+        "-mb-px min-w-0 max-w-[14rem] cursor-pointer truncate border-b-2 px-3 py-1.5 text-ui-sm",
         active
           ? "border-brand text-foreground"
           : "border-transparent text-foreground-subtle hover:text-foreground",

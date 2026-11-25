@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-11-25
-verified-by: every claim below re-read against the tree at the B2 commit on `feature/task-card-redesign-task4`, not lifted from the plan that designed it. Runner counts from `npx vitest run` on the owned files (60 in `TaskDetailDialog.test.tsx`, 20 in `TaskDetailDialog.edit.test.tsx`, 11 + 21 + 6 + 33 in the four `components/tasks/*` children, 312 across the owned-set run, which also includes `TasksBoard`, `TasksBoardReady`, `NewTaskDialog`, `useArtifactReader`, `tauriBarrel`, `classNameConvention`, `mutedCaption` and `slabFloatSeparation`, all green, none edited). Code-line counts from `grep -vcE '^[[:space:]]*(//|\*|/\*|$)'`, the ratchet's classifier, never `wc -l`: `TaskDetailDialog.tsx` 399 (down from 382 + the 301-line artifact section it no longer carries; its own 684 `wc -l` figure is not the unit), `TaskDetailDialog.test.tsx` 855 (test gate 1,000), `TaskDetailDialog.edit.test.tsx` 381, and the four children 104 / 124 / 43 / 270. `npx tsc --noEmit` clean. `bash scripts/check-file-size.sh` passes with the baseline unchanged. The `tauriBarrel` mocker census moved 70 → 71 for the one new barrel mocker (`TaskDetailDialog.edit.test.tsx`), and the spread half 69 → 70.
+verified-by: every claim below re-read against the tree on `feature/task-card-redesign` after the Greptile review fixes, not lifted from the plan that designed it. Runner counts from `npx vitest run` (62 in `TaskDetailDialog.test.tsx`, 30 in `TaskDetailDialog.edit.test.tsx`, 13 + 23 + 6 + 35 in the four `components/tasks/*` children, 169 across the modal-owned set). Code-line counts from `grep -vcE '^[[:space:]]*(//|\*|/\*|$)'`, the ratchet's classifier, never `wc -l`: `TaskDetailDialog.tsx` 440, `TaskDetailDialog.test.tsx` 871 (test gate 1,000), `TaskDetailDialog.edit.test.tsx` 467, and the children `TaskDetailHeader.tsx` 116, `TaskDescription.tsx` 124, `TaskDetailProperties.tsx` 282. `npx tsc --noEmit` clean. `bash scripts/check-file-size.sh` passes with the baseline unchanged. The `tauriBarrel` mocker census is unchanged (70 → 71 from the one edit-file mocker, already recorded).
 ---
 
 # The Task detail modal — a wide, Document-First two-column surface
@@ -27,12 +27,29 @@ spec path edit inline through `useTasks.editTask`, and the Stage is a dropdown o
   The active tab wears `border-brand text-foreground`; an inactive one wears `text-foreground-subtle`.
   Tabs are visible text with a `title`, never an `aria-label`, so the footer's `aria-label` census
   stays exact.
-- **`detail-scroll` is the only element with `overflow-y-auto` inside the dialog.** It holds the
-  Overview (Description, then Sessions) or the open artifact pane. `min-h-0` is load-bearing: a flex
-  item's default `min-height: auto` refuses to shrink, so `flex-1` alone clips.
-- **The Properties column is an `<aside>` with no `overflow-*`.** It sits beside the left column at
-  `md:` and stacks beneath it on a narrow window. It carries `min-w-0 break-words`, so a long spec path
-  or id wraps inside its 16rem column instead of widening the modal.
+- **The tabs are a full WAI-ARIA tablist.** Each `role="tab"` has a unique `id` (namespaced by kind, so an
+  artifact keyed `overview` cannot collide with the Overview tab) and an `aria-controls` naming the one
+  `role="tabpanel"`. The panel carries `aria-labelledby` pointing at the SELECTED tab. Only the selected tab
+  is in the Tab order (`tabIndex` 0); the rest are `-1`. `ArrowRight` and `ArrowLeft` move between tabs
+  with wrap-around, `Home` and `End` jump to the ends, and each calls `preventDefault`, selects the target,
+  and moves DOM focus to it. Keyboard and click select the same tab.
+- **`detail-scroll` is the only element with `overflow-y-auto` inside the dialog, and it holds BOTH the
+  document and the Properties column.** It is the one scroll container, so there is exactly one
+  scrollbar at every window size. Inside it, the `role="tabpanel"` document (Overview: Description then
+  Sessions, or the open artifact pane) sits beside the Properties `<aside>` at `md:` and stacks above it
+  on a narrow window. `min-h-0` is load-bearing: a flex item's default `min-height: auto` refuses to
+  shrink, so `flex-1` alone clips.
+- **The tab strip sits ABOVE the scroller, not inside it, so it never scrolls away.** `detail-tabs` is a
+  `shrink-0` sibling of `detail-scroll`, so the tabs stay visible while a long artifact scrolls beneath
+  them. It is `flex-wrap min-w-0`: a 40-character key is capped at `max-w-[14rem]` and truncates with its
+  full name in `title`, and many keys wrap onto a second row inside the column. Nothing leaves the window.
+- **Why Properties is inside the scroller, and why that is the fix.** It used to sit outside `detail-scroll`
+  as a `shrink-0` sibling with no overflow. Below `md` it stacked under the document and consumed all the
+  available height, and at `md+` an overflowing Properties column could not be scrolled at all. Putting it
+  inside the one scroller makes both cases scroll cleanly.
+- **The Properties column is an `<aside>` with no `overflow-*`, `md:w-64 md:shrink-0`.** It carries
+  `min-w-0 break-words`, so a long spec path or id wraps inside its 16rem column instead of widening the
+  modal, and it never shrinks, so the document absorbs any squeeze.
 - **The launch note and the launch error sit between the scroller and the footer**, outside
   `detail-scroll` and outside `[data-slot="dialog-footer"]`. The note is `role="status"`; the error is
   `IpcErrorLine`, `role="alert"`.
@@ -95,7 +112,8 @@ the body became markdown.
 ## Reading order follows what a person came to do
 
 On the Overview: **Description** (markdown, or the placeholder) → **Sessions on this task**. Each
-artifact tab is its own document. The **Properties** column is beside them, not inside the scroll.
+artifact tab is its own document. The **Properties** column is inside the same scroller, beside the document at
+`md:` and below it on a narrow window, so the whole body scrolls and nothing is unreachable.
 
 One correctness fix is kept from the previous pass: a session link prints `from <Stage label>`, and the
 Stage control prints the same label. Both read the one `columns` slice through `stageLabelOf`, and both
@@ -190,23 +208,27 @@ No artifact is fetched on open (ADR 0100). The first fetch happens on the first 
 
 ## Pin map
 
-`src/components/TaskDetailDialog.test.tsx` — **60 tests**, one `describe` per subject, measured with the
+`src/components/TaskDetailDialog.test.tsx` — **62 tests**, one `describe` per subject, measured with the
 runner (`npx vitest run`, which lists every test, and not a grep):
 `what the card cannot show` 5 · `the sessions list` 3 · `the graph buttons` 16 · `the artifact tabs
-(issue #180)` 8 · `closing` 2 · `the modal scrolls` 7 · `the body renders as markdown` 6 · `the clickable
+(issue #180)` 8 · `closing` 2 · `the modal scrolls` 9 · `the body renders as markdown` 6 · `the clickable
 grammar` 3 · `the session's Stage label` 3 · `the wide two-column shell` 5 · `the Status row` 2.
 
-`src/components/TaskDetailDialog.edit.test.tsx` — **20 tests**, the store-backed integration: a real
+`src/components/TaskDetailDialog.edit.test.tsx` — **30 tests**, the store-backed integration: a real
 `useTasks` slice and a `Harness` that re-derives the dialog's `task` the way `TasksBoard` does. It covers
 inline editing (title, Description, spec path), the Escape seam including the **blurred Description draft
-cancelled by the first Escape, with a second Escape closing the modal**, and the Stage switch (a successful
-move, a refused move that reverts with a `role="alert"`, a `boostNote`, and a disabled control with no Space).
+cancelled by the first Escape, with a second Escape closing the modal**, the Stage switch (a successful
+move, a refused move that reverts with a `role="alert"`, a `boostNote`, and a disabled control with no Space),
+and the **WAI-ARIA tablist** (unique ids, `aria-controls`/`aria-labelledby`, roving `tabIndex`, arrow/Home/End
+keys moving selection and DOM focus, the `overview`-key id collision, and the wrapping tab strip).
 It mocks the barrel the documented way and spreads `vi.importActual`, which is why it is the one new mocker
 in the `tauriBarrel` census (70 → 71).
 
-The four `components/tasks/*.test.tsx` files — **11** (Header), **21** (Description), **6** (ArtifactTabPane)
-and **33** (Properties) — have **no** `vi.mock` of `lib/tauri` and use **no** jest-dom matchers. They are
-presentational, so they are not barrel mockers and do not move the census.
+The four `components/tasks/*.test.tsx` files — **13** (Header), **23** (Description), **6** (ArtifactTabPane)
+and **35** (Properties) — have **no** `vi.mock` of `lib/tauri` and use **no** jest-dom matchers. They are
+presentational, so they are not barrel mockers and do not move the census. The Header, Description and
+Properties files now also pin the **pending-save disable** (the input is `disabled` while a save is in flight
+and re-enables with the draft on rejection) and, for Description, the **StrictMode** cases.
 
 **Mutate-check.** Disabling the dialog's `onEscapeKeyDown` guard reddens exactly the four Escape cases that
 depend on it (the title, the Description, the blurred Description, and the spec path), and the artifact-tab

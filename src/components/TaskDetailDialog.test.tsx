@@ -887,14 +887,38 @@ describe("TaskDetailDialog — the modal scrolls (issue #180 follow-up)", () => 
     expect(within(s).getAllByTestId("task-session-row")).toHaveLength(2);
   });
 
-  it("the Properties column sits OUTSIDE the scroller — the spec path and id live there", () => {
-    // `task-properties` is a sibling of the scroll region, so a property never scrolls away
-    // with the document.
+  it("the Properties column sits INSIDE the one scroller, so it scrolls on every window size", () => {
+    // REGRESSION (Greptile P1, "Smaller windows hide task details"). Properties used to
+    // sit OUTSIDE `detail-scroll` as a `shrink-0` sibling with no overflow. Below `md` it
+    // stacked under the document and consumed all the height, and at `md+` an overflowing
+    // Properties column could not be scrolled. It now lives in the same scroller, so the
+    // document and Properties scroll together at every size, with one scrollbar.
     renderDialog({ task: taskRow({ specPath: "/w/alpha/spec.md" }) });
     const props = within(dialog()).getByTestId("task-properties");
-    expect(scroller().contains(props)).toBe(false);
+    expect(scroller().contains(props)).toBe(true);
     expect(props.textContent).toContain("/w/alpha/spec.md");
     expect(props.textContent).toContain(taskRow().id);
+  });
+
+  it("the document is the tabpanel, and Properties is NOT inside it", () => {
+    // The ARIA tabpanel is the document pane. Properties is a sibling column inside the
+    // same scroller, but it is not the tab's content, so it must not sit under the
+    // `role="tabpanel"` landmark. The scroller contains the panel AND Properties.
+    renderDialog({ artifactKeys: ["plan"] });
+    const panel = within(dialog()).getByRole("tabpanel");
+    expect(scroller().contains(panel)).toBe(true);
+    expect(panel.contains(within(dialog()).getByTestId("task-properties"))).toBe(false);
+    expect(scroller().contains(within(dialog()).getByTestId("task-properties"))).toBe(true);
+  });
+
+  it("the tabpanel is labelled by the ACTIVE tab, so a screen reader names the document", () => {
+    renderDialog({ artifactKeys: ["plan"] });
+    const panel = within(dialog()).getByRole("tabpanel");
+    const labelledBy = panel.getAttribute("aria-labelledby");
+    expect(labelledBy).toBeTruthy();
+    const labeller = dialog().querySelector(`[id="${labelledBy}"]`);
+    expect(labeller).not.toBeNull();
+    expect(labeller!.getAttribute("aria-selected")).toBe("true");
   });
 
   it("the footer and the header sit OUTSIDE the scroller and cannot be scrolled away", () => {

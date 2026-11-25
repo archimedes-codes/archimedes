@@ -44,12 +44,15 @@ export function TaskDescription({
   const [saving, setSaving] = useState(false);
   // Guards the post-await `setSaving`: a successful save unmounts the editor.
   const mounted = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // SET `true` ON SETUP, not only in the cleanup. React 19 StrictMode runs the cleanup
+    // and then the setup again on mount, so a cleanup-only `false` would stay `false` and
+    // every later save would skip `setSaving(false)`, leaving the editor disabled.
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
   const empty = body === null || body === "";
   const editing = draft !== null;
 
