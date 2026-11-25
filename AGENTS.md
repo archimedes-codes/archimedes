@@ -298,6 +298,15 @@ builds, and the Linux DMABUF variables — is `README.md`'s `## Releasing`.
   this is a LOCAL-GATE trap: a run that validates "the components" and reports
   green has not touched the registry. Run that file explicitly alongside the
   glob.
+- **`make check` runs ZERO of the seven `scripts/*.test.sh` harnesses, and CI has a
+  `Shell scripts` job whose entire content is those seven** — so CI is strictly
+  stronger than the local bar in a direction nothing advertises. Run all seven before
+  pushing, **branching on exit codes and never on a grep of the output** (the size
+  guard says "broke", not "over" — grepping for the wrong word turns a real exit 1
+  into a green you invented). `check-file-size.test.sh` additionally REDS while a
+  legitimate `--update` ledger line is staged-but-uncommitted, by design. Prefix
+  `TMPDIR=/real/disk` to the one command, never export it repo-wide. All three
+  details, with the measurement: `docs/agents/repo-gotchas.md`.
 - **ADR numbers collide on disk, and a plan will confidently name one that is
   taken.** `0086` is used by two files — pre-existing. **Do not derive the
   number from a plan or from `max+1` alone**: the directory has gaps, so `max+1`

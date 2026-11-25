@@ -228,3 +228,43 @@ The crate extraction hit each of these repeatedly.
    the name now (suffix as a **parameter**, so the rule is assertable on Linux). Keep
    `target_debug_dir()` **directory-only** — appending the suffix there breaks every caller that joins a
    directory then supplies its own file name.
+
+## `make check` does not run the shell harnesses CI runs
+
+**`make check` runs ZERO of the seven `.test.sh` harnesses, and CI has a whole
+`Shell scripts` job whose only content is those seven.** Measured, not inferred:
+`sed -n '/^check:/,/^[a-z-]*:/p' Makefile | grep -c 'test.sh'` → `0`, and no other
+target names one either; `ls scripts/*.test.sh | wc -l` → `7`, which is exactly the
+set `ci.yml`'s `Shell scripts` job runs (`grep -oE 'run: bash scripts/[a-z0-9.-]+\.test\.sh'`).
+CI is therefore strictly stronger than the documented local merge bar, in a
+direction nothing tells you about.
+
+**This is a LOCAL-GATE trap of the same family as the `toolDetailsRegistry` one:**
+a green `make check` means "the frontend and Rust suites agree with me", not "the
+repo validates". The seven guards are the repo's own shell instruments — the size
+ratchet, the temp-dir census, the crash-log check, the version check, the command
+consumer census, the updater-manifest composer, the release-notes check — and each
+has a fixture harness precisely because no matrix step can build the shapes that
+decide whether the guard means anything.
+
+**Two ways this bit, both worth knowing before you trust a local green:**
+
+1. **A guard you ran and did not read.** `check-file-size.sh` prints `error: N
+   file(s) broke the size ratchet`. Piping it through `grep -iE 'over|exceed'`
+   matches nothing, so a **red exits-looking-green** while the script's own exit
+   code was 1. The rule is general: **branch on the exit code, never on a grep of
+   the output** — the same failure mode `gh api` writes to stdout already teaches.
+2. **`check-file-size.test.sh` asserts the working tree is CLEAN w.r.t. the ledger
+   it tests** ("and git status reports the tracked baseline clean after the whole
+   suite"). So it REDS if you have a legitimate `--update` ledger change staged but
+   not yet committed. That is not a broken harness — it is the harness refusing to
+   let a test rewrite the book it tests. Commit the ledger line, then it passes.
+
+**Run them before pushing, and scope `TMPDIR` to the single command.** These
+harnesses build throwaway git repos and fixture trees; on a box whose `/tmp` is a
+quota'd tmpfs they die with `error: copy-fd: write returned: Disk quota exceeded`
+/ `fatal: cannot copy ... exit 128`, which is an environment failure wearing a
+test-failure costume. `TMPDIR=/real/disk bash scripts/check-file-size.test.sh` fixes
+it — **prefixed on the one command, never exported repo-wide**, because the
+repo-wide export trades a green frontend for four red Rust tests (see the TMPDIR
+entry in `AGENTS.md`).

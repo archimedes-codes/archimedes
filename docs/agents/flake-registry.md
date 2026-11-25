@@ -238,3 +238,28 @@ Two rules apply to every entry here:
   One consequence is worth knowing before triaging anything in that job: because `cargo test` fails
   fast, an `EADDRINUSE` here silently skips `pnpm test` and `pnpm build` on that leg, so a red here
   also means "the frontend never ran here" — check the step list rather than assuming coverage.
+
+- **`agent::session::tests::resolve_derives_anthropic_messages_wire_for_claude_route`
+  flakes on macOS — a THIRD test whose subject is a local HTTP probe, and it needs an
+  owner.** Its assertion, quoted because line numbers move and this does not:
+  `assertion \`left == right\` failed: a Claude-adapter route with the messages probe
+  passing derives the Messages wire / left: Some("litellm") / right:
+  Some("anthropic-messages")`. The mechanism is a race, not a logic error: the test
+  starts a local `litellm_server` and points a provider at it, and the one-time
+  `GET /v1/messages` liveness probe's **2xx is the latch's only evidence** that the
+  Messages wire is available — so a probe that does not answer in time is read as
+  "Messages not available" and the route correctly, deterministically derives the
+  `litellm` fallback. The test asserts the opposite branch. A slow probe is therefore
+  a GREEN-shaped outcome reached by a real code path, which is why it is load-sensitive
+  rather than merely slow.
+  **One observation: CI run `45611911727` (macOS, `push`), which PASSED on re-run at
+  the same SHA.** Cite the run ID, not the SHA, per the rule above.
+  **The load signature is the cleanest available and is worth naming: at that one SHA
+  the ubuntu, Windows and Shell-scripts legs were all GREEN and only the macOS leg was
+  red**, on a branch whose entire Rust surface was zero files (`git diff --name-only
+  main...HEAD | grep -c src-tauri` → `0`). Same tree, three legs pass, one fails, diff
+  cannot reach it — both discriminators this file's header names, in one run.
+  **Do not go looking for a Rust fix when the diff is TypeScript.** And unlike the
+  `worker_e2e` entries above, this one does NOT co-occur with the temp-dir census
+  guard: on that run the census step passed and only `cargo test` failed, so a red
+  here is one incident and nothing else needs explaining.
