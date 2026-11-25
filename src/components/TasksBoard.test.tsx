@@ -54,8 +54,10 @@ vi.mock("../lib/tauri", async () => {
     reorderTasks: vi.fn(),
     linkSession: vi.fn(),
     // T3's ten: the seven Stage verbs, the Strict pair (issue #179) and the
-    // artifact pair (issue #180 D1). The board's `Configure` control mounts the
-    // Stage editor, which drives the store's actions, which call these — so an
+    // artifact pair (issue #180 D1). The board's `Configure` control no longer mounts
+    // an editor of its own — it navigates to the canvas's settings panel — but the
+    // board still drives store actions that call these (a card drag writes
+    // `moveTask`, and the store's board load reads the Strict flag), so an
     // un-mocked one reaches the real `invoke` and rejects in jsdom, and a case
     // below would then be asserting on a rejection instead of on a write. Mocked
     // under the WRAPPER names for the same reason as the seven above.
@@ -261,11 +263,10 @@ beforeEach(() => {
   // thing a test is actually checking.
   vi.mocked(createTask).mockReset();
   vi.mocked(createTask).mockResolvedValue(task("tsk_new", 9, "backlog"));
-  // T3's ten, reset and defaulted. The defaults matter for the two the Stage
-  // editor AWAITS on mount: `getBoardStrict` seeds the footer Switch, and a bare
-  // `vi.fn()` resolves `undefined` there, which the editor reads as a FAILED read
-  // and renders the Switch disabled — so every editor case would silently be
-  // testing the failure arm.
+  // T3's ten, reset and defaulted. The defaults still matter: a bare `vi.fn()`
+  // resolves `undefined`, and the board's own load path awaits the Strict flag — a
+  // `undefined` there reads as a FAILED read wherever the flag is painted, so a case
+  // would silently be testing the failure arm.
   for (const fn of [
     createStage,
     renameStage,
@@ -1154,11 +1155,11 @@ describe("TasksBoard — opening a card (PR #178)", () => {
   });
 });
 
-describe("TasksBoard — the Stage editor's render site (T3)", () => {
-  // The claim is the RENDER SITE and nothing else — the same shape the New Task
-  // modal's describe above makes. `Configure` is the board's affordance and the
-  // board owns the open flag; what the editor does inside its rows is
-  // `StageEditor.test.tsx`'s subject, and nothing here re-pins it.
+describe("TasksBoard — the Configure door (T3, now a navigation)", () => {
+  // The claim is the RENDER SITE and what the door DOES — the same shape the New Task
+  // modal's describe above makes. `Configure` is the board's affordance; what the
+  // settings panel does with the fields it owns is
+  // `workflows/NodeSettingsPanel.test.tsx`'s subject, and nothing here re-pins it.
   it("the header carries a Configure affordance beside New task", () => {
     render(<TasksBoard />);
     expect(screen.getByRole("button", { name: "Configure" })).toBeTruthy();
@@ -1174,7 +1175,8 @@ describe("TasksBoard — the Stage editor's render site (T3)", () => {
 
   it("Configure is disabled with no Selected Space (there is no board to configure)", () => {
     // No Space selected at all — there is genuinely no board to configure here, so
-    // the affordance is dead rather than opening a dialog that cannot write.
+    // the affordance is dead rather than navigating to a surface whose every write
+    // has no target.
     useSessions.setState({ activeSpacePath: null });
     render(<TasksBoard />);
     const button = screen.getByRole("button", {
@@ -1189,52 +1191,49 @@ describe("TasksBoard — the Stage editor's render site (T3)", () => {
     ).toBe(true);
   });
 
-  it("clicking Configure opens the Stage editor over the board", async () => {
+  it("clicking Configure asks for the workflows view and mounts nothing", async () => {
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard />);
+    const onOpenWorkflows = vi.fn();
+    render(<TasksBoard onOpenWorkflows={onOpenWorkflows} />);
     expect(screen.queryByRole("dialog")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Configure" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(
-      within(dialog).getByRole("heading", { name: "Configure stages" }),
-    ).toBeTruthy();
-    // One row per column the BOARD is showing — the editor reads the same store
-    // slice, so a board and an editor that disagreed about the columns would be two
-    // answers to "what columns does this Space have".
-    for (const slug of ["backlog", "doing", "done"]) {
-      expect(within(dialog).getByTestId(`stage-row-${slug}`)).toBeTruthy();
-    }
-    // The footer's Space-level Switch, which is the editor's only non-row control.
-    expect(
-      within(dialog).getByRole("switch", { name: "Strict workflow" }),
-    ).toBeTruthy();
-  });
-
-  it("closing the editor leaves the board (the flag has one owner)", async () => {
-    useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
-    render(<TasksBoard />);
-    fireEvent.click(screen.getByRole("button", { name: "Configure" }));
-    await screen.findByRole("dialog");
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+    // ONE call, and it is the whole job: `App` hands this the same
+    // `setView("workflows")` the pane's own Workflows door gets, and the canvas's
+    // settings panel is the one editor for the stage fields.
+    expect(onOpenWorkflows).toHaveBeenCalledTimes(1);
+    // And NO dialog. This is the half that matters: the door used to raise a dialog
+    // of the board's own, and a second dialog for the same eight fields would be a
+    // second owner of them. The board still has two modals (`New task`, the card
+    // detail), so this asserts the absence of a THIRD rather than of any overlay.
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    // The board is still there behind it — the editor is a dialog over the same
-    // view, not a route away from it.
     expect(screen.getByTestId("tasks-board")).toBeTruthy();
   });
 
-  it("the editor is mounted only while open (a closed editor is an idle catalog read)", async () => {
+  it("Configure is a NO-OP without the callback rather than a crash", () => {
+    // The prop is OPTIONAL on the `onReturnToWorkspace` rule, and the bare
+    // `<TasksBoard />` render sites above are why. An absent callback means the door
+    // does nothing; it does not throw on `undefined()`.
     useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
     render(<TasksBoard />);
-    // The Strict flag read happens on the editor's mount, so its call count IS the
-    // mount count: a dialog that stayed mounted while closed would keep re-reading
-    // the flag and keep a form alive behind the board, exactly the idle-surface
-    // cost the New Task modal's render site records for its own composer.
+    expect(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Configure" }));
+    }).not.toThrow();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("the door reads nothing (the board owns no editor to mount)", async () => {
+    useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
+    const onOpenWorkflows = vi.fn();
+    render(<TasksBoard onOpenWorkflows={onOpenWorkflows} />);
+    // The surviving half of the old mount-cost pin, inverted. `getBoardStrict` used to
+    // be seeded by the dialog this board mounted, so its call count WAS the mount
+    // count. The board now mounts no editor, so the count stays at zero across a door
+    // click: the cost of "the panel owns the fields" is that the board pays nothing for
+    // them, not even a read it does not paint.
     expect(getBoardStrict).toHaveBeenCalledTimes(0);
     fireEvent.click(screen.getByRole("button", { name: "Configure" }));
-    await waitFor(() => expect(getBoardStrict).toHaveBeenCalledTimes(1));
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(getBoardStrict).toHaveBeenCalledTimes(1);
+    expect(onOpenWorkflows).toHaveBeenCalledTimes(1);
+    expect(getBoardStrict).toHaveBeenCalledTimes(0);
   });
 });

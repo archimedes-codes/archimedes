@@ -1,7 +1,53 @@
-//! Tests for `db/stages.rs`: the eight Stage verbs (issue #179's six, spec
-//! §4/§4.1/§5, plus the two workflow columns), the lazy five-stage seed and its
-//! per-Space isolation, and the four gated `stages` columns' migration
-//! (ADRs 0098 + 0099).
+//! Tests for the **lifecycle** half of `db/stages.rs`: the lazy five-stage seed
+//! and its per-Space isolation, the `stages` table's gated columns arriving, and
+//! the four verbs that decide whether a column EXISTS and WHERE it sits —
+//! `create_stage`, `rename_stage`, `reorder_stages`, `delete_stage` — with their
+//! refusals and the card-relocation pin (spec §4/§4.1/§5, ADRs 0098 + 0099).
+//!
+//! THE SPLIT, AND WHY IT IS HERE. `db/tests/stages.rs` reached 985 code lines
+//! against ADR 0112's 1,000-line test gate with 24 tests, so one more test
+//! anywhere in it reddened CI. It was split on the subject boundary the code
+//! already had: THIS child owns the column's existence and position (the seed,
+//! the migration that delivers the columns, and the verbs that add, rename,
+//! renumber and remove a column), and [`super::stage_setters`] owns the five
+//! `set_stage_*` verbs that change a value on a column that already exists.
+//! Production stayed ONE file (`db/stages.rs`), and ADR 0113 names that case in
+//! as many words — "Where production is **one** file, the test children are named
+//! by subject and there is nothing to mirror file-for-file" — with
+//! `commands/tasks/tests/` as the in-repo precedent (one production file, four
+//! subject-named children). So the children here are named by SUBJECT, not by
+//! production filename, and `db/tests/`'s mirror bullet in
+//! `docs/agents/test-counts-and-splits.md` records the two of them that have no
+//! same-named production sibling.
+//!
+//! THE TWO TESTS THAT STRADDLE, and where they went.
+//! [`fresh_database_gets_every_gated_column_from_schema_and_seeds_five`] asserts
+//! the whole gated surface at once (`stages` AND `spaces`), so it belongs to no
+//! single verb; it is here because its other half is the FIVE-ROW SEED, which is
+//! this child's floor — `delete_stage_refuses_the_last_stage` and
+//! `create_stage`'s `sort_order` both read that same five.
+//! [`the_on_enter_skill_gate_backfills_research_and_inserts_no_discuss_row`] and
+//! the two workflow-column gates beside it are `Db::open` migration tests, not
+//! verbs; they are here because what each one asserts is a ROW-LEVEL outcome —
+//! which rows exist, their `sort_order`, whether a flag reads OFF or a column
+//! reads NULL through `list_stages` — and not any `set_stage_*` call. The
+//! `auto` and `prompt_prefix` gates could have gone beside their setter instead;
+//! they stay with the schema cluster they were already grouped into by the
+//! banner below, which keeps `SCHEMA_PRE_TASK_BOARD_CONFIG` and
+//! `pre_task_board_rows` single-child fixtures (support.rs's own placement rule)
+//! instead of promoting them for a convenience.
+//!
+//! WHY THIS CHILD HOLDS EVERY `expect("db mutex poisoned")` SITE AND
+//! [`super::stage_setters`] HOLDS NONE. A test that reads a column's DDL or its
+//! `dflt_value` has to reach past `Db`'s own verbs through `db.conn.lock()`, and
+//! those are the seven sites this file carries. AGENTS.md's poisoned-mutex rule
+//! says the panic spelling is correct there because `Db` holds ONE shared
+//! `rusqlite::Connection` a panic mid-transaction can leave genuinely unusable;
+//! the rule and the in-repo worked example (`record_messages_batch`) are
+//! documented on the production method in `db/stages.rs`, whose own header
+//! carries the same rationale. Any NEW direct `conn.lock()` site added here (or
+//! in the sibling) must carry its own one-line reason for why its resource is
+//! single and shared.
 
 use crate::storage::db::*;
 
@@ -50,6 +96,8 @@ fn fresh_database_gets_every_gated_column_from_schema_and_seeds_five() {
         ("stages", "next_slugs"),
         ("stages", "auto"),
         ("stages", "prompt_prefix"),
+        ("stages", "position_x"),
+        ("stages", "position_y"),
         ("spaces", "board_strict"),
     ] {
         assert!(
@@ -95,6 +143,12 @@ fn fresh_database_gets_every_gated_column_from_schema_and_seeds_five() {
     assert!(
         board.iter().all(|c| c.stage.prompt_prefix.is_none()),
         "and every seeded column has NO prompt prefix — NULL is \"no extra prompt\""
+    );
+    assert!(
+        board
+            .iter()
+            .all(|c| c.stage.position_x.is_none() && c.stage.position_y.is_none()),
+        "and no seeded column is hand-positioned — a fresh board is dagre's to lay out"
     );
 }
 
@@ -447,307 +501,6 @@ fn rename_stage_writes_only_the_label_and_keeps_the_slug() {
     assert!(
         matches!(err, BoardError::MissingStage { .. }),
         "got {err:?}"
-    );
-}
-
-/// (ADR 0098) `set_stage_skill` sets the Skill and CLEARS it back to NULL.
-#[test]
-fn set_stage_skill_sets_and_clears_the_skill() {
-    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-skill-", "scratch");
-    let db = Db::open(&dir.join("t.db")).expect("db should open");
-    let space = board_space("skill");
-    db.get_board(&space).expect("seed");
-
-    let set = db
-        .set_stage_skill(&space, "approved", Some("review"))
-        .expect("set");
-    assert_eq!(set.on_enter_skill.as_deref(), Some("review"));
-
-    let cleared = db
-        .set_stage_skill(&space, "approved", None)
-        .expect("clear to NULL");
-    assert_eq!(
-        cleared.on_enter_skill, None,
-        "`None` clears the column rather than writing an empty string"
-    );
-
-    let err = db
-        .set_stage_skill(&space, "ghost", Some("x"))
-        .expect_err("a missing stage is refused BEFORE the write");
-    assert!(
-        matches!(err, BoardError::MissingStage { .. }),
-        "got {err:?}"
-    );
-}
-
-/// (the per-column auto-advance flag) `set_stage_auto` writes the flag and reads
-/// it back through the SAME mapper the board read uses, in both directions —
-/// ON and back OFF. There is no "clear to NULL" here and that is deliberate: the
-/// column is `NOT NULL DEFAULT 0`, so the flag has exactly two states and `false`
-/// is the off state (unlike `on_enter_skill`, whose absence IS a state).
-#[test]
-fn set_stage_auto_turns_the_flag_on_and_off_and_the_board_read_agrees() {
-    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-auto-", "scratch");
-    let db = Db::open(&dir.join("t.db")).expect("db should open");
-    let space = board_space("auto");
-    db.get_board(&space).expect("seed");
-
-    let on = db
-        .set_stage_auto(&space, "doing", true)
-        .expect("set auto = true");
-    assert!(on.auto, "the reply carries the value it just wrote");
-    assert_eq!(
-        raw_i64s(
-            &db,
-            &format!("SELECT auto FROM stages WHERE space_path = '{space}' AND slug = 'doing'")
-        ),
-        vec![1],
-        "at rest it is the INTEGER 1 — `auto` is a plain column, not JSON"
-    );
-    assert!(
-        db.get_board(&space)
-            .expect("get_board")
-            .iter()
-            .find(|c| c.stage.slug == "doing")
-            .expect("the doing column")
-            .stage
-            .auto,
-        "the board read reports the same flag the verb returned"
-    );
-
-    let off = db
-        .set_stage_auto(&space, "doing", false)
-        .expect("set auto = false");
-    assert!(!off.auto, "and the flag is turnable back off");
-    assert_eq!(
-        raw_i64s(
-            &db,
-            &format!("SELECT auto FROM stages WHERE space_path = '{space}' AND slug = 'doing'")
-        ),
-        vec![0],
-        "at rest it is the INTEGER 0"
-    );
-
-    // The flag is per-COLUMN: turning one on leaves its neighbours alone.
-    db.set_stage_auto(&space, "done", true).expect("set done");
-    assert!(
-        !db.set_stage_auto(&space, "backlog", false)
-            .expect("set backlog")
-            .auto,
-        "backlog stays off"
-    );
-    assert_eq!(
-        raw_i64s(
-            &db,
-            &format!("SELECT COUNT(*) FROM stages WHERE space_path = '{space}' AND auto = 1")
-        ),
-        vec![1],
-        "exactly ONE column carries the flag — a bulk write would make this 5"
-    );
-
-    let err = db
-        .set_stage_auto(&space, "ghost", true)
-        .expect_err("a missing stage is refused BEFORE the write");
-    assert!(
-        matches!(err, BoardError::MissingStage { .. }),
-        "got {err:?}"
-    );
-}
-
-/// (the per-column extra prompt) `set_stage_prompt_prefix` sets it and — the
-/// half that matters — CLEARS it back to NULL. The parameter is an `Option` for
-/// exactly this reason, following `set_stage_skill`; `set_stage_next` takes a
-/// plain slice and so a configured graph can never be un-configured, which is a
-/// recorded known gap this verb refuses to repeat.
-#[test]
-fn set_stage_prompt_prefix_sets_and_clears_the_prefix() {
-    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-prefix-", "scratch");
-    let db = Db::open(&dir.join("t.db")).expect("db should open");
-    let space = board_space("prefix");
-    db.get_board(&space).expect("seed");
-
-    let set = db
-        .set_stage_prompt_prefix(&space, "research", Some("Start by re-reading the card. "))
-        .expect("set");
-    assert_eq!(
-        set.prompt_prefix.as_deref(),
-        Some("Start by re-reading the card. "),
-        "the reply carries the text it just wrote, verbatim — leading and trailing \
-         whitespace included, this layer does not trim"
-    );
-
-    let cleared = db
-        .set_stage_prompt_prefix(&space, "research", None)
-        .expect("clear to NULL");
-    assert_eq!(
-        cleared.prompt_prefix, None,
-        "`None` clears the column rather than writing an empty string — NULL is \
-         the ONLY \"no extra prompt\" state"
-    );
-    let raw = raw_column(
-        &db,
-        &format!(
-            "SELECT COALESCE(prompt_prefix,'NULL') FROM stages \
-             WHERE space_path = '{space}' AND slug = 'research'"
-        ),
-    );
-    assert_eq!(
-        raw.first().map(|s| s.as_str()),
-        Some("NULL"),
-        "at rest it is NULL, not '' — otherwise a clear and a set-to-empty would \
-         be indistinguishable states the launch path had to guess between"
-    );
-
-    // An empty string is a VALUE, not a clear: it round-trips as `Some("")`.
-    let empty = db
-        .set_stage_prompt_prefix(&space, "research", Some(""))
-        .expect("an empty prefix is a legal write");
-    assert_eq!(
-        empty.prompt_prefix.as_deref(),
-        Some(""),
-        "`Some(\"\")` is stored, so `None` stays the only spelling of \"cleared\""
-    );
-
-    let err = db
-        .set_stage_prompt_prefix(&space, "ghost", Some("x"))
-        .expect_err("a missing stage is refused BEFORE the write");
-    match err {
-        BoardError::MissingStage { wanted, available } => {
-            assert_eq!(wanted, "ghost");
-            assert!(
-                available.contains("research"),
-                "the refusal names the valid slugs (ADR 0090), got `{available}`"
-            );
-        }
-        other => panic!("expected MissingStage, got {other:?}"),
-    }
-    assert_eq!(
-        db.list_stages(&space)
-            .expect("list_stages")
-            .iter()
-            .find(|s| s.slug == "research")
-            .expect("the research row")
-            .prompt_prefix
-            .as_deref(),
-        Some(""),
-        "the refusal on the ghost slug touched no other row"
-    );
-}
-
-/// (ADR 0099) the edges round-trip: JSON at rest, `Vec<String>` back out.
-#[test]
-fn set_stage_next_persists_the_edges_and_round_trips_them() {
-    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-next-", "scratch");
-    let db = Db::open(&dir.join("t.db")).expect("db should open");
-    let space = board_space("next");
-    db.get_board(&space).expect("seed");
-
-    let wanted = vec!["research".to_string(), "approved".to_string()];
-    let set = db
-        .set_stage_next(&space, "backlog", &wanted)
-        .expect("set_stage_next");
-    assert_eq!(
-        set.next_slugs,
-        Some(wanted.clone()),
-        "button-render order is preserved, not sorted"
-    );
-
-    let raw = raw_column(
-        &db,
-        &format!("SELECT next_slugs FROM stages WHERE space_path = '{space}' AND slug = 'backlog'"),
-    );
-    assert_eq!(
-        raw.first().map(|s| s.as_str()),
-        Some(r#"["research","approved"]"#),
-        "JSON-at-rest, following the `sessions.todos_json` precedent"
-    );
-    let read_back = db.get_board(&space).expect("get_board");
-    assert_eq!(
-        read_back[0].stage.next_slugs,
-        Some(wanted),
-        "and the board read parses it back"
-    );
-}
-
-/// (spec §4) an unknown destination is a REJECTION naming the valid slugs, not a
-/// silent drop — a dropped destination is a workflow that shrank.
-#[test]
-fn set_stage_next_refuses_an_unknown_slug_naming_the_valid_ones() {
-    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-next-404-", "scratch");
-    let db = Db::open(&dir.join("t.db")).expect("db should open");
-    let space = board_space("next-404");
-    db.get_board(&space).expect("seed");
-
-    let wanted = vec!["done".to_string(), "sprint-review".to_string()];
-    let err = db
-        .set_stage_next(&space, "backlog", &wanted)
-        .expect_err("an unknown destination is refused, not filtered");
-    match err {
-        BoardError::MissingStage { wanted, available } => {
-            assert_eq!(wanted, "sprint-review");
-            assert!(
-                available.contains("research"),
-                "the refusal names the valid slugs, got `{available}`"
-            );
-        }
-        other => panic!("expected MissingStage, got {other:?}"),
-    }
-    assert_eq!(
-        db.get_board(&space).expect("get_board")[0].stage.next_slugs,
-        None,
-        "the refusal wrote nothing at all — not even the valid half"
-    );
-}
-
-/// (spec §4) a self-loop is a button that moves a card to the column it is
-/// already in.
-#[test]
-fn set_stage_next_refuses_a_self_loop() {
-    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-loop-", "scratch");
-    let db = Db::open(&dir.join("t.db")).expect("db should open");
-    let space = board_space("loop");
-    db.get_board(&space).expect("seed");
-
-    let err = db
-        .set_stage_next(&space, "doing", &["doing".to_string()])
-        .expect_err("a stage cannot lead to itself");
-    assert!(
-        matches!(&err, BoardError::SelfLoop { slug } if slug == "doing"),
-        "got {err:?}"
-    );
-}
-
-/// (ADR 0099's NULL-vs-empty distinction) `[]` is a CONFIGURED "no edges"
-/// answer and must round-trip as `Some(vec![])`, while NULL stays the
-/// unconfigured answer. Collapsing the two is the silent-green shape ADR 0099
-/// rejects by name.
-#[test]
-fn set_stage_next_an_empty_slice_persists_explicit_no_edges() {
-    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-nedges-", "scratch");
-    let db = Db::open(&dir.join("t.db")).expect("db should open");
-    let space = board_space("no-edges");
-    db.get_board(&space).expect("seed");
-
-    let set = db
-        .set_stage_next(&space, "done", &[])
-        .expect("[] is a legal configuration");
-    assert_eq!(
-        set.next_slugs,
-        Some(vec![]),
-        "explicit, and distinguishable"
-    );
-
-    let raw = raw_column(
-        &db,
-        &format!(
-            "SELECT COALESCE(next_slugs,'NULL') FROM stages \
-             WHERE space_path = '{space}' AND slug = 'done'"
-        ),
-    );
-    assert_eq!(
-        raw.first().map(|s| s.as_str()),
-        Some("[]"),
-        "at rest it is `[]`, NOT NULL — otherwise the two meanings collapse"
     );
 }
 

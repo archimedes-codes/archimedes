@@ -12,6 +12,16 @@ IPC commands — re-measured 2026-11-24 by `grep -c "tauri::command" src-tauri/s
 which reads **19** at `main` and **26** here, the seven added by the workflow-graph branch being the
 two Stage fields, the guard pair and the three run-record commands; the file's own header carries the
 delegation split — the seven model-facing verbs over the `TaskStore` seam, and the board surface).
+**Re-measured 2026-11-25 and BOTH halves of that evidence are now stale while the headline count is
+coincidentally still right — use the bracketed needle.** `grep -c '#\[tauri::command\]'
+src-tauri/src/commands/tasks.rs` reads **26** at this tip and **25** at `main`; the one addition since
+the measurement above is `set_stage_position` (ADR 0120), and `main` has moved because the
+auto-advance branch landed on it (19 → 25, i.e. the seven it added less `workflow_run_open`, deleted as
+dead IPC — which is why the older clause's "19 at `main`" was true of *its* `main` and is not a number
+to carry). **The unbracketed needle the clause above prescribes now reads 27, not 26**, because
+`commands/tasks.rs`'s own header comment spells that counting command in prose — the trap
+`tauriBoundary.test.ts` records, a doc-comment that reproduces a grep needle makes the grep count prose.
+So "twenty-six" stands, and the command that was cited for it must be re-run with the brackets.
 They live here because the roadmap family that recorded them
 (`docs/roadmap/kanban-task-board-*.md`) is deleted on ship and nothing under `docs/roadmap/`
 is recoverable afterwards — no `git checkout`, no stash, no dangling blob. This is the
@@ -355,7 +365,9 @@ ADR 0098 added it as a SECOND column beside `on_enter`, not a widened `on_enter`
 end to end: the column exists in `storage/db.rs` (`STAGE_COLUMNS` is 7 entries, `StageRow` carries
 `on_enter_skill`, `set_stage_skill` writes it, the migration backfills `research` alone — the
 `discuss` backfill went out with the retired Stage, ADR 0107),
-`StageEditor` edits it through a Skill `Select`, and `taskPrompt.ts`'s `headOfMode` appends a bare
+and the **workflow settings panel** edits it through a Skill `Select` (`Skill for <slug>` — ADR 0120 moved
+this off the deleted dialog's row and onto the panel, the field and the write unchanged), and
+`taskPrompt.ts`'s `headOfMode` appends a bare
 `$`-prefixed Skill token to the launch head. So the sentence "this column starts a Session that
 loads `research`" is now carried entirely by `on_enter_skill`, and `on_enter` carries none of it.
 
@@ -378,10 +390,13 @@ a legal value from a stored union is a migration for no gain.
   §2"), and now that §2 has flipped, that consistency argument no longer holds.
 - **Nothing in the app can even SET the value.** `grep -rn "UPDATE stages SET on_enter = "
   src-tauri/src` returns **two** hits and both are inside `storage/db/tests/` pinning the
-  `compact` boost (`tests/stages.rs` and `tests/tasks.rs` — the file this bullet used to name,
-  `storage/db/tests/mod.rs`, was retired by the ADR 0113 subject split, so the count held and the
-  path did not); no `#[tauri::command]` takes `on_enter` as an argument, `create_stage`'s
-  `INSERT` lists `on_enter_skill` and not `on_enter`, and `StageEditor` has no `onEnter` affordance
+  `compact` boost (`tests/stage_lifecycle.rs` and `tests/tasks.rs` — the files this bullet used
+  to name, `storage/db/tests/mod.rs` and `storage/db/tests/stages.rs`, were both retired by a
+  subject split, the first by ADR 0113's mirror and the second by the ADR 0112-forced split of
+  the Stage test child, so the count held and the paths did not); no `#[tauri::command]` takes
+  `on_enter` as an argument, `create_stage`'s
+  `INSERT` lists `on_enter_skill` and not `on_enter`, and neither the `StageEditor` dialog nor the
+**workflow settings panel** that ADR 0120 replaces it with has any `onEnter` affordance
   at all. The DDL's `DEFAULT 'none'` is therefore the only writer in the shipped app. A `fresh`
   column exists only in a database someone edited by hand — which is why this gap has stayed
   harmless, and why the honest framing is "unimplementable from the UI" rather than "unimplemented".
@@ -629,13 +644,31 @@ lacks a way to express — it is a shape `set_stage_next` alone declines to expr
 state the graph needs. **This section is still open.** `Db::set_stage_next` still takes a plain
 `&[String]`, and its doc still argues the two-state shape is the point — *"`[]` is a legal,
 meaningful configuration: it round-trips as `Some(vec![])`, NOT as NULL"* — and nothing changed it:
-a Stage-graph change moves `StageEditor`'s contract as well as storage's, and that scope was
+a Stage-graph change moves the destination editor's contract as well as storage's (on `main` that was
+`StageEditor`'s; since ADR 0120 it is `NodeDestinations` in the **workflow settings panel**), and that scope was
 declined on 2026-11-14 for the same reason it stands declined now. What is different today is that
 the repair no longer has to invent a signature — it copies one that already ships, three times, in
 two sibling files.
 
+**Amended 2026-11-25 — still open, and the obstacle named here changed shape without shrinking the
+decision.** Two things this sitting verified rather than assumed. (1) `Db::set_stage_next` is *unchanged*
+by the canvas-editor work: it still takes `slugs: &[String]` (re-read in `storage/db/stages.rs`), so the
+third state is still unreachable and nothing in ADR 0120 touched it. (2) The sentence above used to name
+`StageEditor` as the contract a repair would have to move; that dialog is now **deleted** and the
+destination block lives in `NodeDestinations` in the **workflow settings panel**, so the surface a repair
+touches is a different file with a different test suite (`NodeDestinations.test.tsx`,
+`NodeSettingsBody.test.tsx`) — the obstacle is *renamed*, not removed, and the reason the scope was
+declined on 2026-11-14 was never "the dialog is inconvenient", it was that a storage change here drags a
+user-visible destination contract with it. Note also that this change made the two states **more**
+visible rather than less: the canvas now *draws* the difference (a node whose `nextSlugs` is `[]` shows
+"Leads nowhere — the chain stops here" and one with `null` shows the `sortOrder + 1` fallback edge, per
+`WorkflowNodes.tsx` and `workflowGraphLayout.ts`), and `NodeDestinations` states both in words — so a user
+who configures edges and wants unconstrained back is now looking at a surface that spells the distinction
+out and still cannot cross it back. **§8 is not closed and is not softened by ADR 0120.**
+
 **Not fixed by #189, deliberately** — that card's scope was the `tasks` patch verb, and a Stage-graph
-change moves `StageEditor`'s contract as well as storage's.
+change moves the destination editor's contract as well as storage's (on `main` that was `StageEditor`'s;
+since ADR 0120 it is `NodeDestinations` in the **workflow settings panel**).
 
 ## 9. Three gaps the auto-advance chain created and deliberately left open
 
@@ -790,3 +823,212 @@ number ADR 0116 warns about), so this entry deliberately proposes no threshold. 
 decision: an age, an open/closed guard on the delete (`finished_at IS NOT NULL`, never bare), whether a
 Space's rows go with it or outlive it, and whether the vacuum rides the same freelist trigger. Until
 someone writes it, the honest statement is the one in the heading.
+
+## 10. Four gaps the canvas **editor** created and deliberately left open
+
+**Added 2026-11-25 with ADR 0120** (the canvas becoming an editor: `NodeSettingsPanel` as the sole owner
+of the **Stage** fields, `stages.position_x` / `position_y`, drag-to-connect, drag-to-position, **Tidy
+up**, and the deletion of the Stage-list editor dialog). This section is appended at the tail of the file
+and touches nothing above it — including the `verified-by:` front-matter line, which is a single
+~22,000-character line and a known editing hazard; the instrument for everything below is the greps
+printed inline, not that line. §9a and §9c are addressed at the end of this section, because the honest
+answer for both is "not closed, and here is what this change did to them".
+
+### 10a. **Fan-out** is drawn, and **nothing runs in parallel** — the picture promises more than the runtime does
+
+A **Stage** may hold several entries in `next_slugs` and the canvas draws an edge for each. **Only the
+first is ever followed.** `nextStepOf` in `src/lib/workflowGraph.ts` is literally
+`nextStepSlugs(columns, from)[0]` and returns that one column, which is the same single answer the card's
+launch pill and the detail modal's buttons take — so a column with three destinations starts one chain,
+not three.
+
+**This is a schema limit, not an unimplemented toggle, and two constraints enforce it.** `tasks.stage_slug`
+is `TEXT NOT NULL` — one value, so a card is in exactly one column and cannot sit in two. And
+`workflow_runs` carries `CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open ON workflow_runs(task_id)
+WHERE finished_at IS NULL`, i.e. **one open run per card**, refused at the INSERT. Read the DDL's own comment
+before being tempted: that index is what stops the spend bound **failing open** ("a second open row would
+count a chain against a stranger's `steps` and spend"), so relaxing it is not a UI decision.
+
+**What ships instead of silence.** `NodeDestinations` renders one element, `destination-fanout`, only when
+the list holds more than one destination, and `fanOutSentence` names the followed head and the unfollowed
+tail by label: *"Follows <head> only. <others> are not followed. A card lives in exactly one column, so this
+is not several parallel runs — the other edges only say what a drag may land on while Strict workflow is
+on."* A head whose own slug cannot be resolved gets its own clause ("no column this read can resolve carries
+that slug, so the chain follows nothing here"), because "follows a ghost" is a third answer and not the same
+as "follows nothing". Pinned by the cases in `NodeDestinations.test.tsx`'s
+`the destination list — the fan-out truth`. The unfollowed edges are not decorative either: under **Strict
+workflow** they still say what a drag *may* land on.
+
+**What true fork/join would take, so nobody re-derives it.** Either (1) a **card-fork model** —
+`tasks.stage_slug` becomes a membership relation, a card sits in N columns, and every surface reading "the
+column this card is in" (the launch pill, the board's grouping, `move_task`, the **Task badge**'s frozen
+lane) has to decide what N means; this is the shape that actually delivers parallel work — or (2) an
+explicit **join node** with "wait for all incoming" semantics, which is smaller in the graph model and
+larger in the runtime: it needs a notion of a *pending arrival* per card, which neither `tasks` nor
+`workflow_runs` has, and it needs the run record to stop being one-open-row-per-card, which is the unique
+index above. **Either way the auto-chain's bounds change meaning**: `spaces.auto_max_steps` and
+`auto_ceiling_usd` are per **chain**, and a chain that forks is N chains — a person who set "10 steps" and
+gets three live branches did not get the bound they set. That is the part of this that is a decision and not
+a verb, and it is why this is filed rather than fixed.
+
+**The residual honesty problem, stated plainly.** A canvas that draws three lines out of a box looks like a
+fork. The panel's sentence is the mitigation and it is a *sentence*; a person who never opens that column's
+settings never reads it. If this is ever triaged, the options are a distinct edge style for unfollowed
+edges, or refusing fan-out at the write until (1) or (2) exists — the second being a scope reduction and a
+legitimate one. Do not resolve it by making the copy softer.
+
+### 10b. An edge can now form a **cycle**, and nothing refuses one
+
+`lib/workflowEdgeWrite.ts` is the single owner of the edge write for both surfaces (the panel's `Select` and
+the canvas's drag), and it refuses exactly three things: a **self-loop** (`source === target`, backed by
+`BoardError::SelfLoop`), an **endpoint the loaded slice cannot name**, and a **destination the list already
+holds**. It does **not** refuse `A → B → A`. Measured, not reasoned:
+
+```
+grep -rn -i 'cycle' src/lib/workflowEdgeWrite.ts src/store/workflowChain.ts src/lib/workflowGraph.ts
+```
+
+returns only `src/store/workflowChain.ts`'s note about **import** cycles (a module-graph concern, unrelated),
+and no test in `src/lib/workflowEdgeWrite.test.ts`, `src/lib/workflowGraph.test.ts` or
+`src/components/workflows/WorkflowsCanvas.editor.test.tsx` names a cycle.
+
+**Why this is a NEW exposure and not a pre-existing one.** The destination `Select` could always produce a
+cycle in principle, but it is a deliberate, labelled, keyboard-reachable act. A **drag** makes an accidental
+loop easy: the pointer lands where the eye wants it to land, and a graph drawn left-to-right by depth invites
+a line back to the left. `workflowGraphLayout.ts` already says a column "can point at the one two places
+before it … or back at the start" and dagre handles it for the *picture* — so nothing on screen marks the loop
+as suspicious.
+
+**Why it is not an emergency, and the exact bound on the damage.** A cycle cannot make the auto-chain run
+away: the bounds are judged in **Rust** inside `workflow_run_step` (ADR 0119 §2) and a tripped bound closes
+the **run** and never reconfigures the column (ADR 0119 §3). So the observable consequence of a loop on an
+`auto` chain is a chain that spends up to `spaces.auto_max_steps` / `auto_ceiling_usd` and stops, leaving a
+`workflow_runs` row with its `stop_reason` set — visible, bounded, auditable. **Not** an infinite loop.
+
+**Filed, deliberately NOT fixed here, and the fix is a decision.** Refusing a cycle means deciding whether a
+*deliberate* loop-back workflow (retry a column, return a card to `research`) is legal. Say "no cycles" and
+this repo removes a capability the graph model has advertised since ADR 0099; say "cycles are legal" and the
+right change is a warning at the write, not a refusal. Both are defensible; adding a silent refusal without
+making that call is not. If a guard is ever added, it belongs in `workflowEdgeWrite.ts` — the one owner — and
+not in the canvas handler, or the drag and the panel will disagree.
+
+### 10c. A keyboard-only user can reach every **field** and every **refusal**, but cannot persist a **position**
+
+ADR 0120's case for allowing a drag rested on the destination write having a keyboard equivalent (`NodeDestinations`'
+`Select`), and for the **fields** that is true: every field, every destination and every refusal in the panel
+is keyboard-reachable, and `nodesFocusable` stays off so each node has exactly one tab stop — its own
+`<button>` — with Enter opening its settings.
+
+**The position verb has no such equivalent, and the reason is a specific one.** xyflow's arrow keys move a
+selected node **without ever calling `onNodeDragStop`**, so they move it for the view and not for the
+database: the snap-back. `WorkflowsCanvas.tsx`'s header states it plainly — *"Dragging is the verb that
+persists."* So the pointer has one capability the keyboard does not. **This half is still true and it is the
+title of this gap.**
+
+**One pointer-only gesture in this view has since CLOSED, and it is recorded rather than removed.** This
+bullet used to state, present tense, that *nothing takes a keyboard user from node mode **back** to workflow
+mode, because pane-click is a pointer gesture and the wrapper owning Escape is not in the tab order*. Escape
+shipped. `WorkflowsCanvas.tsx`'s `onViewportKeyDown` calls the same `clearSelection` the panel's Close control
+calls, and the pin is `WorkflowsCanvas.test.tsx`'s *"Escape inside the viewport clears the selection (the
+keyboard's route back)"* — fired on the node, because that is where the focus actually is after Tab-and-Enter.
+Three details of the closure are part of the record, because each is a decision someone could undo:
+
+- the handler sits on the viewport `<div>`, **not** on `document`. The panel is that div's sibling, so Escape
+  inside a panel field still means what it means everywhere else in the app (dismiss the Skill `Select`'s
+  popup, and so on). A document-level listener would close the panel from inside a half-typed rename — a
+  discarded draft, on a key pressed to dismiss something else;
+- it could not reuse xyflow's own Escape handling, because turning that on means setting `nodesFocusable`
+  back to its default, and the focused wrapper is the second tab stop whose arrow keys produce exactly the
+  non-persisting move this gap is about;
+- the panel's Close control is still passed *only* while a node is selected. Escape made it redundant, not
+  wrong: in workflow mode it would be a button that clears an already-empty selection, and a dead control is
+  the shape this repo refuses.
+
+So reaching node mode and leaving it are both keyboard operations now. What remains pointer-only is the
+**position** verb above and the edge delete below.
+
+**The `WorkflowsCanvas.tsx` header's staleness has since been corrected too.** The paragraph that
+disclosed this gap in the present tense — *"THE KEYBOARD GAP, named rather than papered over: nothing here
+can take a keyboard user from node mode BACK to workflow mode"* — is amended in place to state the shipped
+route and to name what is genuinely left (position, delete), so the disclosure and this section now read the
+same way. The change that added `onViewportKeyDown` had amended the handler's doc comment and the JSX
+comment and left the header standing, which is the pattern this repo keeps hitting: a fix lands, its local
+comments follow, and the long-form disclosure three hundred lines above does not.
+
+**Focus is returned, which is the part a route needs to be a round trip.** `clearSelection` hands focus back
+to the `<button>` of the node that opened the panel, on BOTH routes (Escape and the panel's Close), and it
+does so BEFORE the re-render it triggers — the panel is a sibling of the viewport, and it is a control inside
+the doomed panel that holds focus on the Close route, so focusing after the commit would be undone by the
+unmount. Without this, Escape was a route with a cost: the panel unmounts, the focused element goes with it,
+`document.activeElement` lands on `<body>` and the next Tab restarts at the top of the document. Pinned by
+`WorkflowsCanvas.test.tsx`'s *"Escape returns focus to the node that opened the panel"* and *"the panel's
+Close returns focus to the node too"* — the second one is the non-vacuous pair, because it is the route that
+starts with focus inside the panel.
+
+**(2) A keyboard edge delete still does not exist:** `deleteKeyCode={null}`, `edgesFocusable={false}`, and an
+edge is removed through the panel's destination list rather than by selecting the edge. The destination list is the
+mitigation for edges and it is a real one; there is no equivalent mitigation for positions.
+
+**What a fix would look like, so this is not a shrug.** A keyboard nudge that routes through
+`setStagePosition` — arrow keys as an explicit verb rather than xyflow's internal move — plus a step size, is
+the whole shape of it. It is a small, well-scoped change and it is the reason this is a *filed gap* rather
+than a documented limitation of the medium. The route back to workflow mode is the part of the original
+ask that has been built, and it took the smaller of the two fixes: one handler on an element that was
+already in the tree.
+
+### 10d. **Tidy up** is N independent writes: it is not atomic, and its error line reports at most one of them
+
+`WorkflowsCanvas.tsx`'s `tidyUp` loops over every positioned column and issues
+`void setStagePosition(activeSpacePath, slug, null, null).catch(() => {})`. The N-writes-not-one-command
+shape is a decision (ADR 0120 §4: `null, null` is the pair's only spelling of "nobody ever moved it", so there
+is no bulk verb, and a clear-the-board command would be new IPC for a nicety). What was NOT written down until
+now is the failure shape:
+
+- **No rollback and no atomicity.** A rejection partway through leaves the graph **half-tidied** — some columns
+  back under dagre, some still hand-arranged — which is precisely the mixed state the layout's
+  "if any node lacks a stored pair, dagre runs over the whole graph and the stored nodes are overridden
+  afterwards" rule is designed to keep readable. So the failure is legible rather than corrupt, and it is
+  recoverable by pressing Tidy up again; but it is not the state the person asked for.
+- **The person may see only the LAST failure.** `store/tasks.ts`'s `setStagePosition` sets the shared `error`
+  cell on rejection *and rethrows*, and the canvas swallows the rethrow. With N writes in flight, each failure
+  overwrites the same `error` cell, so three refused clears produce one sentence naming one slug. The store
+  deliberately has ONE error surface (ADR 0120 §5 — a second error surface would be two answers to "what went
+  wrong"), and this control leans on it N times.
+- **The optimistic paint is per-write, so the cascade is the feedback.** Each answered write re-derives the
+  slice, which is why a five-to-ten column board visibly unwinds one column per reply. Accepted as feedback,
+  and it is also what makes a mid-way failure visible rather than silent.
+
+**Filed, not fixed.** The cheap improvement is a count in the sentence ("2 of 5 columns could not be cleared")
+rather than N competing writes to one error cell; the expensive one is a bulk clear verb, which ADR 0120
+already declined for good reason. Nothing here is a correctness defect — no state is unreachable and no money
+is at stake — which is why it sits in this file and not in front of the feature.
+
+### What this change did to §9a and §9c (neither closed, both re-read)
+
+**§9a (the `ask`-gate stall) is NOT closed and is now MORE reachable.** The stall's mechanism is
+untouched by this branch, and the instrument for that is content, not history — because a branch diff
+against `main` says nothing after the squash-merge, so do NOT try to verify this with `git diff main…HEAD`:
+`grep -c 'AskQuestionCard' src/App.tsx` reads **zero** (the gate card is mounted only by
+`chat/MessageList.tsx`, `chat/TranscriptFooter.tsx` and `SubagentModals.tsx`, and the first two live under
+`ChatStream`), and `App`'s content ternary still renders the board or the canvas **instead of**
+`ChatStream`. `SubagentModals` — the one host outside the ternary — is itself gated
+`sheetMounted={view === "workspace"}`, which is the sibling gap §9a already names. So while the canvas is
+up the gate still has no renderer, `sendPrompt` still never resolves, the settle edge still never fires,
+and the `workflow_runs` row still stays open with `stop_reason IS NULL`.
+What changed is how easily a Space gets into that position. The stall needs a column flagged
+**Continue when finished** (the field is still `stages.auto`) whose **Skill** ends its turn on an `ask`; this
+branch's whole purpose is to make building an auto-chain a drag-and-click exercise, and it moves the flag's
+switch, the destination editor and the guard pair onto the surface where chains are drawn. A faster way to
+configure a chain is a faster way to configure a stalled one. **No new mitigation ships here**, and none should
+be improvised in a settle handler — §9a's own conclusion stands: fix it by rendering the `ask` gate across
+views, which is a separate feature with its own focus-management and Esc-propagation questions.
+
+**§9c (no `workflow_runs` reaper) is UNCHANGED, in both directions, and was re-measured rather than assumed.**
+This change adds no writer to `workflow_runs` — it touches `stages` (two columns), the edge write and the
+canvas — so it neither grows the table faster nor contributes a deleter:
+`grep 'DELETE FROM workflow_runs' src-tauri/src` reads **zero** hits, exactly as §9c states. Two of §9c's own
+claims are worth re-confirming against the schema this branch edited, because both live in files it touched
+and a stale path is the decay class this file exists to record: the table's DDL is now in
+`src-tauri/src/storage/db/mod.rs` (not the retired `storage/db.rs`), and the partial unique index
+`idx_workflow_runs_open` is intact — which matters for §10a above, where that index is the reason fan-out
+cannot be executed. §9c stays open, unsized, and awaiting the census ADR 0118 models.

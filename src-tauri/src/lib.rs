@@ -551,6 +551,14 @@ pub fn run() {
             // `StageRow` back — and neither acts on the value here.
             commands::tasks::set_stage_auto,
             commands::tasks::set_stage_prompt_prefix,
+            // The third per-Stage workflow field, and the one the Workflows CANVAS
+            // writes: the node's hand-arranged position. It rides the same
+            // `StageRow`, delegates in the same shape, and refuses one thing above
+            // the hop — a half-set coordinate pair (`require_position_pair`).
+            // Registered here because it is a Stage verb; the store action that
+            // calls it is `useTasks.setStagePosition`, and the surface that calls
+            // THAT is the canvas's node drag.
+            commands::tasks::set_stage_position,
             commands::tasks::reorder_stages,
             commands::tasks::delete_stage,
             // The Strict-workflow toggle and its read twin. Both write/read the

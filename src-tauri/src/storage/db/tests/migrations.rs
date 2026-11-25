@@ -1,9 +1,17 @@
-//! Tests for `db/migrations.rs`: the one-time `todos_json` backfill and the two
-//! `sort_order` seeds (ADR 0073, ADR 0075).
+//! Tests for `db/migrations.rs`: the one-time `todos_json` backfill, the two
+//! `sort_order` seeds (ADR 0073, ADR 0075), and the `sessions.is_subagent`
+//! gate's arrival value.
 //!
 //! The data steps are the sibling half of a gate — `gate` commits the `ALTER` and
 //! the data step as ONE transaction — so these tests are about re-open behaviour:
 //! a seed that ran twice would duplicate the ADR 0075 numbers.
+//!
+//! The `is_subagent` test sits here rather than in [`super::open`], where the
+//! other per-column gate tests live, for a size reason and a subject reason:
+//! `open.rs` is the largest un-ledgered child in this tree and the derivation
+//! added to it, and this file is the one whose subject is "what the gate's data
+//! step leaves behind" — which is exactly what `is_subagent`'s `DEFAULT 0`
+//! assertion is.
 
 use crate::storage::db::*;
 
@@ -684,5 +692,115 @@ fn backfill_predicate_names_both_literals_and_renames_nothing() {
     assert!(
         !SCHEMA.contains("checklist_json"),
         "sessions.todos_json is FROZEN (ADR 0093) — no column rename here"
+    );
+}
+
+/// (the `is_subagent` gate) a pre-existing database whose `sessions` table
+/// predates the `is_subagent` column must open CLEANLY, and EVERY pre-existing
+/// row must arrive with the flag OFF.
+///
+/// THIS PIN EXISTS BECAUSE THE GATE HAD NO ASSERTION AT ALL. Measured before it
+/// was written: no test anywhere asserted anything about this gate's outcome. The
+/// column was merely ABSENT from several other fixtures' `CREATE TABLE sessions`,
+/// so the `ALTER` ran as an unasserted side effect of someone else's test and
+/// nothing read the result. `each_cluster_schema_omits_exactly_one_gated_column`
+/// records that finding per column; this is the one of the four it names that was
+/// genuinely uncovered rather than covered elsewhere.
+///
+/// `false` — not `true` — is the load-bearing half, and the consequence of
+/// getting it backwards is the whole session list vanishing. `list_sessions`
+/// filters `is_subagent = 0`, so a column that arrived `1` (or a gate that
+/// backfilled `1`) would hide every session a person already had on the launch
+/// after they upgraded — ADR 0025 §6's "no data migration" is exactly this
+/// decision, and `dflt_value` is pinned below for the same reason the
+/// `prompt_prefix` and auto-guard pins exist: the `!s.is_subagent` assertions
+/// would ALSO pass under a `DEFAULT 1` plus a `UPDATE … = 0` backfill, so without
+/// the `dflt_value` arm a later "improvement" could invert the migration's meaning
+/// and stay green.
+///
+/// The fixture is `SCHEMA_WITHOUT_IS_SUBAGENT`: every OTHER gated column is
+/// present, so the sibling gates stay silent and this test observes its own gate.
+///
+/// WHY THIS SITE PANICS ON A POISONED MUTEX (AGENTS.md's poisoned-mutex rule):
+/// the lock guards `Db`'s ONE shared `rusqlite::Connection` — a single, shared
+/// resource a panic mid-transaction can leave genuinely unusable — so this
+/// `.expect` panics rather than recovering, matching every other site in this
+/// tree; the worked example to cite is the production `record_messages_batch`.
+#[test]
+fn the_is_subagent_gate_arrives_zero_for_every_pre_existing_session() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-subagent-gate-", "scratch");
+    let path = preexisting_db(
+        &dir,
+        SCHEMA_WITHOUT_IS_SUBAGENT,
+        "INSERT INTO sessions (id, cwd, created_at, capabilities_json) \
+         VALUES ('s1', '/x/nope-not-a-folder', 1, '{}');\n\
+         INSERT INTO sessions (id, cwd, created_at, capabilities_json) \
+         VALUES ('s2', '/x/nope-not-a-folder', 2, '{}');\n",
+    );
+
+    {
+        let db = Db::open(&path).expect("the is_subagent gate runs on open");
+        let has: i64 = db
+            .conn
+            .lock()
+            .expect("db mutex poisoned")
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'is_subagent'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("pragma_table_info should read");
+        assert_eq!(
+            has, 1,
+            "the `is_subagent` column is in place after the gate"
+        );
+
+        // The DDL's DEFAULT, pinned directly rather than inferred from the reads.
+        let default_value: Option<String> = db
+            .conn
+            .lock()
+            .expect("db mutex poisoned")
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('sessions') WHERE name = 'is_subagent'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("pragma_table_info should read");
+        assert_eq!(
+            default_value.as_deref(),
+            Some("0"),
+            "`is_subagent` arrives `DEFAULT 0` — an existing row IS a main session \
+             (ADR 0025 §6: no data migration)"
+        );
+
+        let rows = db.list_sessions(true).expect("list_sessions");
+        assert_eq!(rows.len(), 2, "the two pre-existing rows survived");
+        assert!(
+            rows.iter().all(|s| !s.is_subagent),
+            "every migrated row reads `is_subagent == false` — a row that arrived \
+             `true` would be filtered out of `list_sessions` and the session would \
+             vanish from the list after an upgrade; got {:?}",
+            rows.iter()
+                .map(|s| (s.id.clone(), s.is_subagent))
+                .collect::<Vec<_>>()
+        );
+        // The read itself is the proof the flag is 0 and not merely present:
+        // `list_sessions` filters `is_subagent = 0`, so a row that arrived `1`
+        // could not be returned here at all — the count above would be 0.
+        assert_eq!(
+            raw_scalar(&db, "SELECT COUNT(*) FROM sessions WHERE is_subagent = 1"),
+            0,
+            "NOT ONE row was migrated into the subagent flag — the gate carries no \
+             backfill and the DEFAULT holds"
+        );
+    }
+
+    // A SECOND open of the already-migrated file is a clean no-op (the
+    // `pragma_table_info` probe skips the `ALTER`), and nothing flipped.
+    let db = Db::open(&path).expect("a re-open of the migrated db must succeed");
+    assert_eq!(
+        db.list_sessions(true).expect("list_sessions").len(),
+        2,
+        "the gate ran once, not twice, and the rows are still visible"
     );
 }

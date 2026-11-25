@@ -218,3 +218,23 @@ Two rules apply to every entry here:
   target 3×, green on the next 4 full runs — but those runs left no artifact I could find (no
   single-target `cargo test` log survives in `/tmp`), so that figure is the close-out's, not a
   re-measurement here.** Re-run alone before investigating.
+
+- **`commands::settings::tests::provider_login_oidc_surfaces_the_manual_url_when_the_callback_fails`
+  flakes on ubuntu with `EADDRINUSE`, and it is NOT yet fixed — it needs an owner.** It fails
+  `assertion failed: message.contains("authorize manually at:")` with the preceding line reading
+  `every configured redirect port failed to bind (no redirect ports were configured); the ephemeral
+  fallback failed too: could not bind the OIDC callback listener: Address already in use (os error 98)`.
+  So the test's own fallback bind loses a race for an ephemeral port and the manual-URL branch it
+  asserts never runs. **One observation: CI run `45569694538` (ubuntu, `push`), which PASSED on
+  re-run at the same SHA.** Cite the run ID, not the SHA, per the rule above.
+  **The load signature is the strongest in this file and it is worth naming as a template: that run
+  failed a DIFFERENT test on each of its first two attempts** — attempt 1 this OIDC port bind, attempt
+  2 `the_definition_permission_deny_refuses_the_child_real_worker` (a registered entry above) — at an
+  unchanged SHA whose entire diff was one `.gitattributes` file. Two unrelated reds at one commit, and
+  a diff that is a checkout-normalisation file, cannot both be the commit's fault. `git show --stat`
+  settles it in one command.
+  **Do not read this as a Windows finding.** It appeared on the ubuntu leg while the Windows leg at
+  that same SHA was green; the `.gitattributes` change that was under test affects checkout only.
+  One consequence is worth knowing before triaging anything in that job: because `cargo test` fails
+  fast, an `EADDRINUSE` here silently skips `pnpm test` and `pnpm build` on that leg, so a red here
+  also means "the frontend never ran here" — check the step list rather than assuming coverage.

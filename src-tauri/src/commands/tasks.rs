@@ -1,11 +1,15 @@
 //! Tauri commands for the per-Space Task board (spec §2 — ADR 0090).
 //!
-//! TWENTY-SIX commands. Twenty-five of them are a `spawn_blocking` delegation to
-//! `impl Db` in `storage/db/`, in the shape `commands/spaces.rs` sets:
-//! `State<'_, Arc<Db>>` first, `state.inner().clone()` into the closure,
-//! `Result<_, TasksError>` out. The twenty-fifth, [`start_task_session`], returns the
-//! `SessionError` family instead because it is a Session command wearing board
-//! clothing — see its own doc.
+//! TWENTY-SIX commands (re-count with `grep -c '#\[tauri::command\]'` against this
+//! file — every prose total in a header rots, and this one had: it read
+//! TWENTY-SIX while the tree held twenty-five, from the moment `workflow_run_open`
+//! was deleted as dead IPC, and the twenty-sixth command this change registers
+//! happens to land the figure back on the truth). Twenty-five of them are a
+//! `spawn_blocking` delegation to `impl Db` in `storage/db/`, in the shape
+//! `commands/spaces.rs` sets: `State<'_, Arc<Db>>` first, `state.inner().clone()`
+//! into the closure, `Result<_, TasksError>` out. The twenty-fifth,
+//! [`start_task_session`], returns the `SessionError` family instead because it is
+//! a Session command wearing board clothing — see its own doc.
 //!
 //! The twenty-five delegations are the seven the board shipped with
 //! ([`get_board`], [`create_task`], [`get_task`], [`edit_task`], [`move_task`],
@@ -15,7 +19,10 @@
 //! Strict-workflow pair ([`set_board_strict`], [`get_board_strict`]) — plus the
 //! workflow pair the Stage editor grew ([`set_stage_auto`],
 //! [`set_stage_prompt_prefix`]), which delegate in the same shape and refuse
-//! nothing above the hop — plus the
+//! nothing above the hop — plus [`set_stage_position`], the canvas's
+//! hand-arranged node position, which delegates in the same shape but DOES refuse
+//! one thing above the hop (a half-set coordinate pair — see
+//! [`require_position_pair`]) — plus the
 //! two issue #180 artifact commands ([`write_artifact`], [`get_artifact`]), which
 //! delegate too but refuse three things BEFORE the storage layer is reached (see
 //! the artifact section for why each refusal lives here) — plus [`task_numbers`],
@@ -29,7 +36,7 @@
 //! setter, three for the step verb), nothing
 //! refused above the hop.
 //!
-//! NINE of the twenty-five do NOT go through [`board_call`], and it is not an
+//! NINE of the twenty-six do NOT go through [`board_call`], and it is not an
 //! oversight: [`set_board_strict`], [`get_board_strict`], [`get_auto_guards`] and
 //! [`set_auto_guards`] write and read the `spaces` table and the two
 //! `workflow_runs` commands write and read their own table, so those six storage layers
@@ -44,7 +51,11 @@
 //! inside the core the closure calls — which is where `not_found` keeps its identity.
 //! The ninth is [`start_task_session`], which goes through NONE of the three: it
 //! speaks `SessionError`, not `TasksError`, because starting a Session can fail in
-//! ways no board read can.
+//! ways no board read can. Note that [`set_stage_position`], which does pre-flight
+//! a refusal, is NOT in this nine: its refusal composes a `TasksError` BEFORE the
+//! hop and then hands a plain `BoardError` over it, so `board_call` still describes
+//! the whole error path after the spawn — the same reason [`create_task`] is not
+//! here despite its own title pre-flight.
 //!
 //! The blocking rule is the file rule from `commands/files/mod.rs`, restated in
 //! `spaces.rs`: SQLite work goes on a worker thread, and it is
@@ -939,6 +950,80 @@ pub async fn set_stage_prompt_prefix(
     board_call(
         tauri::async_runtime::spawn_blocking(move || {
             db.set_stage_prompt_prefix(&space_path, &slug, prompt_prefix.as_deref())
+        })
+        .await,
+    )
+}
+
+/// The half-set refusal, split out so it is testable without `State` (the
+/// [`require_artifact_key`] / [`patch_field`] precedent: a wire-only verdict lives
+/// where the wire's shape is visible, and it is re-runnable from the core).
+///
+/// The two coordinates arrive as two `Option<f64>`s because JSON has no tuple
+/// type — that is the ONE place the half-set is expressible in this feature, and
+/// it is refused HERE, before a worker thread is spent and before a connection is
+/// opened. `Some(x), None` is not a position: a node is a BOX, and a renderer
+/// handed half a coordinate has to invent the other half, which is the
+/// invented-state move `stages.prompt_prefix`'s and `spaces.auto_max_steps`'s
+/// missing SQL `DEFAULT`s each refuse. `None, None` is a real answer — "not
+/// hand-arranged, dagre owns this node" — so the two `None`s are accepted and the
+/// two mixed spellings are not.
+///
+/// Storage does not need this check and does not have it: `Db::set_stage_position`
+/// takes ONE `Option<(f64, f64)>`, so a half-pair has no spelling at that layer.
+/// The refusal is here because this is the only door where the shape can arrive.
+///
+/// Rides `TasksError::Other`, and that is the considered choice rather than the
+/// cheap one. `agent/errors.rs` is baselined at exactly its current code-line
+/// count and the size ratchet refuses it growing by ONE line, so a dedicated kind
+/// would need a `--update` diff against a ledger this change has no business
+/// touching — and `kind()` exists to be BRANCHED on, which nothing does here:
+/// `store/tasks.ts` reverts an optimistic paint on ANY rejection kind. The
+/// sentence names both values, which is the whole answer a caller needs.
+fn require_position_pair(x: Option<f64>, y: Option<f64>) -> Result<Option<(f64, f64)>, TasksError> {
+    match (x, y) {
+        (Some(x), Some(y)) => Ok(Some((x, y))),
+        (None, None) => Ok(None),
+        (x, y) => Err(TasksError::Other(format!(
+            "a stage position must set BOTH coordinates or NEITHER — \
+             got x={x:?} and y={y:?}"
+        ))),
+    }
+}
+
+/// Set or clear one column's **position on the Workflows canvas** — the
+/// hand-arranged layout, so a node a person dragged stays where they put it.
+///
+/// `x`/`y` are canvas coordinates and `NaN`-free `f64`s; `None` for BOTH clears
+/// the pair to NULL, which is the ONLY spelling of "not hand-arranged" and hands
+/// the node back to dagre. `0.0` is NOT that: it is a node someone pinned to the
+/// origin, and the two are distinct stored states the canvas must not collapse
+/// (the `null` ≠ `0` rule every nullable column in this file stands on).
+///
+/// ONE command for the PAIR, and that is the design rather than a convenience:
+/// two setters would make a half-positioned node reachable by a caller that
+/// painted one coordinate mid-drag, and a half-positioned node is a lie about
+/// where a box is. See [`require_position_pair`] for the refusal and
+/// `Db::set_stage_position` for the type-level half of the same rule.
+///
+/// Answers the stored `StageDto` like the six Stage verbs beside it, so the canvas
+/// updates the node from this call rather than from a second round trip. A slug
+/// the Space does not have is refused BEFORE the write, naming the valid slugs.
+#[tauri::command]
+pub async fn set_stage_position(
+    state: State<'_, Arc<Db>>,
+    space_path: String,
+    slug: String,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<StageRow, TasksError> {
+    // Refused BEFORE the hop, so a half-set pair spends no worker thread and
+    // opens no connection — the `write_artifact` / `create_task` pre-flight shape.
+    let position = require_position_pair(x, y)?;
+    let db = state.inner().clone();
+    board_call(
+        tauri::async_runtime::spawn_blocking(move || {
+            db.set_stage_position(&space_path, &slug, position)
         })
         .await,
     )

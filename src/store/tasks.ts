@@ -5,9 +5,10 @@ import {
   linkSession as linkSessionCommand,
   moveTask as moveTaskCommand,
   reorderTasks as reorderTasksCommand,
-  // T3's ten (issue #179 §8.1 + issue #180 D1) plus the FOUR the workflow graph adds
-  // (`setStageAuto`, `setStagePromptPrefix`, `getAutoGuards`, `setAutoGuards`) —
-  // fourteen, ALIASED every one: this store's
+  // T3's ten (issue #179 §8.1 + issue #180 D1) plus the FIVE the workflow graph and
+  // the canvas add (`setStageAuto`, `setStagePromptPrefix`, `setStagePosition`,
+  // `getAutoGuards`, `setAutoGuards`) —
+  // fifteen, ALIASED every one: this store's
   // own actions carry the SAME names these wrappers have, so a bare import is not
   // a collision error but INFINITE RECURSION — the action calling itself instead
   // of the command. See the module header.
@@ -22,6 +23,7 @@ import {
   setBoardStrict as setBoardStrictCommand,
   setStageAuto as setStageAutoCommand,
   setStageNext as setStageNextCommand,
+  setStagePosition as setStagePositionCommand,
   setStagePromptPrefix as setStagePromptPrefixCommand,
   setStageSkill as setStageSkillCommand,
   writeArtifact as writeArtifactCommand,
@@ -72,11 +74,14 @@ import { describeIpcError } from "../lib/ipcError";
  * has not fetched, which is a fetch problem wearing a permission mask. The
  * `void`-returning writes (`reorderStages`, `deleteStage`, `setBoardStrict`,
  * `setAutoGuards`) capture
- * their failure into `error` exactly as `moveTask` does; the eight that ANSWER
+ * their failure into `error` exactly as `moveTask` does; the TEN that ANSWER
  * something (`createStage`, `renameStage`, `setStageSkill`, `setStageNext`,
- * `setStageAuto`, `setStagePromptPrefix`, `getAutoGuards`, and both
- * artifact actions) rethrow as well, because on a refusal there is no value to hand
- * back and the caller is holding text this store will never display.
+ * `setStageAuto`, `setStagePromptPrefix`, `setStagePosition`, `getAutoGuards`, and
+ * both artifact actions) rethrow as well, because on a refusal there is no value to
+ * hand back and the caller is holding text this store will never display. (The
+ * figure this sentence carried was stale by one: it read "eight" beside a list of
+ * nine. Re-count it from the list if you touch this paragraph — a count of a list
+ * two lines long is the least excusable rot in the file.)
  *
  * ONE module `let` still lives here (`loadEpoch`), and no Stage write added a
  * second: the Stage actions do not race each other the way a Space-tab switch
@@ -165,7 +170,11 @@ interface BoardState {
    *  promise because the optimistic slice is painted synchronously and the caller
    *  (a drag handler) has nothing to await: a rejection reverts the slice and lands in
    *  `error`, which is the only channel the UI can still show it through. */
-  reorderWithinStage: (spacePath: string, stageSlug: string, ids: string[]) => void;
+  reorderWithinStage: (
+    spacePath: string,
+    stageSlug: string,
+    ids: string[],
+  ) => void;
   /** Put one Space's `boostNote` away (the warning line's dismiss). */
   dismissBoostNote: (spacePath: string) => void;
 
@@ -195,7 +204,11 @@ interface BoardState {
   ) => Promise<StageDto>;
   /** Rename a column's LABEL. The slug does not move (spec §5 — `tasks.stage_slug`
    *  points at it by string with no foreign key). */
-  renameStage: (spacePath: string, slug: string, label: string) => Promise<StageDto>;
+  renameStage: (
+    spacePath: string,
+    slug: string,
+    label: string,
+  ) => Promise<StageDto>;
   /** Set or clear the Skill a Session started from this column loads (ADR 0098).
    *  `null` CLEARS it. A second field beside `onEnter`, never a merged one. */
   setStageSkill: (
@@ -206,7 +219,11 @@ interface BoardState {
   /** Set one column's outgoing transitions (ADR 0099) in button-render order.
    *  `[]` means "configured, and nothing may follow this column" and is NOT the
    *  same answer as the `null` that means "unconfigured, therefore unconstrained". */
-  setStageNext: (spacePath: string, slug: string, slugs: string[]) => Promise<StageDto>;
+  setStageNext: (
+    spacePath: string,
+    slug: string,
+    slugs: string[],
+  ) => Promise<StageDto>;
   /** Turn one column's **auto-advance** flag on or off (the workflow graph): a card
    *  launched here advances itself when its Session settles.
    *
@@ -215,7 +232,11 @@ interface BoardState {
    *  and on a refusal there is not one to hand back). Nothing else on the row moves:
    *  `auto` is a THIRD question beside `onEnter`'s and `onEnterSkill`'s, and a paint
    *  that touched more than it wrote would be a second owner of the other two. */
-  setStageAuto: (spacePath: string, slug: string, auto: boolean) => Promise<StageDto>;
+  setStageAuto: (
+    spacePath: string,
+    slug: string,
+    auto: boolean,
+  ) => Promise<StageDto>;
   /** Set or clear one column's **extra prompt**, prepended before its Skill launch.
    *  `null` CLEARS it and is the only spelling of cleared — `""` is a stored VALUE a
    *  person typed, so an action that normalized `null` to `""` would make a prefix
@@ -224,6 +245,30 @@ interface BoardState {
     spacePath: string,
     slug: string,
     prefix: string | null,
+  ) => Promise<StageDto>;
+  /** Set or clear one column's **position on the Workflows canvas** — the
+   *  hand-arranged layout a node drag produces.
+   *
+   *  BOTH coordinates or NEITHER, and that is the command's rule rather than a
+   *  convenience of this one: a node is a BOX, so half a coordinate is a lie about
+   *  where a box is. `null, null` is the clear (the node goes back to dagre) and
+   *  `0, 0` is a node a person pinned to the origin — the action passes both through
+   *  and collapses neither.
+   *
+   *  The SAME paint shape as `setStageAuto` immediately above, and it has to be: a
+   *  drag paints the node at the pointer, awaits, then re-paints from the stored row
+   *  or reverts. The revert is the whole point for this action more than any other —
+   *  a node left painted where the database refused to put it is a node the user
+   *  believes they moved, and the next board fetch would teleport it.
+   *
+   *  The paint writes BOTH fields from ONE patch object, never two successive
+   *  `withStage` calls: two paints would put a half-positioned slice on screen for
+   *  one frame, which is the state the command refuses to store. */
+  setStagePosition: (
+    spacePath: string,
+    slug: string,
+    x: number | null,
+    y: number | null,
   ) => Promise<StageDto>;
   /** Rewrite the board's column order in one pass.
    *
@@ -332,6 +377,99 @@ interface BoardState {
  *  new store test. */
 let loadEpoch = 0;
 
+/** Which **(Space, slug)** pairs have a `set_stage_position` write in flight.
+ *
+ *  MODULE SCOPE for the same reason `loadEpoch` is: it is bookkeeping about in-flight work,
+ *  not state a component renders, and `src/test/resetStores.ts` cannot reach a module `let`
+ *  — so `reset()` clears it and both resets are load-bearing in the tests that pin it.
+ *
+ *  KEYED ON THE PAIR and not on the Space, because the thing being protected is one column's
+ *  two coordinates and not the whole board. A Space-wide flag would have `load` discard or
+ *  freeze rows it is entitled to refresh, which is the "a view that refuses to re-read shows
+ *  whatever the last view left behind" failure `WorkflowsCanvas.tsx` argues about.
+ *
+ *  ## The hole this closes (F3)
+ *
+ *  `loadEpoch` answers "which FETCH is current" and says nothing about load-against-a-WRITE.
+ *  Both `TasksBoard` and `WorkflowsCanvas` call `load` on mount and the canvas renders
+ *  immediately when the slice is already populated, so: board → Workflows → drag before that
+ *  mount read lands → the read answers with the PRE-DRAG rows and replaces the slice. The
+ *  write succeeded; the paint shows a node that was never moved. That defeats
+ *  `workflowGraphLayout.ts`'s claim that its stored-first ordering "IS the anti-snap-back
+ *  rule" — the ordering is right and it is simply reading a row a late fetch overwrote.
+ *
+ *  ## Why a MERGE and not a suppressed or deferred `set`
+ *
+ *  Suppressing the response would throw away the cards, labels, skills and auto flags the
+ *  same read carries — a wider loss than the one being prevented, and one the canvas header
+ *  explicitly argues against. Re-issuing `load` once the write settles costs an extra
+ *  `get_board` PER DRAG, and `get_board` is not a pure read (ADR 0090's lazy stage seeding),
+ *  on top of the two per view-hop this file already pays deliberately. A merge costs neither:
+ *  the fresh rows land and only the TWO FIELDS the in-flight write owns are kept, for exactly
+ *  the columns it owns. See `useTasks.load does not undo a position write that is in flight`.
+ *
+ *  A per-Slug COUNT and not a per-Space counter or a plain set of slugs. A Space-wide flag
+ *  would have `load` discard or freeze rows it is entitled to refresh, which is the "a view
+ *  that refuses to re-read shows whatever the last view left behind" failure
+ *  `WorkflowsCanvas.tsx` argues about; a set of slugs would release early when two writes
+ *  land on the SAME slug (the first reply to settle would unprotect the one still in flight),
+ *  and **Tidy up** makes exactly that shape of overlap likely. */
+const positionWritesInFlight = new Map<string, Map<string, number>>();
+
+/** Run `body` with `(spacePath, slug)` marked as having a position write outstanding. */
+const withPositionWriteInFlight = async <T>(
+  spacePath: string,
+  slug: string,
+  body: () => Promise<T>,
+): Promise<T> => {
+  const slugs =
+    positionWritesInFlight.get(spacePath) ?? new Map<string, number>();
+  positionWritesInFlight.set(spacePath, slugs);
+  slugs.set(slug, (slugs.get(slug) ?? 0) + 1);
+  try {
+    return await body();
+  } finally {
+    const left = (slugs.get(slug) ?? 1) - 1;
+    if (left > 0) slugs.set(slug, left);
+    else {
+      slugs.delete(slug);
+      if (slugs.size === 0) positionWritesInFlight.delete(spacePath);
+    }
+  }
+};
+
+/** The slugs of this Space with a position write outstanding, or `null` for none. */
+const inFlightPositionsOf = (spacePath: string): ReadonlySet<string> | null => {
+  const slugs = positionWritesInFlight.get(spacePath);
+  return slugs === undefined || slugs.size === 0 ? null : new Set(slugs.keys());
+};
+
+/** Keep the in-flight position pair(s) of `fresh` from the slice `load` is about to replace.
+ *  Everything else in `fresh` — every other field, every other column — is the newer answer
+ *  and is taken verbatim. A column with a write in flight that the fresh read does NOT hold
+ *  (deleted in another window) is left as the read reports it: inventing a row back would be
+ *  the store disagreeing with the database about the column set, which is not its call. */
+const keepInFlightPositions = (
+  columns: StageWithTasks[],
+  fresh: StageWithTasks[],
+  slugs: ReadonlySet<string>,
+): StageWithTasks[] => {
+  const bySlug = new Map(columns.map((c) => [c.stage.slug, c]));
+  return fresh.map((row) => {
+    if (!slugs.has(row.stage.slug)) return row;
+    const held = bySlug.get(row.stage.slug);
+    if (held === undefined) return row;
+    return {
+      ...row,
+      stage: {
+        ...row.stage,
+        positionX: held.stage.positionX ?? null,
+        positionY: held.stage.positionY ?? null,
+      },
+    };
+  });
+};
+
 /** Publish one Space's re-derived column set, leaving every OTHER Space's slice
  *  standing. The spread of the whole `boardsBySpace` record (and not a mutation of
  *  the nested key) is what makes the update visible to a zustand selector, which
@@ -344,7 +482,9 @@ const paint = (
   spacePath: string,
   next: StageWithTasks[],
 ): void =>
-  set((state) => ({ boardsBySpace: { ...state.boardsBySpace, [spacePath]: next } }));
+  set((state) => ({
+    boardsBySpace: { ...state.boardsBySpace, [spacePath]: next },
+  }));
 
 /** Replace ONE column's `stage` fields, leaving the cards and every other column
  *  alone. A column the slug does not name is returned UNCHANGED (same object), so
@@ -385,10 +525,7 @@ const orderBySlugs = (
     .map((slug) => bySlug.get(slug))
     .filter((c): c is StageWithTasks => c !== undefined);
   const seen = new Set(ordered.map((c) => c.stage.slug));
-  return [
-    ...ordered,
-    ...columns.filter((c) => !seen.has(c.stage.slug)),
-  ];
+  return [...ordered, ...columns.filter((c) => !seen.has(c.stage.slug))];
 };
 
 export const useTasks = create<BoardState>((set, get) => ({
@@ -408,10 +545,21 @@ export const useTasks = create<BoardState>((set, get) => ({
     try {
       const columns = await getBoardCommand(spacePath);
       if (epoch !== loadEpoch) return; // a newer load owns the store
-      set((state) => ({
-        boardsBySpace: { ...state.boardsBySpace, [spacePath]: columns },
-        loading: false,
-      }));
+      set((state) => {
+        // F3: a position write for THIS Space that is still in flight owns its column's two
+        // coordinates, and this read must not paint over them. See `positionWritesInFlight`
+        // for why the fix is a merge and not a suppressed `set`.
+        const inFlight = inFlightPositionsOf(spacePath);
+        const held = state.boardsBySpace[spacePath];
+        const next =
+          inFlight === null || held === undefined
+            ? columns
+            : keepInFlightPositions(held, columns, inFlight);
+        return {
+          boardsBySpace: { ...state.boardsBySpace, [spacePath]: next },
+          loading: false,
+        };
+      });
     } catch (err) {
       // Captured, never rethrown (the `sessions.ts` command-failure pattern): the
       // board renders this sentence, and an action that throws out of a mount
@@ -549,7 +697,9 @@ export const useTasks = create<BoardState>((set, get) => ({
       const next =
         at === -1
           ? columns
-          : columns.map((c, i) => (i === at ? { ...c, tasks: [...c.tasks, card] } : c));
+          : columns.map((c, i) =>
+              i === at ? { ...c, tasks: [...c.tasks, card] } : c,
+            );
       set((state) => ({
         boardsBySpace: { ...state.boardsBySpace, [spacePath]: next },
       }));
@@ -592,7 +742,9 @@ export const useTasks = create<BoardState>((set, get) => ({
       ...column,
       tasks: [...ordered, ...column.tasks.filter((t) => !seen.has(t.task.id))],
     };
-    const next = columns.map((c) => (c.stage.slug === stageSlug ? nextColumn : c));
+    const next = columns.map((c) =>
+      c.stage.slug === stageSlug ? nextColumn : c,
+    );
     set((state) => ({
       boardsBySpace: { ...state.boardsBySpace, [spacePath]: next },
     }));
@@ -670,7 +822,11 @@ export const useTasks = create<BoardState>((set, get) => ({
       if (previous) {
         // Merge the STORED row back over the guess, so a trimmed or normalised
         // label shows what the database kept rather than what was typed.
-        paint(set, spacePath, withStage(get().boardsBySpace[spacePath]!, slug, row));
+        paint(
+          set,
+          spacePath,
+          withStage(get().boardsBySpace[spacePath]!, slug, row),
+        );
       }
       return row;
     } catch (err) {
@@ -693,7 +849,11 @@ export const useTasks = create<BoardState>((set, get) => ({
     // SECOND column beside it, so a column can compact AND load a Skill. Merging
     // the two would print the Skill where the board advertises `compact`.
     if (previous)
-      paint(set, spacePath, withStage(previous, slug, { onEnterSkill: skill ?? null }));
+      paint(
+        set,
+        spacePath,
+        withStage(previous, slug, { onEnterSkill: skill ?? null }),
+      );
     try {
       const row = await setStageSkillCommand(spacePath, slug, skill ?? null);
       if (previous)
@@ -774,7 +934,11 @@ export const useTasks = create<BoardState>((set, get) => ({
     // held before. Normalizing `""` to `null` here would paint a clear the write did
     // not perform — and normalizing `null` to `""` would make the field un-clearable.
     if (previous)
-      paint(set, spacePath, withStage(previous, slug, { promptPrefix: prefix }));
+      paint(
+        set,
+        spacePath,
+        withStage(previous, slug, { promptPrefix: prefix }),
+      );
     try {
       const row = await setStagePromptPrefixCommand(spacePath, slug, prefix);
       if (previous)
@@ -791,6 +955,91 @@ export const useTasks = create<BoardState>((set, get) => ({
       throw err;
     }
   },
+
+  setStagePosition: async (spacePath, slug, x, y) =>
+    // F3: the whole action is bracketed by the in-flight marker — BEFORE the optimistic paint
+    // and until the reply lands — so a `load` that resolves anywhere in that window merges
+    // this column's pair instead of painting the pre-drag row over it. Bracketing only the
+    // command call would leave the gap between the paint and the call open, which is the
+    // window a mount-time `get_board` actually lands in. See `positionWritesInFlight`.
+    withPositionWriteInFlight(spacePath, slug, async () => {
+      const previous = get().boardsBySpace[spacePath];
+      // A HALF pair is not painted, because there is nothing honest to paint: a node
+      // at a known X and an unknown Y is the state the command refuses to STORE, and
+      // putting it on screen for one frame would show the user a node at a place the
+      // database will never hold. The command still runs and still refuses, so the
+      // refusal lands in `error` and rethrows like every other Stage write — the
+      // store does not invent a second verdict, it just declines to paint a lie.
+      const paired = (x === null) === (y === null);
+      // ONE patch, BOTH fields, so no frame ever holds half a position. `null` is
+      // written as `null` and `0` as `0`: the two are distinct stored states and
+      // normalizing either would silently move or silently free a node.
+      if (previous && paired)
+        paint(
+          set,
+          spacePath,
+          withStage(previous, slug, { positionX: x, positionY: y }),
+        );
+      try {
+        const row = await setStagePositionCommand(spacePath, slug, x, y);
+        if (previous)
+          paint(
+            set,
+            spacePath,
+            withStage(get().boardsBySpace[spacePath]!, slug, row),
+          );
+        return row;
+      } catch (err) {
+        // THE COLUMN THIS WRITE OWNS goes back, and NOTHING ELSE does.
+        //
+        // This arm used to read `paint(set, spacePath, previous)` — the whole slice captured at
+        // action entry — and its comment claimed *"The node goes back exactly where it was."*
+        // That sentence was false, and false in the worst direction: with two drags in flight,
+        // the second one's paint is inside the first one's `previous`, so a rejected drag A
+        // repaints a SUCCEEDED drag B back to its pre-drag position while the database holds
+        // B's new pair. The picture then contradicts the store, and the next `get_board`
+        // contradicts the picture. `Tidy up` is the sharpest trigger, because it fires N
+        // writes per click and one mid-list failure re-paints every later success as still
+        // hand-arranged (known-gaps §10d).
+        //
+        // So the revert is `withStage(…, slug, the row this column had)`. Reverting only the
+        // owned column is not a weaker guarantee either: this action's paint touched exactly
+        // one column's two coordinates, so exactly those two fields are what it can undo.
+        //
+        // The revert matters MORE here than on any sibling action: the paint follows a
+        // POINTER, so a node left at the drop point over a Space that refused the write is a
+        // node the user believes they moved until the next fetch teleports it back.
+        if (previous && paired) {
+          const owned = previous.find((c) => c.stage.slug === slug);
+          // A slug the captured slice cannot name was never painted by this action, so there
+          // is nothing to undo — the ghost case, where the whole-slice version used to
+          // "revert" by re-publishing an array nobody had changed.
+          if (owned !== undefined) {
+            // BOTH COORDINATES, spelled out, and `undefined` normalised to `null`. Handing
+            // `withStage` the captured `StageDto` wholesale would NOT work: `withStage`
+            // spreads the patch, and a row read from a database that predates the two columns
+            // — or from a test factory that omits them — has the keys ABSENT rather than
+            // `null`, so the spread leaves the painted numbers in place and the revert silently
+            // does nothing. Measured: the canvas's `puts the box back and says why…` case
+            // failed with `expected { x: 160, y: 110 } to be null` for exactly that reason.
+            // `null` is the wire's only "never arranged", and `storedPositionOf` reads it and
+            // `undefined` identically, so this is the same fact spelled in the form the undo
+            // can carry.
+            paint(
+              set,
+              spacePath,
+              withStage(get().boardsBySpace[spacePath] ?? previous, slug, {
+                positionX: owned.stage.positionX ?? null,
+                positionY: owned.stage.positionY ?? null,
+              }),
+            );
+          }
+        }
+        set({ error: describeIpcError(err) });
+        console.error(`Failed to set the position of stage ${slug}:`, err);
+        throw err; // see `renameStage`'s note for why this arm rethrows
+      }
+    }),
 
   reorderStages: async (spacePath, slugs) => {
     const previous = get().boardsBySpace[spacePath];
@@ -890,7 +1139,10 @@ export const useTasks = create<BoardState>((set, get) => ({
       await setAutoGuardsCommand(spacePath, maxSteps, ceilingUsd);
     } catch (err) {
       set({ error: describeIpcError(err) });
-      console.error(`Failed to set the auto-chain guards of ${spacePath}:`, err);
+      console.error(
+        `Failed to set the auto-chain guards of ${spacePath}:`,
+        err,
+      );
     }
   },
 
@@ -907,7 +1159,10 @@ export const useTasks = create<BoardState>((set, get) => ({
       // and a swallowed failure would hand the editor that fact as its default,
       // printing a field that claims "unset" over a Space with a real ceiling.
       set({ error: describeIpcError(err) });
-      console.error(`Failed to read the auto-chain guards of ${spacePath}:`, err);
+      console.error(
+        `Failed to read the auto-chain guards of ${spacePath}:`,
+        err,
+      );
       throw err;
     }
   },
@@ -949,6 +1204,7 @@ export const useTasks = create<BoardState>((set, get) => ({
     // cannot land afterwards and repopulate a store the NEXT case believes is
     // clean. `setState(…, true)` is the no-merge rule `resetStores.ts` states: a
     // partial reset would leave the rest of the dirty slice standing.
+    positionWritesInFlight.clear();
     loadEpoch += 1;
     set(useTasks.getInitialState(), true);
   },

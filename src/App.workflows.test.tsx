@@ -19,7 +19,7 @@ import type { StageDto, StageWithTasks, TaskCardView } from "./lib/tauri";
  * `scripts/file-size-baseline-test.txt` and the size ratchet refuses a baselined file
  * growing by even one code line. The case below cannot be expressed inside that budget,
  * so it lives beside the file it extends — the route `tasks.workflows.test.tsx` and
- * `StageEditor.workflows.test.tsx` took, and for the same stated reason. The claim it
+ * the other `*.workflows.test.tsx` siblings took, for the same stated reason. The claim it
  * pins is `App`'s ROUTING and not the canvas's rendering (which
  * `workflows/WorkflowsCanvas.test.tsx` owns), so it belongs at the `App` tree.
  *
@@ -38,8 +38,8 @@ import type { StageDto, StageWithTasks, TaskCardView } from "./lib/tauri";
  * real wrapper, which calls `invoke`, which rejects in jsdom; the boot `Promise.all`
  * then rejects, its `.catch` swallows the reason, and every case here goes red looking
  * unrelated. `App.test.tsx`'s header carries the full warning; the list below is that
- * file's list, narrowed to what this view touches, plus the Stage verbs (a node click
- * mounts the real `StageEditor`, whose footer reads the guard pair).
+ * file's list, narrowed to what this view touches, plus the stage verbs (a node click
+ * mounts the real settings panel, whose workflow mode reads the guard pair).
  */
 vi.mock("./lib/tauri", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("./lib/tauri");
@@ -231,7 +231,7 @@ const column = (slug: string, sortOrder: number): StageWithTasks => ({
  *  and the Selected Space is what decides whether the canvas fetches at all.
  *
  *  The `getBoard` arm is armed BEFORE the render so the canvas's mount fetch finds a
- *  real column set; a `[]` reply would leave the canvas on its "no stages yet" line and
+ *  real column set; a `[]` reply would leave the canvas on its "no columns yet" line and
  *  the case below would then be asserting the empty state rather than the graph. */
 async function bootedWithSelectedSpace(): Promise<void> {
   vi.mocked(getBoard).mockResolvedValue([
@@ -302,16 +302,36 @@ describe("App (the Workflows view)", () => {
 
     await openWorkflows();
 
-    // THE PIN THE WIDENING EXISTS FOR. A widened union with NO fourth arm renders the
-    // workspace for `"workflows"` too — the ternary's else-branch IS the workspace — so
-    // the canvas would be absent, the composer still present, `tsc` clean, and every
-    // pre-existing test in the repo green. BOTH halves are asserted because the canvas
-    // being absent is also what a click that never changed the view looks like.
+    // THE PIN THE WIDENING EXISTS FOR, RE-POINTED. It used to live in this block as
+    // `getByRole("heading", { name: "Workflows", level: 1 })`; the canvas's header bar is
+    // gone (ADR 0097's island parity — the bar cost a row of the picture to repeat the
+    // word the sidebar door already says) and the rule it guards is untouched: a widened
+    // union with NO fourth arm renders the workspace for `"workflows"` too — the
+    // ternary's else-branch IS the workspace — so the canvas would be absent, the
+    // composer still present, `tsc` clean, and every pre-existing test in the repo green.
+    // BOTH halves are still asserted below, and the heading is replaced by an element
+    // ONLY this arm puts on screen that is not the `workflows-canvas` testid the line
+    // above already reads: the settings panel's accessible name, asked for BY ROLE. That
+    // also says the arm mounts a working *panel* and not merely a `<section>` with a test
+    // id painted on it. Asserted from `screen` and not from inside the canvas, because the
+    // panel is a SIBLING island now — a `within(canvas)` query would be asserting the
+    // tree ADR 0097 rejected.
     expect(screen.getByTestId("workflows-canvas")).toBeTruthy();
     expect(
-      screen.getByRole("heading", { name: "Workflows", level: 1 }),
+      screen.getByRole("complementary", { name: "Workflow settings" }),
     ).toBeTruthy();
     expect(screen.queryByTestId("composer-island")).toBeNull();
+
+    // AND THE TWO ARE SIBLINGS in the row, not one island with a pane nested in it — the
+    // ADR 0097 claim, checked where the row actually exists. `WorkflowsCanvas.test.tsx`
+    // pins the same shape in isolation; only THIS tree can say the content row is what
+    // parents them, which is the half the component test cannot see.
+    const row = screen.getByTestId("content-row");
+    const canvas = screen.getByTestId("workflows-canvas");
+    const panel = screen.getByTestId("workflow-settings-panel");
+    expect(canvas.parentElement).toBe(row);
+    expect(panel.parentElement).toBe(row);
+    expect(canvas.contains(panel)).toBe(false);
 
     // And it is the GRAPH, not an empty frame: the two columns the Space's board
     // reports are on the canvas, joined by the fallback edge.
@@ -416,5 +436,42 @@ describe("App (the Workflows view)", () => {
     // duplicate that case's whole fixture to prove the SAME wrapper is handed to this
     // arm, which `App.tsx` shows in one line: the pane gets one
     // `onReturnToWorkspace`, not one per door.
+  });
+
+  it("the BOARD's Configure door navigates to the canvas (the wiring is App's)", async () => {
+    // The board's `Configure` door used to raise a dialog of its own. It does not
+    // mount anything now — it calls `onOpenWorkflows`, and whether that callback is
+    // `setView("workflows")` is a fact about THIS file's tree and about nothing a
+    // `TasksBoard.test.tsx` case can see: that file passes a spy and asserts the spy
+    // fired, which stays true even if `App` wires it to the wrong view.
+    //
+    // THE SILENT FAILURE THIS PINS. A door wired to `() => {}` (or to
+    // `setView("board")`, or dropped from the JSX) leaves every board test green and
+    // every canvas test green, because each side's half of the wiring is correct on
+    // its own. What reddens is the seam: click the door, and the canvas is not there.
+    // So BOTH halves are asserted, the same rule the arm's own pin above follows —
+    // the canvas IS up, and the board that hosted the door is NOT.
+    await bootedWithSelectedSpace();
+    fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
+    expect(screen.getByTestId("tasks-board")).toBeTruthy();
+    expect(screen.queryByTestId("workflows-canvas")).toBeNull();
+
+    const configure = screen.getByRole("button", {
+      name: "Configure",
+    }) as HTMLButtonElement;
+    // Enabled, because the helper above selected a Space. The disabled half of the
+    // same gating (no Selected Space, no door) is pinned in `TasksBoard.test.tsx`
+    // against the component, where the flag lives.
+    expect(configure.disabled).toBe(false);
+    fireEvent.click(configure);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.getByTestId("workflows-canvas")).toBeTruthy();
+    expect(screen.queryByTestId("tasks-board")).toBeNull();
+    // And the door did not open a dialog: the board mounts none, so a `dialog` here
+    // would mean a second editor for the stage fields came back.
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

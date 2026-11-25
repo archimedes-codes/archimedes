@@ -1,13 +1,14 @@
 import dagre from "@dagrejs/dagre";
+import type { CSSProperties } from "react";
 import type { Edge, Node } from "@xyflow/react";
 
 import { nextStepSlugs } from "../../lib/workflowGraph";
-import type { StageWithTasks } from "../../lib/tauri";
+import type { StageDto, StageWithTasks } from "../../lib/tauri";
 
 /**
  * The **layout** of the workflow graph — columns in, positioned nodes and edges
  * out. Pure, and deliberately apart from `WorkflowsCanvas.tsx`: the canvas owns
- * the stores, the load and the dialog, and none of that is needed to answer
+ * the stores, the load and the selection, and none of that is needed to answer
  * "where does this box go, and what lines join them", which is the part worth
  * testing without a renderer in the loop.
  *
@@ -21,22 +22,54 @@ import type { StageWithTasks } from "../../lib/tauri";
  * Sugiyama-style job the n8n-style canvas the owner asked for needs — so the
  * graph reads left to right by DEPTH rather than by `sortOrder`.
  *
- * ## Positions, and why they are computed and not stored
+ * ## Positions: the STORE is the authority, dagre is the fallback
  *
- * There is no position column. `stages` holds
- * `space_path / slug / label / sort_order / on_enter / on_enter_skill /
- * next_slugs / auto / prompt_prefix` and nothing else (verified against
- * `SCHEMA` in `src-tauri/src/storage/db/mod.rs` — the schema of record, and one of
- * THREE copies of this `CREATE TABLE`: the others are the test fixtures in
- * `storage/db/tests/support.rs` and `storage/db/tests/open.rs`. The fixture is what
- * this citation used to name, and it is the wrong owner: it is re-synced by hand
- * under the gate-isolation rule, so quoting it lets this list go stale while every
- * test stays green), so the layout is DERIVED from the same two facts
- * the board paints from — the columns
- * and their edges — and a Space that has never seen this canvas still gets a
- * sane graph. That is the decision, not an omission: a stored position would be
- * a per-Space fact with no column to live in, and a second answer to "what is
- * this workflow" that the editor cannot edit.
+ * This section used to argue the opposite — that a stored position "would be a
+ * per-Space fact with no column to live in, and a second answer to 'what is this
+ * workflow' that the editor cannot edit". **The first half of that sentence is now
+ * false and the second half was never much of an argument.** `stages` gained
+ * `position_x` / `position_y` (both nullable, both read as ONE pair, written by
+ * `set_stage_position`), and the panel beside this canvas edits every field the node
+ * shows — so a stored position has a column to live in and an editor that edits it.
+ * What made the old decision wrong was not the reasoning, it was that the surface
+ * became an editor: a canvas you can drag but cannot persist a drag to is worse than
+ * one you cannot drag at all, because the drag promises something the next render
+ * takes back.
+ *
+ * So the rule, in the order it is applied:
+ *
+ *  - a node whose `positionX` **and** `positionY` are both non-null is drawn at that
+ *    pair, exactly. The store is the authority; there is no second source of truth
+ *    and no local position state anywhere near it;
+ *  - a node with only ONE of the two is treated as unpositioned. `set_stage_position`
+ *    takes both coordinates or neither and refuses a half pair, and `StageDto.positionX`
+ *    tells a reader that finds half a pair to treat the node as unpositioned — a node
+ *    at a stored X and a computed Y is the state the write refuses to STORE, so it
+ *    must not be the state the canvas PAINTS either;
+ *  - `0` is a coordinate somebody placed and `null` is the only "nobody ever moved
+ *    it", so the check is `!== null` and not truthiness. `positionX || dagreX` would
+ *    silently free every node pinned to the left or top edge of the canvas;
+ *  - **if any node lacks a stored pair, dagre runs over the whole graph** and the
+ *    stored nodes are overridden afterwards. That is what keeps a half-arranged board
+ *    readable: the never-arranged columns land at sane depths RELATIVE to the
+ *    arranged ones instead of at the origin under them. When every node has a pair,
+ *    dagre is skipped — nothing it computes would survive.
+ *
+ * The last branch is the one a test cannot see: "skip dagre" and "run dagre then
+ * override" return the same array, so the pin on it is behavioural (every stored pair
+ * comes back verbatim, in a fixture deliberately arranged against the ranker) and not
+ * a spy on dagre. It is worth having anyway, and not only to save the call — a graph
+ * somebody arranged by hand has an ORDER in it, and re-ranking it to discover the
+ * positions are then thrown away is the same disrespect the drag is here to end.
+ *
+ * One thing stays computed and it cannot be otherwise: the GHOST node, an edge whose
+ * target column the read cannot name, has no row and so no `position_x`. It is fed to
+ * dagre like any real node (which also means a board with a stale edge can never reach
+ * the "every node is arranged" branch), and it is marked `draggable: false`, because
+ * the drag verb writes through `set_stage_position` and that command refuses a slug
+ * the Space does not hold. A draggable ghost would be a drag that always fails, always
+ * reverts and always lands its sentence in the error line — the snap-back, made
+ * permanent.
  *
  * ## The three answers `nextSlugs` holds, and the collapse to avoid (ADR 0099)
  *
@@ -86,8 +119,10 @@ const RANK_SEPARATION = 96;
 const NODE_SEPARATION = 40;
 
 /** The data one **column** node carries. Every field is the column's OWN state,
- *  read off the `StageDto` the board already paints — the canvas invents nothing
- *  and edits nothing (the `StageEditor` dialog owns all eight fields). */
+ *  read off the `StageDto` the board already paints — the layout invents nothing and
+ *  edits nothing. Every one of these fields is edited by `NodeSettingsPanel`, which
+ *  reads the SAME slice this function is handed, so a node and the panel beside it
+ *  cannot disagree about a column. */
 export interface WorkflowStageNodeData extends Record<string, unknown> {
   slug: string;
   label: string;
@@ -152,41 +187,64 @@ export type WorkflowFlowNode = WorkflowStageFlowNode | WorkflowMissingFlowNode;
  *  edge — and so a test can name the edge it means. */
 export const edgeIdOf = (from: string, to: string): string => `${from}->${to}`;
 
-/** Lay the Space's columns out.
+/** The class and the inline style that mark an edge as **inferred by the graph** rather
+ *  than **drawn by a person**.
  *
- *  `columns` is the loaded slice IN THE ORDER THE STORE HOLDS IT (the board's
- *  own order, which `get_board` returns by `sort_order`). An empty slice yields
- *  an empty graph — that is the store's "this Space has no stages" state, and the
- *  canvas renders its own line for it rather than drawing a blank rectangle. */
-export function layoutWorkflowGraph(
+ *  THIS EXISTS BECAUSE THE TWO WERE PIXEL-IDENTICAL, and the difference between them is a
+ *  documented contract, not a shade of taste. `nextStepSlugs` answers the column at
+ *  `sortOrder + 1` for a `nextSlugs: null` row, so a board that predates the graph draws a
+ *  full chain — and every one of those wires was drawn exactly like a wire somebody saved.
+ *  On a `board_strict = 1` Space `NULL` permits *any* outgoing move and `["research"]`
+ *  permits only `research` (ADR 0099), and known-gaps §8 records that the flip is **not
+ *  reversible through the UI** (`[]` is not `NULL`). A person cannot guard a distinction
+ *  they cannot see, so the inferred wire is dashed and the stored one is not.
+ *
+ *  BOTH a class and a `strokeDasharray`, deliberately. xyflow puts `edge.className` on the
+ *  `<g>` wrapper AND on the `.react-flow__edge-path` (measured in the installed
+ *  `@xyflow/react@13.0.3`: the path's class is `classnames('react-flow__edge-path',
+ *  className)`), so the class is the hook a stylesheet in `index.css` can theme later; the
+ *  inline dash is what makes the wire visibly different TODAY, without depending on a sheet
+ *  that does not exist yet. A class alone would be a promise about CSS nobody has written.
+ *
+ *  `workflowGraphLayout.test.ts` asserts these two values as LITERALS rather than reading
+ *  them back from here, so renaming the class or emptying the dash reddens it. */
+export const IMPLICIT_EDGE_CLASS = "workflow-edge-implicit";
+export const IMPLICIT_EDGE_STYLE: CSSProperties = { strokeDasharray: "6 4" };
+
+/** The pair this column was HAND-ARRANGED at, or `null` for "nobody ever moved it".
+ *
+ *  THE pair rule, spelled once: BOTH coordinates must be present, so a half pair reads
+ *  as unpositioned (that is what `set_stage_position` refuses to store, and what
+ *  `StageDto.positionX` tells a reader to do if it ever finds one), and BOTH tests are
+ *  `!== null` and NOT truthiness, because `0` is a coordinate somebody pinned to an edge
+ *  and `null` is the only absence the column can hold. The canvas reads this too — the
+ *  **Tidy up** control clears exactly the nodes it answers non-`null` for. */
+export const storedPositionOf = (
+  stage: StageDto,
+): { x: number; y: number } | null =>
+  stage.positionX !== null &&
+  stage.positionX !== undefined &&
+  stage.positionY !== null &&
+  stage.positionY !== undefined
+    ? { x: stage.positionX, y: stage.positionY }
+    : null;
+
+/** Run dagre over the whole graph and answer the top-left corner per slug.
+ *
+ *  Called for EVERY node that needs a computed place, including the ones whose stored
+ *  pair will override the answer — that is what places the never-arranged columns at
+ *  sane depths RELATIVE to the arranged ones, which is the mixed case's whole point.
+ *  The ghosts go in as real nodes so a broken edge has somewhere to land.
+ *
+ *  A map and not a closure over a live dagre graph, so `layoutWorkflowGraph` can hold
+ *  ONE position lookup whose stored-first ordering is the position rule; a second way
+ *  to ask "where is this box" is exactly the second source of truth the header
+ *  disclaims. */
+function rank(
   columns: readonly StageWithTasks[],
-): WorkflowGraph {
-  const bySlug = new Map(columns.map((c) => [c.stage.slug, c]));
-  /** Every hop, in column order, deduplicated. Deduplicated because a person can
-   *  save the same slug twice into `next_slugs` — the write validates that each
-   *  entry is a real column, not that the list has no repeats — and two identical
-   *  ids in one `edges` array make xyflow render one of them and warn. */
-  const hops: { from: string; to: string }[] = [];
-  const seen = new Set<string>();
-  for (const column of columns) {
-    for (const to of nextStepSlugs(columns, column.stage)) {
-      const id = edgeIdOf(column.stage.slug, to);
-      if (to === column.stage.slug || seen.has(id)) continue;
-      seen.add(id);
-      hops.push({ from: column.stage.slug, to });
-    }
-  }
-
-  // The ghost set: a hop whose target the loaded columns cannot name. Fed to
-  // dagre as real nodes so a broken edge still gets a place on the canvas.
-  const missing = [
-    ...new Set(
-      hops
-        .map((h) => h.to)
-        .filter((slug) => !bySlug.has(slug)),
-    ),
-  ].sort();
-
+  missing: readonly string[],
+  hops: readonly { from: string; to: string }[],
+): Map<string, { x: number; y: number }> {
   const g = new dagre.graphlib.Graph();
   // `setGraph` FIRST: dagre keeps layout settings on the graph object, and
   // `layout()` reads `rankdir` from it — set it after `setNode` and the default
@@ -209,13 +267,80 @@ export function layoutWorkflowGraph(
 
   dagre.layout(g);
 
+  const out = new Map<string, { x: number; y: number }>();
   // dagre answers with the box's CENTRE; xyflow wants its top-left corner.
-  const positionOf = (slug: string): { x: number; y: number } => {
+  for (const slug of [...columns.map((c) => c.stage.slug), ...missing]) {
     const box = g.node(slug);
-    return {
+    out.set(slug, {
       x: (box?.x ?? 0) - NODE_WIDTH / 2,
       y: (box?.y ?? 0) - NODE_HEIGHT / 2,
-    };
+    });
+  }
+  return out;
+}
+
+/** Lay the Space's columns out.
+ *
+ *  `columns` is the loaded slice IN THE ORDER THE STORE HOLDS IT (the board's
+ *  own order, which `get_board` returns by `sort_order`). An empty slice yields
+ *  an empty graph — that is the store's "this Space has no stages" state, and the
+ *  canvas renders its own line for it rather than drawing a blank rectangle. */
+export function layoutWorkflowGraph(
+  columns: readonly StageWithTasks[],
+): WorkflowGraph {
+  const bySlug = new Map(columns.map((c) => [c.stage.slug, c]));
+  /** Every hop, in column order, deduplicated. Deduplicated because a person can
+   *  save the same slug twice into `next_slugs` — the write validates that each
+   *  entry is a real column, not that the list has no repeats — and two identical
+   *  ids in one `edges` array make xyflow render one of them and warn.
+   *
+   *  `implicit` records the ONE thing the drawing must not lose: whether this hop came
+   *  from the row's own list or from `nextStepSlugs`' `sortOrder + 1` fallback. It is
+   *  read off `nextSlugs === null` and NOT off "did the fallback fire", because an
+   *  unconfigured row's hop is inferred even when its target is a ghost. */
+  const hops: { from: string; to: string; implicit: boolean }[] = [];
+  const seen = new Set<string>();
+  for (const column of columns) {
+    const implicit = column.stage.nextSlugs === null;
+    for (const to of nextStepSlugs(columns, column.stage)) {
+      const id = edgeIdOf(column.stage.slug, to);
+      if (to === column.stage.slug || seen.has(id)) continue;
+      seen.add(id);
+      hops.push({ from: column.stage.slug, to, implicit });
+    }
+  }
+
+  // The ghost set: a hop whose target the loaded columns cannot name. Fed to
+  // dagre as real nodes so a broken edge still gets a place on the canvas.
+  const missing = [
+    ...new Set(
+      hops
+        .map((h) => h.to)
+        .filter((slug) => !bySlug.has(slug)),
+    ),
+  ].sort();
+
+  // EVERY node arranged ⇒ dagre's answer would be thrown away, so it is not computed.
+  // The ghost counts as un-arranged on purpose: it has no row to hold a position, so a
+  // board with a stale edge always takes the dagre branch and the ghost gets a place.
+  const everyNodeArranged =
+    columns.length > 0 &&
+    missing.length === 0 &&
+    columns.every((c) => storedPositionOf(c.stage) !== null);
+
+  /** dagre's answer per slug. EMPTY when every node is arranged — `positionOf`
+   *  consults the stored pair first, so nothing reads an empty map in that branch. */
+  const computed = everyNodeArranged
+    ? new Map<string, { x: number; y: number }>()
+    : rank(columns, missing, hops);
+
+  // The one position lookup: stored first, dagre second. This ordering IS the anti-
+  // snap-back rule — the drag writes through the store, the store echoes the pair onto
+  // the row, this re-derives, and it reads back the number it was just given.
+  const positionOf = (slug: string): { x: number; y: number } => {
+    const column = bySlug.get(slug);
+    const stored = column === undefined ? null : storedPositionOf(column.stage);
+    return stored ?? computed.get(slug) ?? { x: 0, y: 0 };
   };
 
   const nodes: WorkflowFlowNode[] = columns.map((column) => {
@@ -248,6 +373,12 @@ export function layoutWorkflowGraph(
       id: slug,
       type: MISSING_NODE_TYPE,
       position: positionOf(slug),
+      // Not a column, so no row, so no `position_x` — and the drag verb
+      // (`set_stage_position`) refuses a slug the Space does not hold. Left draggable
+      // this box would be a drag that can only fail, revert and land a sentence in the
+      // error line: the snap-back, made permanent. `false` and not absent, because the
+      // canvas-level `nodesDraggable` is what an absent flag defers to.
+      draggable: false,
       data: { slug } satisfies WorkflowMissingNodeData,
     });
   }
@@ -258,6 +389,12 @@ export function layoutWorkflowGraph(
       id: edgeIdOf(hop.from, hop.to),
       source: hop.from,
       target: hop.to,
+      // The inferred wire LOOKS inferred. See `IMPLICIT_EDGE_CLASS` for the contract
+      // this marks — a `null` column and a saved one are different Strict-mode
+      // permissions, and the canvas used to draw them identically.
+      ...(hop.implicit
+        ? { className: IMPLICIT_EDGE_CLASS, style: IMPLICIT_EDGE_STYLE }
+        : {}),
     })),
   };
 }

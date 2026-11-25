@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { PlusIcon, Settings2Icon, XIcon } from "lucide-react";
 import NewTaskDialog from "./NewTaskDialog";
-import StageEditor from "./StageEditor";
 import type { TaskCardProps } from "./TaskCard";
 import TaskDetailDialog from "./TaskDetailDialog";
 import { TaskColumn } from "./tasks/TaskColumn";
@@ -109,9 +108,26 @@ export interface TasksBoardProps {
    *  passed. `App` hands it the same `setView("workspace")` the Session rows and the
    *  `Tasks` door already use; the board does not own a view and does not start here. */
   onReturnToWorkspace?: () => void;
+  /** Open the **Workflows** canvas (`App`'s `"workflows"` view) — which is where the
+   *  board's columns are now CONFIGURED, since the canvas's settings panel became the
+   *  one editor for the stage fields and the board's own dialog was deleted with it.
+   *
+   *  NAMED FOR ITS DESTINATION, not for the door that calls it, and that is the
+   *  convention rather than a whim: `SpacesList` declares the identical callback as
+   *  `onOpenWorkflows?` and `App` hands both call sites the same
+   *  `() => setView("workflows")`. Two names for one callback across two panes is how
+   *  a reader ends up wiring one of them.
+   *
+   *  OPTIONAL on the same rule as `onReturnToWorkspace` above (the bare-`<TasksBoard />`
+   *  render sites in the tests): absent means the `Configure` door is a NO-OP rather
+   *  than a crash. The board does not own a view and does not start here. */
+  onOpenWorkflows?: () => void;
 }
 
-export default function TasksBoard({ onReturnToWorkspace }: TasksBoardProps) {
+export default function TasksBoard({
+  onReturnToWorkspace,
+  onOpenWorkflows,
+}: TasksBoardProps) {
   // The board's Space — the SELECTED one, the same field the Session list and the
   // tab strip read. Read BEFORE the `useTasks` selectors below and not after them,
   // because zustand runs a selector synchronously inside `useSyncExternalStore`
@@ -241,12 +257,6 @@ export default function TasksBoard({ onReturnToWorkspace }: TasksBoardProps) {
   // board's affordance, and a Task already created survives because the store
   // and the sessions list own it, not this flag.
   const [newTaskOpen, setNewTaskOpen] = useState(false);
-  // The **Stage editor**'s open flag, in the same place and for the same reasons as
-  // the flag above it: the dialog needs the board's column set, the board is where
-  // that set already lives, and neither survives leaving the view — which is right,
-  // because both are the board's affordances while the STAGES themselves are owned
-  // by the store and by the database, so closing this dialog loses nothing.
-  const [stageEditorOpen, setStageEditorOpen] = useState(false);
   // The **detail modal** names a CARD by id rather than holding an open flag.
   //
   // The id is the state and not a `boolean` plus a separately-stored row, for two
@@ -367,21 +377,29 @@ export default function TasksBoard({ onReturnToWorkspace }: TasksBoardProps) {
           <PlusIcon className="size-4" />
           <span>New task</span>
         </Button>
-        {/* The **Stage editor**'s door (issue #179 §8), beside `New task` and AFTER
-            it: create first, configure second. Same ghost/idle-ink recipe as its
-            neighbour so the two read as one pair of quiet header affordances rather
-            than one primary action and one loud one, and the SAME disabled rule —
-            with no Selected Space (literally no Space open) there is no column
-            set to edit, and a button that
-            opens a dialog whose every write has no target is worse than one that
-            says nothing is open.
+        {/* The **Configure** door, beside `New task` and AFTER it: create first,
+            configure second. Same ghost/idle-ink recipe as its neighbour so the two
+            read as one pair of quiet header affordances rather than one primary
+            action and one loud one, and the SAME disabled rule — with no Selected
+            Space (literally no Space open) there is no column set to edit, and a
+            button that navigates to a surface whose every write has no target is
+            worse than one that says nothing is open.
 
-            WHY THE EDITING LIVES HERE AND NOT ON THE COLUMN HEADER. A column header
-            is a flex row of spans INSIDE the drop-target `<div>` that carries
+            IT IS A NAVIGATION NOW and not a dialog. The canvas's settings panel
+            (`workflows/NodeSettingsPanel.tsx`) is the ONE editor for the stage
+            fields, so this door calls `onOpenWorkflows` — `App`'s
+            `setView("workflows")` — instead of mounting anything. The label stays
+            `Configure` rather than becoming `Open workflows`: the capability a
+            person is after is unchanged, only where it lives moved, and a door that
+            changes its name at the same moment it changes its destination is a door
+            that reads as removed.
+
+            WHY NOTHING IS EDITED ON THE BOARD ITSELF. A column header is a flex row
+            of spans INSIDE the drop-target `<div>` that carries
             `useDragCard.columnProps()`, and `draggable` inherits to children — the
             hazard `TaskCard.tsx` records for the card itself. Clicking a label to
             rename it inside a drop zone is how "the rename starts a drag" gets
-            written, so every Stage edit happens behind this button instead. */}
+            written, so every stage edit lives behind this door. */}
         <Button
           type="button"
           variant="ghost"
@@ -389,7 +407,7 @@ export default function TasksBoard({ onReturnToWorkspace }: TasksBoardProps) {
           aria-label="Configure"
           className="h-8 shrink-0 gap-2 rounded-lg px-2 text-foreground-subtle hover:bg-surface-hover hover:text-foreground"
           disabled={activeSpacePath === null}
-          onClick={() => setStageEditorOpen(true)}
+          onClick={() => onOpenWorkflows?.()}
         >
           <Settings2Icon className="size-4" />
           <span>Configure</span>
@@ -509,24 +527,6 @@ export default function TasksBoard({ onReturnToWorkspace }: TasksBoardProps) {
           onClose={() => setDetailTaskId(null)}
           onOpenSession={openSessionAndLeave}
           onLaunched={() => onReturnToWorkspace?.()}
-        />
-      )}
-
-      {/* The Stage editor (issue #179 §8), mounted from this component's flag for
-          the same reason and in the same shape as the two modals above it: it reads
-          the board's own store slice, `DialogContent` portals to `body`, and it is
-          mounted ONLY while open — a closed editor would keep a form, a catalog
-          read and a `get_board_strict` round trip alive behind the board. Its
-          `onClose` flips the flag here and nowhere else, so the flag has one owner.
-
-          The editor renders its own `IpcErrorLine` for a refused Stage write, and
-          the board's line above stays as the drag-refusal surface. Both can be live
-          at once while the dialog is up, which is why the editor's own test scopes
-          its `role="alert"` reads to the dialog. */}
-      {stageEditorOpen && (
-        <StageEditor
-          spacePath={activeSpacePath}
-          onClose={() => setStageEditorOpen(false)}
         />
       )}
 

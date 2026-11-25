@@ -613,7 +613,14 @@ function App() {
             // click reads as a visible nothing. The board is handed the SAME
             // `setView("workspace")` a Session row and the `Tasks` door already use; it
             // owns no view of its own (ADR 0095), so it is told rather than wired.
-            <TasksBoard onReturnToWorkspace={() => setView("workspace")} />
+            // `onOpenWorkflows` is the board's `Configure` door: the stage fields are
+            // edited in the canvas's settings panel now, so the door NAVIGATES here
+            // rather than mounting anything, and it is the same `setView("workflows")`
+            // the `Workflows` door in `SpacesList` is handed one arm above.
+            <TasksBoard
+              onReturnToWorkspace={() => setView("workspace")}
+              onOpenWorkflows={() => setView("workflows")}
+            />
           ) : view === "workflows" ? (
             // The **Workflows** canvas — the graph the same per-Space column set
             // forms — in place of the chat column AND the Side pane, exactly as the
@@ -627,11 +634,15 @@ function App() {
             //
             // NO `onReturnToWorkspace` here, and that is not an oversight. The board
             // needs that callback because a card's Session chip is a route TO a
-            // transcript this arm is hiding; the canvas has no such control — it is
-            // READ-ONLY, and a node click opens the Stage editor rather than a
-            // Session. Its two exits are the pane's, which the pane already owns for
-            // every view (ADR 0094/0095), so handing this arm a view callback would be
-            // an optional prop no call site inside it passes.
+            // transcript this arm is hiding. The canvas has no such control: it is an
+            // EDITOR now (ADR 0120), and what a node click opens is the node's
+            // settings in the panel beside the graph — never a Session. Its two exits
+            // are the pane's, which the pane already owns for every view
+            // (ADR 0094/0095), so handing this arm a view callback would be an
+            // optional prop no call site inside it passes. Note what this arm DOES
+            // mount: the panel's writes go through `store/tasks`, so this view mutates
+            // the same slice the board renders — `<WorkflowsCanvas />` takes no props
+            // because it needs none, not because it is inert.
             <WorkflowsCanvas />
           ) : (
             <>

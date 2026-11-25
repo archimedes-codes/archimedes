@@ -342,7 +342,7 @@ fn stage_row_from_maps_the_select_const_columns_in_order() {
         STAGE_ROW_FIELDS,
         "the SELECT built from STAGE_COLUMNS must have exactly STAGE_ROW_FIELDS columns"
     );
-    const EXPECTED_STAGE_COLUMNS: [&str; 9] = [
+    const EXPECTED_STAGE_COLUMNS: [&str; 11] = [
         "space_path",
         "slug",
         "label",
@@ -352,6 +352,8 @@ fn stage_row_from_maps_the_select_const_columns_in_order() {
         "next_slugs",
         "auto",
         "prompt_prefix",
+        "position_x",
+        "position_y",
     ];
     assert_eq!(
         STAGE_COLUMNS.as_slice(),
@@ -408,4 +410,51 @@ fn stage_row_from_maps_the_select_const_columns_in_order() {
          never derived from the column carrying a Skill"
     );
     assert_eq!(research.prompt_prefix, None, "and no column ships a prefix");
+}
+
+/// (the mapper drift guard for the two canvas coordinates) indices 9 and 10 map
+/// to `position_x` and `position_y`, on a row that ACTUALLY CARRIES both.
+///
+/// The sibling guard above can only assert the seeded row, where both are NULL —
+/// and a mapper that read index 9 as `None` for every row, or swapped the two,
+/// passes a NULL-only assertion. So this test WRITES a pair with distinct values
+/// and reads it back through `stage_row_from` on a fresh statement. The swap case
+/// is the one worth naming: `(-40.5, 0.0)` is deliberately asymmetric, so
+/// swapped indices produce a wrong answer rather than an identical one.
+#[test]
+fn stage_row_from_maps_the_two_position_columns_on_a_row_that_carries_them() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-pos-mapper-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("fresh database");
+    let space = board_space("pos-mapper");
+    db.get_board(&space).expect("seed");
+    db.set_stage_position(&space, "doing", Some((-40.5, 0.0)))
+        .expect("hand-arrange one column");
+
+    let mapped = {
+        let conn = db.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {} FROM stages WHERE space_path = ?1 AND slug = ?2",
+                STAGE_COLUMNS.join(", ")
+            ))
+            .unwrap();
+        stmt.query_row(params![space, "doing"], stage_row_from)
+            .expect("the row maps")
+    };
+
+    assert_eq!(
+        mapped.position_x,
+        Some(-40.5),
+        "index 9 is `position_x` — a swapped ladder would put the Y here"
+    );
+    assert_eq!(
+        mapped.position_y,
+        Some(0.0),
+        "index 10 is `position_y`, and `0.0` survives as a STORED coordinate \
+         rather than collapsing into `None` — the two are different answers"
+    );
+    assert_eq!(
+        mapped.slug, "doing",
+        "and the appended rungs did not shift the rungs before them"
+    );
 }

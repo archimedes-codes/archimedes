@@ -243,6 +243,70 @@ impl Db {
         stage_row_by_slug(&guard, space_path, slug)
     }
 
+    /// Set or clear this column's position on the Workflows canvas (the
+    /// hand-arranged layout): the pair of canvas coordinates a person dragged the
+    /// node to. `None` → both columns NULL (the `set_stage_skill` /
+    /// `set_stage_prompt_prefix` precedent — an arrangement a person made by
+    /// mistake has to be removable, and clearing is what hands the node back to
+    /// dagre).
+    ///
+    /// THE PARAMETER IS ONE `Option<(f64, f64)>` AND NOT TWO `Option<f64>`s, and
+    /// that single choice is the half-set rule. A node is a BOX, so half a
+    /// coordinate is a lie about where a box is: `(x, NULL)` has no honest reading,
+    /// because the canvas would have to invent the Y it does not have — the
+    /// invented-state move `stages.prompt_prefix`'s and `spaces.auto_max_steps`'s
+    /// missing `DEFAULT`s each refuse. Taking the pair as a tuple means a
+    /// half-positioned row has NO SPELLING at this layer: the type admits three
+    /// states (both set, both NULL) and the other two do not exist. The wire, which
+    /// has no tuple type, is where a half-pair CAN arrive, and
+    /// `commands/tasks.rs`'s `require_position_pair` refuses it there before this
+    /// verb is reached.
+    ///
+    /// One statement, both columns, one lock — `Db::set_auto_guards`'s shape one
+    /// table over — so a caller cannot lose one coordinate by omitting a statement.
+    ///
+    /// NO range rule and NO sanity check: whether a coordinate is sensible is the
+    /// canvas's question, not storage's. Negative values are legitimate (a node
+    /// dragged left of the dagre origin has one) and refusing a number the wire
+    /// does not forbid is storage inventing a rule — the
+    /// `set_stage_prompt_prefix` / `auto_guards` argument verbatim.
+    ///
+    /// `Some(0.0)` is a stored coordinate and `None` is not: the two are never
+    /// collapsed here, which is the same discipline the columns' missing SQL
+    /// `DEFAULT` states at the DDL.
+    pub fn set_stage_position(
+        &self,
+        space_path: &str,
+        slug: &str,
+        position: Option<(f64, f64)>,
+    ) -> Result<StageRow, BoardError> {
+        let guard = self.conn.lock().expect("db mutex poisoned");
+        // NEW panic-on-poison site (AGENTS.md's rule): it guards `Db`'s ONE shared
+        // `rusqlite::Connection`, a single resource a panic mid-transaction can
+        // leave genuinely unusable — so it panics rather than recovering, the same
+        // discriminator every sibling verb in this file applies.
+        // Refuse before the write — the reason `set_stage_skill` and
+        // `set_stage_auto` give: a zero-row `UPDATE` is a silent 0, and "which
+        // slug did I mistype" is the question the canvas is asking when its drag
+        // lands on a column that has since been deleted.
+        if !stage_slug_exists(&guard, space_path, slug)? {
+            return Err(missing_stage(&guard, space_path, slug));
+        }
+        // The tuple is destructured into the two bound parameters HERE, which is
+        // the one place the pair is ever split — after this line they are two
+        // columns of one row again, and they were written together.
+        let (x, y) = match position {
+            Some((x, y)) => (Some(x), Some(y)),
+            None => (None, None),
+        };
+        guard.execute(
+            "UPDATE stages SET position_x = ?3, position_y = ?4 \
+             WHERE space_path = ?1 AND slug = ?2",
+            params![space_path, slug, x, y],
+        )?;
+        stage_row_by_slug(&guard, space_path, slug)
+    }
+
     /// Rewrite the manual order of one Space's columns in ONE transaction.
     ///
     /// The FOURTH instance of this verb — `reorder_spaces`, `reorder_sessions`,

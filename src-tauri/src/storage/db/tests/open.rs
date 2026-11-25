@@ -1,11 +1,11 @@
-//! Tests for what `db/mod.rs` keeps: `Db::open` and its seventeen migration gates,
+//! Tests for what `db/mod.rs` keeps: `Db::open` and its nineteen migration gates,
 //! `SCHEMA`, `LAST_ACTIVITY`, `set_journal_pragmas`.
 //!
 //! The mirror (ADR 0113) gives every production sibling a test child of the same
 //! name; this child is the one that mirrors the PARENT, because `open`, `gate`,
 //! `SCHEMA` and `LAST_ACTIVITY` stay in `mod.rs` — the gate-count pin
 //! (`the_three_task_tables_are_in_schema_and_have_no_gate_entry`) reads this
-//! parent's source text and counts the seventeen gates inside `open`, so moving them
+//! parent's source text and counts the nineteen gates inside `open`, so moving them
 //! would move the pin's premise.
 
 use crate::storage::db::*;
@@ -427,6 +427,15 @@ fn title_stage_migrates_existing_titled_sessions_to_stage_2_and_untitled_to_0() 
     let dir = crate::test_support::ScratchDir::in_env_temp("db-title-mig-test-", "scratch");
     let path = dir.join("t.db");
     // A pre-existing database: the `sessions` table WITHOUT `title_stage`.
+    //
+    // IT NOW OMITS EXACTLY ONE GATED COLUMN, and that is a fix this branch made.
+    // The fixture used to stop at `sort_order` and carry no `parent_session_id`,
+    // so `Db::open` ran the `sessions.parent_session_id` gate inside a test about
+    // TITLING — the isolation collapse `each_cluster_schema_omits_exactly_one_gated_column`
+    // exists to catch, and invisible there because that pin only walks the
+    // `SCHEMA_WITHOUT_*` cluster fixtures while this one is inline. The assertions
+    // below never noticed: an added NULL column changes nothing they read. The
+    // column is here now so this test observes its own gate.
     let conn = Connection::open(&path).unwrap();
     conn.execute_batch(
         "CREATE TABLE sessions (
@@ -440,7 +449,8 @@ fn title_stage_migrates_existing_titled_sessions_to_stage_2_and_untitled_to_0() 
             is_subagent INTEGER NOT NULL DEFAULT 0,
             todos_json TEXT,
             cost_usd REAL,
-            sort_order INTEGER NOT NULL DEFAULT 0
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            parent_session_id TEXT
         );
         INSERT INTO sessions (id, cwd, created_at, title, capabilities_json)
         VALUES ('s-titled', '/tmp', 1, 'Pre-existing Title', '{}');
@@ -786,15 +796,222 @@ fn parent_session_id_column_migration_on_a_preexisting_db() {
     );
 }
 
+/// (the two hand-position gates) a pre-existing database whose `stages` table
+/// predates BOTH canvas columns must open CLEANLY, and every pre-existing column
+/// must read `None` for both — and BOTH columns must arrive with NO SQL `DEFAULT`.
+///
+/// `None` — not `0` — is the load-bearing half, and it is
+/// `the_auto_max_steps_gate_arrives_null_on_a_preexisting_space`'s argument moved
+/// from a spend bound to a screen coordinate: `NULL` means "this column was never
+/// hand-arranged, so the canvas lays it out with dagre", which is the state every
+/// row in every existing database is in. A `DEFAULT 0` would migrate all of them
+/// into "hand-placed at the origin", so the first canvas open after an upgrade
+/// would stack every node in the user's workflow at (0, 0) and bypass dagre for
+/// all of them — a layout nobody arranged, which is the phantom-`$0.00` shape
+/// (ADR 0082) wearing a coordinate. `0.0` is a CONFIGURED answer ("pinned to the
+/// top edge") and must never arrive by migration.
+///
+/// `dflt_value` is pinned DIRECTLY, because the `None` assertions would also pass
+/// under a `DEFAULT` someone later "improves". Both gates are exercised in one
+/// test through a loop rather than two tests because the two columns are one
+/// decision (a node's position) and the claim about them is identical; the loop
+/// opens each fixture as its OWN database, so each open still observes exactly one
+/// gate (the isolation `each_cluster_schema_omits_exactly_one_gated_column` pins).
+#[test]
+fn both_position_gates_arrive_null_on_a_preexisting_board() {
+    for (fixture, column) in [
+        (SCHEMA_WITHOUT_STAGES_POSITION_X, "position_x"),
+        (SCHEMA_WITHOUT_STAGES_POSITION_Y, "position_y"),
+    ] {
+        let dir = crate::test_support::ScratchDir::in_env_temp("db-position-gate-", "scratch");
+        let space = format!("/board-space/position-gate-{column}");
+        let path = preexisting_db(
+            &dir,
+            fixture,
+            &format!(
+                "INSERT INTO spaces (path, created_at, last_opened_at, trusted, sort_order) \
+                 VALUES ('{space}', 1, 1, 0, 0);\n\
+                 INSERT INTO stages (space_path, slug, label, sort_order) VALUES \
+                   ('{space}','backlog','Backlog',0),\
+                   ('{space}','doing','Doing',1);\n"
+            ),
+        );
+
+        {
+            let db = Db::open(&path).expect("the position gate runs on open");
+            let default_value: Option<String> = db
+                .conn
+                .lock()
+                .expect("db mutex poisoned")
+                .query_row(
+                    &format!(
+                        "SELECT dflt_value FROM pragma_table_info('stages') \
+                         WHERE name = '{column}'"
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("pragma_table_info should read");
+            assert_eq!(
+                default_value, None,
+                "`{column}` has NO column DEFAULT — 0 is a hand-placed coordinate \
+                 and must not arrive by migration"
+            );
+
+            let stages = db.list_stages(&space).expect("list_stages");
+            assert_eq!(stages.len(), 2, "the two pre-existing rows survived");
+            assert!(
+                stages
+                    .iter()
+                    .all(|s| s.position_x.is_none() && s.position_y.is_none()),
+                "every migrated column reads BOTH coordinates as None — an \
+                 upgraded board has nothing hand-arranged, so dagre still owns it; \
+                 got {:?}",
+                stages
+                    .iter()
+                    .map(|s| (s.slug.clone(), s.position_x, s.position_y))
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        // A SECOND open of the already-migrated file is a clean no-op (the
+        // `pragma_table_info` probe skips the `ALTER`) and nothing flipped.
+        let db = Db::open(&path).expect("a re-open of the migrated db must succeed");
+        assert!(
+            db.list_stages(&space)
+                .expect("list_stages")
+                .iter()
+                .all(|s| s.position_x.is_none() && s.position_y.is_none()),
+            "the gate ran once, not twice"
+        );
+    }
+}
+
+/// Derive the `(table, column)` surface `Db::open` ACTUALLY gates, by parsing the
+/// `gate(&mut conn, "table", "column"` call sites out of the parent's own text.
+///
+/// WHY THIS EXISTS. `each_cluster_schema_omits_exactly_one_gated_column` below
+/// carries a hand-maintained `GATED` list, and until this function existed the
+/// ONLY thing tying that list to the code was a bare
+/// `assert_eq!(source.matches("gate(&mut conn, ").count(), 19)` in the sibling
+/// pin. A count of the CALL PREFIX cannot see the table or the column, so both
+/// failure directions were green at once: `GATED` could name a column no gate
+/// probes, and a 20th gate could arrive on a column `GATED` never lists, and the
+/// two numbers still agreed. This function turns the count into a DERIVATION —
+/// the set is parsed from the source, so a gate and its `GATED` entry can no
+/// longer disagree silently. AGENTS.md's rule is the reason: a guard that passes
+/// vacuously is decoration.
+///
+/// THE INSTRUMENT is the same literal the table-ban loop in
+/// [`the_three_task_tables_are_in_schema_and_have_no_gate_entry`] already
+/// searches for (`gate(&mut conn, "{table}"`), so it is an instrument this file
+/// has already proven it can use, not a new one. Its shape is deliberately
+/// STRICT: after the table's closing quote the text MUST begin `, "` — a gate
+/// written with a different spelling (a named argument, a line break, a
+/// `conn` under another name) PANICS here rather than being skipped, because a
+/// parser that waves through what it cannot read is exactly the vacuous guard
+/// this replaced. The cluster pin additionally asserts the derived count equals
+/// the plain call-prefix count, which is what proves the parser saw EVERY call
+/// site rather than a prefix of them.
+fn gated_columns_in_open_source() -> Vec<(&'static str, &'static str)> {
+    // `include_str!` yields `&'static str`, so every slice below is `'static` too
+    // and the returned Vec can outlive the parse.
+    let source: &'static str = include_str!("../mod.rs");
+    const CALL: &str = "gate(&mut conn, \"";
+    let mut found: Vec<(&'static str, &'static str)> = Vec::new();
+    let mut rest = source;
+    while let Some(at) = rest.find(CALL) {
+        let after_table = &rest[at + CALL.len()..];
+        let table_end = after_table.find('"').expect(
+            "a `gate(&mut conn, \"` call must be followed by a table name and its closing quote",
+        );
+        let table = &after_table[..table_end];
+        let after_table_name = &after_table[table_end + 1..];
+        assert!(
+            after_table_name.starts_with(", \""),
+            "the gate on `{table}` is not spelled `gate(&mut conn, \"{table}\", \
+             \"column\", …)` — this parser refuses to SKIP a call shape it cannot \
+             read, because a skipped call site is a gated column no assertion sees"
+        );
+        // `, "` is THREE characters (comma, space, quote) — slicing at 2 would
+        // leave the opening quote on the column and parse every column as `""`.
+        let after_column_quote = &after_table_name[3..];
+        let column_end = after_column_quote
+            .find('"')
+            .expect("the column name must be a quoted literal closed with `\"`");
+        let column = &after_column_quote[..column_end];
+        found.push((table, column));
+        rest = &after_column_quote[column_end + 1..];
+    }
+    found
+}
+
 /// Isolation is these fixtures' load-bearing property, so it is ASSERTED rather
 /// than commented: each `SCHEMA_WITHOUT_*` must omit EXACTLY ONE gated column
 /// across both tables and carry every other one. If a fixture silently
 /// loses a second column, the sibling gate fires inside that test and the test
 /// stops being about its own gate — this fails first, with the fixture named.
+///
+/// THE `GATED` LIST IS PROVEN, NOT TRUSTED. It is asserted to be SET-EQUAL to
+/// the gates [`gated_columns_in_open_source`] parses out of `db/mod.rs`, so this
+/// test's denominator IS `Db::open`'s real migration surface. See that function
+/// for why a bare count could not do this job.
+///
+/// WHAT THIS TEST DOES **NOT** CLAIM, and that narrowing is deliberate. It walks
+/// the fifteen `SCHEMA_WITHOUT_*` fixtures and asserts each omits exactly one
+/// gated column; it does NOT assert that every gated column has a fixture here.
+/// Four columns in `GATED` have no `SCHEMA_WITHOUT_*` string, and each was
+/// checked by measurement rather than assumed — three are covered by a dedicated
+/// legacy-database test elsewhere and one was an actual hole, now closed:
+///
+///   * `sessions.todos_json` — its gate's DATA STEP is the whole subject of two
+///     dedicated tests in [`super::migrations`]
+///     (`legacy_db_migration_backfills_newest_non_read_todos_once` and
+///     `legacy_db_migration_backfills_both_manage_todo_list_and_manage_checklist`),
+///     each building a legacy `sessions` table with `todos_json` absent and
+///     asserting the backfill's outcome and its run-once behaviour. Those
+///     fixtures are NOT isolated (they are a genuinely old shape and omit several
+///     gated columns at once), and they stay that way on purpose: `support.rs`'s
+///     header records that a migration fixture wanting several gates to fire
+///     together is the one legitimate multi-omission shape, and the ADR 0093 pins
+///     are not this pin's to re-cut.
+///   * `sessions.title_stage` — dedicated test
+///     (`title_stage_migrates_existing_titled_sessions_to_stage_2_and_untitled_to_0`
+///     above), whose inline fixture was **fixed by this change** to carry
+///     `parent_session_id TEXT`, because it previously omitted TWO gated columns
+///     and so ran the `parent_session_id` gate inside a test about titling. It
+///     now omits exactly one, which is what the isolation rule asks.
+///   * `spaces.trusted` — dedicated legacy probe in the integration target
+///     `src-tauri/tests/storage.rs::spaces_trusted_column_fresh_and_migrated`,
+///     which builds the OLD three-column `spaces` table, opens `Db`, and asserts
+///     the migrated row reads `trusted = false` and that a third open is a
+///     no-op. That fixture is non-isolated (a three-column `spaces` runs every
+///     `spaces` gate), and a unit twin would duplicate an assertion that already
+///     exists and already names its column — so the honest record is "covered,
+///     outside the cluster", not a second fixture.
+///   * `sessions.is_subagent` — **this one was a real hole and it is closed.**
+///     Measured: no test asserted anything about this gate's outcome on a legacy
+///     database; the column was merely ABSENT from several other fixtures'
+///     `CREATE TABLE sessions`, so the `ALTER` ran as an unasserted side effect of
+///     someone else's test. It now has `SCHEMA_WITHOUT_IS_SUBAGENT` in
+///     [`super::support`] — in the cluster list below, so this pin's isolation
+///     assertion covers it — and
+///     `the_is_subagent_gate_arrives_zero_for_every_pre_existing_session` in
+///     [`super::migrations`], beside the other data-step migration tests.
+///
+/// The asymmetry that survives is therefore stated rather than hidden: the
+/// cluster list is the set of gates whose fixture's ONLY job is the gate, and the
+/// four columns above are the gates whose probe is a bigger test's subject. What
+/// is no longer possible is the thing that was possible before — a gated column
+/// with no legacy-database probe anywhere, discovered only when someone shipped a
+/// migration bug.
 #[test]
 fn each_cluster_schema_omits_exactly_one_gated_column() {
-    // (table, column) for every gate `Db::open` probes, in probe order.
-    const GATED: [(&str, &str); 17] = [
+    // (table, column) for every gate `Db::open` probes, in probe order. THE ORDER
+    // IS DOCUMENTATION ONLY — the assertion below sorts both sides, so a reordered
+    // `gate` call in `db/mod.rs` does not redden this test and a renamed or added
+    // column does.
+    const GATED: [(&str, &str); 19] = [
         ("spaces", "trusted"),
         ("sessions", "archived"),
         ("sessions", "context_usage_json"),
@@ -812,10 +1029,13 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
         ("sessions", "parent_session_id"),
         ("spaces", "auto_max_steps"),
         ("spaces", "auto_ceiling_usd"),
+        ("stages", "position_x"),
+        ("stages", "position_y"),
     ];
-    let fixtures: [(&str, &str); 13] = [
+    let fixtures: [(&str, &str); 16] = [
         ("SCHEMA_WITHOUT_ARCHIVED", SCHEMA_WITHOUT_ARCHIVED),
         ("SCHEMA_WITHOUT_CONTEXT_USAGE", SCHEMA_WITHOUT_CONTEXT_USAGE),
+        ("SCHEMA_WITHOUT_IS_SUBAGENT", SCHEMA_WITHOUT_IS_SUBAGENT),
         ("SCHEMA_WITHOUT_COST_USD", SCHEMA_WITHOUT_COST_USD),
         (
             "SCHEMA_WITHOUT_PARENT_SESSION_ID",
@@ -841,6 +1061,14 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
         (
             "SCHEMA_WITHOUT_STAGES_PROMPT_PREFIX",
             SCHEMA_WITHOUT_STAGES_PROMPT_PREFIX,
+        ),
+        (
+            "SCHEMA_WITHOUT_STAGES_POSITION_X",
+            SCHEMA_WITHOUT_STAGES_POSITION_X,
+        ),
+        (
+            "SCHEMA_WITHOUT_STAGES_POSITION_Y",
+            SCHEMA_WITHOUT_STAGES_POSITION_Y,
         ),
         (
             "SCHEMA_WITHOUT_SPACES_BOARD_STRICT",
@@ -880,6 +1108,52 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
              stay silent; it omits {missing:?}"
         );
     }
+
+    // ── THE DERIVATION: `GATED` is `Db::open`'s gate surface, not a list that
+    //    happens to have the right length ────────────────────────────────────
+    //
+    // Three assertions, each closing one of the holes the bare count left open.
+    let derived = gated_columns_in_open_source();
+
+    // (1) The parser saw EVERY call site. `matches(…).count()` counts the literal
+    // call prefix; this counts what the parser could actually read a table and a
+    // column out of. If the two disagree, a gate is spelled in a shape the parser
+    // did not understand — and (2) alone could then still pass, because a `GATED`
+    // entry that was never parsed simply would not be in `derived`. So this is the
+    // arm that makes (2) mean "every gate", not "the gates the parser liked".
+    let call_sites = include_str!("../mod.rs")
+        .matches("gate(&mut conn, ")
+        .count();
+    assert_eq!(
+        derived.len(),
+        call_sites,
+        "the parser read {} `(table, column)` tuples but the source holds {} \
+         `gate(&mut conn, ` call sites — a gate in an unreadable shape is a gated \
+         column no assertion in this file sees",
+        derived.len(),
+        call_sites,
+    );
+
+    // (2) SET EQUALITY, both directions, after sorting (a `gate` reordered within
+    // `Db::open` must not redden this; a column renamed, added or removed must).
+    // Sorting also puts a DUPLICATE gate on the same column adjacent to its twin,
+    // so a double gate on one column reddens here too — the two lists differ in
+    // length and the printed diff shows the repeated pair. No separate
+    // duplicate-detection arm is asserted: this one already fires first on that
+    // input, and a guard that cannot be the thing that goes red is decoration.
+    let mut want: Vec<(&str, &str)> = GATED.to_vec();
+    let mut got = derived.clone();
+    want.sort_unstable();
+    got.sort_unstable();
+    assert_eq!(
+        got, want,
+        "`GATED` (the SECOND list) and the gates parsed out of `db/mod.rs` (the \
+         FIRST) disagree — an entry in the FIRST list is a gate no fixture in this \
+         file can be built for (add the `SCHEMA_WITHOUT_*` fixture AND its \
+         dedicated test, then update `GATED`), and an entry only in the SECOND \
+         names a column no gate probes. A repeated pair is a gate that fires twice \
+         on one column."
+    );
 }
 
 /// (the schema guard, and the `gate()` rule) the board tables ride the
@@ -922,7 +1196,7 @@ fn the_three_task_tables_are_in_schema_and_have_no_gate_entry() {
     // table of some other shape, which it never did — and it would make
     // `each_cluster_schema_omits_exactly_one_gated_column`'s fixtures lie, so
     // this is the guard that keeps that test honest.
-    // Re-pointed at the PARENT's own text by the ADR 0113 split: all seventeen
+    // Re-pointed at the PARENT's own text by the ADR 0113 split: all nineteen
     // `gate(&mut conn, …)` calls live inside `Db::open`, and `open` is what
     // `db/mod.rs` kept, so the parent is still the file whose gate surface this
     // counts. `migrations.rs` holds the three gate DATA STEPS and calls no gate.
@@ -936,18 +1210,18 @@ fn the_three_task_tables_are_in_schema_and_have_no_gate_entry() {
              `gate(` call ({gated})"
         );
     }
-    // And the gate surface is still exactly the seventeen additive columns: the 9
-    // pre-#179 gates plus `stages.on_enter_skill`, `stages.next_slugs`,
-    // `spaces.board_strict`, `sessions.parent_session_id`, the two workflow
-    // columns `stages.auto` and `stages.prompt_prefix`, and the two per-Space
-    // auto-chain guards `spaces.auto_max_steps` and `spaces.auto_ceiling_usd`.
-    assert_eq!(
-        source.matches("gate(&mut conn, ").count(),
-        17,
-        "the 17 gates are the whole migration surface; a NEW TABLE (as opposed to a
-         new column on an existing one) must not add an 18th, and no gate may ever \
-         name `tasks`, `task_sessions`, `task_artifacts` or `workflow_runs`"
-    );
+    // The gate SURFACE's size is no longer asserted here. It used to be
+    // `assert_eq!(source.matches("gate(&mut conn, ").count(), 19)`, and that was
+    // the bare count [`gated_columns_in_open_source`] replaced: a count of the
+    // call PREFIX cannot see a table or a column, so it agreed with a `GATED`
+    // list that named the wrong columns. It is now derived — set-equal to `GATED`
+    // and cross-checked against the same call-prefix count — in
+    // [`each_cluster_schema_omits_exactly_one_gated_column`], which is the one
+    // place the number lives. Asserting 19 twice would mean a legitimate 20th
+    // gate needs two coordinated edits and would put a rot-prone literal back into
+    // the file this change was meant to take it out of. What this test owns, and
+    // keeps, is the QUALITATIVE ban above: whatever the count turns out to be, no
+    // gate may name a table that arrives whole from `SCHEMA`.
 }
 
 /// (no FK on `space_path`, pinned from the DDL) the two board tables keyed by a

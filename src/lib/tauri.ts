@@ -296,6 +296,14 @@ export {
   // answers for.
   setStageAuto,
   setStagePromptPrefix,
+  // (the Workflows canvas) The third per-COLUMN field and the third wrapper of the
+  // same shape: the node's hand-arranged position. It enters `TAURI_RUNTIME_API`
+  // AND `TAURI_PUBLIC_API` in this commit and adds no TYPE name — it answers the
+  // already-pinned `StageDto`, which GAINS `positionX`/`positionY` here (the
+  // `auto`/`promptPrefix` precedent immediately above). It takes BOTH coordinates
+  // in one call and refuses a half pair, so the wrapper has no "move one axis" arm
+  // and the canvas cannot paint half a node.
+  setStagePosition,
   // (the workflow graph) The two per-SPACE auto-chain guards — the `Strict
   // workflow` pair's twin (a `void` write, and a read that seeds the editor).
   // `setAutoGuards` adds no TYPE name and `getAutoGuards` adds exactly ONE,

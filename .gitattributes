@@ -1,0 +1,48 @@
+# Line endings are DECIDED, not left to each checkout.
+#
+# Every blob in this repository is stored with LF (verified: `git grep -c $'\r' HEAD`
+# over `*.rs *.ts *.tsx *.css` returns nothing) and `core.autocrlf` is unset. Git's
+# default for `text=auto` on Windows is to hand the WORKING TREE CRLF anyway, so a
+# Windows checkout is the only place these files ever carry `\r` — and CI's
+# `windows-latest` leg is the only place that is ever observed.
+#
+# This is not cosmetic here, because the suite CONTAINS TESTS THAT READ SOURCE TEXT.
+# Twenty `include_str!` sites scan the compiled-in source for structure, and two of
+# them delimit a function body with `find("\n}\n")`. On a CRLF checkout that line is
+# `\r\n}\r\n`, the needle can never match, and `.expect(…)` panics — which is how
+# `main` went red on Windows at `12854f94` with no product defect anywhere. The
+# frontend does the same thing with `readFileSync` + `.split("\n")`
+# (`layerBoundary.test.ts`, `mutedCaption.test.ts`, `tauriBarrel.test.ts`); those
+# survived only because `cargo test` fails fast BEFORE `pnpm test` gets to run on
+# that leg, so they are a latent second wave, not a clean set.
+#
+# `eol=lf` is also what protects `scripts/*.sh`: a CRLF shebang does not execute on
+# Linux, and the `Shell scripts` CI job would fail from nothing but an editor setting
+# on a contributor's machine.
+#
+# Why NOT the alternative. Normalising inside the tests
+# (`source.replace("\r\n", "\n")`) fixes the two that happen to panic today and
+# leaves the other eighteen reading CRLF silently. Worse, the `split("…").next()`
+# shape among them does not panic when its delimiter is missing — it returns the REST
+# OF THE FILE, measured: a 30-char body becomes 54 and an occurrence count goes 1→2 —
+# so it would keep passing while quietly asserting about the whole module instead of
+# the function it names. Fixing the checkout fixes all twenty at once and cannot
+# drift.
+#
+# No file in this repository wants CRLF: `git ls-files` holds no `.bat`, `.cmd`, or
+# `.ps1`. If one is ever added it needs its own explicit `eol=crlf` line.
+* text=auto eol=lf
+
+# Declared explicitly rather than left to the `text=auto` heuristic, so a future
+# binary that happens to look textual cannot be line-ending-mangled.
+*.png binary
+*.xcf binary
+
+# Text, named so the intent survives a heuristic change.
+*.svg text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.rs text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.sh text eol=lf

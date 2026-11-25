@@ -12,7 +12,7 @@
 //! Module path spells `crate::commands::tasks::`, not `super::`: `super` here is
 //! `tests`, not `tasks`.
 
-use crate::commands::tasks::{board_call, db_call, stage_slug_from_label};
+use crate::commands::tasks::{board_call, db_call, require_position_pair, stage_slug_from_label};
 use crate::storage::{Db, DbError};
 
 /// (spec §5) the label→slug derivation: lowercase, runs of anything outside
@@ -351,18 +351,20 @@ fn the_relocation_does_not_call_move_task() {
     );
 }
 
-/// (the file's registration claim) all ten Stage commands are in
+/// (the file's registration claim) all ELEVEN Stage commands are in
 /// `lib.rs`'s `generate_handler!` list, inside the board block. `seed.rs` pins
 /// this shape for `start_task_session`, [`super::workflows`] pins it for the two
 /// auto-guard commands AND the three `workflow_runs` commands, and the claim
 /// `commands/tasks.rs`'s header makes ("TWENTY-SIX commands", measured against the
 /// `#[tauri::command]` count) is
 /// only true if every name is actually wired — a missing entry is a command the
-/// webview cannot reach and no Rust test would notice. This pin stays at TEN
+/// webview cannot reach and no Rust test would notice. This pin stays at the Stage
 /// names on purpose: it is named for the Stage commands, and widening it to cover
-/// unrelated verbs would make its own name a lie.
+/// unrelated verbs would make its own name a lie. `set_stage_position` joins the
+/// list because it edits the `stages` row like the ten before it; the canvas that
+/// drags a node is its caller.
 #[test]
-fn the_ten_stage_commands_are_registered_in_the_invoke_handler() {
+fn the_eleven_stage_commands_are_registered_in_the_invoke_handler() {
     let lib = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
         .expect("src/lib.rs reads");
     for command in [
@@ -372,6 +374,7 @@ fn the_ten_stage_commands_are_registered_in_the_invoke_handler() {
         "commands::tasks::set_stage_next",
         "commands::tasks::set_stage_auto",
         "commands::tasks::set_stage_prompt_prefix",
+        "commands::tasks::set_stage_position",
         "commands::tasks::reorder_stages",
         "commands::tasks::delete_stage",
         "commands::tasks::set_board_strict",
@@ -384,8 +387,8 @@ fn the_ten_stage_commands_are_registered_in_the_invoke_handler() {
         );
     }
 }
-/// (the wire shape `src/lib/tauri/types.ts` mirrors) the two workflow fields
-/// `StageRow` carries serialise with camelCase keys, inside all NINE.
+/// (the wire shape `src/lib/tauri/types.ts` mirrors) the workflow and canvas
+/// fields `StageRow` carries serialise with camelCase keys, inside all ELEVEN.
 ///
 /// `StageRow` was serialised by NO test at all before this one, and the two fields
 /// the workflow-graph work added are the ones the board renders and the chain
@@ -396,6 +399,12 @@ fn the_ten_stage_commands_are_registered_in_the_invoke_handler() {
 /// while `promptPrefix` becomes `undefined`, so a column's extra prompt silently
 /// stops reaching the Session it configures. `StageDto` in types.ts is the mirror
 /// this pins.
+///
+/// The two canvas coordinates join the same pin for the same reason and one of
+/// their own: `positionX`/`positionY` are the pair the canvas reads BEFORE it runs
+/// dagre, so a key that arrives as `position_x` is read as `undefined` and the
+/// node silently snaps back to the computed layout — a drag that visibly fails to
+/// persist, which is the exact defect this feature exists to fix.
 ///
 /// The whole object is asserted, following the row pin above: a `contains`-style
 /// check would pass while the sibling keys carried the wrong spelling.
@@ -414,6 +423,11 @@ fn the_stage_row_serialises_with_the_camel_case_keys_the_ts_mirror_declares() {
         .expect("set_stage_auto");
     db.set_stage_prompt_prefix(space, "doing", Some("carry the spec forward"))
         .expect("set_stage_prompt_prefix");
+    // And BOTH coordinates, on the asymmetric pair `-40.5`/`0.0`: a swapped ladder
+    // or a key that arrives snake_cased cannot survive an asymmetric value, and
+    // `0.0` proves a stored zero serialises as `0` rather than dropping out.
+    db.set_stage_position(space, "doing", Some((-40.5, 0.0)))
+        .expect("set_stage_position");
 
     let row = db
         .list_stages(space)
@@ -434,20 +448,23 @@ fn the_stage_row_serialises_with_the_camel_case_keys_the_ts_mirror_declares() {
             "nextSlugs",
             "onEnter",
             "onEnterSkill",
+            "positionX",
+            "positionY",
             "promptPrefix",
             "slug",
             "sortOrder",
             "spacePath",
         ],
-        "EXACTLY the nine camelCase keys the mirror declares — `auto` and \
-         `promptPrefix` are the two the workflow-graph work added, and a dropped \
-         `rename_all` would deliver `prompt_prefix`, which the launch path reads \
-         as `undefined` and drops"
+        "EXACTLY the eleven camelCase keys the mirror declares — `auto` and \
+         `promptPrefix` are the two the workflow-graph work added, `positionX` and \
+         `positionY` the two the canvas adds, and a dropped `rename_all` would \
+         deliver `prompt_prefix` / `position_x`, both of which the reader sees as \
+         `undefined` and drops"
     );
     assert_eq!(
         object.len(),
-        9,
-        "exactly the nine — a tenth is a field nothing reads"
+        11,
+        "exactly the eleven — a twelfth is a field nothing reads"
     );
     assert_eq!(
         object["auto"],
@@ -459,6 +476,17 @@ fn the_stage_row_serialises_with_the_camel_case_keys_the_ts_mirror_declares() {
         object["promptPrefix"],
         serde_json::json!("carry the spec forward"),
         "and the prompt arrives under the camelCase key the launch path reads"
+    );
+    assert_eq!(
+        object["positionX"],
+        serde_json::json!(-40.5),
+        "`positionX` is a JSON number under the camelCase key the canvas reads"
+    );
+    assert_eq!(
+        object["positionY"],
+        serde_json::json!(0.0),
+        "and a stored `0.0` arrives as `0` — it is a coordinate a person placed, \
+         not an absent value, so it must NOT serialise as `null` or drop out"
     );
 
     // The `null` arms of the two nullable workflow-adjacent fields are PRESENT and
@@ -490,5 +518,123 @@ fn the_stage_row_serialises_with_the_camel_case_keys_the_ts_mirror_declares() {
         serde_json::json!(false),
         "and a fresh column defaults to NOT auto-advancing — the compatibility \
          rule: adding the capability must not make an existing board move anything"
+    );
+    // The pair's `null` arms, and these two are the UPGRADE case: every column in
+    // every pre-canvas database arrives here, and the canvas branches on exactly
+    // this pair to decide "run dagre for this node". An absent key and a `null`
+    // read the same in JS, but the mirror declares them REQUIRED (`number | null`,
+    // not `number?`), so the key must be there — the same argument
+    // `nextSlugs`'s arm above makes about `[]` versus `null`.
+    assert!(
+        bare.contains_key("positionX") && bare["positionX"].is_null(),
+        "`null` positionX is present-and-null — NEVER hand-arranged, so dagre \
+         lays this node out; got {:?}",
+        bare.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        bare.contains_key("positionY") && bare["positionY"].is_null(),
+        "and `null` positionY arrives present-and-null beside it — a half-pair on \
+         the wire would mean a node at a known X and an unknown Y, which is the \
+         state `require_position_pair` refuses and no row may hold"
+    );
+}
+
+/// (the pair arrives together, or not at all) the wire's half-set refusal, at the
+/// one door where a half-pair is expressible.
+///
+/// JSON has no tuple type, so the command takes two `Option<f64>`s and four
+/// combinations arrive; two of them are positions and two are lies. `Some(x),
+/// None` is a node at a known X and an unknown Y — the renderer would have to
+/// invent a Y, which is the invented-state move this repo refuses at every
+/// nullable column's missing SQL `DEFAULT`. `(None, None)` is honest and is the
+/// clear.
+///
+/// `require_position_pair` is a pure function, so the refusal is pinned directly
+/// rather than through `board_call`: `tauri::State` cannot be built in a unit test
+/// (the header's reason), and unlike the delegations this check has no storage
+/// call to stand behind — it runs BEFORE the hop, so there is no `BoardError` in
+/// its path at all.
+#[test]
+fn a_half_set_stage_position_is_refused_at_the_wire_naming_both_values() {
+    // The two honest combinations.
+    assert_eq!(
+        require_position_pair(Some(1.5), Some(-2.0)),
+        Ok(Some((1.5, -2.0)))
+    );
+    assert_eq!(require_position_pair(None, None), Ok(None));
+
+    for (x, y) in [(Some(1.5), None), (None, Some(-2.0))] {
+        let err =
+            require_position_pair(x, y).expect_err("a half-set pair is refused — a node is a BOX");
+        let message = err.to_string();
+        assert!(
+            message.contains("BOTH") && message.contains("NEITHER"),
+            "the sentence states the rule it refused, got `{message}`"
+        );
+        // BOTH halves are echoed AS THEY ARRIVED, `None` included: the caller is a
+        // canvas mid-drag, and the whole point of the refusal is that it does not
+        // know which half it lost — a message that printed only the present value
+        // would leave it guessing (the `require_artifact_key` rule: rejects, never
+        // cleans, because the caller is the only party that can fix it).
+        assert!(
+            message.contains(&format!("x={x:?}")) && message.contains(&format!("y={y:?}")),
+            "the refusal names BOTH coordinates as they arrived, got `{message}`"
+        );
+        assert_eq!(
+            err.kind(),
+            "other",
+            "the pair's refusal rides `other`: nothing branches on a wire `kind` \
+             it does not already handle, and `agent/errors.rs` is baselined at \
+             exactly its code-line count — a new kind costs a ledger diff this \
+             change has no business making. `store/tasks.ts` reverts on ANY kind."
+        );
+    }
+}
+
+/// (the command's signature IS the `Db` verb's, not an improvement on it) every
+/// spelling in the new command's parameter list is a fact the canvas is written
+/// against and none is checked by a compiler on either side of the wire — the
+/// [`super::workflows`] structure-pin idiom, for the same reason and with the same
+/// delimiter (`the run_commands' signatures…`'s note: the block ends at the
+/// function's OWN `}`, because a neighbour's doc comment is prose about a
+/// different verb).
+#[test]
+fn set_stage_position_command_signature_matches_the_db_verb_it_delegates_to() {
+    let source = include_str!("../../tasks.rs");
+    let start = source
+        .find("pub async fn set_stage_position(")
+        .expect("`set_stage_position` is defined in commands/tasks.rs");
+    let rest = &source[start..];
+    let end = rest
+        .find("\n}\n")
+        .expect("the function's own closing brace delimits the block");
+    let block = &rest[..end];
+
+    for spelling in [
+        "space_path: String",
+        "slug: String",
+        "x: Option<f64>",
+        "y: Option<f64>",
+        "Result<StageRow, TasksError>",
+    ] {
+        assert!(
+            block.contains(spelling),
+            "the command must take `{spelling}` — the canvas passes camelCase \
+             `x`/`y` and Tauri folds them to these, so a rename is a runtime \
+             failure on one side and a green compile on both"
+        );
+    }
+    // The pair is refused BEFORE the spawn, and the order is load-bearing: a
+    // half-pair must not spend a worker thread or open a connection.
+    let refusal = block
+        .find("require_position_pair")
+        .expect("the pre-flight runs in the command body");
+    let hop = block
+        .find("spawn_blocking")
+        .expect("the delegation is a spawn_blocking");
+    assert!(
+        refusal < hop,
+        "`require_position_pair` must run BEFORE the hop, the `write_artifact` \
+         and `create_task` pre-flight rule"
     );
 }

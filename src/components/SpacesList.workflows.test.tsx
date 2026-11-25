@@ -14,8 +14,8 @@ import { clearAgentCatalogCache } from "../hooks/useAgentCatalog";
  * at its exact code-line count in `scripts/file-size-baseline-test.txt` and the
  * size ratchet refuses a baselined file growing by even one code line. The door's
  * own behaviour cannot be expressed inside that budget, so it lives beside the
- * file it extends — the same route `SpacesList.agents.test.tsx` and
- * `StageEditor.workflows.test.tsx` took. The one thing that could not move is the
+ * file it extends — the same route `SpacesList.agents.test.tsx` and the
+ * `*.workflows.test.tsx` siblings take. The one thing that could not move is the
  * existing top-row ORDER assertion (a baselined file may be EDITED, only not
  * grown), and it was rewritten in place there.
  *

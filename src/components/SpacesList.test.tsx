@@ -1615,7 +1615,7 @@ describe("SpacesList (archive, ADR 0016)", () => {
     // `SpacesList.workflows.test.tsx`: THIS file is BASELINED at its exact
     // code-line count and the size ratchet refuses a baselined file growing by one
     // code line, so a new door's cases go in a NEW file (the
-    // `SpacesList.agents.test.tsx` / `StageEditor.workflows.test.tsx` precedent)
+    // `SpacesList.agents.test.tsx` / `SpacesList.workflows.test.tsx` precedent)
     // and only the assertion this change makes STALE is edited here, in place.
     render(<SpacesList />);
     const tasksRow = screen.getByRole("button", { name: "Tasks" }).parentElement!;

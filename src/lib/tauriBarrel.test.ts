@@ -471,6 +471,12 @@ const TAURI_PUBLIC_API = [
   // make the wired type a lie about columns the database already answers for.
   "setStageAuto",
   "setStagePromptPrefix",
+  // (the Workflows canvas) The third per-COLUMN Stage write and the third of the
+  // three that answer the already-pinned `StageDto`, which GAINS
+  // `positionX`/`positionY` in the same commit — widening an existing interface
+  // moves neither list, but leaving it narrow would make the wired type a lie about
+  // columns the database already answers for.
+  "setStagePosition",
   // (the workflow graph) The auto-chain guard WRITE — the `setBoardStrict` twin, one
   // call for the PAIR, `void` back. `null` clears a guard to the shipped fallback and
   // `0` binds it to zero; the wrapper passes both through and never collapses them.
@@ -655,6 +661,16 @@ const TAURI_RUNTIME_API = [
   "setSessionConfigOption",
   "setStageAuto",
   "setStageNext",
+  // (the Workflows canvas) The node's hand-arranged position — a RUNTIME wrapper
+  // (it answers the already-pinned `StageDto`, which gains `positionX`/`positionY`
+  // in this commit, so no TYPE name enters with it). It enters this list in the same
+  // commit as its `src/lib/tauri.ts` re-export line and its `generate_handler!`
+  // registration, which is this file's own rule for entering a name: the three are
+  // one change and not three. `scripts/check-commands.sh` counts THIS wrapper's
+  // literal `invoke("set_stage_position")` as the command's only consumer until the
+  // canvas's drag handler lands, and the header of that script says plainly why a
+  // wrapper alone is the weak form of the evidence.
+  "setStagePosition",
   "setStagePromptPrefix",
   "setStageSkill",
   "setSpaceTrusted",
@@ -827,7 +843,8 @@ describe("the scanner actually reads the tree", () => {
     // mocker — it asserts on a returned string and touches no IPC, which is the shape
     // the seam prefers.
     // And 54 -> 55 when T3 (issue #179 §8) landed ONE new mocker:
-    // `src/components/StageEditor.tsx`'s own test file, which mocks the barrel the
+    // the board's stage dialog's own test file (since deleted, its cases re-homed to
+    // the settings panel's suite), which mocked the barrel the
     // documented way (it drives the seven Stage verbs, the Strict pair and the
     // artifact pair through the store, and it counts `listSkills` calls to pin the
     // "the Skill Select shares the board's one catalog fetch" rule — an assertion
@@ -870,14 +887,14 @@ describe("the scanner actually reads the tree", () => {
     //    `src/store/tasks.test.ts` because that file is BASELINED at its exact
     //    code-line count and the size ratchet refuses a baselined file growing by one
     //    line — the sibling file is the honest route, not a dodge.
-    //  - `src/components/StageEditor.workflows.test.tsx` — the row's Auto switch and
+    //  - that dialog's `.workflows` sibling test file — the row's Auto switch and
     //    extra-prompt field and the footer's guard fields, which drive the same four
     //    wrappers through the store from a real mount. `getAutoGuards` un-mocked would
     //    reject in jsdom and land its sentence in the store's `error` cell that the
     //    file's own error-line assertions read — the noisy-green case this file's
-    //    premise is about, and the reason `StageEditor.test.tsx`'s own factory had to
+    //    premise is about, and the reason the dialog's shape file's own factory had to
     //    gain the same four names in this commit.
-    // Neither re-spells an existing mock: `StageEditor.test.tsx` pins the dialog's
+    // Neither re-spells an existing mock: the dialog's shape file pinned the dialog's
     // SHAPE and the Strict/add-field footers, and `tasks.test.ts` pins the board and
     // the #179/#180 actions. Both new files spread `vi.importActual` too, so the spread
     // half moved 55 -> 57 and the one wholesale replacement is STILL
@@ -906,7 +923,8 @@ describe("the scanner actually reads the tree", () => {
     // the documented way because each mounts a surface that reaches the wire.
     //  - `src/components/workflows/WorkflowsCanvas.test.tsx` — the canvas itself, which
     //    LOADS `store/tasks` on mount (that store's `load` had exactly one call site
-    //    before this view) and whose node click mounts the real `StageEditor`. An
+    //    before this view) and whose node click mounted the real stage dialog (the
+    //    panel owns those fields now). An
     //    un-mocked `getAutoGuards` rejects in jsdom and writes its sentence into the
     //    store's `error` cell that this file's own error-line case reads — the exact
     //    noisy-green shape the seam exists to refuse.
@@ -928,8 +946,100 @@ describe("the scanner actually reads the tree", () => {
     // is UNCHANGED by this commit: the canvas adds no IPC wrapper and no wire type, it
     // consumes the board read and the Stage verbs T1/T3/T4 landed, so both pinned API
     // lists below are untouched.
-    expect(mockers).toHaveLength(62);
-    // 61 of the 62 SPREAD `vi.importActual`, which is the shape that makes the
+    // And 62 -> 65 for the workflow **settings panel** (the node-mode / workflow-mode
+    // form the canvas will mount beside the graph), which is the addition this pin
+    // exists to record: THREE new test files, each mocking the barrel the documented
+    // way because each mounts a surface that reaches the wire through `store/tasks`.
+    //  - `src/components/workflows/NodeSettingsBody.test.tsx` — the eight per-column
+    //    fields, which are the dialog's `StageRow` controls re-homed. Every one of them
+    //    is a Stage verb (`renameStage`, `setStageSkill`, `setStageNext`, `setStageAuto`,
+    //    `setStagePromptPrefix`, `reorderStages`, `deleteStage`) and the file asserts on
+    //    the ARGUMENTS that reach the wire — the "one keystroke is not one write" and
+    //    "`[]` is not `null`" pins cannot be made against a real `invoke`.
+    //  - `src/components/workflows/WorkflowSettingsBody.test.tsx` — the per-Space
+    //    subjects (`getBoardStrict` / `setBoardStrict`, `getAutoGuards` /
+    //    `setAutoGuards`, `createStage`). This is where the dialog's `.workflows` suite's
+    //    guard and Strict cases live now, and they need the same in-flight / rejecting /
+    //    echo-the-arguments control the dialog's suite had: `NULL` versus `0`, a failed
+    //    read that leaves a control INERT, and a write that must be re-read.
+    //  - `src/components/workflows/NodeSettingsPanel.test.tsx` — the shell, which pins
+    //    that the per-Space reads fire in workflow mode and DO NOT fire in node mode.
+    //    That assertion is only observable with the two readers spied.
+    // The feature's FOURTH new test file,
+    // `src/components/workflows/NodeDestinations.test.tsx`, is NOT a mocker: the
+    // destination block takes its list and its two writes as props and reads no store,
+    // so the file mounts it directly and touches no IPC — the shape the seam prefers, and
+    // the same reading `workflowGraphLayout.test.ts` and `workflowGraph.test.ts` carry
+    // above. All THREE mockers spread `vi.importActual` too, so the spread half moved
+    // 61 -> 64 and the one wholesale replacement is STILL
+    // `hooks/useWindowMaximized.test.ts`. The barrel's OWN surface is UNCHANGED by this
+    // commit: the panel adds no IPC wrapper and no wire type, it consumes the Stage verbs
+    // and the per-Space pairs that T1/T3/T4 and the workflow-graph work landed, so both
+    // pinned API lists below are untouched.
+    //
+    // 65 -> 66 for `src/store/tasks.position.test.ts`, the store suite for the
+    // canvas's `setStagePosition` action. It mocks the barrel the documented way
+    // because the action it pins IS a barrel call — an un-mocked wrapper rejects in
+    // jsdom and writes its sentence into the store's `error` cell that this file's
+    // own revert cases read, which is the noisy-green shape the seam exists to
+    // refuse. It spreads `vi.importActual` too, so the spread half moves 64 -> 65 and
+    // the one wholesale replacement is STILL `hooks/useWindowMaximized.test.ts`.
+    // THIS commit is the first of the two that also moves both pinned API lists
+    // below: the canvas work adds one RUNTIME wrapper (`setStagePosition`), and the
+    // already-pinned `StageDto` gains two FIELDS (`positionX`/`positionY`), which
+    // widens an existing interface and so moves neither list on its own.
+    //
+    // And 66 -> 67 for the Workflows canvas EDITOR (drag-to-connect, drag-to-position,
+    // Tidy up), which is the addition this pin exists to record: ONE new test file,
+    // `src/components/workflows/WorkflowsCanvas.editor.test.tsx`, mocking the barrel the
+    // documented way because the file's whole subject is WHICH arguments reach the wire
+    // and what the slice looks like when they come back. Two things make the mock
+    // load-bearing rather than convenient: `setStagePosition` and `setStageNext` are
+    // stubbed to ANSWER THE STORED ROW built from their own arguments, because the
+    // anti-snap-back round trip is a round trip only if the echo carries the pair (a
+    // `mockResolvedValue([])` there would let the case assert on a fiction), and an
+    // un-mocked `getAutoGuards` rejects in jsdom and writes its sentence into the store's
+    // `error` cell that this file's own refused-write case reads — the noisy-green shape
+    // the seam exists to refuse. It spreads `vi.importActual` too, so the spread half
+    // moves 65 -> 66 and the one wholesale replacement is STILL
+    // `hooks/useWindowMaximized.test.ts`.
+    // The feature's OTHER new test file, `src/lib/workflowEdgeWrite.test.ts`, is NOT a
+    // mocker: the edge-write rule is a pure function over the columns the caller hands it
+    // and imports `StageWithTasks` as a TYPE only, so it touches no IPC — the shape the
+    // seam prefers, and the same reading `workflowEdgeWrite.ts`'s own header and
+    // `workflowGraphLayout.test.ts` and `workflowGraph.test.ts` carry above. The barrel's
+    // OWN surface is UNCHANGED by this commit: the editor adds no IPC wrapper and no wire
+    // type, it consumes the `setStagePosition` / `setStageNext` pair the previous two
+    // commits landed, so both pinned API lists below are untouched.
+    // 67 -> 65 for the RETIREMENT of the board's stage dialog, which is the removal
+    // this pin exists to record: TWO test files deleted, both of them mockers, both of
+    // them the dialog's own two suites, in `src/components/` — the dialog's shape file
+    // (46 cases: the dialog's shape and its Strict/add-field footers) and its
+    // `.workflows` sibling (29 cases: the row's Auto switch and extra-prompt field and
+    // the footer's guard fields). Neither was deleted
+    // before its cases moved: 49 of the 75 are re-pinned under the settings panel by
+    // NAME (`NodeSettingsBody` / `NodeDestinations` / `NodeSettingsPanel` /
+    // `WorkflowSettingsBody` test files, 97 cases between them), 16 more are the same
+    // assertion under the panel's column vocabulary ("row" → "column", "Stage" →
+    // "column"), and the remaining 10 are obsolete because the surface they pinned is
+    // gone — the dialog's filter (2 cases), the dialog's Close button (1), the row's
+    // `role="button"` nesting guards (4, the panel is a plain `<div>` with no row
+    // affordance to bubble INTO), the dialog's footer Switch mount (1) and the dialog's
+    // one-row-per-Stage title (1). The board's `Configure` door navigates to the canvas
+    // now instead of mounting a dialog, so `TasksBoard.test.tsx` lost its three
+    // dialog-mount cases and gained two navigation cases; it was already a mocker and
+    // its count does not move, and neither does `App.workflows.test.tsx`'s, whose new
+    // case pins the seam this commit wires.
+    // Both DELETED files spread `vi.importActual`, so the spread half moves 66 -> 64
+    // and the one wholesale replacement is STILL `hooks/useWindowMaximized.test.ts`.
+    // The barrel's OWN surface is UNCHANGED by this commit: retiring a dialog removes no
+    // IPC wrapper and no wire type — every verb the dialog drove is driven by the panel
+    // instead — so both pinned API lists below are untouched. NO new test file is added
+    // here either (the new cases go in the two existing files above, one of which is
+    // baselined and one of which has room), so this is the census moving for the only
+    // reason the pin allows: test files removed, in a commit that says so.
+    expect(mockers).toHaveLength(65);
+    // 64 of the 65 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. The new mocker spreads
     // too (it lists the arms its own tests drive and leaves every other barrel
     // export — `invoke` included — to the real module), so the remaining one
@@ -940,7 +1050,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(sweep.listed(f) ?? ""),
       ).length,
-).toBe(61);
+).toBe(64);
   });
 });
 

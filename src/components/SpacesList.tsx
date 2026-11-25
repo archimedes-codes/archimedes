@@ -191,10 +191,11 @@ export default function SpacesList({
    *  IT IS A THIRD VIEW DOOR and not a variant of the Tasks one. Both name the
    *  board's columns; what differs is the SHAPE they show — a kanban of cards
    *  versus the chain those columns form (`auto`, each column's Skill, where the
-   *  edges go, where a chain dead-ends). The canvas is READ-ONLY: every field it
-   *  shows is edited by the `StageEditor` dialog the board's `Configure` door
-   *  opens, which this door's node click reaches too. A second editor for the same
-   *  eight fields would be a second owner of them, so there is none here. */
+   *  edges go, where a chain dead-ends). The GRAPH itself is read-only: every field
+   *  it shows is edited by the settings panel beside it, which a node click opens.
+   *  That panel is the one editor for the stage fields — the board's `Configure` door
+   *  used to open a dialog of its own, and it now navigates here instead, so a second
+   *  owner of the same eight fields does not exist. */
   onOpenWorkflows?: () => void;
   /** Open the **Settings** view. The door that used to sit in the chrome bar's
    *  `ChromeControls` (deleted) — this pane's command band is its only home, so the

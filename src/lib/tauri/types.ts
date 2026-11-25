@@ -196,6 +196,39 @@ export interface StageDto {
    *
    *  Stored RAW: nothing trims, templates or interprets it. */
   promptPrefix: string | null;
+  /** This column's node X on the Workflows canvas, in canvas coordinates — the
+   *  **hand-arranged** layout, so a node a person dragged stays where they put it.
+   *
+   *  `null` means NEVER HAND-ARRANGED and it is the ONLY spelling of that: the
+   *  column carries no SQL `DEFAULT`, so an upgraded database gains `null` rather
+   *  than a second, equivalent "at the origin" state. `0` is a coordinate someone
+   *  **placed**; the canvas must not read it as absence, or every node a person
+   *  pinned to the left edge silently returns to dagre's computed layout.
+   *
+   *  READ AS A PAIR with `positionY`. A node is a BOX, so half a coordinate is a
+   *  lie about where a box is — the write takes both together
+   *  (`setStagePosition`), the command refuses a half pair, and the storage verb's
+   *  type has no spelling for one. A reader that finds half a pair (only possible
+   *  via a writer that bypassed both) may treat the node as unpositioned.
+   *
+   *  **OPTIONAL, and that is a deliberate departure from `auto`'s and
+   *  `promptPrefix`'s REQUIRED-ness next door.** The argument beside those two is
+   *  right and this field does not inherit it: making a field required is worth
+   *  its cost when absence would render something WRONG (`auto?:` compiles against
+   *  a fixture that never sets it and then paints a Switch in a state the wire
+   *  never agreed to). Here absence and `null` mean the SAME thing to the only
+   *  reader — "dagre lays this node out" — so a fixture that omits the field
+   *  degrades to the correct behaviour instead of a confident wrong one. The
+   *  concrete cost of required-ness was measured at this commit, not argued:
+   *  `positionX: number | null` reddens `tsc` in **18 files** (20 sites) that this
+   *  change may not touch, because the Workflows canvas and the board's tests are
+   *  being edited elsewhere on this branch. Tightening it to required is the
+   *  follow-up's to do alongside those fixtures, in one commit that can update all
+   *  eighteen. */
+  positionX?: number | null;
+  /** This column's node Y on the Workflows canvas — see `positionX` for the pair's
+   *  semantics, which are identical, and for why both are optional. */
+  positionY?: number | null;
 }
 
 

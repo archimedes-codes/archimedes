@@ -23,17 +23,17 @@ import {
  * ## NEITHER NODE HOSTS AN INPUT, AND THAT IS WHY EITHER CAN BE DRAGGABLE
  *
  * `draggable` inherits to children — the hazard `TaskCard.tsx` records for a card, the
- * one `TasksBoard` cites as the reason Stage editing lives behind a dialog rather than
- * on a column header, and the one `StageEditor`'s header repeats for its two text
- * fields. A drag surface that hosts a text input is that defect: the caret and the
- * drag handler are both answering the same mousedown, and the drag wins.
+ * one `TasksBoard` cites as the reason stage editing lives behind its `Configure` door
+ * rather than on a column header, and the one the settings panel's header repeats for
+ * its two text fields. A drag surface that hosts a text input is that defect: the caret
+ * and the drag handler are both answering the same mousedown, and the drag wins.
  *
  * These nodes host NO input. There is no label field, no Skill picker, no extra-prompt
  * `<textarea>`, no Auto switch and no destination editor on a node — every one of those
- * eight fields is edited by the existing `StageEditor` dialog, which the canvas opens
- * on a node click. That decision is what makes a draggable node legal here at all, and
- * it is the reason the canvas ships no second form. A future executor tempted to put a
- * field on a node is re-opening that defect; the answer is the dialog.
+ * eight fields is edited by the settings panel (`NodeSettingsPanel.tsx`), which the
+ * canvas opens on a node click. That decision is what makes a draggable node legal here
+ * at all, and it is the reason the canvas ships no second form. A future executor
+ * tempted to put a field on a node is re-opening that defect; the answer is the panel.
  *
  * The one interactive element a node does hold is a `<button>`, and a button is not the
  * hazard above: nothing types into it, and its activation is a click like any other
@@ -57,9 +57,18 @@ import {
  *
  *  `nodrag` is xyflow's own escape hatch and is deliberately NOT on the button: the
  *  button lives inside the drag surface and a click that never moved is a click, which
- *  is the behaviour we want to keep. */
+ *  is the behaviour we want to keep.
+ *
+ *  The seam is `border-card-border` and NOT `border-border`, because this box is a CARD
+ *  and every other card in the app spells it that way (`ui/card.tsx`, `TaskCard.tsx`).
+ *  `--color-border` is the app-wide divider — inputs, popovers, tabs — and ADR 0096's
+ *  issue-#173 amendment says the resting card seam is the card token precisely so a card
+ *  does not wear the loud rule: on Dracula the two are 2.51 and 1.34 against this surface,
+ *  and in Ayu light / Catppuccin light / Rosé Pine light the `border-border` outline
+ *  measures 3.5–4.2 against a fill step of ~1.1, i.e. the outline dominates the elevation
+ *  it is meant to be signalling. */
 const NODE_BOX =
-  "rounded-xl border border-border bg-card px-3 py-2 text-left shadow-sm";
+  "rounded-xl border border-card-border bg-card px-3 py-2 text-left shadow-sm";
 
 /** The shared box's SIZE, and the reason it is inline rather than a class.
  *
@@ -93,14 +102,15 @@ const handleAnchorProps = (isConnectable: boolean) => ({
  *  here, so the component owns the pair and this constant owns only the chip's box.
  *  A badge's `title` carries the meaning a glyph alone does not. */
 const BADGE =
-  "inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5";
+  "inline-flex items-center gap-1 rounded-md border border-card-border px-1.5 py-0.5";
 
 /** One column of the workflow, as a node.
  *
  *  The whole body is the `<button>` described above, and it carries NO `onClick` of its
  *  own: the click bubbles to xyflow's node wrapper, which calls `onNodeClick`, which is
- *  where the canvas opens `StageEditor`. Two handlers on one gesture would be two owners
- *  of "open the editor for this column", and the wrapper's is the one xyflow documents.
+ *  where the canvas selects the column and the settings panel opens. Two handlers on one
+ *  gesture would be two owners of "open the settings for this column", and the wrapper's
+ *  is the one xyflow documents.
  *
  *  `isConnectable` is a PROP and not a global. `nodesConnectable` on `<ReactFlow>` lands
  *  on the node component as `isConnectable`; it does NOT reach a `<Handle>`, whose own
@@ -165,12 +175,33 @@ export function WorkflowStageNode({
           <span className="min-w-0 flex-1 truncate text-ui-base font-medium">
             {label}
           </span>
-          <MutedCaption className="shrink-0 tabular-nums">{taskCount}</MutedCaption>
+          {/* The count is a QUANTITY, not de-emphasised prose, and it is the one number
+           *  on the node — so it does not get the app's faintest ink. `MutedCaption`'s
+           *  `text-foreground-subtlest` measures 2.38 on `bg-card` in default light and
+           *  2.18 in default dark, and no palette gate can see it: `--color-card` is in
+           *  the `raised` surface set for four dark readings and one light one, and
+           *  default names both `subtle` and `subtlest` `textUngradeable` (a `color-mix`
+           *  over an `oklch()` base). `subtle` is 4.12 / 4.44 there. Overridden through
+           *  `className`, which `cn()` merges over the base — the `mutedCaption` census
+           *  forbids re-spelling the pair, not asking for a step up. */}
+          <MutedCaption className="shrink-0 tabular-nums text-foreground-subtle">
+            {taskCount}
+          </MutedCaption>
         </span>
         <span className="mt-1 flex flex-wrap items-center gap-1">
+          {/* The amber carries the MEANING and the fill carries the amber; the WORDS stay
+           *  readable ink. This is the app's own split for a tinted state — see
+           *  `SessionStalledBanner` / `NewSessionErrorBanner`, both `border-warning
+           *  bg-warning/10` over normal text — and `docs/css-theme-tokens.md` states it
+           *  outright: status text keeps the bright hues while the functional palette
+           *  drives fills and borders. `text-warning` as 12px TEXT is the worst token in
+           *  five of the six light readings (Everforest light 2.12, Rosé Pine light 2.16,
+           *  Catppuccin light 2.31), and it is the live defect the board's own card T20
+           *  records ("Light accent is illegible as text in every palette that ships a
+           *  light reading"). The hue is not the problem and is not changed. */}
           {auto && (
             <MutedCaption
-              className={cn(BADGE, "border-warning text-warning")}
+              className={cn(BADGE, "border-warning/60 bg-warning/10 text-foreground")}
               title="A card launched on this column advances itself when its Session settles"
               data-testid={`workflow-node-auto-${slug}`}
             >
@@ -192,7 +223,7 @@ export function WorkflowStageNode({
             <MutedCaption
               // The badge is a MARKER and not the text: a column's extra prompt can be
               // a paragraph, and a paragraph on a node would decide the node's height,
-              // which the layout does not know about. The full text is in the dialog.
+              // which the layout does not know about. The full text is in the panel.
               className={BADGE}
               title="This column prepends an extra prompt before its Skill"
               data-testid={`workflow-node-prompt-${slug}`}
@@ -202,7 +233,10 @@ export function WorkflowStageNode({
           )}
           {deadEnd && (
             <MutedCaption
-              className={cn(BADGE, "border-warning text-warning")}
+              className={cn(
+                BADGE,
+                "border-warning/60 bg-warning/10 text-foreground",
+              )}
               title="No destination: a card that lands here stays here"
               data-testid={`workflow-node-dead-end-${slug}`}
             >
@@ -235,11 +269,11 @@ export function WorkflowMissingNode({
   const { slug } = data;
   return (
     <div
-      className="rounded-xl border border-dashed border-warning px-3 py-2 text-ui-sm text-foreground-subtlest"
+      className="rounded-xl border border-dashed border-warning/60 bg-warning/10 px-3 py-2 text-ui-sm text-foreground"
       style={NODE_BOX_STYLE}
       data-testid={`workflow-node-missing-${slug}`}
       // Not a `<button>`: there is nothing to open. A destination with no column has no
-      // row for `StageEditor` to edit, and a control that opens nothing is the
+      // row for the settings panel to edit, and a control that opens nothing is the
       // dead-button shape this repo refuses.
       aria-label={`Destination "${slug}" is not a column of this board`}
     >

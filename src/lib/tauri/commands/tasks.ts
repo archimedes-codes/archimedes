@@ -475,6 +475,43 @@ export async function setStagePromptPrefix(
 }
 
 /**
+ * Set or clear one column's **position on the Workflows canvas** — the
+ * hand-arranged layout, so a node a person dragged stays where they put it.
+ *
+ * `x`/`y` are canvas coordinates and BOTH must be supplied or NEITHER. That is the
+ * signature's whole shape and it is not a convenience: a node is a BOX, so half a
+ * coordinate is a lie about where a box is — a renderer handed `(120, null)` has to
+ * invent the Y, which is the invented-state move this repo refuses at every
+ * nullable column's missing SQL `DEFAULT`. The command refuses the two mixed
+ * spellings before it touches the database; `null, null` is the honest pair and it
+ * is the CLEAR — the node goes back to dagre.
+ *
+ * `0` is NOT `null`, and this wrapper passes both through without collapsing them
+ * (the guard pair's rule, one section below): `setStagePosition(space, slug, 0, 0)`
+ * means "a person pinned this node to the origin" and
+ * `setStagePosition(space, slug, null, null)` means "nobody ever moved it".
+ *
+ * ONE call for the PAIR, following `setAutoGuards` rather than two one-coordinate
+ * wrappers, and for the same stated reason: whatever this hands over is exactly
+ * what lands, there is no "keep what is there" arm, so a caller that moved one node
+ * still has to name both of its numbers. Two setters would make the half-positioned
+ * node reachable by a drag handler that painted one coordinate — which is precisely
+ * the caller that exists here.
+ *
+ * Answers the stored `StageDto` so the canvas updates the node from this call
+ * rather than from a second round trip. A slug the Space does not have is refused
+ * before the write, naming the slugs that are valid.
+ */
+export async function setStagePosition(
+  spacePath: string,
+  slug: string,
+  x: number | null,
+  y: number | null,
+): Promise<StageDto> {
+  return invoke<StageDto>("set_stage_position", { spacePath, slug, x, y });
+}
+
+/**
  * Read one Space's **auto-chain guards** — the seed for the editor's two numeric
  * fields, and the only thing that can tell "unset" from "set to the same number".
  *

@@ -5,13 +5,20 @@ import { Switch } from "../ui/switch";
 import { useTasks } from "../../store/tasks";
 
 /**
- * The Space-level **Strict workflow** opt-in (ADR 0099) — the footer Switch under
- * the Stage rows in `StageEditor`, as its own subject.
+ * The Space-level **Strict workflow** opt-in (ADR 0099) — the Switch in the
+ * workflow mode of the canvas's settings panel, as its own subject.
  *
- * This component owns exactly ONE piece of state, `strict`, and nothing else in
- * the dialog reads it — which is why it could be lifted whole. It is a move, not a
- * redesign: the Switch, the read, the write and the re-read are what `StageEditor`
- * rendered before, carried here with the comments that explain them.
+ * IT HAD TWO MOUNTS AND NOW HAS ONE. The other was the footer of the board's stage
+ * dialog, which used to sit behind the board's `Configure` door. The panel took these
+ * per-Space fields over from that dialog and the dialog has since been deleted, so the
+ * duplication the paragraph below used to describe is over: `spacePath` is read by one
+ * surface, through `workflows/WorkflowSettingsBody.tsx`, and `getBoardStrict` /
+ * `setBoardStrict` still have exactly one owner.
+ *
+ * This component owns exactly ONE piece of state, `strict`, and nothing else in the
+ * panel reads it — which is why it could be lifted whole. It is a move, not a redesign:
+ * the Switch, the read, the write and the re-read are what the dialog rendered before,
+ * carried here with the comments that explain them.
  *
  * WHY A COMPONENT AND NOT A WRAPPER ELEMENT. `CatalogSearchDialog` renders its
  * `children` as SIBLINGS of the scroller, and its header records that a level
@@ -20,10 +27,10 @@ import { useTasks } from "../../store/tasks";
  * the inline `<div>` one-for-one; a shared footer `<div>` around it would have been
  * a real regression dressed up as a refactor.
  *
- * `spacePath` is `string`, not `string | null`. `StageEditor`'s own
- * `if (spacePath === null) return null` early return means this is never mounted
- * without a target, so the guards the moved callbacks carried are gone — the type
- * says what the guards used to check.
+ * `spacePath` is `string`, not `string | null`. The one mount — `NodeSettingsPanel`'s
+ * workflow mode — carries its own `if (spacePath === null) return null` early
+ * return, so this is never mounted without a target and the guards the moved callbacks
+ * carried are gone: the type says what the guards used to check.
  */
 export function StrictWorkflowToggle({
   spacePath,
@@ -70,7 +77,7 @@ export function StrictWorkflowToggle({
   };
 
   return (
-    <div className="flex min-w-0 items-center justify-between gap-2 border-t border-card-border pt-2">
+    <div className="flex min-w-0 items-center justify-between gap-2 border-t border-card-border pt-3">
       <div className="flex min-w-0 items-center gap-2">
         <Switch
           checked={strict ?? false}

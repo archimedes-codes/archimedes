@@ -189,6 +189,166 @@ describe("layoutWorkflowGraph — the nodes", () => {
   });
 });
 
+describe("layoutWorkflowGraph — the STORE owns a position a person arranged", () => {
+  /** The dagre answer for the same column set, as the baseline the stored pair is
+   *  compared against. Computed from the SAME builder with no position overridden, so
+   *  a stored value that merely coincided with dagre's could not pass for an override. */
+  const dagreOf = (
+    columns: StageWithTasks[],
+    slug: string,
+  ): { x: number; y: number } => {
+    const node = layoutWorkflowGraph(columns).nodes.find((n) => n.id === slug)!;
+    return node.position;
+  };
+
+  it("uses the stored pair verbatim for a node that has one", () => {
+    // THE ANTI-SNAP-BACK RULE AT ITS SOURCE. A drag writes the drop point through
+    // `set_stage_position`, the store echoes it onto the row, and the layout effect
+    // re-derives from that row — so if the derived position were dagre's again, the
+    // node would jump back the instant the write landed. The pair is returned
+    // EXACTLY, not approximately, and not merged with dagre's.
+    const columns = [
+      column("backlog", { positionX: -1234.5, positionY: 777 }),
+      column("todo", { nextSlugs: [] }),
+    ];
+    const { nodes } = layoutWorkflowGraph(columns);
+    expect(nodes.find((n) => n.id === "backlog")!.position).toEqual({
+      x: -1234.5,
+      y: 777,
+    });
+    // And the stored value is NOT what dagre would have said, so the assertion above
+    // cannot be satisfied by a layout that ignores the columns' own fields.
+    expect(dagreOf([column("backlog"), column("todo", { nextSlugs: [] })], "backlog")).not.toEqual({
+      x: -1234.5,
+      y: 777,
+    });
+  });
+
+  it("treats a HALF pair as unpositioned, which is the reading the wire type allows", () => {
+    // `positionX`/`positionY` are read as a PAIR (`set_stage_position` takes both or
+    // neither and refuses one), and `StageDto.positionX`'s own doc says a reader that
+    // finds half a pair "may treat the node as unpositioned". A layout that read
+    // `positionX ?? dagre` would put the node at a stored X and a dagre Y — the exact
+    // half-positioned state the write refuses to store, painted on screen.
+    const onlyX = layoutWorkflowGraph([
+      column("backlog", { positionX: 500, positionY: null }),
+      column("todo", { nextSlugs: [] }),
+    ]);
+    const plain = layoutWorkflowGraph([column("backlog"), column("todo", { nextSlugs: [] })]);
+    expect(onlyX.nodes.find((n) => n.id === "backlog")!.position).toEqual(
+      plain.nodes.find((n) => n.id === "backlog")!.position,
+    );
+
+    const onlyY = layoutWorkflowGraph([
+      column("backlog", { positionX: null, positionY: 500 }),
+      column("todo", { nextSlugs: [] }),
+    ]);
+    expect(onlyY.nodes.find((n) => n.id === "backlog")!.position).toEqual(
+      plain.nodes.find((n) => n.id === "backlog")!.position,
+    );
+  });
+
+  it("reads `0` as a placed coordinate and not as absence", () => {
+    // The column has no SQL `DEFAULT`, so `null` is the only "never arranged" state and
+    // `0` is a coordinate somebody pinned. `positionX || dagreX` — the shape that reads
+    // naturally — loses every node arranged on the left or top edge, silently and
+    // permanently.
+    //
+    // THE PAIR IS PINNED TO THE SECOND COLUMN AND THAT IS LOAD-BEARING: dagre places
+    // the leftmost box at x = 0 itself, so a `(0, 0)` stored on `backlog` would come
+    // back `(0, 0)` from a layout that ignored the stored pair entirely. On `todo` the
+    // two answers differ, and the guard below states that.
+    const columns = [
+      column("backlog"),
+      column("todo", { nextSlugs: [], positionX: 0, positionY: 0 }),
+    ];
+    const { nodes } = layoutWorkflowGraph(columns);
+    expect(nodes.find((n) => n.id === "todo")!.position).toEqual({ x: 0, y: 0 });
+    expect(
+      layoutWorkflowGraph([column("backlog"), column("todo", { nextSlugs: [] })]).nodes.find(
+        (n) => n.id === "todo",
+      )!.position,
+    ).not.toEqual({ x: 0, y: 0 });
+  });
+
+  it("lays out the node that has NO stored pair by dagre, beside the one that has one", () => {
+    // THE MIXED CASE. One arranged column and one never-arranged: the un-arranged one
+    // still has to land somewhere sane, so dagre runs over the WHOLE graph and the
+    // stored node is overridden afterwards. Both answers are finite and the two boxes
+    // are not stacked on the same point — a layout that returned `{0, 0}` for the
+    // un-positioned node would be a node at the origin under the arranged one.
+    const columns = [
+      column("backlog", { positionX: 2000, positionY: 1500 }),
+      column("todo", { nextSlugs: [] }),
+    ];
+    const { nodes } = layoutWorkflowGraph(columns);
+    const todo = nodes.find((n) => n.id === "todo")!.position;
+    expect(Number.isFinite(todo.x) && Number.isFinite(todo.y)).toBe(true);
+    expect(nodes.find((n) => n.id === "backlog")!.position).toEqual({ x: 2000, y: 1500 });
+    expect(todo).not.toEqual({ x: 0, y: 0 });
+    // And the un-arranged node's answer is dagre's for the SAME graph with nothing
+    // arranged — the position-free twin, not this same call (a cross-check against the
+    // implementation's own output would be the self-referential pin
+    // `WorkflowsCanvas.test.tsx`'s node-box case exists to avoid).
+    expect(todo).toEqual(
+      dagreOf([column("backlog"), column("todo", { nextSlugs: [] })], "todo"),
+    );
+  });
+
+  it("returns the stored positions for every node when every node has one", () => {
+    // Every column arranged ⇒ dagre's answer is unused. THE PIN IS THE RESULT, and it
+    // is stated as such rather than over-claimed: "skip dagre" and "run dagre then
+    // override" return the SAME array here, so nothing in a pure-layout test can tell
+    // the two branches apart. What this case DOES catch is a layout that averages,
+    // clamps or re-ranks stored positions — which is why the fixture is deliberately
+    // OUTRANKING: `done` sits left of `backlog`, the opposite of what the ranker would
+    // choose, and a ranker that survived into the output would move one of them.
+    const columns = [
+      column("backlog", { positionX: 900, positionY: 40 }),
+      column("todo", { nextSlugs: ["done"], positionX: 40, positionY: 300 }),
+      column("done", { nextSlugs: [], positionX: -800, positionY: -250 }),
+    ];
+    const { nodes } = layoutWorkflowGraph(columns);
+    expect(nodes.map((n) => n.position)).toEqual([
+      { x: 900, y: 40 },
+      { x: 40, y: 300 },
+      { x: -800, y: -250 },
+    ]);
+  });
+
+  it("keeps a GHOST node on dagre, since a ghost has no row to store a position on", () => {
+    // A ghost is an edge whose target column the read cannot name. It is not a column,
+    // so it has no `position_x` — and because it can never carry a stored pair it also
+    // makes "every node is arranged" false, which is what keeps dagre running to place
+    // it. Without that, a hand-arranged board with one stale edge would put the ghost
+    // at the origin with nothing laid out around it.
+    const { nodes } = layoutWorkflowGraph([
+      column("doing", { nextSlugs: ["archived"], positionX: 10, positionY: 20 }),
+    ]);
+    const ghost = nodes.find((n) => n.id === "archived")!;
+    expect(ghost.type).toBe("missing");
+    expect(Number.isFinite(ghost.position.x) && Number.isFinite(ghost.position.y)).toBe(
+      true,
+    );
+    expect(ghost.position).not.toEqual({ x: 0, y: 0 });
+    expect(nodes.find((n) => n.id === "doing")!.position).toEqual({ x: 10, y: 20 });
+  });
+
+  it("marks the ghost node NOT draggable, because its position is not a fact anybody can store", () => {
+    // `onNodeDragStop` writes the drop point through `set_stage_position`, which
+    // refuses a slug the Space does not have. A draggable ghost would therefore be a
+    // drag that always fails and always snaps back — the failure the whole position
+    // rule exists to avoid — so the flag is off at the source instead.
+    const { nodes } = layoutWorkflowGraph([
+      column("doing", { nextSlugs: ["archived"] }),
+    ]);
+    expect(nodes.find((n) => n.id === "archived")!.draggable).toBe(false);
+    // A real column stays draggable: it is `undefined` and not `true`, so a person can
+    // still override it per node and the canvas-level `nodesDraggable` decides.
+    expect(nodes.find((n) => n.id === "doing")!.draggable).toBeUndefined();
+  });
+});
+
 describe("layoutWorkflowGraph — the edges (ADR 0099's three answers)", () => {
   it("draws the configured edges in the row's OWN order", () => {
     // `doing` is configured to stop (`[]`) so it contributes no edge of its own
@@ -272,7 +432,8 @@ describe("layoutWorkflowGraph — an edge to a column that is not there", () => 
     // column deleted in another window, or a slice that has not refreshed). An
     // edge to a node id that does not exist renders NOTHING in xyflow, so the
     // honest alternative is a node that says so — otherwise the broken edge is
-    // invisible, which is the opposite of what a read-only canvas is for.
+    // invisible, which is the opposite of what a canvas that claims to show the
+    // chain is for.
     const { nodes, edges } = layoutWorkflowGraph([
       column("doing", { nextSlugs: ["archived"] }),
     ]);
@@ -295,6 +456,75 @@ describe("layoutWorkflowGraph — an edge to a column that is not there", () => 
       column("doing"),
     ]);
     expect(nodes.find((n) => n.id === "backlog")!.data.nextLabels).toEqual(["Doing"]);
+  });
+});
+
+describe("layoutWorkflowGraph — an INFERRED edge looks unlike a DRAWN one", () => {
+  /* The hazard this marks: `nextStepSlugs` answers the `sortOrder + 1` fallback for a
+   * `nextSlugs: null` column, and the canvas drew that fallback as a wire PIXEL-IDENTICAL
+   * to a stored edge. Both looked like "this is where the column goes", but they are two
+   * different contracts — `NULL` permits ANY outgoing move under Strict workflow and
+   * `["research"]` permits only `research` (ADR 0099), and per known-gaps §8 the flip is
+   * not reversible through the UI. A person cannot protect a distinction they cannot see,
+   * so the inferred wire is dashed and classed and the stored one is not.
+   *
+   * THE ASSERTIONS ARE LITERALS AND NOT THE PRODUCTION CONSTANTS, on purpose. Reading the
+   * marker back off the module that set it is the self-referential pin
+   * `WorkflowsCanvas.test.tsx`'s node-box case exists to avoid: it would stay green if the
+   * marker were renamed to something a stylesheet does not know, and the dash is only a
+   * dash if the sheet draws one. */
+
+  it("marks the sortOrder + 1 fallback edge as implicit, by class and by dash", () => {
+    const { edges } = layoutWorkflowGraph([
+      column("backlog", { nextSlugs: null }),
+      column("todo", { nextSlugs: null }),
+    ]);
+    expect(edges).toHaveLength(1);
+    expect(edges[0]!.className).toBe("workflow-edge-implicit");
+    // The dash is the VISIBLE half — a class a stylesheet ignores would leave the two
+    // wires identical again, which is the exact defect this exists to remove.
+    expect(edges[0]!.style).toMatchObject({ strokeDasharray: expect.any(String) });
+    expect(String(edges[0]!.style!.strokeDasharray).length).toBeGreaterThan(0);
+  });
+
+  it("does NOT mark an edge the row's own nextSlugs names, so the two are distinguishable", () => {
+    // THE PAIR THIS WHOLE BLOCK DEPENDS ON. Marking every edge implicit would be the same
+    // blindness with a different label, so the assertion is that a stored edge carries
+    // NEITHER marker while an inferred one from the same fixture carries both.
+    const { edges } = layoutWorkflowGraph([
+      column("backlog", { nextSlugs: ["todo"] }),
+      column("todo", { nextSlugs: null }),
+      column("doing", { nextSlugs: null }),
+    ]);
+    const stored = edges.find((e) => e.id === edgeIdOf("backlog", "todo"))!;
+    const inferred = edges.find((e) => e.id === edgeIdOf("todo", "doing"))!;
+    expect(stored.className).toBeUndefined();
+    expect(stored.style).toBeUndefined();
+    expect(inferred.className).toBe("workflow-edge-implicit");
+    expect(inferred.style).toMatchObject({ strokeDasharray: expect.any(String) });
+  });
+
+  it("marks a GHOST edge implicit when its source is unconfigured, and not when it is stored", () => {
+    // A ghost is about the TARGET's resolvability and says nothing about whether the
+    // SOURCE was configured — so the marker follows `nextSlugs` and not the ghostliness.
+    // The second fixture is the reason this cannot be "every edge to a ghost is dashed":
+    // a configured column with a stale destination is a wire the person DID draw.
+    const configuredToAGhost = layoutWorkflowGraph([
+      column("backlog", { nextSlugs: null }),
+      column("todo", { nextSlugs: ["archived"] }),
+    ]);
+    expect(
+      configuredToAGhost.edges.find((e) => e.id === edgeIdOf("todo", "archived"))!
+        .className,
+    ).toBeUndefined();
+
+    const inferredToAGhost = layoutWorkflowGraph([
+      column("todo", { nextSlugs: null }),
+      column("doing", { nextSlugs: ["archived"] }),
+    ]);
+    expect(
+      inferredToAGhost.edges.find((e) => e.id === edgeIdOf("todo", "doing"))!.className,
+    ).toBe("workflow-edge-implicit");
   });
 });
 

@@ -171,7 +171,17 @@ mechanical reason, not a deferral for lack of time.
   (`docs/decisions/0115-the-stage-wire-type-is-renamed-to-stagedto-so-the-component-can-own-stagerow.md`);
   evidence: `docs/research/production-godfile-census-and-the-size-metric.md`. The entry is KEPT, not
   deleted — the useful fact is that PR #206's decline was right about the **depth** and wrong about the
-  **redesign**: the honest shape was three levels of subject extraction, not a redesign), **`TaskDetailDialog.tsx`**
+  **redesign**: the honest shape was three levels of subject extraction, not a redesign.
+  **Status note, added 2026-11-25:** this decomposition is the shape that shipped and stayed the shape
+  until **ADR 0120** deleted the dialog. The three levels were re-homed, not reversed —
+  `NodeSettingsBody` is `stages/StageRow.tsx` re-homed field for field and `NodeDestinations` is
+  `stages/StageDestinations.tsx` re-homed, both now mounted by the **workflow settings panel** beside the
+  **Workflows canvas** rather than by a dialog; `AddStageField`, `AutoChainGuards` and
+  `StrictWorkflowToggle` moved from `components/stages/` to `components/workflows/`. The one declared
+  behaviour change above — a half-typed draft discarded when its row unmounts — **survives with a new
+  trigger**: the panel holds no panel-level draft record at all, and its equivalent of "the row went
+  away" is a different node being selected, which unmounts the body that owned the draft. Read every
+  `StageEditor` above as a dated name for a surface that no longer exists), **`TaskDetailDialog.tsx`**
   (**REFUTED, and since SPLIT** — this entry used to read *"the artifact reader's `requestIdRef` is a
   request-ordering guard; lifting it changes when the fetch fires"*, and every clause of that is false:
   no such symbol exists, it shared no state with the launch path, and the file has zero `useEffect`s, so

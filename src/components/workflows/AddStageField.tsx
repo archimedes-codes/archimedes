@@ -6,21 +6,28 @@ import { Input } from "../ui/input";
 import { useTasks } from "../../store/tasks";
 
 /**
- * The footer's **add a Stage** field (create) — the input-and-button pair under
- * the Stage rows in `StageEditor`, as its own subject.
+ * The **add a Stage** field (create) — the input-and-button pair in the workflow mode
+ * of the canvas's settings panel, as its own subject.
  *
- * One piece of state, `newLabel`, and nothing else in the dialog reads it — the
- * reason it lifted whole. The write goes through the store like every other write
- * in this dialog (`store/tasks` owns the optimistic paint, the re-derivation and the
- * revert), so what lives here is the draft and the one call that commits it.
+ * IT HAD TWO MOUNTS AND NOW HAS ONE. The other was the footer of the board's stage
+ * dialog; that dialog is deleted, so `workflows/WorkflowSettingsBody.tsx` is its only
+ * home. Adding a column is a workflow-level act and not a per-column one, which is why
+ * the panel's workflow mode and not a node body is where it lives.
+ *
+ * One piece of state, `newLabel`, and nothing else in the panel reads it — the reason
+ * it lifted whole. The write goes through the store like every other write the panel
+ * makes (`store/tasks` owns the optimistic paint, the re-derivation and the revert), so
+ * what lives here is the draft and the one call that commits it.
  *
  * WHY A COMPONENT AND NOT A WRAPPER ELEMENT: `CatalogSearchDialog`'s `children` are
  * SIBLINGS of the scroller and a level deeper would break the `parentElement` walk
  * its sibling dialogs' tests perform. A component boundary adds no element, so the
  * `<div>` below is the same node in the same position.
  *
- * `spacePath` is `string`, not `string | null` — `StageEditor`'s early return makes
- * a Spaceless mount unreachable, so `addStage`'s guard is now the type's job.
+ * `spacePath` is `string`, not `string | null` — the one mount that uses this field
+ * (`NodeSettingsPanel`'s workflow mode) early-returns on a
+ * `null` Space, which makes a Spaceless mount unreachable, so `addStage`'s guard is now
+ * the type's job.
  */
 export function AddStageField({ spacePath }: { spacePath: string }): ReactElement {
   const createStage = useTasks((s) => s.createStage);
@@ -42,11 +49,11 @@ export function AddStageField({ spacePath }: { spacePath: string }): ReactElemen
   };
 
   return (
-    <div className="flex min-w-0 items-center gap-2 border-t border-card-border pt-2">
+    <div className="flex min-w-0 items-center gap-2 border-t border-card-border pt-3">
       <Input
-        aria-label="New stage label"
+        aria-label="New column label"
         className="min-w-0 flex-1"
-        placeholder="New stage label"
+        placeholder="New column label"
         value={newLabel}
         onChange={(event) => setNewLabel(event.target.value)}
         onKeyDown={(event) => {
@@ -60,14 +67,13 @@ export function AddStageField({ spacePath }: { spacePath: string }): ReactElemen
       <Button
         type="button"
         variant="outline"
-        size="sm"
-        aria-label="Add stage"
+        aria-label="Add column"
         className="shrink-0 gap-1"
         aria-disabled={newLabel.trim() === "" || undefined}
         onClick={() => void addStage()}
       >
         <PlusIcon className="size-3.5" />
-        <span>Add stage</span>
+        <span>Add column</span>
       </Button>
     </div>
   );

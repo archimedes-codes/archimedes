@@ -12,6 +12,12 @@ import type { AutoGuards } from "../../lib/tauri";
  * `StrictWorkflowToggle` (its exact sibling: per-Space, seeded from its own read, one
  * `spaces`-row write, no board paint).
  *
+ * IT HAD TWO MOUNTS AND NOW HAS ONE — `workflows/WorkflowSettingsBody.tsx` (the
+ * workflow mode of the settings panel). The other was the footer of the board's stage
+ * dialog, which is deleted. One component rather than a copy in the panel, because a
+ * fork would be a second owner of the `NULL` ≠ `0` rules
+ * below — the rules most likely to be quietly diverged by a fork.
+ *
  * ---------------------------------------------------------------------------
  * IT IS A FORM, NOT A STORE
  * ---------------------------------------------------------------------------
@@ -76,8 +82,9 @@ import type { AutoGuards } from "../../lib/tauri";
  * nothing as far as the ceiling can see, and the STEP bound is what stops it. This
  * component configures the guard; the runtime enforces it.
  *
- * `spacePath` is `string`, not `string | null` — `StageEditor`'s early return makes a
- * Spaceless mount unreachable, the same promise `StrictWorkflowToggle` and
+ * `spacePath` is `string`, not `string | null` — its one mount early-returns on a
+ * `null` Space (`NodeSettingsPanel` for the panel's workflow mode), which
+ * makes a Spaceless mount unreachable — the same promise `StrictWorkflowToggle` and
  * `AddStageField` are built on.
  */
 export function AutoChainGuards({ spacePath }: { spacePath: string }): ReactElement {
@@ -157,7 +164,7 @@ export function AutoChainGuards({ spacePath }: { spacePath: string }): ReactElem
       next.maxSteps === guards.maxSteps &&
       next.ceilingUsd === guards.ceilingUsd
     ) {
-      // Nothing changed — and a blur fires on every click elsewhere in the dialog, so
+      // Nothing changed — and a blur fires on every click elsewhere in the panel, so
       // an ungated commit would rewrite the Space's guards as the user worked. The
       // `commitLabel` gate, one control over.
       return;
@@ -182,7 +189,7 @@ export function AutoChainGuards({ spacePath }: { spacePath: string }): ReactElem
   const seed = (value: number | null): string => (value === null ? "" : String(value));
 
   return (
-    <div className="flex min-w-0 flex-col gap-1 border-t border-card-border pt-2">
+    <div className="flex min-w-0 flex-col gap-2 border-t border-card-border pt-3">
       <div className={GUARD_ROW}>
         <span className={GUARD_GROUP}>
           <span className={GUARD_LABEL}>
@@ -237,7 +244,6 @@ export function AutoChainGuards({ spacePath }: { spacePath: string }): ReactElem
         <Button
           type="button"
           variant="ghost"
-          size="xs"
           disabled={guards === null}
           aria-label="Clear the auto-chain guards"
           className={GUARD_BUTTON}
@@ -263,14 +269,14 @@ export function AutoChainGuards({ spacePath }: { spacePath: string }): ReactElem
  *  `CONTROL_ROW` because it carries labelled FIELDS and not a cluster of small
  *  affordances. ONE consumer — this file — so it lives here, the bar
  *  `stageStyles.ts` states for itself. */
-const GUARD_ROW = "flex min-w-0 flex-wrap items-center gap-2";
+const GUARD_ROW = "flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2";
 /** A label-and-field pair. A `<span>` and not a `<div>`: this row's items are
  *  inline-flex and a block child would take the field out of the wrap. */
 const GUARD_GROUP = "flex min-w-0 items-center gap-1.5";
 const GUARD_LABEL = "shrink-0 text-ui-sm text-foreground-subtle";
 /** The two fields, narrow and identical — a bound you cannot compare side by side is
  *  two fields instead of one decision. */
-const GUARD_FIELD = "h-6 w-24";
+const GUARD_FIELD = "w-20 min-w-0";
 /** The Clear, on the `ROW_BUTTON` shape so it sits at the same weight as a row's. */
 const GUARD_BUTTON =
   "shrink-0 text-foreground-subtlest hover:bg-surface-hover hover:text-foreground";

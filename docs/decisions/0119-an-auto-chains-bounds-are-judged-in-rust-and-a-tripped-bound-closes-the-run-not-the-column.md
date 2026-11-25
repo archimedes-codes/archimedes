@@ -1,7 +1,7 @@
 ---
 status: accepted
 date: 2026-11-24
-superseded-by:
+superseded-by: 0120-the-workflows-canvas-is-an-editor-and-node-settings-panel-is-the-sole-owner-of-the-stage-fields.md
 ---
 
 # An auto-chain's bounds are judged in **Rust**, and a tripped bound closes the **run** and never reconfigures the **column**
@@ -254,6 +254,21 @@ would call a refusal a success.
 
 ## 7. The canvas is **read-only**, the **Stage editor** dialog is the sole owner of the Stage fields, and the two next-step functions stay **two**
 
+> **Superseded PARTIALLY by ADR 0120 (2026-11-25) — read that before acting on this section.** Two of
+> this section's three clauses no longer describe the tree, and one stands untouched. **Falls:** that the
+> canvas is read-only, and that the **Stage editor** dialog is the sole owner of the per-column fields —
+> the canvas is now an **editor** (drag-to-connect, drag-to-position, **Tidy up**), the dialog is
+> **deleted**, and `NodeSettingsPanel` is the sole owner. The premise that made this ruling right is what
+> died: a read-only surface is defensible *while a dialog owns the fields*, and once the dialog goes the
+> panel is not a second owner, it is the only one. `stages.position_x` / `position_y` also landed, so the
+> "no column to live in" half of the position argument below is simply false now. **Stands, unchanged and
+> not to be re-opened:** the whole next-step half — `nextStepSlugs` and `nextStepOf` stay **two**
+> functions and their disagreement stays **preserved, not unified** — and the *principle* this section
+> argues, **one owner per fact**, which is what deleting the dialog honours rather than abandons. The
+> field-by-field arithmetic below is kept deliberately: it is the measured evidence that the reasoning was
+> sound when its premises were true, which is the durable lesson here. Scope is governed by that note in
+> ADR 0120 §7, not by the front-matter line alone.
+
 The plan specified a side panel editing label / Skill / extra prompt / Auto / destinations / order —
 **six fields, and the sentence this section used to carry ("all eight already existed in `StageEditor`")
 was wrong twice over: the plan's list holds six, not eight, and two of the six did not exist before this
@@ -432,8 +447,15 @@ was**, and `pnpm-lock.yaml` carries no n8n package. The only place the tree name
   this branch never touched, and cannot run against any of the four — so a reverted build opens a
   database that still carries them, present and inert. That is
   only survivable because the load-bearing half holds too: `STAGE_COLUMNS` and `SPACE_COLUMNS` are
-  **explicit** column lists, `grep 'SELECT \*'` over `src-tauri/src` reads **zero** hits at all, and
-  every production `INSERT INTO` names its columns — including the `workflow_runs` insert, whose list
+  **explicit** column lists. `grep 'SELECT \*'` over `src-tauri/src` reads **two** hits and **both are
+  prose** — the two doc-comment lines in `db/rows.rs` that explain why one of the mappers' const is an
+  explicit list and what a `SELECT *` would do to a positional index ladder — so the executable count is
+  zero. (This bullet used to report **zero hits at all**, and a prior correction pass claimed to have
+  fixed that; it had not. Measured again at this branch: the figure is 2, and the reason it is not 0 is
+  that the repo documents the rule in the file that obeys it. The distinction the claim was reaching for
+  is real and is now stated as what it is — **no `SELECT *` in any executed statement** — rather than as
+  a grep total that a comment can falsify.)
+  Every production `INSERT INTO` names its columns — including the `workflow_runs` insert, whose list
   is line-continued and therefore invisible to a naive one-line grep. Note what makes the guard pair
   safe, since it is **not** `SPACE_COLUMNS`: that const is `["path", "created_at",
   "last_opened_at", "trusted"]` and carries neither guard column, because the guards are read by

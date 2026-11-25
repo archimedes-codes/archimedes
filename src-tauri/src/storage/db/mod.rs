@@ -14,7 +14,7 @@
 //!
 //! This parent holds what every subject shares and what the pins read: the three
 //! error types and their `From` maps, the `Db` struct, [`Db::open`] **whole**
-//! (its seventeen `gate` calls ARE the migration surface, and
+//! (its nineteen `gate` calls ARE the migration surface, and
 //! `the_three_task_tables_are_in_schema_and_have_no_gate_entry` counts them from
 //! this file's text), `gate`, `set_journal_pragmas`, `LAST_ACTIVITY` and `SCHEMA`.
 //! Every subject lives in the sibling that names it — [`sessions`], [`messages`],
@@ -970,6 +970,48 @@ impl Db {
             tx.execute("ALTER TABLE spaces ADD COLUMN auto_ceiling_usd REAL", [])?;
             Ok(())
         })?;
+        // The two hand-arranged canvas coordinates (the Workflows canvas's
+        // n8n-style "drag it where you want it and it stays"). TWO gates because
+        // `gate` probes ONE column, and one gate naming two columns cannot answer
+        // "is this one absent". They are the LAST two probes, which is the order
+        // `each_cluster_schema_omits_exactly_one_gated_column`'s `GATED` list
+        // spells — that pin walks the list in probe order against the fixtures.
+        //
+        // NO `DEFAULT` and NO backfill on either, and that is the whole upgrade
+        // story: `NULL` means "this column was NEVER hand-arranged, so the canvas
+        // lays the node out with dagre", which is the truth for every row in every
+        // existing database. A `DEFAULT 0` would migrate all of them into
+        // "hand-placed at the origin" — a CONFIGURED position nobody configured —
+        // and the first canvas open after an upgrade would stack every node in the
+        // user's workflow at (0, 0) while bypassing dagre for all of them. That is
+        // ADR 0082's phantom-`$0.00` collapse one table over, wearing a coordinate
+        // instead of a cost, and it is the same argument `spaces.auto_max_steps`
+        // two gates up makes about a spend bound: `0` is an answer, `NULL` is the
+        // absence of one. Both `dflt_value`s are pinned to NULL by
+        // `both_position_gates_arrive_null_on_a_preexisting_board`, so a `DEFAULT`
+        // added here fails a pin rather than passing the `None` asserts.
+        //
+        // NO CHECK constraint and NO range rule: whether a coordinate is SANE is
+        // the canvas's question, not storage's (the `prompt_prefix` /
+        // `set_stage_prompt_prefix` argument — refusing a value the wire does not
+        // forbid is storage inventing a rule). Negative coordinates are real: a
+        // node dragged left of the dagre origin has one, and the canvas pans.
+        //
+        // The pair's "both or neither" rule is NOT enforced here and cannot be:
+        // SQLite cannot express a two-column constraint in an `ADD COLUMN`, and
+        // `gate` is a per-column probe. It is enforced by making the state
+        // unrepresentable one layer up — `Db::set_stage_position` takes ONE
+        // `Option<(f64, f64)>`, so there is no argument list that spells a
+        // half-pair — and by `require_position_pair` at the wire, which is the
+        // only door where a half-pair can arrive at all.
+        gate(&mut conn, "stages", "position_x", |tx| {
+            tx.execute("ALTER TABLE stages ADD COLUMN position_x REAL", [])?;
+            Ok(())
+        })?;
+        gate(&mut conn, "stages", "position_y", |tx| {
+            tx.execute("ALTER TABLE stages ADD COLUMN position_y REAL", [])?;
+            Ok(())
+        })?;
         // One-time migration for pre-existing databases: give
         // `native_messages` its `ON DELETE CASCADE` foreign key (a
         // pre-existing table cannot GAIN an FK in place — recreate it,
@@ -1137,6 +1179,8 @@ CREATE TABLE IF NOT EXISTS stages (
     next_slugs TEXT,
     auto INTEGER NOT NULL DEFAULT 0,
     prompt_prefix TEXT,
+    position_x REAL,
+    position_y REAL,
     PRIMARY KEY (space_path, slug)
 );
 CREATE TABLE IF NOT EXISTS tasks (

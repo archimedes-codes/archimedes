@@ -206,14 +206,23 @@ whether a candidate crosses subjects.
 Candidates to inspect rather than assume (each reads as plausibly one subject or
 several — read the titles): `SidePane (the status panel)`,
 `MessageList scroll behavior`, `chatAttachments`. In Rust, `config.rs` is a
-Rust-side candidate by the same instrument. `db/tests/stages.rs` was inspected on
-this branch and is **not** a violation: 22 attributes over 890 code lines with
-zero inner `mod` declarations, so it is under the ~25 tripwire and under ADR
-0112's 1,000-line test gate, and its titles are one subject (the Stage-config
-verbs — seeding, the gated columns, `create`/`rename`/`reorder`/`delete` and the
-`set_stage_*` setters). It is named here rather than in the list above because it
-is the closest non-ledgered child to both thresholds, and a reader who adds a
-`set_stage_*` verb is the one who will cross them.
+Rust-side candidate by the same instrument. `db/tests/stages.rs` — which was
+named in this paragraph as the closest non-ledgered child to both thresholds —
+**no longer exists**: it was split by subject into `db/tests/stage_lifecycle.rs`
+and `db/tests/stage_setters.rs`, so the figures this paragraph carried (22
+attributes over 890 code lines) are provenance for the commit that measured them
+and are not re-runnable at HEAD. What made the split unavoidable is the shape
+this file warns about, arrived at one commit later than the paragraph expected:
+the canvas-editor work took the file to **24 attributes over 985 code lines** —
+15 lines under ADR 0112's 1,000-line test gate, with `db/tests/sessions.rs`
+already sitting ledgered above it — so a 25th test anywhere in it, or one added
+line, was a CI red. Its titles held TWO subjects, which is what the subject rule
+says to separate: the column's EXISTENCE and POSITION (the lazy seed, the
+`Db::open` gates that deliver the columns, and `create`/`rename`/`reorder`/
+`delete`) against the per-column VALUES (the five `set_stage_*` verbs). Both
+children are under the ~25 tripwire and well under the size gate — re-run
+`grep -cE '#\[(tokio::)?test\]'` and the code-line instrument on each rather
+than trusting a number here — and neither is a subject-count violation.
 
 ### Mirror status (ADR 0113) and the size class (ADR 0112), separated
 
@@ -225,9 +234,12 @@ been mis-cited as a mirror violation.
   `tests/mod.rs` is a shell of `mod` declarations and nothing else, one
   child per production sibling
   (`db/tests/{artifacts,auto_guards,board,messages,migrations,open,parent_link,
-  retention,rows,seams,sessions,spaces,stages,tasks,workflow_runs}.rs` plus
-  `support.rs` as the only non-mirror child), mirroring the **fourteen**
-  production siblings plus the `mod.rs` parent through `open.rs`. Run
+  retention,rows,seams,sessions,spaces,stage_lifecycle,stage_setters,tasks,
+  workflow_runs}.rs`), mirroring **thirteen** of the fourteen production
+  siblings by identical name, plus the `mod.rs` parent through `open.rs`, plus
+  `support.rs` as the only fixture child that mirrors nothing. The fourteenth
+  production sibling, `db/stages.rs`, is the single deliberate exception and it
+  is ADR 0113's own, not a violation — see the next paragraph. Run
   `ls src-tauri/src/storage/db/*.rs src-tauri/src/storage/db/tests/*.rs` and
   compare the two name-sets rather than trusting this enumeration — it is the
   list that decays, and it has already been under-counted once in this file's
@@ -235,6 +247,19 @@ been mis-cited as a mirror violation.
   work and `auto_guards.rs` / `workflow_runs.rs` with the workflow split; all four
   landed with their mirror child, which is what makes this bullet's claim
   self-defending rather than merely asserted at one moment.
+  **The two names that have no same-named production sibling (beside `open`,
+  which mirrors the parent and is accounted for above) are the ADR 0113
+  exception, not a mirror violation.** `db/stages.rs` is ONE production file, and
+  the ADR says so in as many words: "Where production is **one** file, the test
+  children are named by subject and there is nothing to mirror file-for-file",
+  citing `commands/tasks/tests/` — one production file with FOUR subject-named
+  children — as the precedent. So `stage_lifecycle.rs` and `stage_setters.rs`
+  carry subject names for the same reason `commands/tasks/tests/{board,stages,
+  artifacts,seed}.rs` do, and `db/tests/mod.rs`'s header names both deviations.
+  A reader who wants a one-file-per-verb mirror of `db/stages.rs` should read
+  that ADR's Scope section before filing it: the mirror binds the naming of the
+  children a split produces, and it never demanded a production split of a file
+  that holds one subject's SQL.
   Its largest child, `db/tests/sessions.rs`, is 1,086 code lines / 30
   tests: **over** ADR 0112's test gate, so it is ledgered in
   `scripts/file-size-baseline-test.txt`, and it is **not** a subject-count

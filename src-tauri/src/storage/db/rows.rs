@@ -180,7 +180,15 @@ pub(super) fn space_row_from(row: &Row<'_>) -> rusqlite::Result<SpaceRow> {
 ///
 /// Keyed `(space_path, slug)`: a slug is unique WITHIN a Space, so two Spaces
 /// can both have a `doing` column with different `on_enter` settings.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// NOT `Eq`, and that is load-bearing rather than careless, exactly as
+/// [`StageWithTasks`] documents for itself: the two canvas coordinates are
+/// `f64`, and `f64` is not `Eq` (no reflexive equality over `NaN`). Nothing keys
+/// a `StageRow` in a `HashSet`/`BTreeMap` (verified: zero hits for
+/// `HashSet<StageRow>`/`HashMap<StageRow…`/`BTreeSet<StageRow`), and `PartialEq`
+/// is all `assert_eq!` needs — the same derive set `TaskCardView` and
+/// `StageWithTasks` already carry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StageRow {
     pub space_path: String,
@@ -224,15 +232,45 @@ pub struct StageRow {
     /// (`Db::set_stage_prompt_prefix`, whose parameter is an `Option` for exactly
     /// that reason). Stored RAW: nothing here trims, templates or interprets it.
     pub prompt_prefix: Option<String>,
+    /// The X of this column's node on the Workflows canvas, in canvas
+    /// coordinates — the hand-arranged half of the layout (the canvas's
+    /// n8n-style "drag it where you want it and it stays").
+    ///
+    /// `None` means NEVER HAND-ARRANGED and it is the ONLY spelling of that: the
+    /// canvas runs dagre for the node. `Some(0.0)` is a DIFFERENT answer — a
+    /// person pinned it to the origin — and the two are never collapsed anywhere,
+    /// which is why neither column has a SQL `DEFAULT` (both gates in `Db::open`,
+    /// both `dflt_value`s pinned). A `DEFAULT 0` would migrate every existing
+    /// board to "hand-placed at (0, 0)" and stack every node on top of every
+    /// other one.
+    ///
+    /// ALWAYS READ AS A PAIR with [`Self::position_y`]. A node is a BOX, so half a
+    /// coordinate is a lie about where a box is; the state has no spelling at the
+    /// write (`Db::set_stage_position` takes one `Option<(f64, f64)>`) and is
+    /// refused at the wire (`require_position_pair`). A half-set row is therefore
+    /// only reachable through a writer that bypassed both, and a reader finding
+    /// one has permission to treat the node as unpositioned — nothing here
+    /// promises to repair what it cannot have produced.
+    pub position_x: Option<f64>,
+    /// The Y of this column's node on the Workflows canvas — see
+    /// [`Self::position_x`] for the pair's semantics, which are identical.
+    pub position_y: Option<f64>,
 }
 
 /// The ONE `stages` SELECT list every read uses, as a const array of column
 /// names — same reason and same honest scope as [`SESSION_COLUMNS`].
 ///
+/// This is an EXPLICIT column list and there is no `SELECT *` anywhere in
+/// production: the invariant ADR 0119's rollback story rests on, because a
+/// rolled-back build whose extra columns are simply un-named keeps working, while
+/// a `SELECT *` would change a positional mapper's index ladder on the next
+/// migration and read the wrong column into the wrong field.
+///
 /// The two #179 columns and the two workflow columns go at the END, not in the
 /// middle: [`stage_row_from`] reads by POSITION, so appending keeps every
 /// existing index stable and a reorder cannot silently swap two fields' meanings.
-pub(super) const STAGE_COLUMNS: [&str; 9] = [
+/// The two canvas coordinates append the same way, for the same reason.
+pub(super) const STAGE_COLUMNS: [&str; 11] = [
     "space_path",
     "slug",
     "label",
@@ -242,9 +280,11 @@ pub(super) const STAGE_COLUMNS: [&str; 9] = [
     "next_slugs",
     "auto",
     "prompt_prefix",
+    "position_x",
+    "position_y",
 ];
 
-pub(super) const STAGE_ROW_FIELDS: usize = 9;
+pub(super) const STAGE_ROW_FIELDS: usize = 11;
 // Compile-time arity tie ONLY — see SESSION_ROW_FIELDS for the honest scope;
 // the drift-guard TEST is the guard.
 const _: [(); STAGE_COLUMNS.len()] = [(); STAGE_ROW_FIELDS];
@@ -264,6 +304,14 @@ pub(super) fn stage_row_from(row: &Row<'_>) -> rusqlite::Result<StageRow> {
         // ON rather than silently as OFF.
         auto: row.get::<_, i64>(7)? != 0,
         prompt_prefix: row.get::<_, Option<String>>(8)?,
+        // The two canvas coordinates, `REAL` and both nullable. Read as plain
+        // `Option<f64>` — no lenient parser (that is `next_slugs`'s JSON problem,
+        // not a numeric one) and no `0.0` fallback: a NULL must arrive as `None`,
+        // because `None` is "dagre lays this node out" and `Some(0.0)` is "a
+        // person put it at the origin". A DDL type change is a loud
+        // `InvalidColumnType` here, exactly as every other rung of this ladder is.
+        position_x: row.get::<_, Option<f64>>(9)?,
+        position_y: row.get::<_, Option<f64>>(10)?,
     })
 }
 
