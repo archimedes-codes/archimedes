@@ -425,25 +425,19 @@ describe("the board pills' fill, per palette (the default-dark collision)", () =
    *  already reads the float components for their `shadow-`: a class a palette
    *  test cannot see is still a palette failure.
    *
-   *  TWO ENTRIES, SIX PILLS: the card carries FIVE (`T{n}`, the spec chip, the
-   *  sessions chip, the next-step pill and the artifact key chips) and the column
-   *  carries one (the count).
-   *  Issue #174 added the card's THIRD — the sessions chip — and it wears the same
-   *  fill, so the entry needed no new row (each entry is FILE-scoped: the gate reads
-   *  a file and censuses every `rounded-full` literal in it) but the count below did
-   *  move, 2 → 3. Issue #179's primary-next-step pill is the FOURTH and moved it
-   *  3 → 4 on the same reasoning. Issue #180's ARTIFACT KEY CHIPS are the FIFTH and
-   *  move it 4 → 5: the chips render one pill per artifact key from ONE shared class
-   *  literal, so a card with three keys still contributes exactly ONE literal here.
-   *  The sequence is 2 → 3 (#174) → 4 (#179) → 5 (#180), and the TREE is the
-   *  authority on the number, never this comment. A new pill in an already-censused
-   *  file needs no new row, only a count that keeps failing if one of them loses its
-   *  fill — which is the whole point of the census being a COUNT and not a scan. */
+   *  TWO ENTRIES, TWO PILLS: the card carries ONE (the `T{n}` badge) and the column
+   *  carries one (the count). The sequence is 2 → 3 (#174, the sessions chip) → 4
+   *  (#179, the next-step pill) → 5 (#180, the artifact key chips) → 1 (card
+   *  redesign: spec/artifact chips became `rounded-md`, the sessions control a quiet
+   *  inline link and the next-step control a bordered `bg-surface` button, so none of
+   *  them is a `rounded-full` pill any more). The TREE is the authority on the
+   *  number, never this comment. A new pill in an already-censused file needs no new
+   *  row, only a count that keeps failing if one of them loses its fill — which is
+   *  the whole point of the census being a COUNT and not a scan. */
   const PILLS: Array<{ file: string; label: string }> = [
     {
       file: "src/components/TaskCard.tsx",
-      label:
-        "the card's `T{n}` pill, spec chip, sessions chip, next-step pill and artifact key chips",
+      label: "the card's `T{n}` pill",
     },
     { file: "src/components/tasks/TaskColumn.tsx", label: "the column count pill" },
   ];
@@ -465,13 +459,9 @@ describe("the board pills' fill, per palette (the default-dark collision)", () =
         );
       }
       // A CENSUS, so a pill cannot dodge the gate by losing `rounded-full`.
-      // The card carries FIVE (`T{n}`, the spec chip, the sessions chip, the
-      // primary-next-step pill — #179's — and the artifact key chips — #180's, which
-      // render N chips from ONE literal) and the column still carries one.
+      // The card carries ONE (the `T{n}` badge) and the column one.
       const fills = literals.filter((l) => /(^|\s)bg-background(\s|$)/.test(l));
-      expect(fills.length, `${pill.file} pill count drifted`).toBe(
-        pill.file.endsWith("TaskCard.tsx") ? 5 : 1,
-      );
+      expect(fills.length, `${pill.file} pill count drifted`).toBe(1);
     });
   }
 

@@ -280,10 +280,9 @@ describe("TaskCard — the mark is decoration, not a control", () => {
   });
 
   it("the mark is not a pill: the card's pill census does not move", () => {
-    // `slabFloatSeparation.test.ts` counts `bg-background`-filled `rounded-full`
-    // literals in `TaskCard.tsx` and pins the number at FIVE. A status glyph wears
-    // no fill, so the RENDERED count stays what it was before any mark existed:
-    // `T{n}` + spec + one artifact key + the sessions chip = 4.
+    // `slabFloatSeparation.test.ts` pins the card's `bg-background` `rounded-full`
+    // literal at ONE (the `T{n}` badge). A status glyph wears no fill, so the RENDERED
+    // count is ONE and the glyph is not a second pill.
     render(
       <TaskCard
         task={task({ specPath: "/tmp/spec.md" })}
@@ -296,7 +295,7 @@ describe("TaskCard — the mark is decoration, not a control", () => {
     const pills = Array.from(
       card().querySelectorAll('[class*="rounded-full"]'),
     );
-    expect(pills).toHaveLength(4);
+    expect(pills).toHaveLength(1);
     expect(pills.some((p) => p.contains(readyGlyph()!))).toBe(false);
   });
 
