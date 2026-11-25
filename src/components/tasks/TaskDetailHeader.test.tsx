@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { TaskDetailHeader } from "./TaskDetailHeader";
 import { Dialog, DialogContent } from "../ui/dialog";
@@ -240,34 +240,88 @@ describe("TaskDetailHeader", () => {
   // focus. So the user had to click back in, and Escape then reached the dialog instead of
   // the editor. A failed save must hand focus back to the still-open input.
   it("a rejected save returns keyboard focus to the input, so Escape still cancels the editor", async () => {
-    // jsdom does NOT drop focus when an input is disabled (verified: `activeElement` stays on
-    // the input), but a browser DOES. So simulate the browser: while the save is pending,
-    // move focus off the input, as disabling it does in a real browser. The fix must
-    // restore focus after the failed save, or this assertion fails.
+    // jsdom does NOT drop focus when a focused input is disabled, but a browser DOES. The
+    // save is started from `commit`, and the disable happens on the next render. So the
+    // browser drop is simulated by blurring the input inside `onSaveTitle`, which runs during
+    // `commit` BEFORE that render. The fix must hand focus back after the failed save.
     let reject: (err: Error) => void = () => {};
+    let inputRef: HTMLInputElement | null = null;
     const onSaveTitle = vi.fn(
       () =>
         new Promise<void>((_resolve, rej) => {
           reject = rej;
+          inputRef?.blur();
         }),
     );
     renderHeader({ title: "Old", onSaveTitle });
     const input = openEditor();
+    inputRef = input;
     fireEvent.change(input, { target: { value: "Doomed" } });
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(onSaveTitle).toHaveBeenCalledWith("Doomed"));
-    // The browser drops focus when the input is disabled. jsdom does not (and `blur()` is a
-    // no-op on a disabled element), so move focus to a neutral element explicitly: that is
-    // the state a real browser leaves the user in. The fix must hand focus back.
-    const neutral = document.createElement("button");
-    document.body.appendChild(neutral);
-    neutral.focus();
-    expect(document.activeElement).toBe(neutral);
-    reject(new Error("empty_title"));
-    await waitFor(() =>
-      expect((screen.getByRole("textbox") as HTMLInputElement).disabled).toBe(false),
+    await waitFor(() => expect(input.disabled).toBe(true));
+    expect(document.activeElement).not.toBe(input);
+    await act(async () => {
+      reject(new Error("empty_title"));
+    });
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    expect(input.disabled).toBe(false);
+  });
+
+  // REGRESSION (Greptile P2, "Failed saves interrupt another edit"). A failed save must not
+  // pull focus away from a control the user deliberately moved to while the save was pending.
+  // The user tabs into another field in the same dialog; the rejection must leave focus there,
+  // not steal it back to the title input.
+  it("a rejected save does NOT steal focus from another control the user moved to", async () => {
+    let reject: (err: Error) => void = () => {};
+    let inputRef: HTMLInputElement | null = null;
+    const onSaveTitle = vi.fn(
+      () =>
+        new Promise<void>((_resolve, rej) => {
+          reject = rej;
+          inputRef?.blur();
+        }),
     );
-    expect(document.activeElement).toBe(screen.getByRole("textbox"));
-    neutral.remove();
+    // Another field in the same dialog, present from the start. A late `rerender` that adds it
+    // remounts the dialog content and drops the editor, so it is rendered up front instead.
+    render(
+      <Dialog open>
+        <DialogContent aria-describedby={undefined}>
+          <TaskDetailHeader
+            number={3}
+            title="Old"
+            onSaveTitle={onSaveTitle}
+            onEditingChange={vi.fn()}
+            error={null}
+          />
+          <textarea aria-label="Description" />
+        </DialogContent>
+      </Dialog>,
+    );
+    fireEvent.click(titleButton());
+    // The title input is the textbox that is NOT the labelled description field.
+    const input = screen
+      .getAllByRole("textbox")
+      .find((el) => el.getAttribute("aria-label") !== "Description") as HTMLInputElement;
+    inputRef = input;
+    fireEvent.change(input, { target: { value: "Doomed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onSaveTitle).toHaveBeenCalledWith("Doomed"));
+    await waitFor(() => expect(input.disabled).toBe(true));
+    const other = screen.getByRole("textbox", { name: "Description" });
+    act(() => {
+      other.focus();
+    });
+    expect(document.activeElement).toBe(other);
+    await act(async () => {
+      reject(new Error("empty_title"));
+    });
+    await act(async () => {
+      reject(new Error("empty_title"));
+    });
+    // The rejection's `act` has flushed the re-enable AND its passive restore effect, so the
+    // guard has already run by here. No timer is needed: the focus is read deterministically.
+    expect(input.disabled).toBe(false);
+    expect(document.activeElement).toBe(other);
   });
 });

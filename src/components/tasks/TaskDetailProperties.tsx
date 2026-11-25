@@ -199,7 +199,14 @@ function SpecPathRow({
   useEffect(() => {
     if (!saving && refocusRef.current) {
       refocusRef.current = false;
-      inputRef.current?.focus();
+      const input = inputRef.current;
+      if (!input) return;
+      // Only take focus back when the user has NOT moved it to another control while the save
+      // was pending. A disabled input drops focus to <body>, and the dialog wrapper is the
+      // other "nothing chosen" landing. Anything else is a deliberate choice; keep it.
+      const active = document.activeElement;
+      const dialog = input.closest('[role="dialog"]');
+      if (!active || active === document.body || active === dialog) input.focus();
     }
   }, [saving]);
   const mounted = useRef(true);

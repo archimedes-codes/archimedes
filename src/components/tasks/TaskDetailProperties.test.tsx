@@ -366,31 +366,74 @@ describe("TaskDetailProperties — spec path", () => {
 
   // REGRESSION (Greptile P2, "Failed saves lose keyboard focus"), the SpecPathRow half.
   // A rejected save must hand focus back to the still-open input, so Escape still cancels.
+  //
+  // jsdom does not drop focus when a focused input is disabled, but a browser does. The drop
+  // is simulated by blurring the input inside `onSaveSpecPath`, which runs during commit
+  // BEFORE the disabling render. The restore runs in a passive effect after the re-enable,
+  // so the assertion waits for focus rather than reading it synchronously.
   it("a rejected spec save returns keyboard focus to the input, so Escape still cancels", async () => {
     let reject: (err: Error) => void = () => {};
+    let inputRef: HTMLInputElement | null = null;
     const onSaveSpecPath = vi.fn(
       () =>
         new Promise<void>((_resolve, rej) => {
           reject = rej;
+          inputRef?.blur();
         }),
     );
     renderProperties({ task: taskRow({ specPath: "/old.md" }), onSaveSpecPath });
     fireEvent.click(screen.getByTestId("spec-path-value"));
     const input = screen.getByRole("textbox") as HTMLInputElement;
+    inputRef = input;
     fireEvent.change(input, { target: { value: "/bad.md" } });
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(onSaveSpecPath).toHaveBeenCalledWith("/bad.md"));
-    // Move focus to a neutral element, as a browser does when the input is disabled.
-    const neutral = document.createElement("button");
-    document.body.appendChild(neutral);
-    neutral.focus();
-    expect(document.activeElement).toBe(neutral);
-    reject(new Error("bad path"));
-    await waitFor(() =>
-      expect((screen.getByRole("textbox") as HTMLInputElement).disabled).toBe(false),
+    await waitFor(() => expect(input.disabled).toBe(true));
+    expect(document.activeElement).not.toBe(input);
+    await act(async () => {
+      reject(new Error("bad path"));
+    });
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    expect(input.disabled).toBe(false);
+  });
+
+  // REGRESSION (Greptile P2, "Failed saves interrupt another edit"), the SpecPathRow half.
+  // A rejected save must not pull focus away from a control the user moved to while the save
+  // was pending. The user tabs into another field; the rejection must leave focus there.
+  it("a rejected spec save does NOT steal focus from another control the user moved to", async () => {
+    let reject: (err: Error) => void = () => {};
+    let inputRef: HTMLInputElement | null = null;
+    const onSaveSpecPath = vi.fn(
+      () =>
+        new Promise<void>((_resolve, rej) => {
+          reject = rej;
+          inputRef?.blur();
+        }),
     );
-    expect(document.activeElement).toBe(screen.getByRole("textbox"));
-    neutral.remove();
+    renderProperties({ task: taskRow({ specPath: "/old.md" }), onSaveSpecPath });
+    fireEvent.click(screen.getByTestId("spec-path-value"));
+    const input = screen.getByRole("textbox") as HTMLInputElement;
+    inputRef = input;
+    fireEvent.change(input, { target: { value: "/bad.md" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onSaveSpecPath).toHaveBeenCalledWith("/bad.md"));
+    await waitFor(() => expect(input.disabled).toBe(true));
+    // Another control the user moved to while the save is pending. Rendered as a plain button
+    // so the test does not depend on the Stage select's own focus handling.
+    const other = document.createElement("button");
+    document.body.appendChild(other);
+    act(() => {
+      other.focus();
+    });
+    expect(document.activeElement).toBe(other);
+    await act(async () => {
+      reject(new Error("bad path"));
+    });
+    // The rejection's `act` has flushed the re-enable AND its passive restore effect, so the
+    // guard has already run by here. No timer is needed: the focus is read deterministically.
+    expect(input.disabled).toBe(false);
+    expect(document.activeElement).toBe(other);
+    other.remove();
   });
 });
 
