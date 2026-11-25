@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   createTask as createTaskCommand,
+  editTask as editTaskCommand,
   getBoard as getBoardCommand,
   linkSession as linkSessionCommand,
   moveTask as moveTaskCommand,
@@ -50,16 +51,20 @@ import { describeIpcError } from "../lib/ipcError";
  * key IS the identity.
  *
  * THE `as …Command` ALIASES ARE LOAD-BEARING, not decoration. This store's own
- * actions are named `moveTask`, `createTask` and `linkSession` — the same names
- * the IPC wrappers carry. Importing them bare would collide with the key being
- * defined, and worse, calling the bare name inside `moveTask:` would be INFINITE
- * RECURSION rather than a command call. Every call site below therefore names the
- * alias. (`sessions.ts` follows the identical convention for the same reason.)
+ * actions are named `moveTask`, `createTask`, `linkSession` and `editTask` — the
+ * same names the IPC wrappers carry. Importing them bare would collide with the
+ * key being defined, and worse, calling the bare name inside `moveTask:` would be
+ * INFINITE RECURSION rather than a command call. Every call site below therefore
+ * names the alias. (`sessions.ts` follows the identical convention for the same
+ * reason.)
  *
- * `editTask` / `getTask` are deliberately ABSENT: no board action rewrites a
- * card's text. That is the New Task modal / a later edit surface (task A5), and a
- * store that owned a second write path the UI never drives is a second owner of
- * one fact.
+ * `getTask` is deliberately ABSENT: the board never reads one card on its own
+ * (`get_board` carries every card the columns draw). `editTask` is NOT absent any
+ * more — it is the ONE action that rewrites a card's text (title / body / spec
+ * path), driven by the inline editors in `TaskDetailDialog`. It forwards its three
+ * fields to the wrapper UNTOUCHED (`undefined` keeps, `null` clears, a string
+ * writes) and paints only the four fields the row's text owns (`title`, `body`,
+ * `specPath`, `updatedAt`); see the action.
  *
  * THE STAGE WRITES AND THE ARTIFACT PAIR (issue #179 §8.1 + issue #180 D1) joined
  * the same file on the same rules, and one rule needed a decision: spec §8.1 asks
@@ -74,14 +79,15 @@ import { describeIpcError } from "../lib/ipcError";
  * has not fetched, which is a fetch problem wearing a permission mask. The
  * `void`-returning writes (`reorderStages`, `deleteStage`, `setBoardStrict`,
  * `setAutoGuards`) capture
- * their failure into `error` exactly as `moveTask` does; the TEN that ANSWER
+ * their failure into `error` exactly as `moveTask` does; the ELEVEN that ANSWER
  * something (`createStage`, `renameStage`, `setStageSkill`, `setStageNext`,
- * `setStageAuto`, `setStagePromptPrefix`, `setStagePosition`, `getAutoGuards`, and
- * both artifact actions) rethrow as well, because on a refusal there is no value to
- * hand back and the caller is holding text this store will never display. (The
- * figure this sentence carried was stale by one: it read "eight" beside a list of
- * nine. Re-count it from the list if you touch this paragraph — a count of a list
- * two lines long is the least excusable rot in the file.)
+ * `setStageAuto`, `setStagePromptPrefix`, `setStagePosition`, `getAutoGuards`,
+ * both artifact actions, and `editTask`) rethrow as well, because on a refusal
+ * there is no value to hand back and the caller is holding text this store will
+ * never display. (The figure this sentence carried was stale by one: it read
+ * "eight" beside a list of nine. Re-count it from the list if you touch this
+ * paragraph — a count of a list two lines long is the least excusable rot in the
+ * file.)
  *
  * ONE module `let` still lives here (`loadEpoch`), and no Stage write added a
  * second: the Stage actions do not race each other the way a Space-tab switch
@@ -188,6 +194,25 @@ interface BoardState {
     title: string,
     body?: string | null,
     stageSlug?: string | null,
+  ) => Promise<TaskRow>;
+  /** Rewrite a card's TEXT (title / body / spec path) — the ONE action that does.
+   *  Each `patch` key has THREE states, forwarded UNTOUCHED to the wrapper: key
+   *  absent / `undefined` = KEEP the stored value, `null` = CLEAR it (`body` and
+   *  `specPath` only — `title` is NOT NULL, hence `title?: string`), a string =
+   *  WRITE it (`""` is a write, not a clear). Never coerce `undefined` to `null`:
+   *  that turns every keep into a clear.
+   *
+   *  `spacePath` only locates the board slice; it is not sent to the command.
+   *  Resolves the STORED `TaskRow` (trimmed title, fresh `updatedAt`) and, when the
+   *  card is on the loaded board, paints `title`/`body`/`specPath`/`updatedAt` onto
+   *  it in place — `sessions`, `costUsd`, `artifactKeys`, `stageSlug` and
+   *  `sortOrder` are not touched. On a refusal (`empty_title`, unknown id…) it
+   *  writes `error` AND REJECTS with the original error, so the editor can keep its
+   *  draft and show the sentence locally (the `writeArtifact` pattern). */
+  editTask: (
+    spacePath: string,
+    taskId: string,
+    patch: { title?: string; body?: string | null; specPath?: string | null },
   ) => Promise<TaskRow>;
   /** Record that a Session belongs to a card. Writes no board state. */
   linkSession: (
@@ -544,6 +569,46 @@ const withStage = (
       : c,
   );
 
+/** Merge a stored row's TEXT fields onto the ONE card it names, leaving the
+ *  wrapper's other fields (`sessions`, `costUsd`, `artifactKeys`), the row's
+ *  `stageSlug`/`sortOrder`, every other card and every other column alone. Only
+ *  `title`, `body`, `specPath` and `updatedAt` are taken from `row` — stage and
+ *  order belong to `moveTask`/`reorderWithinStage`, and a wholesale `task: row`
+ *  could revert an in-flight optimistic move. A slice that does not hold the card
+ *  (a board reloaded mid-edit) is returned UNCHANGED (same array), so the caller
+ *  can tell "nothing to paint" by identity. */
+const withCardText = (
+  columns: StageWithTasks[],
+  taskId: string,
+  row: TaskRow,
+): StageWithTasks[] => {
+  const at = columns.findIndex((c) =>
+    c.tasks.some((t) => t.task.id === taskId),
+  );
+  if (at === -1) return columns;
+  return columns.map((c, i) =>
+    i === at
+      ? {
+          ...c,
+          tasks: c.tasks.map((t) =>
+            t.task.id === taskId
+              ? {
+                  ...t,
+                  task: {
+                    ...t.task,
+                    title: row.title,
+                    body: row.body,
+                    specPath: row.specPath,
+                    updatedAt: row.updatedAt,
+                  },
+                }
+              : t,
+          ),
+        }
+      : c,
+  );
+};
+
 /** Rebuild the slice in the caller's slug order — the optimistic half of
  *  `reorderStages`. Two deliberate leniencies, both inherited from
  *  `reorderWithinStage`: a slug the slice does not hold is SKIPPED (it cannot be
@@ -818,6 +883,37 @@ export const useTasks = create<BoardState>((set, get) => ({
       set((state) => ({
         boardsBySpace: { ...state.boardsBySpace, [spacePath]: next },
       }));
+    }
+    return row;
+  },
+
+  editTask: async (spacePath, taskId, patch) => {
+    // The three fields go to the wrapper EXACTLY as the caller wrote them: a key
+    // the patch does not carry reads as `undefined` (= KEEP), `null` stays `null`
+    // (= CLEAR). No `??`, no default, no spread of defaults — any of those turns a
+    // title rename into a blanked body and spec path. `spacePath` stays off the wire.
+    let row: TaskRow;
+    try {
+      row = await editTaskCommand(
+        taskId,
+        patch.title,
+        patch.body,
+        patch.specPath,
+      );
+    } catch (err) {
+      set({ error: describeIpcError(err) });
+      console.error(`Failed to edit task ${taskId}:`, err);
+      throw err;
+    }
+    // Read the slice NOW, after the await: a load / refresh / moveTask may have
+    // replaced it while the command was in flight, and a copy captured before the
+    // call would write that older board back. An unloaded Space or a card that is
+    // no longer on the board is left alone (the `createTask` precedent) — the write
+    // already happened, only the paint is skipped.
+    const columns = get().boardsBySpace[spacePath];
+    if (columns) {
+      const next = withCardText(columns, taskId, row);
+      if (next !== columns) paint(set, spacePath, next);
     }
     return row;
   },
