@@ -380,8 +380,9 @@ fn artifacts_commands_are_registered_in_the_invoke_handler() {
     }
 }
 
-/// (the D2 boundary, pinned from the source text) the `<artifacts>` block and the
-/// verbs that answer it exist TOGETHER, or neither does.
+/// (the D2 boundary, pinned from the source text) the `<artifacts>` block, the
+/// registration of the verbs that answer it, and the frame that carries them exist
+/// TOGETHER, or none of them does.
 ///
 /// This test is D1's `d1_ships_no_model_facing_artifact_verb`, INVERTED rather than
 /// deleted, and the reason to keep it under a new name is that the hazard it guards
@@ -396,24 +397,76 @@ fn artifacts_commands_are_registered_in_the_invoke_handler() {
 /// change (its own MUTATION note named the `<artifacts>` line).
 ///
 /// What IS still true, and now worth pinning harder, is the PAIRING. The launch block
-/// and the answering seam are one feature: the block alone is the D1 bug (a promise
-/// with no verb), and the seam alone is a wire nobody tells the model about. So the
-/// three D2 pieces are asserted as a unit — `taskBlock`'s `<artifacts>` line, the
-/// `impl TaskStore for Db`, and the `TaskRequest` router arm. The third is the one
-/// that makes this more than a checklist: the pin bump and that arm are ONE COMMIT by
-/// D2's atomicity rule, because `route_event` matches `WorkerInboundEvent`
-/// exhaustively with no `_` arm, so the block, the impl and the arm are the three
-/// faces of a change that cannot be half-shipped.
+/// and the verbs that answer it are one feature: the block alone is the D1 bug (a
+/// promise with no verb), and a verb no Session is told about is a wire nobody
+/// travels. So the pieces are asserted as a unit — `taskBlock`'s `<artifacts>` line,
+/// the desktop's HOST-TOOL registration (the seven `ToolSpec`s this repo now owns, in
+/// `agent/host_tools/specs.rs`), and the generic `HostToolCall` router arm. The third
+/// is the one that makes this more than a checklist: `route_event` matches
+/// `WorkerInboundEvent` exhaustively with no `_` arm, so the block, the specs and the
+/// arm are three faces of a change that cannot be half-shipped.
 ///
-/// The files scanned are the three a partial D2 would have to leave inconsistent,
-/// plus `agent/harness/mod.rs`, which D1 scanned for a model-facing surface and which
-/// still must not grow one: the task tools are registered in the published
-/// `fulcrum-harness` crate (F1's step), and a second desktop-side registration would
-/// be a second owner of the tool list.
+/// # The two needles that used to be here, and why both moved
+///
+///   * `impl TaskStore for Db` in `storage/db/seams.rs` — that seam is GONE. ADR
+///     0102's F3 deleted `trait TaskStore` from the crate and D1 replaced the
+///     trait-impl door with `agent/host_tools/`. The needle is replaced by whatever
+///     now answers the block, not dropped.
+///   * `WorkerInboundEvent::TaskRequest` in `router.rs` — the frame pair died with
+///     the trait; the generic `HostToolCall` arm answers it.
+///
+/// # The negative half is INVERTED, and its premise is REVERSED with it
+///
+/// This block used to scan `agent/harness/mod.rs` and forbid `TaskStore` /
+/// `write_artifact` / `get_artifact` there, on the premise that the CRATE owned the
+/// advertised tool list and a desktop-side registration would be a SECOND owner of
+/// it. ADR 0102 reverses that premise: **the Client is the SOLE owner** of the seven
+/// host specs; the crate carries nineteen other specs and no idea that a Task exists.
+/// So the two host verbs flip to must-be-**PRESENT** and `TaskStore` stays **ABSENT**
+/// — for the opposite reason it was absent before, namely that the trait no longer
+/// exists anywhere, so a code-level mention of it is a reference to a symbol the
+/// pinned crate does not export.
+///
+/// The scanned file therefore MOVED, and that is the part a literal inversion gets
+/// wrong: `agent/harness/mod.rs` is an alias module that never held the registration
+/// and never will, so inverting the assertion where it stood would leave a GREEN test
+/// scanning a file that cannot contain its needles — the worst artifact available, a
+/// pin that passes on nothing while arguing against the design it now guards. The
+/// scan now reads `agent/host_tools/specs.rs` (where the seven specs are BUILT) and
+/// `agent/host_tools/mod.rs` (where they are handed to the engine).
+///
+/// # The string-literal hand-check — RE-DONE for the newly scanned files
+///
+/// `strip_comments` parses no string literals, so a `//` inside one truncates that
+/// line. Its doc licensed that for the OLD scanned file with a by-hand check of
+/// `agent/harness/mod.rs`. That premise moved with the file and was re-run
+/// 2026-11-25 against both files this pin now reads:
+///
+///   * `agent/host_tools/specs.rs` — `awk '{i=index($0,"//"); if(i>0){pre=substr($0,
+///     1,i-1); gsub(/^[ \t]+/,"",pre); if(pre!="") print}}'` gives **0** lines (every
+///     `//` in the file BEGINS its line, i.e. every one is a comment) and
+///     `grep -c '/\*'` gives **0**.
+///   * `agent/host_tools/mod.rs` — both instruments give **0** the same way.
+///
+/// The second is the one that matters, because a truncation in a must-be-ABSENT scan
+/// is a false GREEN; the first can only cost a false RED, which is loud. Neither file
+/// carries a URL or a path in a string literal — the literals in them are `ToolSpec`
+/// descriptions, parameter descriptions and one `crate::agent::harness::ToolSpec`
+/// path, and a `//` in any of those would be visible in the model's own `<tools>`
+/// section.
+///
+/// NOT scanned tree-wide for `TaskStore`, deliberately: the ONLY file in `src-tauri`
+/// whose CODE (comments stripped) still names `TaskStore` is this file, and it names
+/// it inside `the_comment_stripper_removes_prose_and_keeps_code`'s own fixture string
+/// — a tree-wide loop would read its own fixture, which is the self-reference this
+/// repo calls a vacuous pin. Fifteen other files name it in PROSE only, which is
+/// allowed to record what was deleted precisely because the stripper runs first.
 ///
 /// MUTATIONS: delete the `<artifacts>` line from `taskBlock` → the first assertion
-/// reddens. Delete `impl TaskStore for Db` → the second. Delete the router arm (or
-/// leave the crate pinned at 0.1.x, where the variant does not exist) → the third.
+/// reddens. Delete or rename a host `ToolSpec` in `specs.rs` → the second/third, on
+/// that verb. Delete the `HostToolCall` arm → the fourth. Move the registration out of
+/// `specs.rs` into a file this pin does not scan → the second reddens naming the file
+/// it reads, which is why the pin names files rather than globbing for them.
 #[test]
 fn d2_ships_the_artifacts_block_and_the_verbs_that_answer_it_together() {
     let manifest = env!("CARGO_MANIFEST_DIR");
@@ -424,21 +477,27 @@ fn d2_ships_the_artifacts_block_and_the_verbs_that_answer_it_together() {
             "the launch block tells a Session which artifact keys its card has",
         ),
         (
-            format!("{manifest}/src/storage/db/seams.rs"),
-            "impl TaskStore for Db",
-            "the desktop implements the crate's board seam on the `Db`",
+            format!("{manifest}/src/agent/host_tools/specs.rs"),
+            "name: \"write_artifact\"",
+            "the CLIENT registers the host tool that answers it — ADR 0102 moved the \
+             advertised board/artifact surface out of the crate and into this file",
+        ),
+        (
+            format!("{manifest}/src/agent/host_tools/specs.rs"),
+            "name: \"get_artifact\"",
+            "…and its reading twin, the other half of ADR 0100's pair",
         ),
         (
             format!("{manifest}/src/agent/session/router.rs"),
-            "WorkerInboundEvent::TaskRequest",
-            "the Supervisor answers the Worker's task-request frame",
+            "WorkerInboundEvent::HostToolCall",
+            "the Supervisor answers the Worker's generic host-tool frame",
         ),
     ];
     for (path, needle, why) in required {
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("`{path}` reads (the pin's premise): {e}"));
         // STRIP COMMENTS FIRST, and this is the load-bearing line of the whole test.
-        // Every one of these three needles ALSO appears in a doc comment — mine, and
+        // Every one of these needles ALSO appears in a doc comment — mine, and
         // this test's own prose — so scanning raw source makes the pin pass on
         // commentary after the code is deleted. `toolDetailsRegistry.test.ts` records
         // being bitten by exactly this ("a doc-comment that MENTIONS `details.error`
@@ -450,27 +509,66 @@ fn d2_ships_the_artifacts_block_and_the_verbs_that_answer_it_together() {
         assert!(
             code.contains(needle),
             "`{path}` must CONTAIN `{needle}` in its code (comments stripped) in D2 — \
-             {why}. One of the three without the others is a half-shipped feature: the \
-             block alone is D1's bug (a promise with no verb behind it), the seam alone \
-             is a wire no Session is ever told about"
+             {why}. One of these without the others is a half-shipped feature: the \
+             block alone is D1's bug (a promise with no verb behind it), and a spec \
+             with no arm behind it is a tool the model is told about that nothing \
+             ever answers"
         );
     }
 
-    // The desktop side still owns NO tool registration. The seven task tools are
-    // `tool_specs()` entries in the published crate, and `agent/harness/mod.rs` is
-    // where this repo assembles its own tool surface — a task verb appearing there
-    // would be a second, desktop-side registration of a list the crate already owns.
-    let harness = format!("{manifest}/src/agent/harness/mod.rs");
-    let source = std::fs::read_to_string(&harness)
-        .unwrap_or_else(|e| panic!("`{harness}` reads (the pin's premise): {e}"));
-    let code = strip_comments(&source);
-    for needle in ["TaskStore", "write_artifact", "get_artifact"] {
-        assert!(
-            !code.contains(needle),
-            "`{harness}` must not mention `{needle}` in its code — the task tools are \
-             registered in the `fulcrum-harness` crate (F1), and a desktop-side \
-             registration would be a second owner of the advertised tool list"
-        );
+    // INVERTED, and its premise is REVERSED with it (see the doc above): THE CLIENT
+    // IS THE SOLE OWNER of the advertised host-tool list. The seven specs are
+    // registered in `agent/host_tools/`, the crate carries nineteen others, and
+    // `trait TaskStore` is deleted from the pinned crate. So EACH needle carries its
+    // OWN direction — the loop is over (file, needle, must-be-present) rather than one
+    // polarity, because a blanket "invert the operator" would need to forbid
+    // `TaskStore` and require the registration in the same loop, and quietly getting
+    // that backwards is exactly how a pin like this goes green on nothing.
+    let registration = format!("{manifest}/src/agent/host_tools/mod.rs");
+    let per_needle = [
+        (
+            registration.as_str(),
+            "specs::specs()",
+            true,
+            "the module that hands the seven host specs to the engine's \
+             `StartEnv.host_tools` must actually BUILD them — the Client is the sole \
+             owner, so if this stops composing them the board verbs are advertised to \
+             nobody",
+        ),
+        (
+            registration.as_str(),
+            "pub fn host_tool_specs",
+            true,
+            "…and expose them as the ONE owner of that list, which is what \
+             `commands/settings.rs::list_tools` and the Session's envelope hop both \
+             read (a fixture that hand-spelled the seven would be a second owner)",
+        ),
+        (
+            registration.as_str(),
+            "TaskStore",
+            false,
+            "`trait TaskStore` was deleted from `fulcrum-harness` by ADR 0102's F3 and \
+             the Client owns these seven verbs outright, so a CODE-level mention here \
+             is a re-introduced seam — a second and dead door to the board (comments \
+             are stripped first, so this module's own history prose about the deleted \
+             trait cannot satisfy the scan in either direction)",
+        ),
+    ];
+    for (path, needle, present, why) in per_needle {
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("`{path}` reads (the pin's premise): {e}"));
+        let code = strip_comments(&source);
+        if present {
+            assert!(
+                code.contains(needle),
+                "`{path}` must CONTAIN `{needle}` in its code (comments stripped) — {why}"
+            );
+        } else {
+            assert!(
+                !code.contains(needle),
+                "`{path}` must NOT mention `{needle}` in its code (comments stripped) — {why}"
+            );
+        }
     }
 }
 
@@ -527,13 +625,18 @@ fn the_comment_stripper_removes_prose_and_keeps_code() {
 /// file with block comments left in it once its `//` lines are gone.
 ///
 /// Crude where crudeness is safe: neither pass parses string literals, so a `//`
-/// inside a string literal truncates that line (`router.rs:991`'s
+/// inside a string literal truncates that line (`router.rs`'s
 /// `"https://example.com"` test fixture is the one instance in the scanned files, and
 /// it names no needle). The direction of that error is what makes it acceptable — a
 /// dropped span can only REMOVE text, so for the required-word scan it can only cause
 /// a false RED: loud, names the file, one line to fix. For the forbidden-word scan it
-/// is a potential false GREEN, so `agent/harness/mod.rs` was checked by hand and
-/// carries no `//` or `/*` inside a string literal at all.
+/// is a potential false GREEN, so the file the forbidden scan reads is checked by hand
+/// and carries no `//` or `/*` inside a string literal at all. **That hand-check is
+/// per-file and it moved when the pin's scanned file did** — it now covers
+/// `agent/host_tools/mod.rs` (the forbidden direction) and `agent/host_tools/specs.rs`
+/// (the required direction), both re-run 2026-11-25; the readings and the instruments
+/// are in `d2_ships_the_artifacts_block_and_the_verbs_that_answer_it_together`'s doc,
+/// which is the test that owns the choice of file.
 fn strip_comments(source: &str) -> String {
     let lineless = source
         .lines()

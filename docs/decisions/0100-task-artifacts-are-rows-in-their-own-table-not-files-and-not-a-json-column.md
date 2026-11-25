@@ -146,3 +146,34 @@ What the grammar protects is the **invariant** — keys are grammar-shaped — a
 is the next surface that interpolates a key without escaping inheriting a bug from a row this grammar
 was supposed to make impossible. That is also why the rule refuses where `require_title` cleans: a
 mangled key is a different key.
+
+## Amendment (2026-11-25) — NOT superseded; the seam this file leans on was replaced by [ADR 0102](0102-the-tool-registry-is-the-engines-sole-dispatch-authority-and-host-tools-arrive-as-data.md)
+
+`superseded-by:` stays EMPTY here, and that is the finding rather than an omission. ADR 0102 /
+issue #183 changed nothing this ADR decides: a **Task artifact** is still a row in
+`task_artifacts(task_id, key, markdown, created_at, updated_at)`, the markdown still lives IN the
+database, the key is still a free-form grammar-shaped slug validated at storage, and the two artifact
+verbs still exist. What moved is the DOOR they are reached through, so three cross-references above
+are now stale and are corrected here rather than by editing them in place.
+
+- **"The seam is ADR 0092's, widened by two methods … `trait TaskStore` carries seven methods and the
+  wire gains two variants (`Outbound::TaskRequest` / `Inbound::TaskResponse`)."** There is no
+  `trait TaskStore` and no `TaskRequest` / `TaskResponse` pair any more — ADR 0102's F3 deleted both
+  from `fulcrum-harness` (published **0.8.0**). The reasoning that made artifacts and the five board
+  verbs ONE delivery is unaffected: they still cross as one generic
+  `Outbound::HostToolCall` / `Inbound::HostToolResponse` pair, and adding a verb now costs a spec and
+  an executor in `agent/host_tools/` and no protocol change at all — which is a stronger version of
+  the same point.
+- **"D2's `impl TaskStore for Db` is the second door."** The second door is now
+  `agent/host_tools/exec.rs`, which calls the INHERENT `Db::write_artifact` / `Db::get_artifact`
+  directly. **The storage backstop this ADR mandates is therefore more load-bearing than before, not
+  less**: with the trait gone, nothing at the type level stops the new door from skipping a rule, so
+  `MAX_ARTIFACT_MARKDOWN_BYTES` and `artifact_key_is_well_formed` running BEFORE the lock is the only
+  thing that holds on both doors. Its pin moved with the door, to
+  `agent/host_tools/tests/verbs.rs`'s
+  `an_illegal_artifact_key_and_an_oversized_markdown_are_refused_and_write_nothing`.
+- **`tool_specs()` "returns a static `Vec` and cannot carry an enum".** Still true of the engine's
+  table, which is now 19 names; the seven board/artifact specs — including both artifact verbs — are
+  this repo's own `agent/host_tools/specs.rs`. The constraint this bullet was making (a key or a slug
+  is validated at the executor/storage boundary, never as a JSON-Schema enum) is unchanged, and
+  `specs.rs` still spells the key as a free-form `string` for exactly that reason.

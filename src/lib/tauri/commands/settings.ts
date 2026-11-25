@@ -40,7 +40,7 @@ export async function listModels(forceRefresh?: string): Promise<ModelDto[]> {
 }
 
 
-/** The native harness's tool names, sorted (the Settings page's enabled-tools checkbox list). */
+/** The tool names a Session can be advertised, sorted — the COMPOSED set: the engine's 19 `tool_specs()` ++ this app's 7 host-tool specs (ADR 0102 / issue #183). The Settings page's enabled-tools checkbox list. */
 export async function listTools(): Promise<string[]> {
   return invoke<string[]>("list_tools");
 }

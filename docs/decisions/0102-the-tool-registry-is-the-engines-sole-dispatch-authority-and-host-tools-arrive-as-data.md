@@ -116,3 +116,64 @@ message because a bare count cannot say which half vanished.
   widening, the publish and the pin bump are then owed rather than deferred, not waived. `impl TaskStore
   for Db`'s body comment carries the same pointer, and
   `docs/research/edit-task-cannot-clear-a-field.md` is the finding behind all of it.
+
+## Amendment (2026-11-25) — as shipped: the D1/D2 boundary, `narrow`, and ONE WRONG TYPE NAME
+
+Appended by issue #183's final desktop commit (D2). Nothing above is rewritten. Three things this
+ADR predicted or mis-stated are recorded here because the migration table that carried them lived in
+`docs/roadmap/tool-separation.md`, which is gitignored and **unrecoverable after a ship** — no
+checkout, no stash, no dangling blob.
+
+**CORRECTION — the Consequence naming `MoveTaskOutcome` names the WRONG TYPE, and the error is
+load-bearing.** The bullet above says "the inherent `MoveTaskOutcome` has `on_enter` alone — no
+`toStage`, no `note`". There are **THREE** move shapes in this tree, not two, and that sentence names
+the middle one by the wrong name:
+
+| type | owner | fields | derives |
+|---|---|---|---|
+| `storage::db::MoveOutcome` (`storage/db/rows.rs`) | storage — the actual return of the inherent `Db::move_task` | `on_enter: String` — **one** field | `Debug, Clone, PartialEq, Eq, Serialize, Deserialize` |
+| `commands::tasks::MoveTaskOutcome` (`commands/tasks.rs`) | the IPC command layer | `on_enter: String`, `boost_note: Option<String>` — **two** | `Debug, Clone, Serialize` only (wire-out, no `Deserialize`, no `PartialEq`) |
+| the crate's `seams::MoveOutcome` (deleted by F3) | the engine | `to_stage`, `on_enter: Option`, `note: Option` | `Debug, Clone, PartialEq, Serialize, Deserialize` |
+
+A plan that imports `MoveTaskOutcome` believing it is storage's return **does not compile**; a plan
+that believes storage's answer already carries a note **double-reports the boost**, because the boost
+note is computed one layer UP (`commands/tasks.rs`'s `boost_note`), and storage cannot name
+`SessionManager` (ADR 0092). The desktop's wire DTO is a fourth name again, `MoveToolOutcome` in
+`agent/host_tools/`, and `to_stage` is **synthesised from the caller's own argument** while `note` is
+hard-coded `None`.
+
+**CORRECTION — the D1/D2 boundary as drawn does not compile, so D1 carried more than the plan
+assigned it.** The plan put the crate-pin bump in D1 and "the read sites and the pins" in D2, but
+`impl TaskStore for Db`, both `From … for TaskStoreError` impls, the crate `seams::{…}` imports, the
+three `ToolCtx { task_store: None }` literals and `fulcrum_seams.rs`'s whole Pin-4 block all stop
+compiling AT THE PIN BUMP, and the `d2_ships_…` pin's second needle was literally
+`"impl TaskStore for Db"` — so D1 would have shipped RED. Same atomicity argument this ADR already
+makes for the router arm, simply never applied to the desktop's own copy of the seam. D1 therefore
+took the desktop-side deletion and the needle rewrite; D2 took the two read sites, the pin's negative
+half, and the docs.
+
+**CORRECTION — `narrow` is a THIRD `tool_specs()` read site and it was NOT fixed; the consequence is
+accepted upstream.** §2.3 names two read sites (`advertised_tool_specs` and `list_tools`). There is a
+third, `harness/launch.rs`'s `narrow` closure, which filters a definition's `tools:` frontmatter
+against `tool_specs()`. Since the seven verbs left that table, a `tools:` list naming ONLY host verbs
+narrows to nothing and ADR 0067's emptied-means-ABSENT rule hands the child the PARENT's set. The
+engine records this as an accepted decision with three reasons in its own `launch.rs`; **fulcrum is
+frozen for this run**, so the desktop's `worker_e2e` pin was re-pointed at the inherited-parent leg
+while still asserting the child's enabled set is exactly `["write_artifact"]`. What is lost is a
+narrowing the frontmatter intended, and `docs/features/permissions-model.md` §(f.2) carries the
+consequence. **A future run that wants host-tool narrowing must feed `narrow` the composed set.**
+
+**CONFIRMED as designed — the two things this ADR made a hard requirement.** `Outbound::HostToolCall`
+shipped WITH the origin `session_id` field (the plan's §2.5 code block omits it; without it
+`task_reply_target` has nothing to consume and ADR 0117's 255m55s `get_artifact` hang returns as a
+`HostToolCall` hang), and children DO inherit `host_tools` (`subagent_flow.rs`, read off the parent's
+live envelope, pinned by the engine's own inheritance tests). `PROTOCOL_VERSION` stayed **1**: the
+Worker is a self-exec of the same binary, so Supervisor and Worker are always one build.
+
+**CLOSED by D2 — the second §2.3 read site.** `commands/settings.rs::list_tools` now returns the
+composed set (the engine's 19 ++ this repo's 7) and stays STATELESS, so a host tool appears in
+Settings and can be disabled through `enabled_tools`. Its pin is
+`list_tools_lists_the_engine_tools_and_the_host_tools_together`, and the pin that used to argue a
+desktop-side registration would be "a second owner of the advertised tool list" is now INVERTED to
+assert the Client is the SOLE owner — scanned at `agent/host_tools/`, the file that actually holds the
+registration, because scanning the old file would have left a green test arguing against this design.

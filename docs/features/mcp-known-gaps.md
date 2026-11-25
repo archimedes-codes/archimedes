@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-10-29
-verified-by: read against this tree at `2b6bd26` (`agent/mcp/tool.rs`, `agent/harness/tool_specs.rs`) — every gap below re-confirmed still open, not copied from the plan
+verified-by: read against this tree at `2b6bd26` (`agent/mcp/tool.rs`, `agent/harness/tool_specs.rs`) — every gap below re-confirmed still open, not copied from the plan — DATED PATH NOTE 2026-11-25, and it is about a PATH and not about any gap below. The second path this line cites, `agent/harness/tool_specs.rs`, no longer exists in this tree. `agent/harness/` is now an ALIAS module with only `{mod,store,trust}.rs` (the harness moved to the crates.io-pinned `fulcrum-harness`), and since ADR 0102 / issue #183 `tool_specs()` is the ENGINE's 19-name table while the seven board verbs are this repo's own Host-tool specs in `agent/host_tools/specs.rs`. No `mcp` gap is closed or opened by that move. `mcp` stays a loop-internal arm, its `action: "auth"` needs to prompt so no name-level `ScriptAccess` field can express its reach, and the `mcp` spec text itself is unchanged among the crate's 19.
 ---
 
 # MCP — known gaps

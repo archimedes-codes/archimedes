@@ -31,11 +31,23 @@ tests in `src/store/interactive.test.ts`.
 
 ## Why a convention and not a tool
 
-**A model-facing verb is engine-gated, and this repo cannot add one.** `TaskCall`
-and `trait TaskStore` live in `fulcrum-harness`, a **crates.io-pinned** dependency
-(`src-tauri/Cargo.toml`), and `tool_specs()` is the crate's — the desktop
-contributes **zero** tool specs today. A new verb means an engine change, a
-crates.io publish, and a pin bump here.
+**A model-facing verb used to be engine-gated, and this repo could not add one.**
+`TaskCall` and `trait TaskStore` lived in `fulcrum-harness`, a **crates.io-pinned**
+dependency (`src-tauri/Cargo.toml`), and `tool_specs()` was the crate's — the desktop
+contributed **zero** tool specs. A new verb meant an engine change, a crates.io
+publish, and a pin bump here.
+
+**That gate is gone and the marker is still a convention, so read the reason
+carefully.** ADR 0102 / issue #183 landed on 2026-11-25: `trait TaskStore` is deleted
+from the crate and the desktop now ships **seven** of its own **Host tool** specs from
+`src-tauri/src/agent/host_tools/` as data on `StartEnv.host_tools`, so a tool can be
+added without publishing a crate release. **A `mark_ready` verb was nonetheless NOT part
+of that run and is DELIBERATELY DEFERRED** — ADR 0102 §5 caps the run at the seven board
+and artifact verbs and §6 names session lifecycle as the seam's *second consumer, recorded
+but not in scope*. Nothing in this file should be read as promising otherwise: **the
+sentence in `lib/readyMarker.ts` IS the contract today, not a placeholder awaiting a
+tool.** The independent argument below (the engine constructs the `TodoItem` vector, so an
+extra key dies crate-side) is untouched by #183 and holds on its own.
 
 The obvious shortcut does not work either. The engine **constructs**
 `TodoItem { content, status, description }` and emits the *constructed* vector, so
@@ -43,13 +55,20 @@ an extra key on an item (`"ready": true`) is dropped inside the crate, **before 
 frame the desktop would read exists**. Only the model-authored *string* survives.
 That is the whole reason the marker is a word and not a field.
 
-The real fix is **ADR 0102** and `docs/roadmap/tool-separation.md` (**issue #183**):
+The shape a fix would take is **ADR 0102**'s (**issue #183**):
 `StartEnv.host_tools` plus a vocabulary-free `HostToolCall` / `HostToolResponse`
-pair, so the desktop can ship a tool without publishing a crate release. It is
-**approved and unbuilt**. When it lands, the marker becomes a real verb and **the
-read path does not change** — the mark already rides a store slot, so #183 swaps
-the *writer* only. That is why the convention was built first: the expensive half
-was sequenced after the cheap half on purpose, not by omission.
+pair, so the desktop can ship a tool without publishing a crate release.
+**Amended 2026-11-25 — ADR 0102 has since shipped, and this verb is still not built.**
+The mechanism now exists and is exercised by seven board/artifact verbs; a `mark_ready`
+verb is the seam's documented *next* tenant and was explicitly left out of #183's scope.
+So the sentence above about sequencing still describes the state, with one word changed:
+the expensive half is now **available and unbuilt** rather than **approved and unbuilt**.
+**If a `mark_ready` verb is ever built, the read path does not change** — the mark already
+rides a store slot, so such a change swaps the *writer* only. That is why the convention was
+built first: the expensive half was sequenced after the cheap half on purpose, not by
+omission. (The `docs/roadmap/tool-separation.md` this paragraph used to cite is unreachable
+by design — `docs/roadmap/` is gitignored and nothing there is recoverable after a ship;
+ADR 0102 and `docs/features/task-board-known-gaps.md` §2 are the durable records.)
 
 ## Why the mark is a slot and not a derivation
 
@@ -184,6 +203,11 @@ started from the sidebar or the workspace never call `buildLaunchMessage` and so
 not told — correct, since `ready` is a claim about a Task. It is also inert in a
 Space that has `manage_todo_list` switched off in Settings.
 
-When #183 lands, this sentence moves out of the launch message and into a real tool
-description, the marker word retires, and **the read path does not move** — which is
-why the convention was built first.
+**Amended 2026-11-25 — #183 has landed and this sentence has NOT moved, because no session
+verb shipped in it.** The retirement of the marker word is DEFERRED, not scheduled: ADR 0102
+§5 allows no host tool beyond the seven board/artifact verbs and §6 records session lifecycle
+as a later consumer of the same seam. If someone builds a `mark_ready` verb, then this sentence
+moves out of the launch message and into a real tool description, the marker word retires, and
+**the read path does not move** — which is why the convention was built first. Until that
+happens, the launch-message instruction is the only thing telling a model the convention
+exists, and removing it would silently un-ship the feature.

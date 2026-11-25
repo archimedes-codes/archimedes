@@ -40,12 +40,15 @@
 //!
 //! # Two things this module does NOT do
 //!
-//!   * **It does not register itself into Settings.**
-//!     `commands/settings.rs::list_tools` still reads the crate's `tool_specs()` and
-//!     so still omits these seven — the "advertised to the model, invisible to
-//!     Settings" split ADR 0102 §2.3 names. D2 owns that read site. Until it lands, a
-//!     host tool cannot be disabled through `enabled_tools` and does not appear in the
-//!     checkbox list; that is a known, accepted, one-commit gap inside this branch.
+//!   * **It does not decide a host tool's ENABLED-ness.**
+//!     `commands/settings.rs::list_tools` composes this module's seven specs onto the
+//!     crate's 19, so a host tool appears in the Settings checkbox list and can be
+//!     disabled through `enabled_tools` — ADR 0102 §2.3's second read site, closed by
+//!     D2. What is still NOT this module's business is the FILTER itself: `narrow`
+//!     (the engine's agent-definition frontmatter path) still tests membership against
+//!     `tool_specs()` alone, so a `tools:` list naming only host verbs cannot narrow a
+//!     child. That is a crate-side limitation, accepted in the engine's `launch.rs`,
+//!     and `docs/features/permissions-model.md` §(f.2) is its record.
 //!   * **It does not widen script reach.** The seven entries carry the
 //!     `ScriptAccess::Allowed` the crate gave them, so a codemode script's nested
 //!     `tools.create_task(…)` still resolves — through the engine's registry, which is

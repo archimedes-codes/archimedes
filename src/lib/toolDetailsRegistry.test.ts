@@ -597,8 +597,9 @@ const ENVELOPE_ENTRY_KEYS = [
  *
  *  `task` (issue #180 D2) is exactly that case, and the reason this is derived
  *  rather than hand-partitioned. The task tools emit `details.task` — a Task-board
- *  ROW (`agent/host_tools/exec.rs`'s `json!({ "task": t })` in `get_task` and in
- *  `row_result`) — while the subagent card reads `task` off a `results[i]` /
+ *  ROW (`agent/host_tools/exec.rs`'s `to_details("task", …)`, reached from
+ *  `get_task`'s `TaskDetail` arm and from the shared `row_result` helper) — while
+ *  the subagent card reads `task` off a `results[i]` /
  *  `progress[i]` ENTRY as that subagent's task description. Same spelling, two
  *  frames, two meanings: the collision `title`, `reason` and `path` already
  *  document for the RAW-INPUT frame, one level deeper. Counting it as spanning
