@@ -1,14 +1,23 @@
 import type { Message } from "./sessionTypes";
 import { recencyOf } from "./sessionRecency";
 
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+const DATE_ARM_MS = 30 * DAY_MS;
+
 /**
  * The relative time of an **instant**, bucketized — the ONE owner of the bucket
  * rule, for ANY caller that already holds a timestamp.
  *
- * `<60s` → `now`, `<60m` → `Nm`, else `Nh`. No "ago" suffix, and that is a
- * contract rather than a taste: the **Session** list and a **Task** card print this
- * string in the same app, so a suffix on one arm would make two surfaces read as
- * two clocks.
+ * `<60s` → `now`, `<60m` → `Nm`, `<24h` → `Nh`, `<30d` → `Nd`, else a short
+ * date: `Nov 11` within the calendar year of `now`, `Nov 11, 2022` from a prior
+ * year. No "ago" suffix, and that is a contract rather than a taste: the **Session**
+ * list and a **Task** card print this string in the same app, so a suffix on one
+ * arm would make two surfaces read as two clocks.
+ *
+ * A future `at` (negative diff) falls in the `<60s` arm and prints `now`, because
+ * that arm is tested first and so a future stamp never reaches the date arm.
  *
  * This is `relativeTimeFor`'s own arithmetic, lifted verbatim, so a caller holding
  * a DIFFERENT instant can share the rule instead of copying it. A Task card
@@ -29,9 +38,30 @@ export function relativeTimeFromInstant(
   now: number = Date.now(),
 ): string {
   const diff = now - at;
-  if (diff < 60_000) return "now";
-  if (diff < 60 * 60_000) return `${Math.floor(diff / 60_000)}m`;
-  return `${Math.floor(diff / (60 * 60_000))}h`;
+  if (diff < MINUTE_MS) return "now";
+  if (diff < HOUR_MS) return `${Math.floor(diff / MINUTE_MS)}m`;
+  if (diff < DAY_MS) return `${Math.floor(diff / HOUR_MS)}h`;
+  if (diff < DATE_ARM_MS) return `${Math.floor(diff / DAY_MS)}d`;
+  const sameYear = new Date(at).getFullYear() === new Date(now).getFullYear();
+  return new Date(at).toLocaleDateString(
+    "en-US",
+    sameYear
+      ? { month: "short", day: "numeric" }
+      : { month: "short", day: "numeric", year: "numeric" },
+  );
+}
+
+/**
+ * The full localized date and time of an **instant** — for a `title` tooltip.
+ *
+ * The relative label (`relativeTimeFromInstant`) is the glance; this is the exact
+ * instant behind it, so hovering a timestamp shows when it actually happened.
+ */
+export function absoluteTimeFromInstant(at: number): string {
+  return new Date(at).toLocaleString("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
 
 /**
@@ -63,9 +93,10 @@ export function relativeTimeFromInstant(
  * `relativeTimeFromInstant` returns `string` and this one keeps `string | null`.
  *
  * `now` stays the last parameter (defaulting to the wall clock) so a caller —
- * and a test — can pin the arithmetic to a fixed instant. The buckets are
- * byte-identical to the pre-delegation ones; only where the instant comes from
- * changed.
+ * and a test — can pin the arithmetic to a fixed instant. The buckets are the
+ * ones `relativeTimeFromInstant` owns (`now`, `Nm`, `Nh`, `Nd`, then a short
+ * date), so a Session row and a Task card print the same string for the same
+ * instant; this function only decides where the instant comes from.
  */
 export function relativeTimeFor(
   sessionId: string,
