@@ -536,6 +536,16 @@ fn start_env_with_file_policy(
         }),
         None => env,
     };
+    // (ADR 0102 / issue #183 D1) EVERY fixture carries the SAME host tools the ONE
+    // production envelope carries, because a fixture that left them off would be
+    // testing a Worker that no Session ever starts: the engine composes its
+    // advertised set as `builtins() ++ host_entries(env.host_tools)`, so an empty
+    // `host_tools` means the seven board verbs are NOT advertised at all and a
+    // `tools: [write_artifact]` expectation reddens with "(none)" rather than with
+    // a routing bug. Reached through the production `host_tool_specs()` and NOT
+    // re-spelled here — a second literal list of the seven would be a second owner
+    // of the advertised surface.
+    let env = env.with_host_tools(archimedes_lib::agent::host_tools::host_tool_specs());
     (env, config_dir)
 }
 
@@ -3234,11 +3244,24 @@ async fn a_subagents_task_request_is_answered_in_the_child_and_not_the_parent() 
     let _restore = RestoreHome(original_home);
     std::fs::create_dir_all(home.join(".pi/agent/agents")).expect("the agents dir is created");
     // The frontmatter's `model` resolves against the PARENT's catalog (the shared
-    // one below), its `tools` become the child's enabled set, its body the child's
-    // system message.
+    // one below) and its body is the child's system message.
+    //
+    // NO `tools:` line here, and that is a crate-side decision this fixture has to
+    // obey — see the doc comment above the test. ADR 0102 / issue #183 F3 asks
+    // `fulcrum-harness` whether a frontmatter `tools: [write_artifact]` reaches the
+    // child's enabled set, and 0.8.0's answer is NO, stated as accepted in
+    // `harness/launch.rs`: `narrow()` filters against `tool_specs()`, which no longer
+    // carries the seven host verbs, so a host-only list narrows to nothing and ADR
+    // 0067's emptied-means-ABSENT rule hands the child the PARENT's set instead. The
+    // crate's three reasons (it cannot cheaply thread a parent registry into the
+    // resolver; emptied-means-ABSENT is doing its documented job; nothing becomes
+    // advertised-and-dead) are the shipped behaviour, and fulcrum is frozen for this
+    // run — so the narrowing this case used to pin is not available to it. The child
+    // still gets exactly the one verb below, by the INHERITED-parent leg instead of
+    // the frontmatter leg, and the addressing this test exists to pin is unchanged.
     std::fs::write(
         home.join(".pi/agent/agents/scout.md"),
-        "---\nname: scout\nmodel: fake/sub-model\ntools: [write_artifact]\n---\nYou are a scout. Write the spec.\n",
+        "---\nname: scout\nmodel: fake/sub-model\n---\nYou are a scout. Write the spec.\n",
     )
     .expect("the agent definition is written");
     // SAFETY: the `ENV_LOCK` is held for the whole set→assert→restore span.
@@ -3331,8 +3354,11 @@ async fn a_subagents_task_request_is_answered_in_the_child_and_not_the_parent() 
         // Trusted, so the child (which inherits the posture) needs no gate for its
         // board call — this test is about the ADDRESSING, not the permission gate.
         true,
-        // The parent needs the `subagent` tool and nothing else.
-        Some(vec!["subagent".to_string()]),
+        // The parent needs the `subagent` tool to make the dispatch at all, PLUS the
+        // one board verb the CHILD is meant to use: with no frontmatter `tools:` leg
+        // speaking (see above), `subagent_flow`'s inherited-parent leg gives the child
+        // this list minus the recursion guard, i.e. exactly `["write_artifact"]`.
+        Some(vec!["subagent".to_string(), "write_artifact".to_string()]),
         true, // `subagent_enabled: true` (the recursion guard is OFF for the parent)
     );
     persister.set_cwd(&env.session_id, &env.cwd);
@@ -3390,9 +3416,15 @@ async fn a_subagents_task_request_is_answered_in_the_child_and_not_the_parent() 
     assert_eq!(
         enabled,
         vec!["write_artifact".to_string()],
-        "the definition's `tools:` list reached the CHILD's enabled set (a name that is \
-         not in `tool_specs()` would be dropped by `narrow()` and leave the child with \
-         no tools, which is a fixture bug this assertion turns into a red)"
+        "the CHILD's enabled set is exactly the one board verb, reached by the \
+         INHERITED-parent leg (the parent's list minus the `subagent`/`list_agents` \
+         recursion guard). This is the assertion that makes the rest of this case mean \
+         anything: a child with NO tools could not make the `write_artifact` call whose \
+         answer the addressing pin below waits for, so a drop here would turn that \
+         pin green by never running the call at all. It also proves `host_tools` \
+         INHERITANCE works across the wire — the child's advertised set is composed \
+         from the parent's envelope, which is the `subagent_flow` hop D1's single \
+         `with_host_tools` line feeds."
     );
 
     // ── THE ANSWER REACHED THE CHILD. This is the discriminating assertion, and

@@ -688,8 +688,10 @@ fn edit_task_still_reports_a_missing_card_as_not_found_after_the_wire_call_swap(
 /// THE ROUTES ACTUALLY DRIVEN are the two real doors. The command's is
 /// [`require_title`], the pre-flight the `create_task` command runs before it hops; the
 /// storage door is `Db::create_task` / `Db::edit_task` called directly, which is the
-/// shape `impl TaskStore for Db` delegates to and therefore the shape the model's
-/// `create_task` / `edit_task` TOOL takes. Comparing the built `InvokeError` payloads
+/// shape the model's `create_task` / `edit_task` HOST TOOLS run (since ADR 0102 /
+/// issue #183 D1 they are `agent/host_tools/exec.rs`, and they call these two verbs
+/// and nothing else — the crate's `impl TaskStore for Db`, which used to sit between
+/// the tool and storage, is deleted). Comparing the built `InvokeError` payloads
 /// with `==` rather than merely the `kind` covers `kind` AND the full `message`
 /// sentence in one assertion.
 ///

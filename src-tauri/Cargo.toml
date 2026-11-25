@@ -116,10 +116,25 @@ tauri-build = { version = "2", features = [] }
 # differently — investigate before committing.
 # 0.5.1 removes the engine's per-prompt round bound — see ADR 0116.
 #
-# 0.6.0 puts the frame's ORIGIN id on `Outbound::TaskRequest` — see ADR 0117.
-# The desktop must answer a board call at that origin, not at the pump's
-# delivery id (which for a Subagent is the PARENT's id); answering at the
-# delivery id is the 255m55s `get_artifact` hang.
+# 0.6.0 put the frame's ORIGIN id on the Worker's request frame. The desktop must
+# answer a board call at that origin, not at the pump's delivery id (which for a
+# Subagent is the PARENT's id); answering at the delivery id is the 255m55s
+# `get_artifact` hang — see ADR 0117. The frame it named, `Outbound::TaskRequest`,
+# is GONE in 0.8.0; the ORIGIN rule survives it verbatim and now rides
+# `Outbound::HostToolCall`'s `session_id`, which is why `task_reply_target` in
+# `agent/session/router.rs` is vocabulary-free.
+#
+# 0.8.0 is ADR 0102 / issue #183 F3: the crate FORGETS TASKS EXIST. Deleted from
+# its public surface — `seams::{TaskStore, TaskCaller, TaskCall, TaskStoreError}`
+# and the five board DTOs, `ToolCtx::task_store`, `Outbound::TaskRequest` /
+# `Inbound::TaskResponse`, `WorkerInboundEvent::TaskRequest`, and the seven
+# `tool_specs()` entries (26 → 19). What arrives in their place is DATA: the
+# additive `StartEnv::host_tools` (a `Vec<ToolSpec>`, `with_host_tools`) and one
+# generic frame pair, `Outbound::HostToolCall` → `Inbound::HostToolResponse`. The
+# seven board verbs are now the DESKTOP's specs and the DESKTOP's executors — see
+# `agent/host_tools/` — answered through that one arm. `PROTOCOL_VERSION` stays 1:
+# the Worker is a self-exec of the same binary, so Supervisor and Worker are
+# always one build.
 #
 # Working on the crate alongside the desktop? Do NOT edit this line to a path
 # (that would commit a dep that cannot resolve for anyone else). Copy
@@ -127,7 +142,7 @@ tauri-build = { version = "2", features = [] }
 # there redirects the CRATES.IO source to a sibling checkout and is gitignored, so
 # it can never leak into a commit. `.cargo/config.toml.example` is inert (cargo
 # reads only `config.toml`), which is what makes it safe to ship.
-fulcrum-harness = "0.7.0"
+fulcrum-harness = "0.8.0"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

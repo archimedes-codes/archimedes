@@ -1,212 +1,139 @@
-//! Tests for `db/seams.rs`: the two crate-seam impls, at UNIT level.
+//! Tests for `db/seams.rs`: the crate-seam impl, at UNIT level.
 //!
-//! This child holds the two things that need no database harness beyond a
-//! throwaway file: the trait-bound INSTANTIATIONS (the proof the S4 ruling asks
-//! for — `impl FulcrumPersistence for Db` / `impl TaskStore for Db` must exist and
-//! be satisfiable), and the DTO FIELD MAPPING of the write answer, which is the
-//! only substance in `seams.rs` (both impls are delegation: zero SQL, no error
-//! policy re-spelled).
+//! This child holds the two things that need no database harness beyond a throwaway
+//! file: the trait-bound INSTANTIATION (the proof the S4 ruling asks for —
+//! `impl FulcrumPersistence for Db` must exist and be satisfiable), and the answers
+//! that seam gives in the CRATE's error family.
 //!
-//! The BEHAVIOURAL half of the seam coverage stays in
-//! `src-tauri/tests/fulcrum_seams.rs`, where the full DB harness already lives:
-//! the `Arc<dyn FulcrumPersistence>` / `Arc<dyn TaskStore>` round trips over a real
-//! database, the artifact key-grammar and size-cap refusals on the seam path, and
-//! the crate-side error vocabulary. Those are integration pins by shape — they drive
-//! a trait object against a seeded database — and moving them here would move the
-//! harness with them. What this child adds is the mirror ADR 0113 asks for: every
-//! production sibling has a test child, and `seams.rs` was the one that did not.
+//! # There used to be four pins here, and two of them moved
 //!
-//! The import below is also the measurement that kills the stale claim at
-//! `fulcrum_seams.rs:1345` ("the `storage/db/tests/` tree cannot see the crate's
-//! error family"): it can, and `the_seams_answer_in_the_crate_error_family` uses
-//! both crate error types from inside `db/tests/`.
+//! `db_satisfies_both_crate_seams` and `the_seams_answer_in_the_crate_error_family`
+//! each had a TaskStore half, and `create_task_maps_every_field_of_the_desktop_row`
+//! plus `edit_task_maps_the_same_ten_fields_and_keeps_what_the_seam_was_not_given`
+//! tested the trait impl's DTO mapping. ADR 0102 / issue #183 F3 deleted the trait, so
+//! all four lost their subject. The two that tested the MAPPING — the one piece of
+//! substance the impl had — are not deleted, they moved to
+//! `agent/host_tools/tests/mapping.rs` with the mapping itself, keeping their
+//! assertions (including the load-bearing 5 ms sleep that makes the clock arm
+//! non-vacuous). The two seam-bound pins here keep only their persistence half,
+//! because the trait they asserted against is gone from the crate.
+//!
+//! The BEHAVIOURAL half of the seam coverage stays in `src-tauri/tests/fulcrum_seams.rs`,
+//! where the full DB harness already lives: the `Arc<dyn FulcrumPersistence>` round
+//! trip over a real database. That is an integration pin by shape — it drives a trait
+//! object against a seeded database — and moving it here would move the harness with
+//! it. What this child adds is the mirror ADR 0113 asks for: every production sibling
+//! has a test child, and `seams.rs` was the one that did not.
 
 use crate::storage::db::*;
 
-use fulcrum_harness::seams::{FulcrumPersistence, StoreError, TaskStore, TaskStoreError};
+use fulcrum_harness::seams::{FulcrumPersistence, StoreError};
 
 use super::support::board_space;
 
-/// (S4's gate, unit half) `Db` IS a `FulcrumPersistence` and IS a `TaskStore`.
+/// (S4's gate, unit half) `Db` IS a `FulcrumPersistence`.
 ///
-/// The generic bounds ARE the assertion: neither function can be monomorphised
-/// without the real `impl` block in `db/seams.rs`, and `FulcrumPersistence`'s
-/// `Send + Sync` supertraits ride along, so this also proves `Db` is shareable
-/// behind the `Arc` the crate holds. Deleting either impl is an `E0277` here.
+/// The generic bound IS the assertion: the function cannot be monomorphised without
+/// the real `impl` block in `db/seams.rs`, and `FulcrumPersistence`'s `Send + Sync`
+/// supertraits ride along, so this also proves `Db` is shareable behind the `Arc` the
+/// crate holds. Deleting the impl is an `E0277` here.
+///
+/// The name used to be `db_satisfies_both_crate_seams`. There is now ONE crate seam
+/// on this type, not two, and the name says so — a name that promises two and asserts
+/// one is the kind of stale claim that survives a deletion unnoticed.
 #[test]
-fn db_satisfies_both_crate_seams() {
+fn db_satisfies_the_crate_persistence_seam() {
     fn assert_fp<T: FulcrumPersistence>() {}
-    fn assert_task_store<T: TaskStore>() {}
 
     assert_fp::<Db>();
-    assert_task_store::<Db>();
 }
 
-/// The seams answer in the CRATE's error family, not the desktop's.
+/// The persistence seam answers in the CRATE's error family, not the desktop's.
 ///
-/// The two return types below are ASCRIBED, so a seam that leaked `DbError`
-/// instead of mapping it would not compile — that is the whole point of the pin,
-/// and it is the proof `fulcrum_seams.rs`'s "cannot see the crate's error family"
-/// note got wrong. Both calls are the benign arm on an empty database (a cost
-/// update that matches no row, a board that does not exist), so the test asserts
-/// the TYPE and the silent no-op, and leaves the refusals to the integration file.
+/// The return type below is ASCRIBED, so a seam that leaked `DbError` instead of
+/// mapping it would not compile — that is the whole point of the pin. The call is the
+/// benign arm on an empty database (a cost update that matches no row), so this
+/// asserts the TYPE and the silent no-op, and leaves the refusals to the integration
+/// file.
 #[test]
-fn the_seams_answer_in_the_crate_error_family() {
+fn the_persistence_seam_answers_in_the_crate_error_family() {
     let dir = crate::test_support::ScratchDir::in_env_temp("db-seam-errors-", "scratch");
     let db = Db::open(&dir.join("t.db")).expect("db should open");
 
     let persistence: Result<(), StoreError> =
         FulcrumPersistence::record_session_cost(&db, "no-such-session", 1.0);
-    let board: Result<Vec<fulcrum_harness::seams::BoardRow>, TaskStoreError> =
-        TaskStore::list_board(&db, "/seams-never-a-space");
 
     assert!(
         persistence.is_ok(),
         "a cost update that matches no row is the seam's silent no-op, not an error"
     );
+}
+
+/// The board verbs still answer in the DESKTOP's error family — and the host tools
+/// fold that into their own sentence type through ONE `From` impl.
+///
+/// The sibling of the pin above, and the half that INVERTED with the deletion: the
+/// board verbs were reached through a trait whose error type the crate owned, and they
+/// are now reached through `agent/host_tools/exec.rs`, which folds `BoardError` into
+/// `HostToolError` (`storage/db/mod.rs`) exactly as the seam used to fold it into the
+/// crate's family. The ascribed types below are the assertion — change the `From`
+/// impl's target and this stops compiling.
+///
+/// The three sentences asserted are the ones the MODEL reads verbatim (the frame
+/// carries a bare `String`), which is what makes this a wording pin and not only a
+/// type pin: `docs/features/task-board-known-gaps.md` §2 cites them.
+#[test]
+fn the_board_verbs_fold_into_the_host_tool_error_with_their_sentences_intact() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-host-tool-errors-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("host-tool-errors");
+
+    // A dangling card id is the `NotFound` arm, and its sentence is `BoardError`'s
+    // own `Display` rendered ONCE — never re-spelled per mapping arm, which is how a
+    // `#[error(...)]` edit and a mapping table drift apart.
+    let absent: Result<MoveOutcome, HostToolError> =
+        Db::move_task(&db, &space, "tsk_absent", "doing").map_err(Into::into);
+    let err = match absent {
+        Ok(_) => panic!("a move of a card that does not exist must refuse"),
+        Err(e) => e,
+    };
     assert!(
-        board
-            .as_ref()
-            .expect("an unseen Space is an empty board, not a failure")
-            .is_empty(),
-        "the board seam answers `[]` for a Space with no cards"
+        matches!(&err, HostToolError::NotFound { message } if message.contains("tsk_absent")),
+        "`NotFound` naming the id — the model cannot act on a refusal that does not \
+         say what it rejected. Got {err:?}"
     );
-}
+    assert_eq!(
+        err.to_string(),
+        "no task with id tsk_absent",
+        "the sentence is `BoardError`'s own, byte for byte — this is the string the \
+         Worker shows the model, and the one docs/features/task-board-known-gaps.md \
+         §2 cites"
+    );
 
-/// `desktop_row_to_crate_row`, field for field, on the `create_task` answer.
-///
-/// The mapping is the only substance in the write path of `impl TaskStore for Db`,
-/// and until now it was asserted only INDIRECTLY (a seam test that read back a card
-/// and looked at one or two fields). Every one of the ten fields is asserted here
-/// against the STORED row, read through the inherent verb. `spec_path`, `sort_order`
-/// and `updated_at` had NEVER been asserted through the seam at all.
-///
-/// One honest limit, stated rather than glossed: on a FRESH card both clock columns
-/// come from the same `now_ms()`, so this test proves both fields are CARRIED and
-/// cannot prove WHICH clock each carries. The `edit_task` test below is the arm that
-/// distinguishes them, and it is the one a swapped clock mapping reddens.
-#[test]
-fn create_task_maps_every_field_of_the_desktop_row() {
-    let dir = crate::test_support::ScratchDir::in_env_temp("db-seam-map-", "scratch");
-    let db = Db::open(&dir.join("t.db")).expect("db should open");
-    let space = board_space("seams");
+    // An artifact key outside the grammar is `Invalid`, and keeps the GRAMMAR in the
+    // sentence so the model self-corrects without a second call.
+    let created = Db::create_task(&db, &space, "a card", None, None).expect("create_task");
+    let bad_key: Result<ArtifactMeta, HostToolError> =
+        Db::write_artifact(&db, &created.id, "My Spec", "x").map_err(Into::into);
+    let err = match bad_key {
+        Ok(_) => panic!("a key outside the grammar must refuse"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&err, HostToolError::Invalid { message }
+            if message.contains("My Spec") && message.contains("[a-z0-9][a-z0-9-]{0,39}")),
+        "`Invalid`, naming the key AND the grammar — got {err:?}"
+    );
 
-    // QUALIFIED calls throughout: `Db` carries inherent methods with these exact
-    // names and Rust prefers inherent ones, so `self.method(…)` would reach the
-    // SQLite verb and never the trait — the same rule `db/seams.rs` spells.
-    let created = TaskStore::create_task(&db, &space, "a card", Some("a body"), None)
-        .expect("the seam creates a card");
-    // The two clock arms at the end prove CARRIAGE, not which clock — see the doc.
-    let stored = Db::get_task(&db, &created.id)
-        .expect("get_task")
-        .expect("the card the seam just made");
-
-    assert_eq!(created.id, stored.id, "`id` crosses");
+    // And a `DbError` (the board read's enrichment path is the only one a host tool
+    // can hit it on) folds to `Io` with its `sqlite error: ` prefix PRESERVED, so
+    // which layer failed survives inside the sentence.
+    let db_err: DbError = rusqlite::Error::QueryReturnedNoRows.into();
+    let folded: HostToolError = db_err.into();
     assert_eq!(
-        created.space_path, stored.space_path,
-        "`space_path` crosses"
-    );
-    assert_eq!(
-        created.number, stored.number as u32,
-        "`number` narrows i64 → u32 (the desktop's is `MAX(number) + 1`, positive \
-         and small by construction — ADR 0090)"
-    );
-    assert_eq!(created.title, stored.title, "`title` crosses");
-    assert_eq!(
-        created.body, stored.body,
-        "`body` crosses, `Option` and all"
-    );
-    assert_eq!(
-        created.spec_path, stored.spec_path,
-        "`spec_path` crosses — and a fresh card carries None, so this is the arm \
-         that proves the field is MAPPED and not defaulted"
-    );
-    assert_eq!(
-        created.stage_slug, stored.stage_slug,
-        "`stage_slug` crosses"
-    );
-    assert_eq!(
-        created.sort_order, stored.sort_order,
-        "`sort_order` crosses (never asserted through the seam before)"
-    );
-    // Both clock arms prove the field is CARRIED; neither can prove WHICH clock it
-    // carries, because `create_task` stamps the two columns from one `now_ms()` and a
-    // fresh card therefore has `created_at == updated_at`. The `edit_task` test below
-    // is the arm that distinguishes the slots (it pauses first, so they differ).
-    assert_eq!(
-        created.created_at, stored.created_at,
-        "`created_at` crosses the seam"
-    );
-    assert_eq!(
-        created.updated_at, stored.updated_at,
-        "`updated_at` crosses (never asserted through the seam before)"
-    );
-}
-
-/// The same mapping on the `edit_task` answer, plus the seam's OWN two-state rule.
-///
-/// Two facts, both about `impl TaskStore for Db` rather than about the SQL:
-/// `Option<&str> → FieldPatch` maps `None → Keep` (so a model's edit leaves an
-/// untouched field exactly as stored — `FieldPatch::Clear` is unreachable from the
-/// published wire), and the answer the seam hands back is the re-read row mapped by
-/// the SAME helper `create_task` uses.
-#[test]
-fn edit_task_maps_the_same_ten_fields_and_keeps_what_the_seam_was_not_given() {
-    let dir = crate::test_support::ScratchDir::in_env_temp("db-seam-edit-", "scratch");
-    let db = Db::open(&dir.join("t.db")).expect("db should open");
-    let space = board_space("seams");
-    let created = TaskStore::create_task(&db, &space, "a card", Some("a body"), None)
-        .expect("the seam creates a card");
-    // THE SLEEP IS THE NON-VACUITY OF THE CLOCK ARMS BELOW, so it is load-bearing
-    // and not decoration. `create_task` writes ONE `now_ms()` into BOTH clock
-    // columns, so on a fresh card `created_at == updated_at` and a mapping that put
-    // `created_at` into the crate DTO's `updated_at` slot would survive every
-    // assertion in the test above. `edit_task` stamps `updated_at` unconditionally,
-    // so after this pause the stored `updated_at` is strictly LATER than the stored
-    // `created_at`, and only a correctly-mapped `updated_at` can equal it. Measured:
-    // with the sleep the swapped mapping reddens this test; without it, not.
-    std::thread::sleep(std::time::Duration::from_millis(5));
-
-    // `spec_path` is the ONLY patch this edit sends, so every other field in the
-    // answer must be exactly what the create answer carried.
-    let edited = TaskStore::edit_task(&db, &created.id, None, None, Some("docs/spec.md"))
-        .expect("the seam patches one field");
-    let stored = Db::get_task(&db, &created.id)
-        .expect("get_task")
-        .expect("the card the seam just patched");
-
-    assert_eq!(
-        edited.spec_path.as_deref(),
-        Some("docs/spec.md"),
-        "a `Some` spec_path reaches `FieldPatch::Set` and lands"
-    );
-    assert_eq!(
-        edited.spec_path, stored.spec_path,
-        "and the answer is the STORED value, not the argument echoed back"
-    );
-    assert_eq!(
-        (edited.id.as_str(), edited.title.as_str(), edited.number),
-        (created.id.as_str(), created.title.as_str(), created.number),
-        "the three fields this edit never named come back untouched"
-    );
-    assert_eq!(
-        (edited.body.as_deref(), edited.stage_slug.as_str()),
-        (Some("a body"), created.stage_slug.as_str()),
-        "`None` maps to `FieldPatch::Keep`, so `body` still holds its text — a \
-         `None → Clear` mapping would blank it here and this is where that shows"
-    );
-    assert_eq!(
-        (edited.sort_order, edited.space_path.as_str()),
-        (created.sort_order, created.space_path.as_str()),
-        "`sort_order` and `space_path` survive the edit answer too"
-    );
-    assert_eq!(
-        edited.created_at, created.created_at,
-        "`created_at` is not re-stamped by a patch"
-    );
-    assert_eq!(
-        edited.updated_at, stored.updated_at,
-        "`updated_at` crosses the seam from the re-read row (`edit_task` stamps it \
-         unconditionally), so the answer's clock IS the stored clock"
+        folded.to_string(),
+        "sqlite error: Query returned no rows",
+        "the `sqlite error: ` prefix survives the `Sqlite → Io` fold — a model that \
+         is told the disk failed looks in the wrong place"
     );
 }

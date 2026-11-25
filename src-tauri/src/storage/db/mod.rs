@@ -45,7 +45,7 @@ use rusqlite::{params, Connection, Transaction};
 // resolves unchanged.
 pub use fulcrum_harness::store_rows::{MessageRow, SessionRow};
 
-use fulcrum_harness::seams::{StoreError, TaskStoreError};
+use fulcrum_harness::seams::StoreError;
 // (T5/S4, Step B-bis) The clock moved to `fulcrum_harness::clock` — this file's
 // private copy and `agent/normalize.rs`'s `pub(crate)` copy were byte-identical
 // duplicates, and the trait's `now_ms` would have been a third. Importing the
@@ -107,34 +107,72 @@ impl From<DbError> for StoreError {
     }
 }
 
-/// The `DbError → TaskStoreError` map the D2 TaskStore seam runs through
-/// (issue #180; the crate trait is `fulcrum_harness::seams::TaskStore`).
+/// The error a board/artifact HOST TOOL answers with (ADR 0102 / issue #183 D1).
 ///
-/// Lossy like the `StoreError` map beside it, and licensed by the same
-/// measurement: `DbError` stays three-variant and DESKTOP-only (`Sqlite` is never
-/// constructible crate-side), so the crate seam only ever sees the three arms its
-/// own error type can express. `TaskStoreError` has no `Sqlite` arm for the same
-/// reason `StoreError` has none — no `rusqlite` crosses into the crate — and it
-/// must be serde-serializable because its value rides the wire inside
-/// `Inbound::TaskResponse`, which is why it is a separate type and not `StoreError`
-/// reused.
+/// This type is what `fulcrum_harness::seams::TaskStoreError` used to be for. F3
+/// deleted the crate's knowledge of Tasks — that error family included — and the
+/// frame carrying an answer now holds a bare `Result<ToolResult, String>`, because a
+/// crate with no idea what a host tool is has no business naming a host tool's
+/// failure kind. So the KINDS move here with the mapping, and the wire carries the
+/// sentence: the crate turns this type's `Display` into the failed tool result the
+/// model reads verbatim.
+///
+/// The three kinds are kept rather than collapsed into one `String`, for two
+/// reasons. First, `agent/host_tools/exec.rs::spawn_board` is generic over the error
+/// its closure returns and needs ONE type to fold both `BoardError` (the six inherent
+/// verbs) and `DbError` (the board read's artifact-key enrichment) into. Second, the
+/// distinction is what the tests assert on and what a reader needs: "the card is not
+/// there", "the argument is not admissible" and "the database failed" are three
+/// different facts, and a model reacts to the first two differently.
+///
+/// `Sqlite` gets no variant of its own for the same reason `StoreError` has none — no
+/// `rusqlite` crosses into the crate — and none is needed: the `Sqlite → Io` map
+/// below preserves the `sqlite error: ` prefix through `Display`, so WHICH layer
+/// failed survives inside the sentence.
+///
+/// Lives in `storage` and NOT in `agent`, because it is built at the storage boundary,
+/// beside the two `From` impls that are its whole substance — and `storage` never
+/// names `crate::agent` (measured: zero occurrences), so a type the storage error
+/// family owns cannot move up without inverting that edge.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum HostToolError {
+    /// The call named a card (or a Space, or a Stage) that is not there.
+    #[error("{message}")]
+    NotFound { message: String },
+    /// The call was well-formed and still not admissible: a key outside the artifact
+    /// grammar, a markdown over the size cap, a title that cleans to nothing, a slug
+    /// no column answers to.
+    #[error("{message}")]
+    Invalid { message: String },
+    /// The storage layer itself failed — including a board call still running at the
+    /// deadline, and a blocking task that died mid-call.
+    #[error("{message}")]
+    Io { message: String },
+}
+
+/// The `DbError → HostToolError` map the host-tool executors run through.
+///
+/// Lossy like the `StoreError` map beside it, and licensed by the same measurement:
+/// `DbError` stays three-variant and DESKTOP-only (`Sqlite` is never constructible
+/// crate-side), so this path only ever sees the three arms its own error type can
+/// express.
 ///
 /// `Sqlite → Io` with the sentence preserved through `Display` (the
 /// `io error: sqlite error: …` degradation the map above documents — the model
 /// reads this `message` as its tool result, so WHICH layer failed has to survive);
-/// `Io → Io`; `Json → Invalid`, because a JSON failure is a malformed row rather
-/// than an I/O failure, and folding it into `Io` would tell a model to retry a
+/// `Io → Io`; `Json → Invalid`, because a JSON failure is a malformed row
+/// rather than an I/O failure, and folding it into `Io` would tell a model to retry a
 /// write that will fail identically every time.
-impl From<DbError> for TaskStoreError {
+impl From<DbError> for HostToolError {
     fn from(e: DbError) -> Self {
         match e {
-            DbError::Sqlite(inner) => TaskStoreError::Io {
+            DbError::Sqlite(inner) => HostToolError::Io {
                 message: format!("sqlite error: {inner}"),
             },
-            DbError::Io(e) => TaskStoreError::Io {
+            DbError::Io(e) => HostToolError::Io {
                 message: e.to_string(),
             },
-            DbError::Json(e) => TaskStoreError::Invalid {
+            DbError::Json(e) => HostToolError::Invalid {
                 message: e.to_string(),
             },
         }
@@ -331,16 +369,20 @@ pub enum BoardError {
     EmptyTitle,
 }
 
-/// The `BoardError → TaskStoreError` map the D2 TaskStore seam runs through
-/// (issue #180).
+/// The `BoardError → HostToolError` map the host-tool executors run through
+/// (issue #180, re-pointed at the desktop's own error type by ADR 0102 / #183 D1).
 ///
-/// Four arms carry the refusals a board VERB can reach through the crate trait,
-/// and the fifth is the honest catch-all for the variants the seam cannot produce
-/// — see below.
+/// THIS IS THE MODEL-FACING SENTENCE FACTORY. Every board refusal a model can reach
+/// through a host tool passes through here exactly once, and `BoardError`'s `Display`
+/// is the sentence it reads — so a `#[error(...)]` edit and this table cannot drift,
+/// and `docs/features/task-board-known-gaps.md` §2 cites the wording this produces.
+///
+/// Four arms carry the refusals a board VERB can reach through a host tool, and the
+/// rest is the honest catch-all for the variants no verb can produce — see below.
 ///
 /// - `MissingTask` → `NotFound`: a WRITE against a card that is not there. This is
-///   the variant `write_artifact`'s dangling-id gate raises, and the crate's
-///   `TaskStoreError::NotFound` exists for exactly that question.
+///   the variant `write_artifact`'s dangling-id gate raises, and `NotFound` exists
+///   for exactly that question.
 /// - `MissingStage` → `Invalid`: a bad slug is a malformed ARGUMENT, not an
 ///   absence — the destination column may well exist in another Space. The
 ///   sentence keeps `available`, because ADR 0090's first Consequence is that a bad
@@ -354,27 +396,26 @@ pub enum BoardError {
 /// The catch-all exists because `move_task` is not the only verb-shaped method on
 /// this type and the match has to be exhaustive over an enum the command layer
 /// grows. `StageNotEmpty`, `StageReferenced`, `LastStage`, `StageSlugTaken`,
-/// `EmptyStageSlug` and `SelfLoop` are all STAGE-management refusals, and the crate
-/// trait has no stage verb at all — no path through `TaskStore` reaches them.
+/// `EmptyStageSlug` and `SelfLoop` are all STAGE-management refusals, and there is no
+/// stage HOST tool at all — the seven verbs are board and artifact, never stage.
 /// Folding them into `Invalid` rather than panicking is deliberate: a future verb
 /// that starts raising one gets a correct-if-generic sentence, where a `unreachable!`
 /// would panic inside a `spawn_blocking` and turn a storage refusal into the
 /// `JoinError` the router reports as `Io`.
 ///
 /// `BadArtifactKey` and `ArtifactTooLarge` sit in the SAME arm but for the opposite
-/// reason: they ARE reachable, because `write_artifact` is a `TaskStore` verb and
-/// storage now enforces both rules for every door to `task_artifacts`. The crate's
-/// `Invalid` doc names exactly those two failures, so the mapping is the one F1
-/// anticipated rather than a coincidence.
+/// reason: they ARE reachable, because `write_artifact` is a host tool and storage
+/// enforces both rules for every door to `task_artifacts`. `Invalid`'s own doc names
+/// exactly those two failures, so the mapping is the one the variant was written for.
 ///
 /// `EmptyTitle` belongs with THAT paragraph, not with the stage refusals above it.
-/// It is REACHABLE through the seam — `create_task` and `edit_task` are both
-/// `TaskStore` verbs, and both now refuse a title that cleans to nothing before they
-/// touch a connection. `Invalid`'s own crate doc is "the call was well-formed JSON
-/// and still not admissible", and a title is exactly that: the arguments parsed, the
-/// card id is fine, and the label is not a label. Documenting this arm under the
-/// stage paragraph would leave a docblock arguing against the code beside it.
-impl From<BoardError> for TaskStoreError {
+/// It is REACHABLE — `create_task` and `edit_task` are both host tools, and both
+/// refuse a title that cleans to nothing before they touch a connection. `Invalid`'s
+/// definition is "the call was well-formed and still not admissible", and a title is
+/// exactly that: the arguments parsed, the card id is fine, and the label is not a
+/// label. Documenting this arm under the stage paragraph would leave a docblock
+/// arguing against the code beside it.
+impl From<BoardError> for HostToolError {
     fn from(e: BoardError) -> Self {
         // `Display` IS the sentence the model reads, so it is rendered ONCE from
         // the variant that arrived and then dispatched on — never re-spelled per
@@ -383,18 +424,17 @@ impl From<BoardError> for TaskStoreError {
         // `Display` already carries the `sqlite error: ` prefix.)
         let sentence = e.to_string();
         match e {
-            BoardError::MissingTask(_) => TaskStoreError::NotFound { message: sentence },
-            BoardError::Sqlite(_) => TaskStoreError::Io { message: sentence },
+            BoardError::MissingTask(_) => HostToolError::NotFound { message: sentence },
+            BoardError::Sqlite(_) => HostToolError::Io { message: sentence },
             // The two artifact refusals are MALFORMED ARGUMENTS, not absences, and
-            // the crate's own `TaskStoreError::Invalid` doc names them ("a key
-            // outside the artifact grammar, a markdown over the size cap") — this
-            // arm is why that sentence is now true on the desktop side too. The
-            // grammar and the numbers ride in `Display`, which is what the model
-            // reads as the tool result. `EmptyTitle` rides here too, and NOT for the
-            // reason the stage refusals below do: it is REACHABLE, because
-            // `create_task` and `edit_task` are `TaskStore` verbs. A title that
-            // cleans to nothing is a well-formed call whose argument is not
-            // admissible, which is `Invalid`'s own definition.
+            // `Invalid`'s own doc names them (a key outside the artifact grammar, a
+            // markdown over the size cap) — this arm is what makes that sentence
+            // true. The grammar and the numbers ride in `Display`, which is what the
+            // model reads as the tool result. `EmptyTitle` rides here too, and NOT
+            // for the reason the stage refusals below do: it is REACHABLE, because
+            // `create_task` and `edit_task` are host tools. A title that cleans to
+            // nothing is a well-formed call whose argument is not admissible, which
+            // is `Invalid`'s own definition.
             BoardError::BadArtifactKey { .. }
             | BoardError::ArtifactTooLarge { .. }
             | BoardError::EmptyTitle
@@ -405,7 +445,7 @@ impl From<BoardError> for TaskStoreError {
             | BoardError::LastStage { .. }
             | BoardError::StageSlugTaken { .. }
             | BoardError::EmptyStageSlug
-            | BoardError::SelfLoop { .. } => TaskStoreError::Invalid { message: sentence },
+            | BoardError::SelfLoop { .. } => HostToolError::Invalid { message: sentence },
         }
     }
 }
@@ -1401,8 +1441,8 @@ use migrations::{backfill_session_todos, seed_session_sort_order, seed_space_sor
 // `MessageRow` / `SessionRow` are NOT here — they stay behind the
 // `pub use fulcrum_harness::store_rows::{…}` above, which is where they live.
 pub use rows::{
-    Artifact, ArtifactMeta, MoveOutcome, SessionRecency, SpaceRow, StageRow, StageWithTasks,
-    TaskCardView, TaskNumberRow, TaskRow, TaskSessionRow,
+    Artifact, ArtifactMeta, BoardRow, MoveOutcome, MoveToolOutcome, SessionRecency, SpaceRow,
+    StageRow, StageWithTasks, TaskCardView, TaskDetail, TaskNumberRow, TaskRow, TaskSessionRow,
 };
 
 // The workflow subject's PUBLIC surface: the run record and the VERDICT a step
