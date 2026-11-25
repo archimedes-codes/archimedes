@@ -16,7 +16,10 @@ import { useMentionCatalogs } from "../hooks/useMentionCatalogs";
 import { describeIpcError } from "../lib/ipcError";
 import type { TaskLaunchDestination } from "../lib/taskPrompt";
 import { nextStepOf } from "../lib/workflowGraph";
-import type { StageWithTasks, TaskRow } from "../lib/tauri";
+import { sessionStatusRollupOf } from "../lib/sessionStatusRollup";
+import { useSessionStatuses } from "../hooks/useSessionStatus";
+import type { SessionStatus } from "../hooks/useSessionStatus";
+import type { StageWithTasks, TaskCardView, TaskRow } from "../lib/tauri";
 
 /**
  * The **Task board** — the surface `App`'s `"board"` view renders in place of the
@@ -313,6 +316,65 @@ export default function TasksBoard({
   // `SpacesList` hoists `NO_SESSION_IDS` to module scope.
   const stages: readonly StageWithTasks[] = useMemo(() => columns ?? [], [columns]);
 
+  // THE LIVE SESSION MARK, computed ONCE for the whole board.
+  //
+  // The union of every VISIBLE card's linked session ids goes into ONE
+  // `useSessionStatuses` call and the answer is read back per card by
+  // `sessionStatusFor` below. Two reasons, both already argued in this tree:
+  //
+  //  - a hook cannot be called inside the `stages.map(...)` → `TaskColumn` →
+  //    `card.tasks.map(...)` chain at a changing list length, which is why
+  //    `useSessionStatuses` and the pure `sessionStatusOf` exist as a pair;
+  //  - the hook subscribes FIVE stores at once (`sessions` / `inTurn` / `prompts` /
+  //    `requests` / `subagents.entries`), so a hook per card would be N
+  //    subscriptions to all five and every Session's turn churn would re-render
+  //    every card — the subscription-breadth cost `useSessionStatus`'s own header
+  //    records for the sidebar rows and names `useSessionStatuses` as the shape the
+  //    open list would want. This board takes that shape.
+  //
+  // The ids come from the cards and NOT from the session list: a card's mark
+  // answers a question about ITS links, so a board whose every card wore the status
+  // of some unrelated waiting Session would be a second answer to "what is blocked
+  // on me" — and a wrong one, since the card is a Task and not a Session.
+  //
+  // `useMemo` on the card set, so the id array's identity is stable across renders
+  // that did not change the board — the same reason `stages` and `spacePaths` are
+  // memoised here and in `SpaceTabs` (a fresh array every render re-runs the hook's
+  // per-id loop for the same answer).
+  const linkedSessionIds = useMemo(
+    () => [
+      ...new Set(
+        stages.flatMap((column) =>
+          column.tasks.flatMap((card) =>
+            card.sessions.map((link) => link.sessionId),
+          ),
+        ),
+      ),
+    ],
+    [stages],
+  );
+  // The ONE read. `TaskDetailDialog` calls the same hook for its own session list
+  // and `SpaceTabs` for the whole strip: three surfaces, one subscription each, and
+  // never one per row.
+  const statusById = useSessionStatuses(linkedSessionIds);
+
+  /** The `sessionStatus` prop for one card, folded out of that card's OWN linked
+   *  Sessions, or `null` for "nothing to report".
+   *
+   *  The PRECEDENCE is not spelled here. `sessionStatusRollupOf` is the ONE rollup,
+   *  shared with `SpaceTabs`, so a `?` cannot mean one thing on a tab and another on
+   *  a card two hundred pixels below it; the extraction and its reasoning are at
+   *  `lib/sessionStatusRollup`.
+   *
+   *  A FUNCTION and not a pre-built map, for the reason `launchStepFor` gives for
+   *  itself: the column renders N cards and each card's answer is its own. The card
+   *  stays presentational and takes the value — it holds no store and no
+   *  derivation, which its own test pins against source. */
+  const sessionStatusFor = (card: TaskCardView): SessionStatus | null =>
+    sessionStatusRollupOf(
+      card.sessions.map((link) => statusById[link.sessionId]),
+    );
+
   /** The cross-column gesture, ONE instance for the whole board: it has to see every
    *  column to answer "is the pointer over a different one", so one instance per
    *  column would be N copies of one question. */
@@ -501,6 +563,7 @@ export default function TasksBoard({
                 columnDrop={columnDrop}
                 onOpenSession={openSessionAndLeave}
                 onOpenTask={setDetailTaskId}
+                sessionStatusFor={sessionStatusFor}
                 launchStepFor={launchStepFor}
                 onReorder={(ids) =>
                   reorderInStage(activeSpacePath, column.stage.slug, ids)

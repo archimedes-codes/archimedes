@@ -1,7 +1,9 @@
 import { MutedCaption } from "./MutedCaption";
 import { RowButton } from "./RowButton";
 import { moneyOf } from "./SessionCostLine";
+import { SessionStatusMark } from "./SessionStatusMark";
 import type { DragCardHandlers } from "../hooks/useDragCard";
+import type { SessionStatus } from "../hooks/useSessionStatus";
 import type { TaskLaunchDestination } from "../lib/taskPrompt";
 import type { TaskRow, TaskSessionRow } from "../lib/tauri";
 import { relativeTimeFromInstant } from "../lib/sessionTime";
@@ -10,11 +12,13 @@ import { cn } from "./lib/utils";
 /**
  * One **Task** card on the board.
  *
- * PRESENTATIONAL, and deliberately thin. It takes a card's `TaskRow` plus the two
- * board-only facts the wire carries beside it (`sessions`, `costUsd`), the drag
- * surface the board's `useDragCard` instance produced for it, and one callback —
- * and it renders. It subscribes to NO store: the board already holds the slice, and
- * a card that read the store for itself would be a second owner of "which board is
+ * PRESENTATIONAL, and deliberately thin. It takes a card's `TaskRow` plus the
+ * board-only facts that ride beside it on the wire (`sessions`, `costUsd`,
+ * `artifactKeys`) plus the one fact the board DERIVES for it (`sessionStatus`, the
+ * live mark), the drag surface the board's `useDragCard` instance produced for it,
+ * and two callbacks — and it renders. It subscribes to NO store: the board already
+ * holds the slice, and a card that read the store for itself would be a second
+ * owner of "which board is
  * showing" — the same reason `SessionListRow` takes its `drag` and `dropEdge` as
  * props rather than calling `useDragReorder` at the row. Issue #174 added the
  * sessions chip and the card still holds that line: the chip's callback is
@@ -120,6 +124,33 @@ export interface TaskCardProps {
    *  this prop is a keyboard-focusable row that does nothing when activated — the
    *  silent-green shape this file already argues against one prop above. */
   onOpenTask: (taskId: string) => void;
+  /** This card's **live session state**, folded out of its linked Sessions by the
+   *  board: `waiting` (a linked Session is parked on a human), `running` (one is in
+   *  a turn), or `null` for "nothing to report".
+   *
+   *  REQUIRED, and the reason is the same argument this file already makes three
+   *  times over — with one refinement worth stating, because it is what separates
+   *  this prop from `launchStep` below.
+   *
+   *  The board's answer is `sessionStatusRollupOf(...)`, whose return type is
+   *  `SessionStatus | null`. `null` is a real production value and it is spelled
+   *  `null`, not left absent: it means "I looked, and no linked Session is waiting
+   *  or working". `undefined` is therefore NOT a value a correct board produces — it
+   *  is only ever a caller that forgot the prop. And what a forgotten one of those
+   *  paints here is the worst version of this repo's silent-green shape: a card
+   *  whose Session is blocked on a permission for the last forty minutes, rendered
+   *  exactly like a card whose Session finished an hour ago. The one fact on this
+   *  card that changes while nobody is looking is the one fact a caller must not be
+   *  allowed to omit.
+   *
+   *  It is NOT read off `task`, and NOT derived here. `TaskRow` has no such field
+   *  (ADR 0100), the inputs (`inTurn`, `prompts`, `requests`, `subagents.entries`)
+   *  live in four stores the BOARD already subscribes to, and the precedence is
+   *  `lib/sessionStatusRollup`'s — shared with the tab strip so a `?` cannot mean
+   *  one thing on a tab and another on a card two hundred pixels below it. The card
+   *  takes the value and paints the glyph. That is the whole contract, and
+   *  `TaskCard.test.tsx` pins the file against importing a store. */
+  sessionStatus: SessionStatus | null;
   /** This card's `useDragCard` spread (`dragProps(task.id)`), or nothing when the
    *  board cannot drag (no board loaded yet). Absent means NO gesture at all —
    *  `draggable` is not spelled without the handlers that would answer it. */
@@ -160,6 +191,7 @@ export default function TaskCard({
   sessions,
   costUsd,
   artifactKeys,
+  sessionStatus,
   onOpenSession,
   onOpenTask,
   drag,
@@ -250,19 +282,101 @@ export default function TaskCard({
       {/* THREE ROWS: meta / title / chips-and-body. The reference board's anatomy,
           with our ladder and our tokens rather than its. */}
       <div className="flex items-center justify-between gap-2">
-        {/* The number is a PILL now, and its fill is the PAGE step: it has to
-            differ from BOTH surfaces it can land on — the column's `bg-panel` and
-            this card's `bg-card` — in EVERY palette. `bg-chat` looked fine in
-            Dracula (1.22 / 1.21) and is EXACTLY the card in default-dark: its
-            `color-mix` base is `--color-background-win-alt` `#2b2b2b`, which IS
-            `--color-card` there, so 0.6·base + 0.4·card = the card. 1.00. Measured
-            per palette in `slabFloatSeparation.test.ts`; `bg-background` is
-            1.10/1.34 Dracula, 1.11/1.28 default-dark, 1.06/1.06 default-light. It stays its
-            OWN text node — `T3` is the label a person says out loud and both board
-            test files resolve a card through `getByText("T3")`. */}
-        <span className="shrink-0 rounded-full bg-background px-2 py-0.5 font-mono text-ui-xs text-foreground-subtle">
-          T{task.number}
-        </span>
+        {/* The number and the LIVE MARK, grouped so `justify-between` keeps the
+            timestamp right-aligned with TWO facts on the left instead of spreading
+            three children across the row. The group is a wrapper and not a sibling
+            because `T{n}` and the mark are one sentence — "T3, and it is blocked on
+            you" — and the pill stays its OWN text node either way (both board test
+            files resolve a card through `getByText("T3")`, which reads text content
+            and not a parent). */}
+        <div className="flex min-w-0 items-center gap-1.5">
+          {/* The number is a PILL now, and its fill is the PAGE step: it has to
+              differ from BOTH surfaces it can land on — the column's `bg-panel` and
+              this card's `bg-card` — in EVERY palette. `bg-chat` looked fine in
+              Dracula (1.22 / 1.21) and is EXACTLY the card in default-dark: its
+              `color-mix` base is `--color-background-win-alt` `#2b2b2b`, which IS
+              `--color-card` there, so 0.6·base + 0.4·card = the card. 1.00. Measured
+              per palette in `slabFloatSeparation.test.ts`; `bg-background` is
+              1.10/1.34 Dracula, 1.11/1.28 default-dark, 1.06/1.06 default-light. It stays its
+              OWN text node — `T3` is the label a person says out loud and both board
+              test files resolve a card through `getByText("T3")`. */}
+          <span className="shrink-0 rounded-full bg-background px-2 py-0.5 font-mono text-ui-xs text-foreground-subtle">
+            T{task.number}
+          </span>
+          {/* THE LIVE SESSION MARK — the card's one non-static fact, and a GLYPH.
+
+              The guard names THREE values (`null`, `live`, `stored`) although the
+              rollup the board feeds this prop can only ever answer `waiting`,
+              `running` or `null`. That is not redundancy, it is the surface owning
+              its own rule: "a card never wears a ring" is a claim about THIS
+              component, and a card that painted one the moment a caller passed a
+              fourth value would be the defect — provable only if the card refuses it
+              itself. `TaskCard.test.tsx` passes `live` and `stored` on purpose, which
+              a narrower prop type would have made uncompilable and therefore
+              untestable.
+
+              WHY A GLYPH AND NOT A WORD. `WorkflowNodes.tsx` records `text-warning` as
+              12px TEXT as a live defect — 2.12 Everforest light, 2.16 Rosé Pine light,
+              2.31 Catppuccin light, measured again against `bg-card` here — and a
+              faint WORD is worse still: `text-foreground-subtlest` on `bg-card`
+              measures 2.36 default-light / 2.18 default-dark and NO palette gate can
+              see it, because both Default readings declare that token
+              `textUngradeable` (a `color-mix` over an oklch Tailwind token, with no
+              hex reading in this repo to grade) and `--color-card` sits in the graded
+              `raised` text-surface set in only 8 of the 13 readings. The app's rule is
+              hue on border/fill and readable ink on WORDS, and this is neither: it is
+              a mark.
+
+              WHY NO `className` WITH INK IN IT. `SessionStatusMark` documents
+              `className` as GEOMETRY-only and says so because two same-group utilities
+              in one list resolve by CSS source order, which the caller cannot control —
+              `cn()` (tailwind-merge) now enforces it by DROPPING the mark's own. So the
+              `?` arrives wearing `text-warning` and the spinner
+              `text-foreground-subtlest`, the same two values the tab strip ships at the
+              same 14px, and this file restyles nothing. That is deliberate, not an
+              oversight: the alternative is a card whose `?` is a different orange from
+              the tab's.
+
+              ONE HONEST CAVEAT, recorded rather than fixed here. `waiting` is fine —
+              `text-warning` is graded per palette (Everforest light carries a 1.75
+              floor on it, so its 2.12 is a RECORDED value and not an accident). But the
+              `running` spinner's ink IS the faint token, and it measures 2.36 on
+              `bg-card` in default-light — the same family of number this file refuses
+              for a WORD. It is inherited, not chosen here: it is what the tab strip and
+              the detail modal's session rows already ship for a non-active mark, it
+              lands on a 14px animated OUTLINE rather than on text, and `className` is
+              geometry-only, so a card that wanted it bolder would have to break the
+              mark's contract and end up with a spinner that disagrees with the tab's.
+              The fix, if it is wanted, is in `SessionStatusMark`'s ink for ALL its
+              surfaces at once — which is exactly why it is not made in this file.
+
+              `announce={false}`, i.e. decoration, and the reason is the TAB's reason
+              rather than an invention: the card is a `RowButton` and a
+              `div[role="button"]`'s accessible name is computed RECURSIVELY from its
+              subtree (this file's own `controlsNamed` helper exists because of it), so
+              an announced mark would rename the card under the user mid-turn — "Ship
+              the board, Waiting for you" — exactly the way it would rename a tab. The
+              sidebar row keeps the announcement because its "Waiting" TEXT pill was
+              deleted and the glyph is the only statement left; a card is not that case,
+              the detail modal's session rows carry the SAME mark announced, and a board
+              can hold N marks at once, which is an argument for restraint.
+
+              NOT a control, so zero `[role="button"]` matches — the rule the `spec` chip
+              and the artifact key chips follow and that `TaskCard.test.tsx` re-pins
+              (`SpacesList.test.tsx` resolves rows through `.closest('[role="button"]')`
+              at eight sites). Opening a Session already has its affordance: the chip. */}
+          {sessionStatus !== null &&
+            sessionStatus !== "live" &&
+            sessionStatus !== "stored" && (
+            <SessionStatusMark
+              status={sessionStatus}
+              size={14}
+              testId="task-card-status"
+              announce={false}
+              className="shrink-0"
+            />
+          )}
+        </div>
         {/* The same buckets the Session list prints, from a different instant —
             `task.updatedAt` is Unix ms (`now_ms()` in `db.rs`), so it goes through
             the ONE bucket rule rather than a copy of it. Its own element, never

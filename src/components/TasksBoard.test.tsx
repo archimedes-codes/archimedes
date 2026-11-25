@@ -4,6 +4,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import TasksBoard from "./TasksBoard";
 import { useTasks } from "../store/tasks";
 import { useSessions } from "../store/sessions";
+import { usePermissions } from "../store/permissions";
+import { useInteractive } from "../store/interactive";
 import { resetStores } from "../test/resetStores";
 import { clearSkillCatalogCache } from "../hooks/useSkillCatalog";
 import {
@@ -1235,5 +1237,243 @@ describe("TasksBoard — the Configure door (T3, now a navigation)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Configure" }));
     expect(onOpenWorkflows).toHaveBeenCalledTimes(1);
     expect(getBoardStrict).toHaveBeenCalledTimes(0);
+  });
+});
+
+/**
+ * THE LIVE SESSION-STATUS MARK ON A CARD.
+ *
+ * These cases run against the REAL stores, not a mocked `TaskCard` — that is the
+ * whole point. The board is the ONE place that calls `useSessionStatuses` (its
+ * header's subscription-breadth argument: a hook per card would reproduce the cost
+ * at N cards), and the stores that decide the answer are app-scoped, not
+ * view-scoped: `App` mounts `listenPermissionRequest` → `addPrompt` and
+ * `listenInteractiveRequest` → `addRequest` for the life of the window, so a
+ * prompt that arrives while the person is looking at the board is already in
+ * `usePermissions` when the board renders. A test that mocked the card could only
+ * prove the card paints what it is handed; it could not prove the board HANDS it
+ * anything, which is the half that can silently be missing.
+ *
+ * `resetStores()` runs in the file's own `beforeEach`, so every case below starts
+ * from the captured initial state and seeds exactly the fields it means to.
+ */
+describe("TasksBoard — the live session-status mark on a card", () => {
+  /** A card that OWNS a Session, in the wire shape (`TaskCardView.sessions`). */
+  const cardWith = (
+    id: string,
+    number: number,
+    stageSlug: string,
+    sessionIds: string[],
+  ): TaskCardView => ({
+    task: task(id, number, stageSlug),
+    sessions: sessionIds.map((sessionId) => ({
+      taskId: id,
+      sessionId,
+      stageSlug,
+    })),
+    costUsd: null,
+    artifactKeys: [],
+  });
+
+  /** The board seeded with one card in `doing` that owns `sessionIds`. */
+  const boardWith = (sessionIds: string[]): StageWithTasks[] => [
+    {
+      stage: stage("backlog", { sortOrder: 0 }),
+      tasks: [cardWith("t1", 1, "backlog", sessionIds)],
+    },
+  ];
+
+  /** The card's mark, or `null`. Queried by testid, not role: the mark is
+   *  decoration on a card, so a role query cannot tell "silent" from "absent". */
+  const cardMark = (): Element | null =>
+    screen.getByTestId("task-card").querySelector('[data-testid="task-card-status"]');
+
+  /** A live Session in the store — `running` needs `isLive && inTurn`, so a card
+   *  whose Session is only `inTurn` reads `stored`, not `running`. */
+  const liveSession = (sessionId: string) => ({
+    sessionId,
+    cwd: SPACE,
+    capabilities: {},
+    archived: false,
+  });
+
+  it("a card whose linked Session holds a pending permission shows the QUESTION", () => {
+    // THE feature's headline case, end to end: the store is populated while the
+    // board is up (exactly what the app-scoped `listenPermissionRequest` →
+    // `addPrompt` listener does), and the mark appears on the CARD.
+    useTasks.setState({ boardsBySpace: { [SPACE]: boardWith(["sess_wait"]) } });
+    useSessions.setState({ sessions: [liveSession("sess_wait")] });
+    // The REAL action, not a `setState` of its shape: `addPrompt` is what the app's
+    // listener calls, so seeding through it pins the same field path the status
+    // derivation reads (`prompts[sessionId]`).
+    usePermissions.getState().addPrompt("sess_wait", "req_1", {
+      options: [],
+      toolCall: { title: "Write src/a.ts" },
+    });
+
+    render(<TasksBoard />);
+
+    const mark = cardMark();
+    expect(mark, "the card must carry the mark once the store holds a prompt").toBeTruthy();
+    expect(mark!.getAttribute("data-dot")).toBe("waiting");
+  });
+
+  it("a card whose linked Session is in a turn shows the spinner", () => {
+    useTasks.setState({ boardsBySpace: { [SPACE]: boardWith(["sess_run"]) } });
+    useSessions.setState({
+      sessions: [liveSession("sess_run")],
+      inTurn: { sess_run: true },
+    });
+
+    render(<TasksBoard />);
+
+    const mark = cardMark();
+    expect(mark).toBeTruthy();
+    expect(mark!.hasAttribute("data-dot"), "a spinner carries no data-dot").toBe(false);
+    expect(classTokens(mark!)).toContain("animate-spin");
+  });
+
+  it("a card with a waiting Session AND a running one shows the QUESTION (the shared precedence)", () => {
+    // Two linked Sessions, one parked on an `ask` and one streaming: the card is
+    // blocked on YOU, and a spinner would be the lie. This is the SAME precedence
+    // the tab strip draws, and it lands here through the one rollup — the case that
+    // proves the board folds through `lib/sessionStatusRollup` rather than spelling
+    // its own `if (any waiting)` at the JSX.
+    useTasks.setState({ boardsBySpace: { [SPACE]: boardWith(["sess_run", "sess_wait"]) } });
+    useSessions.setState({
+      sessions: [liveSession("sess_run"), liveSession("sess_wait")],
+      inTurn: { sess_run: true },
+    });
+    // Through the REAL interactive-request action, `ask` being one of the three
+    // `isInteractivePause` methods.
+    useInteractive.getState().addRequest("sess_wait", {
+      requestId: "req_ask",
+      method: "ask",
+      source: "native",
+      params: { question: "which one?" },
+    });
+
+    render(<TasksBoard />);
+
+    const mark = cardMark();
+    expect(mark).toBeTruthy();
+    expect(mark!.getAttribute("data-dot")).toBe("waiting");
+    expect(mark!.getAttribute("class")).not.toContain("animate-spin");
+  });
+
+  it("a card whose Session is live and idle renders NO mark (no ring on a card)", () => {
+    // `live` is a real state of the Session and NOT a fact the board reports. A
+    // ring on every card of an idle Space would paint the whole board with a state
+    // nobody asked about, and the tab strip suppresses the same two states for the
+    // same reason. The sidebar row is the ring's only home.
+    useTasks.setState({ boardsBySpace: { [SPACE]: boardWith(["sess_idle"]) } });
+    useSessions.setState({ sessions: [liveSession("sess_idle")] });
+
+    render(<TasksBoard />);
+
+    expect(cardMark()).toBeNull();
+    // And the card still renders — this is "no mark", not "no card".
+    expect(screen.getByTestId("task-card").textContent).toContain("T1");
+  });
+
+  it("a card with NO linked Sessions renders no mark, whatever the stores hold", () => {
+    // The seeded board's common case, and the second half of the non-vacuity pair:
+    // the mark is derived from a card's OWN links, not from "some Session
+    // somewhere is waiting". Without this, a board that painted a global status on
+    // every card would pass all three cases above.
+    useTasks.setState({ boardsBySpace: { [SPACE]: SEED } });
+    useSessions.setState({ sessions: [liveSession("sess_other")], inTurn: { sess_other: true } });
+    usePermissions.getState().addPrompt("sess_other", "req_1", {
+      options: [],
+      toolCall: { title: "Write src/a.ts" },
+    });
+
+    render(<TasksBoard />);
+
+    // The seeded cards own no Session at all, so not one of them carries a mark —
+    // while a DIFFERENT Session in the same store is waiting and running.
+    expect(screen.getAllByTestId("task-card").length).toBeGreaterThan(1);
+    for (const card of screen.getAllByTestId("task-card")) {
+      expect(
+        card.querySelector('[data-testid="task-card-status"]'),
+        "a card with no links must not borrow another Session's status",
+      ).toBeNull();
+    }
+  });
+
+  it("every card gets its OWN status, read from one board-wide computation", () => {
+    // THE threading proof, and the reason the board computes rather than the card.
+    // `useSessionStatuses` subscribes FIVE stores at once (`sessions` / `inTurn` /
+    // `prompts` / `requests` / `subagents.entries`) and the board calls it ONCE for
+    // the union of the visible cards' ids; a hook per card would open N
+    // subscriptions to all five, which is the cost `TasksBoard`'s header (and
+    // `useSessionStatus`'s note about `SessionRow`) both record. jsdom cannot count
+    // subscriptions, so what THIS case can prove is the half that only a
+    // board-computed map gets right: three cards, three different ids, three
+    // different correct answers in ONE render. A board that broadcast one
+    // board-wide status — the tempting shortcut — reddens here immediately.
+    useTasks.setState({
+      boardsBySpace: {
+        [SPACE]: [
+          {
+            stage: stage("doing", { sortOrder: 0 }),
+            tasks: [
+              cardWith("t1", 1, "doing", ["sess_wait"]),
+              cardWith("t2", 2, "doing", ["sess_run"]),
+              cardWith("t3", 3, "doing", ["sess_idle"]),
+            ],
+          },
+        ],
+      },
+    });
+    useSessions.setState({
+      sessions: [liveSession("sess_wait"), liveSession("sess_run"), liveSession("sess_idle")],
+      inTurn: { sess_run: true },
+    });
+    usePermissions.getState().addPrompt("sess_wait", "req_1", {
+      options: [],
+      toolCall: { title: "Write src/a.ts" },
+    });
+
+    render(<TasksBoard />);
+
+    const cards = within(screen.getByTestId("task-column-doing")).getAllByTestId(
+      "task-card",
+    );
+    expect(cards).toHaveLength(3);
+    const dots = cards.map((card) => {
+      const mark = card.querySelector('[data-testid="task-card-status"]');
+      if (mark === null) return "none";
+      return mark.getAttribute("data-dot") ?? "spinner";
+    });
+    // Per-card CORRECTNESS is what proves the map was threaded by id and not
+    // broadcast as one board-wide answer: waiting, running, nothing.
+    expect(dots).toEqual(["waiting", "spinner", "none"]);
+  });
+
+  it("the mark adds no control to a card on the board", () => {
+    // `RowButton`'s one-`role="button"`-per-row rule, asserted where cards are
+    // actually mounted in bulk. `SpacesList.test.tsx` resolves rows through
+    // `.closest('[role="button"]')` at eight sites and never mounts a card, so
+    // this is the second place the rule is provable — and it is the one that counts
+    // a whole board of them at once.
+    useTasks.setState({ boardsBySpace: { [SPACE]: boardWith(["sess_wait"]) } });
+    useSessions.setState({ sessions: [liveSession("sess_wait")] });
+    usePermissions.getState().addPrompt("sess_wait", "req_1", {
+      options: [],
+      toolCall: { title: "Write src/a.ts" },
+    });
+
+    render(<TasksBoard />);
+
+    // ONE role in the whole tree, and it is the CARD. Asserted at document level
+    // because `querySelectorAll` searches DESCENDANTS — reading it from the card
+    // would answer 0 for a correct card and could not tell "the card has the role"
+    // from "nothing has it".
+    expect(document.querySelectorAll('[role="button"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[role="button"]')[0]).toBe(
+      screen.getByTestId("task-card"),
+    );
+    expect(cardMark()!.tagName).not.toBe("BUTTON");
   });
 });

@@ -108,6 +108,7 @@ const NO_LINKS: Pick<
   | "onOpenSession"
   | "onOpenTask"
   | "launchStep"
+  | "sessionStatus"
 > = {
   sessions: [],
   costUsd: null,
@@ -115,6 +116,12 @@ const NO_LINKS: Pick<
   onOpenSession: noopOpenSession,
   onOpenTask: noopOpenTask,
   launchStep: undefined,
+  // `null` = "nothing to report", which is what a card with no linked Sessions
+  // gets from the board's one rollup. REQUIRED like `artifactKeys` above: the
+  // value the production board hands down is `SessionStatus | null` and NEVER
+  // `undefined`, so an omitted prop is a caller that forgot, and what it paints
+  // is a card whose Session is blocked on a human with no mark saying so.
+  sessionStatus: null,
 };
 
 /** A card's primary next step (issue #179 §7.1), derived by the BOARD.
@@ -573,6 +580,8 @@ describe("TaskCard — the card is a control (PR #178 inverts this)", () => {
         artifactKeys={[]}
         onOpenSession={vi.fn()}
         onOpenTask={vi.fn()}
+        // Not this case's subject: the board's rollup answers `null` = nothing to report.
+        sessionStatus={null}
       />,
     );
     const chip = screen.getByText("1 session");
@@ -601,6 +610,8 @@ describe("TaskCard — the card is a control (PR #178 inverts this)", () => {
         artifactKeys={[]}
         onOpenSession={onOpenSession}
         onOpenTask={onOpenTask}
+        // Not this case's subject: the board's rollup answers `null` = nothing to report.
+        sessionStatus={null}
       />,
     );
     fireEvent.click(screen.getByText("1 session"));
@@ -668,6 +679,8 @@ describe("TaskCard — the primary-next-step pill (issue #179 §7.1)", () => {
         onOpenTask={noopOpenTask}
         launchStep={launchStep()}
         drag={dragSurface()}
+        // Not this case's subject: the board's rollup answers `null` = nothing to report.
+        sessionStatus={null}
       />,
     );
     expect(document.querySelectorAll('[role="button"]')).toHaveLength(1);
@@ -857,6 +870,8 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         artifactKeys={[]}
         onOpenSession={noopOpenSession}
         onOpenTask={noopOpenTask}
+        // Not this case's subject: the board's rollup answers `null` = nothing to report.
+        sessionStatus={null}
       />,
     );
     expect(screen.getByText("2 sessions · $1.75")).toBeTruthy();
@@ -881,6 +896,8 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         artifactKeys={[]}
         onOpenSession={noopOpenSession}
         onOpenTask={noopOpenTask}
+        // Not this case's subject: the board's rollup answers `null` = nothing to report.
+        sessionStatus={null}
       />,
     );
     expect(screen.getByText("1 session")).toBeTruthy();
@@ -904,6 +921,8 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         artifactKeys={[]}
         onOpenSession={noopOpenSession}
         onOpenTask={noopOpenTask}
+        // Not this case's subject: the board's rollup answers `null` = nothing to report.
+        sessionStatus={null}
       />,
     );
     expect(screen.getByText("1 session · $0.00")).toBeTruthy();
@@ -926,6 +945,8 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         artifactKeys={[]}
         onOpenSession={onOpenSession}
         onOpenTask={noopOpenTask}
+        // Not this case's subject: the board's rollup answers `null` = nothing to report.
+        sessionStatus={null}
       />,
     );
     fireEvent.click(screen.getByText("3 sessions · $0.50"));
@@ -1019,6 +1040,8 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         artifactKeys={[]}
         onOpenSession={onOpenSession}
         onOpenTask={noopOpenTask}
+        // Not this case's subject: the board's rollup answers `null` = nothing to report.
+        sessionStatus={null}
       />,
     );
     const chip = screen.getByText("2 sessions · $2.50");
@@ -1091,6 +1114,8 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
         artifactKeys={[]}
         onOpenSession={vi.fn()}
         onOpenTask={vi.fn()}
+        // Not this case's subject: the board's rollup answers `null` = nothing to report.
+        sessionStatus={null}
       />,
     );
     const chip = screen.getByText("1 session · $0.25");
@@ -1103,5 +1128,295 @@ describe("TaskCard — the sessions chip (issue #174)", () => {
     // No role ON THE CHIP (the card's role is the row's one role — see the case
     // above). This used to be `closest(…).toBeNull()`, which PR #178 inverted.
     expect(chip.getAttribute("role")).toBeNull();
+  });
+});
+
+/**
+ * THE LIVE SESSION-STATUS MARK. The card's third fact about its linked Sessions
+ * (after the count chip and the money), and the only one that changes on its own:
+ * `?` when a linked Session is parked on a human, spinner when one is in a turn,
+ * NOTHING otherwise.
+ *
+ * The card is handed the ANSWER (`sessionStatus`), never the map it came from —
+ * `TasksBoard` makes the one `useSessionStatuses` call and folds the group through
+ * `lib/sessionStatusRollup`, for the reason its own header gives (a hook per card
+ * would reproduce the subscription-breadth cost at N cards) and the reason the card
+ * takes it as a prop (a card that read a store would be a second owner of "which
+ * board is showing"). So these cases pin the RENDER and the SHAPE of the node; the
+ * precedence is pinned at `lib/sessionStatusRollup.test.ts` and the wiring at
+ * `TasksBoard.test.tsx`, which is the only file that can populate the real stores.
+ */
+describe("TaskCard — the live session-status mark", () => {
+  /** The card's own mark node, or `null` for "the card reports nothing".
+   *  Queried by `data-testid` rather than by role: the mark is decoration here
+   *  (`announce={false}`), so a role query would read `null` for the CORRECT card
+   *  and could not tell "silent" from "absent". */
+  const mark = (): Element | null =>
+    screen
+      .getByTestId("task-card")
+      .querySelector('[data-testid="task-card-status"]');
+
+  it("a card whose Session is waiting shows the QUESTION", () => {
+    render(
+      <TaskCard
+        task={task()}
+        sessions={[link("sess_1")]}
+        costUsd={null}
+        artifactKeys={[]}
+        sessionStatus="waiting"
+        onOpenSession={noopOpenSession}
+        onOpenTask={noopOpenTask}
+      />,
+    );
+    const glyph = mark();
+    expect(glyph).not.toBeNull();
+    // The SAME glyph the tab and the sidebar row draw — `SessionStatusMark` is the
+    // ONE component for these four states, and `data-dot` is how the other two
+    // surfaces query it. Re-implementing a `?` here would be a second glyph set.
+    expect(glyph!.getAttribute("data-dot")).toBe("waiting");
+    // The attention ink belongs to the mark, not to this file: `text-warning` as
+    // 12px WORDS is a recorded live defect (2.12 Everforest light, 2.16 Rosé Pine
+    // light, 2.31 Catppuccin light — see `workflows/WorkflowNodes.tsx`), which is
+    // why the card renders a GLYPH that owns its own ink and passes it no
+    // `className` at all (the mark documents `className` as geometry-only).
+    expect(classTokens(glyph!)).toContain("text-warning");
+  });
+
+  it("a card whose Session is running shows the spinner, not the QUESTION", () => {
+    render(
+      <TaskCard
+        task={task()}
+        sessions={[link("sess_1")]}
+        costUsd={null}
+        artifactKeys={[]}
+        sessionStatus="running"
+        onOpenSession={noopOpenSession}
+        onOpenTask={noopOpenTask}
+      />,
+    );
+    const glyph = mark();
+    expect(glyph).not.toBeNull();
+    expect(glyph!.hasAttribute("data-dot")).toBe(false);
+    // `animate-spin` is the spinner's own class (`ui/spinner.tsx` + the mark), and
+    // it is the only way jsdom can see a spinner at all — no layout, no rotation.
+    expect(classTokens(glyph!)).toContain("animate-spin");
+  });
+
+  it("live and stored render NOTHING (a ring is a different signal, and the tab suppresses it too)", () => {
+    // `sessionStatusRollupOf` answers `null` for both, and the card paints nothing
+    // for `null`. The ring belongs to the sidebar row — the one place a stored
+    // Session is listed at all — and a board whose every card wore a ring would
+    // paint an entire idle Space with a state nobody asked about, using the glyph
+    // set that means "blocked on you" two states away.
+    for (const status of ["live", "stored"] as const) {
+      const { unmount } = render(
+        <TaskCard
+          task={task()}
+          sessions={[link("sess_1")]}
+          costUsd={null}
+          artifactKeys={[]}
+          sessionStatus={status}
+          onOpenSession={noopOpenSession}
+          onOpenTask={noopOpenTask}
+        />,
+      );
+      expect(mark(), `a ${status} Session must not paint a mark`).toBeNull();
+      unmount();
+    }
+  });
+
+  it("a card with no linked Sessions renders no mark", () => {
+    // The common case, spelled the way the board produces it: no links, so the
+    // rollup over an empty list is `null`, so there is no node. No placeholder, no
+    // reserved slot — the same rule the spec chip, the artifact chips and the
+    // sessions chip follow for an absent field. (And a reserved slot would indent
+    // every idle card's `T{n}` pill by a glyph's width for a mark that never
+    // appears.)
+    render(<TaskCard task={task()} {...NO_LINKS} sessionStatus={null} />);
+    expect(mark()).toBeNull();
+    expect(screen.getByTestId("task-card").textContent).toContain("T3");
+  });
+
+  it("the mark is a glyph and NOT a control (RowButton's one-role-per-row rule)", () => {
+    // The pinned constraint: `SpacesList.test.tsx` resolves rows through
+    // `.closest('[role="button"]')` at eight sites, so a second `[role="button"]`
+    // inside a card moves the ancestor those reads land on. The mark is a LABEL
+    // like the `spec` chip and the artifact key chips — and `SessionStatusMark`
+    // renders an `<svg>`/`<span>` with no role of its own in the announced modes
+    // and `role="presentation"` in this one.
+    //
+    // Counted with BOTH nested controls present (the chip is a real `<button>`) so
+    // the numbers below describe a fully-populated card and not an empty one.
+    const { unmount } = render(
+      <TaskCard
+        task={task()}
+        sessions={[link("sess_1")]}
+        costUsd={null}
+        artifactKeys={["plan"]}
+        sessionStatus="waiting"
+        onOpenSession={noopOpenSession}
+        onOpenTask={noopOpenTask}
+        launchStep={launchStep()}
+      />,
+    );
+    // The card's ONE role, and the mark is not it.
+    expect(document.querySelectorAll('[role="button"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[role="button"]')[0]).toBe(
+      screen.getByTestId("task-card"),
+    );
+    // Two `<button>`s in the whole tree: the chip and the pill. The mark adds
+    // ZERO, which is the whole reason it is a glyph and not a "View session"
+    // affordance.
+    expect(
+      screen.getByTestId("task-card").querySelectorAll("button"),
+    ).toHaveLength(2);
+    expect(mark()!.tagName).not.toBe("BUTTON");
+    // And a click on the glyph is answered by the ROW, once — the chip's
+    // `stopPropagation` is the chip's own, and the mark has no handler at all
+    // (it is decoration, not a second way to open a Session). Re-rendered with a
+    // spy because the render above deliberately leaves the callbacks as the file's
+    // no-ops; the unmount keeps the `[role="button"]` count above about ONE tree.
+    const onOpenTask = vi.fn();
+    unmount();
+    render(
+      <TaskCard
+        task={task()}
+        sessions={[link("sess_1")]}
+        costUsd={null}
+        artifactKeys={[]}
+        sessionStatus="waiting"
+        onOpenSession={noopOpenSession}
+        onOpenTask={onOpenTask}
+      />,
+    );
+    fireEvent.click(mark()!);
+    expect(onOpenTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("the mark adds no pill to the card's census, and no WORD to the card", () => {
+    // `slabFloatSeparation.test.ts` counts the card's `rounded-full` +
+    // `bg-background` class LITERALS at FIVE, because every one of them is a pill
+    // that has to differ from both the `bg-panel` column and the `bg-card` card in
+    // every palette. A status glyph is not a pill: it wears no fill, so the census
+    // must not move. Asserted on the RENDERED nodes (the source-side count is that
+    // file's job): `T{n}` + spec + one artifact key + the sessions chip = 4, and the
+    // mark is not a fifth.
+    render(
+      <TaskCard
+        task={task({ specPath: "/tmp/spec.md" })}
+        {...NO_LINKS}
+        sessions={[link("sess_1")]}
+        artifactKeys={["plan"]}
+        sessionStatus="waiting"
+      />,
+    );
+    const pills = Array.from(
+      screen
+        .getByTestId("task-card")
+        .querySelectorAll('[class*="rounded-full"]'),
+    );
+    expect(pills).toHaveLength(4);
+    expect(pills.some((p) => p.contains(mark()))).toBe(false);
+    // And the state is a GLYPH with no text beside it. `WorkflowNodes.tsx` records
+    // `text-warning` as 12px TEXT as a live defect (2.12 Everforest light, 2.16
+    // Rosé Pine light, 2.31 Catppuccin light), and a faint WORD is worse still:
+    // `text-foreground-subtlest` on `bg-card` measures 2.36 default-light / 2.18
+    // default-dark (re-derived here from the oklch Tailwind tokens its `color-mix`
+    // resolves against) and NO palette gate can see it, because both Default
+    // readings declare that token `textUngradeable` — no hex reading in this repo —
+    // and `--color-card` sits in the graded `raised` text-surface set in only 8 of
+    // the 13 readings. So the card states the state with the mark's own ink on a
+    // glyph, or not at all.
+    const words = screen.getByTestId("task-card").textContent ?? "";
+    expect(words).not.toMatch(/wait|running|working|blocked/i);
+    expect(mark()!.textContent).toBe("");
+  });
+
+  it("the mark is decoration: the card gains no live region and no new name", () => {
+    // THE ACCESSIBILITY DECISION, and it is the tab strip's, for the same reason.
+    // The card is a `RowButton`, and this file's own `controlsNamed` helper records
+    // that a `div[role=button]`'s accessible name is computed RECURSIVELY from its
+    // subtree — so an announced mark would rename the card under the user
+    // ("Ship the board Loading… Waiting for you") exactly the way it would rename a
+    // tab, which is why `SpaceTabs` passes `announce={false}`. The sidebar row keeps
+    // the announcement because its "Waiting" TEXT pill was deleted and the glyph is
+    // the only statement left; the card is not that case — the detail modal's
+    // session rows carry the SAME mark announced, and that is the surface built to
+    // read a card. And the board holds N cards at once, so N live regions is noise
+    // rather than information.
+    const { unmount } = render(
+      <TaskCard
+        task={task()}
+        sessions={[link("sess_1")]}
+        costUsd={null}
+        artifactKeys={[]}
+        sessionStatus="waiting"
+        onOpenSession={noopOpenSession}
+        onOpenTask={noopOpenTask}
+      />,
+    );
+    expect(mark()!.getAttribute("aria-hidden")).toBe("true");
+    // No `role="status"` inside the card — the spinner's own live region is
+    // silenced the same way the tab's is.
+    expect(screen.getByTestId("task-card").querySelector('[role="status"]')).toBeNull();
+    unmount();
+    render(
+      <TaskCard
+        task={task()}
+        sessions={[link("sess_1")]}
+        costUsd={null}
+        artifactKeys={[]}
+        sessionStatus="running"
+        onOpenSession={noopOpenSession}
+        onOpenTask={noopOpenTask}
+      />,
+    );
+    expect(screen.getByTestId("task-card").querySelector('[role="status"]')).toBeNull();
+    // The row's accessible name is its own text and nothing the mark adds: the
+    // name is computed recursively from the subtree, and the mark contributes no
+    // text and no label to it. (The relative time is a bucket of `updatedAt`, so
+    // the assertion is about what is ABSENT from the name, not about its exact
+    // spelling.)
+    const name = screen.getByTestId("task-card").textContent ?? "";
+    expect(name).toContain("Ship the board");
+    expect(name).not.toMatch(/wait|working|loading|blocked/i);
+  });
+
+  it("stays presentational: no store, no derivation, in this file", () => {
+    // The card's header has argued this since issue #174 — a card that read the
+    // store for itself would be a second owner of "which board is showing" — and
+    // the live mark is the change that could quietly break it, because the inputs
+    // it needs (`inTurn`, `prompts`, `requests`, `subagents.entries`) all live in
+    // stores the board already reads. So the claim is pinned against SOURCE,
+    // comment-stripped: this file's own doc-comment NAMES `useSessions`,
+    // `useDragReorder` and `store/taskLaunch` while explaining why the card does
+    // NOT reach for them, and prose is not a consumer.
+    const src = stripJsComments(readFileSync("src/components/TaskCard.tsx", "utf8"));
+    expect(src).not.toContain("../store/");
+    expect(src).not.toContain("src/store/");
+    for (const store of [
+      "useSessions",
+      "useTasks",
+      "usePermissions",
+      "useInteractive",
+      "useSubagents",
+    ]) {
+      expect(src, `${store} would make the card a second owner of its own data`)
+        .not.toContain(store);
+    }
+    // The live mark makes this the ONE hook module the card may name at all — for
+    // its `SessionStatus` TYPE — so the distinction is pinned rather than assumed:
+    // `tsconfig.json` sets `verbatimModuleSyntax`, so `import type` erases and
+    // carries no runtime edge, while a value import of `useSessionStatus` would put
+    // five store subscriptions inside a presentational component. The word
+    // `useSessionStatus` is therefore ALLOWED in this file only on an
+    // `import type` line, and the hook is never CALLED.
+    expect(src).toMatch(/import type \{ SessionStatus \} from "\.\.\/hooks\/useSessionStatus"/);
+    expect(src).not.toMatch(/\buseSessionStatus(es)?\s*\(/);
+    // And no derivation either: the precedence has ONE home and the card is not it.
+    expect(src).not.toContain("sessionStatusRollupOf");
+    expect(src).not.toContain('includes("waiting")');
+    // Vacuity guard: real code survived the strip.
+    expect(src).toContain("export default function TaskCard");
   });
 });

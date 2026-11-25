@@ -8,7 +8,7 @@ import {
   type DragCardHandlers,
   type DropTargetHandlers,
 } from "../../hooks/useDragCard";
-import type { StageWithTasks, TaskRow } from "../../lib/tauri";
+import type { StageWithTasks, TaskCardView, TaskRow } from "../../lib/tauri";
 
 /**
  * One column: its header, and the card strip that carries the within-column surface.
@@ -28,6 +28,7 @@ export function TaskColumn({
   columnDrop,
   onOpenSession,
   onOpenTask,
+  sessionStatusFor,
   launchStepFor,
   onReorder,
 }: {
@@ -47,6 +48,15 @@ export function TaskColumn({
   onOpenSession: (sessionId: string) => void;
   /** Opens this card's detail modal — the board's `detailTaskId` setter. */
   onOpenTask: (taskId: string) => void;
+  /** This card's live session status (the mark), or `null` for "nothing to report".
+   *
+   *  A FACTORY taking the CARD rather than a pre-computed value, for the identical
+   *  reason `launchStepFor` below spells itself that way: the column renders N cards
+   *  and each card's answer comes from ITS OWN linked Sessions. The board makes the
+   *  single `useSessionStatuses` call over the union of every visible card's ids and
+   *  folds each card through the shared precedence; this column forwards, exactly as
+   *  it forwards `onOpenSession`, so no store read and no derivation appears here. */
+  sessionStatusFor: (card: TaskCardView) => TaskCardProps["sessionStatus"];
   /** Builds this card's primary-next-step pill (issue #179 §7.1), or `undefined` for
    *  "this Stage leads nowhere".
    *
@@ -177,6 +187,8 @@ export function TaskColumn({
                   artifactKeys={card.artifactKeys}
                   onOpenSession={onOpenSession}
                   onOpenTask={onOpenTask}
+                  // The board's ONE status read, read back for THIS card's links.
+                  sessionStatus={sessionStatusFor(card)}
                   launchStep={launchStepFor(column, card.task)}
                   drag={cardDrag(card.task.id)}
                   active={draggingTaskId === card.task.id}

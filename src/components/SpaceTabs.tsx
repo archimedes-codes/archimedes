@@ -4,10 +4,10 @@ import { basenameOfPath } from "../lib/paths";
 import { titleFor } from "../lib/sessionTitle";
 import { useSessions } from "../store/sessions";
 import { useSessionStatuses } from "../hooks/useSessionStatus";
+import { sessionStatusRollupOf } from "../lib/sessionStatusRollup";
 import { useDragReorder } from "../hooks/useDragReorder";
 import { SessionStatusMark } from "./SessionStatusMark";
 import { cn } from "./lib/utils";
-import type { SessionStatus } from "../hooks/useSessionStatus";
 import CloseSpaceDialog from "./CloseSpaceDialog";
 import { openNewSpaceDialog } from "../lib/newSpaceDialogState";
 import { Button } from "./ui/button";
@@ -159,29 +159,6 @@ const NEW_SPACE_BUTTON_WALL =
   "border-0 inline-block whitespace-normal select-auto transition-none text-[length:inherit] hover:text-foreground-subtle";
 
 /**
- * A Space's own status, folded out of its live Sessions' statuses with the SAME
- * precedence `sessionStatusOf` gives one Session: `waiting` > `running` >
- * nothing to show.
- *
- * WHY `null` FOR IDLE AND STORED: a tab is not a session's only home — the
- * Space is a tab and its sessions are the rows below it, so the tab's job is
- * only to say "look up here". The sidebar row is where the idle/stored ring
- * belongs (it is the one place a stored session appears at all), and an idle
- * tab has always been blank. `live`/`stored` therefore pass through as `null`:
- * a Worker running and in an idle turn is not a fact the tab strip reports.
- *
- * Pure and exported so the precedence is assertable without the tab strip's
- * store fixtures.
- */
-function tabStatusOf(
-  statuses: (SessionStatus | undefined)[],
-): SessionStatus | null {
-  if (statuses.includes("waiting")) return "waiting";
-  if (statuses.includes("running")) return "running";
-  return null;
-}
-
-/**
  * The Spaces as browser-style tabs (the top of the chat column — the old
  * session header row's position): one tab per Space (its base name), the
  * active one selected; clicking a tab selects the Space (the store's
@@ -233,8 +210,9 @@ function tabStatusOf(
  *
  * THE LEADING MARK is `SessionStatusMark` — the spinner for a Space whose
  * Worker is in a turn, the `?` for one blocked on the user (see
- * `tabStatusOf`). It is the SAME component the sidebar row draws, which is the
- * point: a `?` must not mean one thing in the tab and
+ * `lib/sessionStatusRollup`, which the Task board's cards share). It is the SAME
+ * component the sidebar row draws, which is the point: a `?` must not mean one
+ * thing in the tab and
  * something else two hundred pixels below it. Before it, the tab had a spinner
  * and NO waiting cue at all, so a Space parked on a permission looked identical
  * to one nobody had used in an hour.
@@ -378,7 +356,12 @@ export default function SpaceTabs() {
         // idle tab has always been blank here, and a tab that is a TAB needs no
         // idle mark (unlike a sidebar row, which is the only place its session
         // is listed).
-        const tabStatus = tabStatusOf(
+        //
+        // The rollup itself lives in `lib/sessionStatusRollup`, because the
+        // Task board's cards now answer the SAME question for a card's linked
+        // Sessions and two copies of a precedence is how one starts disagreeing
+        // with the Sessions it summarises.
+        const tabStatus = sessionStatusRollupOf(
           sessions
             .filter((sess) => sess.cwd === s.path)
             .map((sess) => statuses[sess.sessionId]),
