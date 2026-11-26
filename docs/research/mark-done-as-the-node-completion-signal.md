@@ -82,6 +82,13 @@ makes the move consequential rather than a formality preceding an inert write. *
 benefit for free**: under D7 the model's only live forward path *is* the claim path, so the launch is
 budgeted by construction and **there is no fourth launcher**. The model never launches anything except
 through the automation.
+**D6 — The graph shape is outcome-routed single successor.** `mark_done` gains an outcome value,
+edges gain a name, exactly one edge fires per claim. **Fork and join are explicitly out of scope**
+and stay blocked by `tasks.stage_slug` holding one value and `idx_workflow_runs_open` being
+partially UNIQUE. ADR 0099's pre-authorised `stage_transitions` table remains the named home for
+whichever change needs per-edge data first — outcome labels may be that moment, but D6 can be
+shipped on the JSON array if a name fits it, and the migration should be priced separately rather
+than assumed.
 
 **D7 — `mark_done` is the ONLY forward door; `move_task` is backward-only.** The model's
 `move_task` host verb REFUSES a forward move and its refusal sentence teaches the replacement
@@ -175,6 +182,7 @@ passing a partial figure trips it on a meaningless number. The claim counts the 
 what actually stops an unbilled chain, `workflow_runs.rs:204-213`); the **ceiling** is evaluated where
 a real delta exists.
 
+
 **D19 — The act side needs a slice-free path.** Deciding in Rust escaped the unloaded-slice no-op for
 the *decision*; the *act* is still slice-bound in three places grounding verified: `resolveStage`
 (`taskLaunch.ts:210-226`) returns `{slug: null, absent: true}` with no slice, so the move is skipped
@@ -184,13 +192,51 @@ the chain's wiring drops every field but the slug (`taskLaunch.ts:642`). So the 
 destination-trusting launch arm and an explicit-endpoint `moveTask` arm, or the plan's own headline
 criterion — "with no board and no canvas mounted" — cannot pass.
 
-**D6 — The graph shape is outcome-routed single successor.** `mark_done` gains an outcome value,
-edges gain a name, exactly one edge fires per claim. **Fork and join are explicitly out of scope**
-and stay blocked by `tasks.stage_slug` holding one value and `idx_workflow_runs_open` being
-partially UNIQUE. ADR 0099's pre-authorised `stage_transitions` table remains the named home for
-whichever change needs per-edge data first — outcome labels may be that moment, but D6 can be
-shipped on the JSON array if a name fits it, and the migration should be priced separately rather
-than assumed.
+**D20 — The ceiling is read before the dedupe returns, and `already_advanced` never closes the run.**
+A review round found that the first two drafts defeated D18 in two different ways, and both were
+arm-ordering bugs rather than design errors.
+
+- **Ceiling before dedupe.** The normal working case is claim-then-settle, and on that path the dedupe
+  returns early. Once Task 4 replaces the settle path's `workflowRunStep` call with the advice, the
+  advice holds the **only** ceiling evaluation left in the tree — so if the dedupe is arm 3 and the
+  ceiling is arm 5, the ceiling is unreachable precisely on the path that has a real cost figure. The
+  ceiling is therefore evaluated **read-only** at arm 2 (touching no `steps`) and the **step increment
+  stays behind the dedupe** at arm 6. The distinction is exactly that: the ceiling is a *read* of money
+  already spent, so it is always safe and always informative; the step is a *write* that buys the next
+  launch, so it must not be spent twice for one link.
+- **`already_advanced` is a silent no-op.** `workflowChain.ts:452-455` states why a run is left **open**
+  across a successful link — *"`workflowRunStep` UPSERTS onto an OPEN run, so a run left open here would
+  hand this chain's step count and running cost to the NEXT chain this card ever starts, and a person
+  who set a 20-step bound would silently get a shorter one."* The converse is the failure this decision
+  prevents: **closing** the run on `already_advanced` hands the next link a fresh run, because
+  `workflow_run_step`'s `None` branch INSERTs `steps = 1` (`workflow_runs.rs:471-479`). A 20-step bound
+  would become 20 steps **per link** — the spend bound failing open, which is what ADR 0119 §3 and
+  `idx_workflow_runs_open`'s partial UNIQUE index exist to prevent. Only `unclaimed`, `not_automatic`,
+  `unlinked` and the bound stops get `stopChain`.
+
+**D21 — Every read inside the advice's single guard takes `&Connection`, because the mutex is not
+reentrant.** The advice holds one `conn.lock()` for its whole read→step→read (the `workflow_run_step`
+TOCTOU argument), and `Db::conn` is a `StdMutex<Connection>` — ADR 0119 §2: *"the connection mutex is
+not reentrant, so a verb that called the public one while holding the guard would deadlock rather
+read."* So the session→card read ships in **both** shapes (`card_of_session_on(&Connection, …)` for the
+advice, a `&self` wrapper for outside callers), and the advice may call only `pub(super)`
+`&Connection` helpers: `auto_guards_on` (`auto_guards.rs:159`), `forward_reachable`, and its own inline
+dedupe query. **`stage_row_by_slug` is private (`stages.rs:477`) and a sibling cannot reach it** —
+`auto_guards.rs:155-158` states the rule, *"a sibling may not read a sibling's private item"* — so it is
+either widened to `pub(super)` on `auto_guards_on`'s own precedent or the destination read is written
+inline with `STAGE_COLUMNS` + `stage_row_from`. The failure mode is a **hung test binary, not a failed
+one**, which is why this is a written rule and not something to discover.
+
+**D15's known limit, recorded so nobody "fixes" it:** `delete_stage` never compacts `sort_order`
+(`stages.rs:428-449` relocates cards and `DELETE`s the row, nothing else) while `create_stage` appends
+at `COALESCE(MAX(sort_order), -1) + 1` (`stages.rs:65`), so after any mid-column delete there is a
+**hole**, and a `NULL` column immediately before the hole resolves no destination — the gate is inert
+for that one column and a claim there finds no next step. TypeScript has the identical hole
+(`nextStepSlugs` matches `sortOrder + 1` exactly), so the two sides still agree, which is the invariant
+D15 exists to hold. Closing it means compacting `sort_order` on delete — a separate decision with its
+own pin, not a silent widening to `> sort_order`, which would diverge from `nextStepSlugs` unnoticed.
+
+
 
 ### Where D1 and D2 disagreed — resolved by D4
 
