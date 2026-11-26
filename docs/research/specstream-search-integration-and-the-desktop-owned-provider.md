@@ -11,6 +11,7 @@ verified-by: >-
   re-export at `src-tauri/src/agent/web.rs:76`, `HOST_CALL_TIMEOUT = 30 s`, `POLICIED_TOOLS` = 7 names,
   and crates.io returning `NoSuchKey` for a `specstream` Rust crate.
 task: tsk_8196079b-ce7f-4afe-b595-38ff92706b04
+issue: https://github.com/archimedes-codes/archimedes/issues/223
 ---
 
 # SpecStream integration, and the desktop-owned Search provider
