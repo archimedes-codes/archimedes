@@ -23,18 +23,24 @@
  *
  * ## Why a convention and not a verb (do not "fix" this by adding a tool)
  *
- * A model-facing verb is engine-gated. `TaskCall` and `trait TaskStore` live in
- * the crates.io-pinned `fulcrum-harness`, and `tool_specs()` is the crate's — this
- * repo contributes ZERO tool specs. The obvious shortcut is closed too: the engine
- * CONSTRUCTS `TodoItem { content, status, description }` and emits the
+ * A model-facing verb was engine-gated: `TaskCall` and `trait TaskStore` lived in
+ * the crates.io-pinned `fulcrum-harness` and `tool_specs()` was the crate's, so this
+ * repo contributed ZERO tool specs. ADR 0102 / issue #183 removed THAT gate — the
+ * desktop now owns 7 host specs in `src-tauri/src/agent/host_tools/` and ships them
+ * to the engine as data — but it shipped NO session verb, so the gate that remains is
+ * scope, not architecture. The obvious shortcut is closed on its own merits too: the
+ * engine CONSTRUCTS `TodoItem { content, status, description }` and emits the
  * constructed vector, so an extra key on an item (`"ready": true`) is dropped
  * inside the crate, before the frame the desktop would read exists. Only the
  * model-authored STRING survives, which is why the marker is a word.
  *
- * ADR 0102 / issue #183 (`StartEnv.host_tools` + a vocabulary-free
- * `HostToolCall`) is the real fix. When it lands, this sentence moves out of the
- * launch message and into a real tool description, and the marker word retires.
- * Full contract: `docs/features/session-ready-marker.md`.
+ * **A `mark_ready` host verb is therefore DELIBERATELY DEFERRED, not pending.** #183
+ * §6 records session lifecycle as this seam's second consumer and says in the same
+ * breath that no session verb ships in that run; the 7 board/artifact verbs are the
+ * only tenants ADR 0102 §5 allows. Until someone builds that verb, THIS SENTENCE IS
+ * THE CONTRACT — it is not a placeholder awaiting a tool, and nothing here should be
+ * read as promising that the marker word retires. Full contract:
+ * `docs/features/session-ready-marker.md`.
  */
 
 /** The exact word a todo item must carry to mark its Session ready.

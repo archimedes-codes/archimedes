@@ -1757,6 +1757,38 @@ impl SessionManager {
             agent_overrides: settings.agent_overrides.clone(),
             providers: settings.providers.clone(),
         });
+        // (ADR 0102 / issue #183 D1) THE host-tool hop — the seven board / artifact
+        // specs ride the envelope as DATA, and the ENGINE composes
+        // `builtins() ++ host_entries(env.host_tools)` into the advertised set.
+        //
+        // WHY A HOP AT ALL: the engine cannot advertise a spec it has never seen, so
+        // a host tool's spec crosses the boundary. The desktop never injects a Rust
+        // object into a Worker — the Worker is a second process of the SAME binary
+        // (`WorkerHandle::spawn(current_exe())` + `--worker`, ADR 0025) — so no
+        // desktop type crosses and ADR 0091's "the desktop drives; the crate never
+        // pulls" holds verbatim. The crate ends up holding no idea a Task exists.
+        //
+        // WHY HERE, AND WHY THERE IS ONLY ONE OF THESE LINES: this is the ONE
+        // production `StartEnv` construction in the desktop, and `start_session` and
+        // `resume_session` BOTH reach it (`establish_worker_session`, with `is_resume`
+        // choosing `StartMode::Fresh` vs `Resume` inside the same `from_parts`). So
+        // this single hop covers a fresh session AND a resumed one — there is no
+        // second resume path to remember. `subagent_flow` inherits the parent's
+        // `host_tools` explicitly on a child's envelope, the same way it inherits
+        // `diagnostics_dir`, which is what lets a CHILD be advertised a board verb
+        // (the ADR 0117 end-to-end in `worker_e2e.rs` is the pin).
+        //
+        // UNCONDITIONAL, and that is the semantics: these seven are not a settings
+        // toggle. `settings.enabled_tools` still filters what is ADVERTISED, and it is
+        // applied one level down (`StartEnv::enabled_tools` → `set_enabled_tools` →
+        // `is_tool_enabled`), so an empty `enabled_tools` means all 26 and a
+        // restrictive list means exactly the names it lists — the same rule every
+        // engine tool obeys. What D2 still owes these seven is the OTHER read site:
+        // `commands/settings.rs::list_tools` composes the Settings checkbox list from
+        // `tool_specs()` alone, so until it composes this list too a host tool is
+        // advertised to the model and invisible to Settings, and therefore
+        // un-disableable through the UI. That gap is known and one commit wide.
+        let env = env.with_host_tools(crate::agent::host_tools::host_tool_specs());
         // (Fulcrum T2) The resume seed: the stored `sessions.cost_usd` figure
         // rides the envelope so the Worker's fresh `AgentLoop` CONTINUES the
         // session's total instead of restarting at zero. Gated on `is_resume`

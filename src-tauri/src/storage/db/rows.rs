@@ -602,6 +602,126 @@ pub struct MoveOutcome {
     pub on_enter: String,
 }
 
+// ── The board DTOs the HOST TOOLS answer with (ADR 0102 / issue #183 D1) ──────
+//
+// These three types WERE `fulcrum_harness::seams::{BoardRow, TaskDetail,
+// MoveOutcome}`. F3 deleted the crate's knowledge of Tasks, and the parent doc is
+// explicit that the five DTOs are not deleted but MOVE — "they are not deleted,
+// because the answer payload the frontend pins still has to have a name". So they
+// are the desktop's own wire vocabulary now, and this file is where a wire shape
+// lives.
+//
+// THREE facts about the family, each of which is a place a careless reader
+// re-derives the wrong thing:
+//
+//   * `BoardRow` / `TaskDetail` are the storage [`TaskRow`] PLUS
+//     `artifact_keys`, and `artifact_keys` is REQUIRED — never `Option`, `[]` when
+//     nobody has written one. Fetching the CONTENT is a separate verb
+//     ([`Db::get_artifact`](super::Db::get_artifact)), and that split is the whole
+//     reason `board` never carries markdown.
+//   * `number` is `u32` HERE and `i64` on [`TaskRow`]. `number` is
+//     `MAX(number) + 1` per Space (ADR 0090), so it is positive and small by
+//     construction and the narrowing at the mapping site is widening-free. A Space
+//     with four billion cards would wrap and no board renders that; the cast is
+//     named at the mapping site rather than left for a reader to invent a
+//     justification for.
+//   * The two WRITE verbs (`create_task` / `edit_task`) answer with the storage
+//     [`TaskRow`] itself, not with a DTO of their own: a write touched no
+//     artifact, so its answer says nothing about them, and the storage row is
+//     already exactly that shape field-for-field. This is why the family is three
+//     new types and not five — the crate's `TaskRow`/`Artifact`/`ArtifactMeta`
+//     were field-for-field the desktop's, so re-declaring them here would be a
+//     second owner of a shape this file already owns.
+//
+// THE SHAPE IS A CONTRACT, NOT AN IMPLEMENTATION DETAIL. `src/lib/
+// toolDetailsRegistry.test.ts` pins `details.board`, `details.task`,
+// `details.moveOutcome` and `details.artifactMeta` in a 39-key frozen tuple, and
+// `pnpm build` fails on a drop, an add, a reorder or a widening. Renaming a field
+// here reddens that file (run it EXPLICITLY — `vitest run src/components` does not
+// reach it) and the shape assertion in `agent/host_tools/tests/shape.rs`.
+
+/// One board card AS THE `list_board` HOST TOOL ANSWERS IT: the storage
+/// [`TaskRow`] plus the artifact KEY names, never their content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardRow {
+    pub id: String,
+    pub space_path: String,
+    pub number: u32,
+    pub title: String,
+    pub body: Option<String>,
+    pub spec_path: Option<String>,
+    pub stage_slug: String,
+    pub sort_order: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// REQUIRED, never `Option` — `[]` when nobody has written an artifact. The
+    /// board UI and the model both read the NAMES off this field, and the promise
+    /// that the content costs a second call is what keeps one board read from
+    /// putting the whole corpus in one tool result.
+    pub artifact_keys: Vec<String>,
+}
+
+/// One card AS THE `get_task` HOST TOOL ANSWERS IT: [`TaskRow`] plus the artifact
+/// key names (the detail dialog shows the chips, so the fetch has to answer them).
+///
+/// Deliberately a SECOND type rather than `BoardRow` with a `body` already on it:
+/// the two verbs are allowed to diverge (a board row could one day carry fewer
+/// fields), and a shared struct would make that a rename instead of an edit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDetail {
+    pub id: String,
+    pub space_path: String,
+    pub number: u32,
+    pub title: String,
+    pub body: Option<String>,
+    pub spec_path: Option<String>,
+    pub stage_slug: String,
+    pub sort_order: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// As on [`BoardRow`]: required, and never the document.
+    pub artifact_keys: Vec<String>,
+}
+
+/// One card's move AS THE `move_task` HOST TOOL ANSWERS IT — the WIDER answer
+/// than the storage [`MoveOutcome`] beside it, and the widening is the point.
+///
+/// Storage's [`MoveOutcome`] carries `on_enter` ALONE. This carries the
+/// destination, the opaque `on_enter`, and a note. The three-way naming is
+/// confusing ON PURPOSE at the call sites and precise everywhere else, because
+/// there are genuinely three move answers in this repo and conflating two of them
+/// is the recorded lossy-twin trap (ADR 0102 §"The lossy inherent twins"):
+///
+/// | type | fields | who answers with it |
+/// |---|---|---|
+/// | [`MoveOutcome`] (here) | `on_enter` | `Db::move_task` — storage |
+/// | [`crate::commands::tasks::MoveTaskOutcome`] | `on_enter`, `boost_note` | the `moveTask` Tauri command |
+/// | **this** | `to_stage`, `on_enter`, `note` | the `move_task` host tool's answer |
+///
+/// `to_stage` is the CALLER's own argument echoed back: the desktop's `move_task`
+/// refuses before it writes, so a successful move always lands where it was told.
+/// `note` is `None` today and the reason is a dependency, not an oversight — the
+/// boost warning a note would describe needs the `SessionManager`, which the
+/// storage layer cannot name, so it is computed one layer UP in
+/// `commands/tasks.rs`'s `boost_note` and is invisible to this path. Reporting one
+/// here would mean reaching past storage for a fact storage does not hold.
+///
+/// `on_enter` stays OPAQUE string data: this type passes it through and never
+/// interprets it, and it must not grow a field that implies the answerer
+/// understands compaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveToolOutcome {
+    /// The Stage the card landed on.
+    pub to_stage: String,
+    /// Opaque destination metadata for the CALLER's layer to act on.
+    pub on_enter: Option<String>,
+    /// A human-readable note about the move, when there is one worth making.
+    pub note: Option<String>,
+}
+
 /// One session's recency, as a FIELD rather than a position (ADR 0075).
 ///
 /// `list_sessions` stopped sorting by recency, so recency has to be asked for

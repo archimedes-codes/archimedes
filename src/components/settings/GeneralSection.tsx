@@ -234,8 +234,17 @@ export default function GeneralSection({
           </Select>
         }
       />
-      {/* The enabled-tools list (the harness-level tool filter — `[]` = all
-          tools: "none checked" is a valid, meaningful state, it means all).
+      {/* The enabled-tools list (the tool filter — `[]` = all tools: "none
+          checked" is a valid, meaningful state, it means all).
+          AS OF ADR 0102 / issue #183 D2 this list is the COMPOSED set: the
+          engine's 19 **Engine tool**s ++ this repo's 7 **Host tool**s (the board
+          and artifact verbs), which is what `list_tools` now returns and what the
+          engine composes onto a Session from `StartEnv.host_tools`. Before that
+          commit it read only the crate's `tool_specs()`, so the seven host verbs
+          were advertised to the model and invisible here — un-disableable through
+          `enabledTools`. They are deliberately NOT visually grouped or badged: a
+          Host tool is a first-class tool on every surface the engine owns, and a
+          second class of row would be a UI feature with no design behind it.
           Task C8: this row hand-rolled the settings data-row shell WITHOUT
           `first:border-t-0`, which C2 recorded as the reason it was not a
           drop-in `SettingsDataRow`. Checked rather than assumed: this row is the
@@ -247,7 +256,7 @@ export default function GeneralSection({
           Enabled tools
         </div>
         <div className="mt-1 text-ui-base leading-6 text-foreground-subtle">
-          The harness tools new sessions start with — empty = all tools
+          The tools new sessions start with — empty = all tools
         </div>
         {tools.length === 0 ? (
           <div className="mt-2 text-ui-sm text-foreground-subtlest">

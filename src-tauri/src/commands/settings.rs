@@ -133,12 +133,31 @@ impl From<&Model> for ModelDto {
     }
 }
 
-/// The native harness's tool names, sorted (the Settings page's
-/// enabled-tools checkbox list). STATELESS (no `tauri::State` param — the
-/// command needs no state: `tool_specs()` is a free function).
+/// The tool names a Session can be advertised, sorted (the Settings page's
+/// enabled-tools checkbox list) — the COMPOSED set, both owners.
+///
+/// ADR 0102 §2.3 names this as one of the two read sites that must switch to the
+/// composed set or the ownership claim is a slogan. The other is the engine's
+/// `advertised_tool_specs`. Composition is `tool_specs()` (the crate's 19
+/// **Engine tool**s) ++ [`crate::agent::host_tools::host_tool_specs`] (this repo's
+/// 7 **Host tool**s) — the same two halves the engine composes onto a Session's
+/// advertised set from `StartEnv.host_tools`. Reading only the crate's list here
+/// silently omitted every host tool: the "advertised to the model, invisible to
+/// Settings" split, and seven board verbs a user could not disable through
+/// `enabled_tools`.
+///
+/// STATELESS (no `tauri::State` param — the command needs no state: BOTH halves are
+/// free functions, and a host spec is a static description, not a handle on the
+/// `Db`; the host tool's SUBSTANCE reaches the `Db` at call time, over the
+/// `HostToolCall` frame). That is also why the frontend's `listTools()` wrapper and
+/// `App.tsx`'s boot `Promise.all` do not move with this change.
 #[tauri::command]
 pub async fn list_tools() -> Result<Vec<String>, SettingsError> {
-    let mut names: Vec<String> = tool_specs().iter().map(|t| t.name.clone()).collect();
+    let mut names: Vec<String> = tool_specs()
+        .into_iter()
+        .chain(crate::agent::host_tools::host_tool_specs())
+        .map(|t| t.name)
+        .collect();
     names.sort(); // deterministic UI order
     Ok(names)
 }
@@ -854,22 +873,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_tools_returns_a_sorted_list_of_the_native_harness_tools() {
+    async fn list_tools_lists_the_engine_tools_and_the_host_tools_together() {
         // The command is stateless (no `tauri::State` param — it cannot be
-        // constructed in a unit test, and it needs no state: `tool_specs()`
-        // is a free function), so it is called directly.
-        let names = list_tools().await.expect("the tool specs build");
+        // constructed in a unit test, and it needs no state: BOTH halves of the
+        // composed list are free functions), so it is called directly.
+        let names = list_tools().await.expect("the composed tool list builds");
         // Sorted (deterministic UI order).
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
-        // The built-in harness tools.
+        // The ENGINE tools — the crate's 19.
         for name in ["bash", "read", "edit", "write", "subagent"] {
             assert!(
                 names.iter().any(|n| n == name),
-                "missing {name} in {names:?}"
+                "missing engine tool {name} in {names:?}"
             );
         }
+        // The HOST tools — the desktop's 7, and the half this assertion exists
+        // for. ADR 0102 §2.3: read the crate's `tool_specs()` alone and Settings
+        // silently omits every host tool, which splits the surface into "advertised
+        // to the model, invisible to Settings" and makes the seven board verbs
+        // un-disableable through `enabled_tools`. A SUBSET-shaped assertion here is
+        // the whole point — the pre-ADR-0102 version of this test passed with all
+        // seven missing, because it named no host verb.
+        for name in [
+            "list_board",
+            "get_task",
+            "create_task",
+            "edit_task",
+            "move_task",
+            "get_artifact",
+            "write_artifact",
+        ] {
+            assert!(
+                names.iter().any(|n| n == name),
+                "missing HOST tool {name} in {names:?} — a tool the model is \
+                 advertised that Settings cannot see cannot be disabled"
+            );
+        }
+        // The two halves are DISJOINT and BOTH are counted: the length is the sum,
+        // so a host spec that shadowed an engine name (which the engine refuses at
+        // compose time) shows up here as a doubled name, and a dropped half as a
+        // short list. Neither is visible to the two loops above.
+        assert_eq!(
+            names.len(),
+            tool_specs().len() + crate::agent::host_tools::host_tool_specs().len(),
+            "the Settings list is the engine's specs ++ the desktop's host specs, \
+             each name once"
+        );
     }
 
     #[tokio::test]

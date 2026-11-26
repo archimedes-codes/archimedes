@@ -1380,12 +1380,20 @@ pub async fn workflow_run_close(
 
 // ── Task artifacts (issue #180 D1, spec §1/§2, ADR 0100) ────────────────────
 //
-// TWO commands, and D1 ships them as a HUMAN surface only: nothing here
-// advertises a verb to a model. There is no `trait TaskStore`, no `tool_specs()`
-// entry, no `execute_tool` arm and no `<artifacts>` launch block — those are D2,
-// and the launch block waits for the verbs that make its sentence true (spec,
-// "Why `<artifacts>` waits for D2"). D1 is independently useful because a person
-// can write and read a Task's documents through these two commands today.
+// TWO commands, and D1 ships them as a HUMAN surface only: nothing here advertises
+// a verb to a model. At the time this was written the missing model-facing half was
+// `trait TaskStore`, a `tool_specs()` entry, an `execute_tool` arm and an
+// `<artifacts>` launch block, and the block was deferred to the commit that shipped
+// the verbs behind it.
+//
+// ADR 0102 / issue #183 D1 has since taken three of those four away by DELETION and
+// supplied the fourth from elsewhere: the trait, the crate's `tool_specs()` entry and
+// the crate's `execute_tool` arm are gone from `fulcrum-harness` 0.8.0, and the seven
+// model-facing verbs are now the DESKTOP's host tools (`agent/host_tools/`), answered
+// over one generic `HostToolCall` frame. The `<artifacts>` LAUNCH BLOCK is still not
+// shipped and D2 owns it. What is unchanged by all of that is the sentence above:
+// THESE TWO COMMANDS advertise nothing to a model. They are the human door, and the
+// host tools are a separate door onto the same storage rules.
 // `commands/tasks/tests/artifacts.rs::d1_ships_no_model_facing_artifact_verb`
 // pins the boundary from the source text, so an early D2 leak is a red test.
 

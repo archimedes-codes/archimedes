@@ -3,19 +3,15 @@
 //! items (`SessionManager`'s `sessions` map and the `with_session` accessors,
 //! the private `LiveWorkerSession` / `CloseKind`) with no visibility widening.
 
-use std::sync::Arc;
-use std::time::Duration;
-
 use serde_json::json;
 
 use crate::agent::crashlog::find_crash_log_for_pid;
 use crate::agent::diagnostics;
 use crate::agent::events::RpcEvent;
 use crate::agent::normalize::now_ms;
+use crate::agent::tools::ToolResult;
 use crate::agent::worker::client::WorkerInboundEvent;
 use crate::agent::worker::Inbound;
-use crate::storage::Db;
-use fulcrum_harness::seams::{TaskCall, TaskStore, TaskStoreError};
 
 use super::{CloseKind, ClosedReason, SessionManager, StalledInfo, StopReason, TurnDisposition};
 
@@ -320,50 +316,65 @@ impl SessionManager {
                     }
                 });
             }
-            WorkerInboundEvent::TaskRequest {
+            WorkerInboundEvent::HostToolCall {
                 request_id,
                 session_id: origin_id,
-                call,
+                tool,
+                params,
             } => {
-                // Internal machine call (ADR 0092, issue #180 D2): do NOT call
-                // track_modal! The `FetchRenderRequest` arm above is the template
-                // and this arm copies its shape for the same reason — the Worker
-                // asked the SUPERVISOR to run a board verb, and the Supervisor is
-                // the sole SQLite writer (ADR 0025), so the answer is computed HERE
-                // and never in the Worker. "Its shape" is that machine-call /
-                // no-modal / Supervisor-computes-the-answer SHAPE ONLY — explicitly
-                // NOT the render arm's REPLY ADDRESSING, which still falls back to the
+                // A HOST TOOL call (ADR 0102 / issue #183 D1): the Worker's `HostTool`
+                // executor framed one call whose SUBSTANCE IS THE DESKTOP'S SQLite, and
+                // the Supervisor computes the answer HERE and never in the Worker —
+                // ADR 0025 makes this process the sole SQLite writer.
+                //
+                // Internal machine call: do NOT call track_modal! The
+                // `FetchRenderRequest` arm above is the shape template and this arm
+                // copies its shape for the same reason — no modal, no UI, the answer
+                // goes back over the wire. "Its shape" is that machine-call /
+                // no-modal / Supervisor-computes-the-answer SHAPE ONLY — explicitly NOT
+                // the render arm's REPLY ADDRESSING, which still falls back to the
                 // delivery id (`unwrap_or(session_id)`) and is exactly what the rule
                 // below forbids.
                 //
-                // A DELIVERY ADDRESS IS NOT A REPLY ADDRESS (ADR 0117). The comment
-                // that used to sit here claimed `handle_for` answers `None` for a
-                // session that is already gone, so a frame that cannot be delivered
-                // is an ordinary miss and the send result may be discarded. For a
-                // LIVE SUBAGENT neither half holds. The pump re-keys a child's frames
-                // to the PARENT's session id — correctly, because a child's UI renders
-                // in the parent's scope (`pump.rs:91-102`) — so `handle_for(session_id)`
-                // here HITS and hands back the PARENT's handle. The parent's per-Worker
-                // pending map has no such `request_id` and ignores the frame exactly as
-                // its contract requires, the child stays parked on a `oneshot` with no
-                // timeout, and the subagent Dead bound is disarmed while a `tool_call_id`
-                // is outstanding — which is the 255m55s `get_artifact` hang
-                // (ADR 0117, and
+                // A DELIVERY ADDRESS IS NOT A REPLY ADDRESS (ADR 0117 — the rule
+                // survives the frame rename verbatim, and `task_reply_target` is
+                // deliberately VOCABULARY-FREE so it does not have to be rewritten with
+                // it). The comment that used to sit here claimed `handle_for` answers
+                // `None` for a session that is already gone, so a frame that cannot be
+                // delivered is an ordinary miss and the send result may be discarded.
+                // For a LIVE SUBAGENT neither half holds. The pump re-keys a child's
+                // frames to the PARENT's session id — correctly, because a child's UI
+                // renders in the parent's scope (`pump.rs:91-102`) — so
+                // `handle_for(session_id)` here HITS and hands back the PARENT's handle.
+                // The parent's per-Worker pending map has no such `request_id` and
+                // ignores the frame exactly as its contract requires, the child stays
+                // parked on a `oneshot` with no timeout, and the subagent Dead bound is
+                // disarmed while a `tool_call_id` is outstanding — which is the 255m55s
+                // `get_artifact` hang (ADR 0117, and
                 // `docs/research/board-tool-hang-subagent-task-response-misroute.md`).
                 // The REPLY address is therefore the frame's ORIGIN id — the
-                // `session_id` field `Outbound::TaskRequest` has carried since
+                // `session_id` field the request frame has carried since
                 // `fulcrum-harness` 0.6.0, bound here as `origin_id` so it does NOT
-                // shadow `route_event`'s `session_id` (the delivery id, which stays
-                // the UI-scope key it is). Meanwhile a miss is never silently
-                // discardable: every path below that fails to answer records an
-                // always-on `diagnostics` line. Note what the bound does and does
-                // NOT cover: `spawn_board` bounds the board CALL, so a verb that is
-                // stuck is answered, but a verb that ran fine and fast and then
-                // failed to reach its Worker is a DELIVERY failure this bound never
-                // fires for — that is made VISIBLE by the `record` sites below, not
-                // by the deadline (the same scope `TASK_BOARD_CALL_TIMEOUT`'s own doc
-                // now states). So a miss is visible, and a wedged verb is bounded —
-                // two different mechanisms, not one.
+                // shadow `route_event`'s `session_id` (the delivery id, which stays the
+                // UI-scope key it is). Meanwhile a miss is never silently discardable:
+                // every path below that fails to answer records an always-on
+                // `diagnostics` line. Note what the bound does and does NOT cover:
+                // `spawn_board` bounds the board CALL, so a verb that is stuck is
+                // answered, but a verb that ran fine and fast and then failed to reach
+                // its Worker is a DELIVERY failure this bound never fires for — that is
+                // made VISIBLE by the `record` sites below, not by the deadline (the
+                // same scope `TASK_BOARD_CALL_TIMEOUT`'s own doc now states, in
+                // `agent/host_tools/exec.rs`). So a miss is visible, and a wedged verb
+                // is bounded — two different mechanisms, not one.
+                //
+                // THE FRAME VOCABULARY IN THE LINES BELOW IS `host-tool-*`, and that is
+                // not cosmetics. `docs/features/task-board-known-gaps.md` §2 and
+                // `docs/features/subagent-sessions.md` both carry a
+                // `grep -c "diagnostics::record(" router.rs` census; this arm keeps the
+                // SAME FOUR record sites it had as the `TaskRequest` arm and changes
+                // only their words, because a line that says `task-request:` about a
+                // frame that is no longer a task request is a lie in a log a supporter
+                // reads.
                 let db = self.driver.db.clone();
                 let wm = self.worker_manager.get().cloned();
                 // Decided BEFORE the spawn, so the early `return` below exits
@@ -377,7 +388,7 @@ impl SessionManager {
                         Some(target) => target,
                         None => {
                             diagnostics::record(&format!(
-                                "task-request: a Subagent frame for delivery {session_id} \
+                                "host-tool-call: a Subagent frame for delivery {session_id} \
                                  carried no origin id, request {request_id} - the answer \
                                  was dropped"
                             ));
@@ -385,42 +396,48 @@ impl SessionManager {
                         }
                     };
                 tokio::spawn(async move {
-                    let result: Result<serde_json::Value, TaskStoreError> = match db {
-                        Some(db) => run_task_call(&db, call).await,
-                        None => Err(TaskStoreError::Io {
-                            message: "Supervisor database not available".to_string(),
-                        }),
+                    // The executors answer `Result<ToolResult, String>` and the frame
+                    // carries exactly that, because the crate has no idea what a host
+                    // tool is and so cannot name a host tool's failure KIND. The `String`
+                    // half is `HostToolError`'s `Display` — the model-facing sentence,
+                    // rendered ONCE in `host_tools::run` — and the Worker turns it into
+                    // `ToolResult::fail(message, None)`, which is the shape a refusal had
+                    // when the executors lived in the crate. No behaviour change; the
+                    // kind simply stopped crossing.
+                    let result: Result<ToolResult, String> = match db {
+                        Some(db) => crate::agent::host_tools::run(&db, &tool, params).await,
+                        None => Err("Supervisor database not available".to_string()),
                     };
                     let Some(wm) = wm else {
                         // The `OnceLock` was never wired — a Worker exists and is
                         // parked on this answer, and NOTHING can ever deliver it.
                         diagnostics::record(&format!(
-                            "task-response: no WorkerManager for request {request_id}"
+                            "host-tool-response: no WorkerManager for request {request_id}"
                         ));
                         return;
                     };
                     let Some(handle) = wm.handle_for(&reply_target) else {
                         diagnostics::record(&format!(
-                            "task-response: no Worker for session {reply_target}, request \
-                             {request_id} — the answer was dropped"
+                            "host-tool-response: no Worker for session {reply_target}, \
+                             request {request_id} — the answer was dropped"
                         ));
                         return;
                     };
                     // The one path back to the Worker. An `Err` here means the process
-                    // is already gone (the `exited` watch) and F1's Drop guard cleans
-                    // the pending entry — but the answer is still undelivered, and a
-                    // line behind `ARCHIMEDES_DEBUG` cannot answer "why did nothing
-                    // happen" for a user who never set the var (`pump.rs:62-77`), so
-                    // this records rather than swallowing the result. The clone keeps
-                    // the id readable in the line: the frame MOVES it.
-                    let frame = Inbound::TaskResponse {
+                    // is already gone (the `exited` watch) and the Worker's Drop guard
+                    // cleans the pending entry — but the answer is still undelivered, and
+                    // a line behind `ARCHIMEDES_DEBUG` cannot answer "why did nothing
+                    // happen" for a user who never set the var (`pump.rs:62-77`), so this
+                    // records rather than swallowing the result. The clone keeps the id
+                    // readable in the line: the frame MOVES it.
+                    let frame = Inbound::HostToolResponse {
                         request_id: request_id.clone(),
                         result,
                     };
                     if let Err(e) = handle.send_inbound_frame(frame) {
                         diagnostics::record(&format!(
-                            "task-response: the answer for request {request_id} could not \
-                             be sent: {e}"
+                            "host-tool-response: the answer for request {request_id} could \
+                             not be sent: {e}"
                         ));
                     }
                 });
@@ -908,211 +925,21 @@ impl SessionManager {
     }
 }
 
-/// Run one Worker task-board call against the Supervisor's `Db` (issue #180 D2).
-///
-/// The body of the `WorkerInboundEvent::TaskRequest` router arm, factored out so
-/// it is testable without a live Worker: the arm needs a `WorkerManager` and a
-/// live session to deliver its answer, this needs only a `Db`.
-///
-/// Every arm runs the SYNC `impl TaskStore for Db` inside `spawn_blocking`. That
-/// is not defensive style — `rusqlite` is a blocking driver and `Db`'s methods
-/// take the connection mutex, so calling one directly from this `async` block
-/// would hold a tokio worker thread for the duration of a SQLite statement. The
-/// crate's trait is sync BY DESIGN (ADR 0092: the desktop implements it on `Db`,
-/// Supervisor-side, because the Supervisor is the sole SQLite writer), so the
-/// async shape lives HERE and never in the trait.
-///
-/// The return is the DTO SERIALIZED, because `Inbound::TaskResponse` carries a
-/// `serde_json::Value` and F1's Worker arm deserializes the shape its verb
-/// expects. `None` serializes to `null`, which is what F1's `get_task` /
-/// `get_artifact` arms decode as "no row" — an answer, not an error.
-async fn run_task_call(db: &Arc<Db>, call: TaskCall) -> Result<serde_json::Value, TaskStoreError> {
-    // Every arm goes through `<Db as TaskStore>::…` and NOT through a method call
-    // on `db`. That is load-bearing, not ceremony. Six of the seven verbs have an
-    // INHERENT `Db` method of the same name (the desktop's own board API), and Rust
-    // prefers inherent methods — so `db.move_task(…)` here would bind to the
-    // DESKTOP's `move_task`, whose `MoveOutcome` is `{ on_enter }` alone. The answer
-    // would serialize without `toStage`/`note`, and F1's Worker arm decodes a
-    // REQUIRED `to_stage`, so the tool would fail with "task response was not a move
-    // outcome" — a desktop-green, CI-green build whose every move is broken. Same
-    // trap for `get_task` (the desktop's row has no `artifactKeys`, which the crate's
-    // `TaskDetail` requires). The qualified path is the only spelling that says
-    // "the seam, not the desktop's twin", and `run_task_call_creates_edits_and_moves_and_shapes_each_answer`
-    // is the pin that reddens if one is spelled back to a method call.
-    //
-    // One `db.clone()` per arm: the `FnOnce` the blocking pool runs has to own what
-    // it closes over, and `Arc<Db>` is the cheap kind of clone.
-    let value = match call {
-        TaskCall::ListBoard { space_path } => {
-            let db = db.clone();
-            let rows = spawn_board("list_board", move || {
-                <Db as TaskStore>::list_board(&db, &space_path)
-            })
-            .await?;
-            serde_json::to_value(rows)
-        }
-        TaskCall::GetTask { task_id } => {
-            let db = db.clone();
-            let row = spawn_board("get_task", move || {
-                <Db as TaskStore>::get_task(&db, &task_id)
-            })
-            .await?;
-            serde_json::to_value(row)
-        }
-        TaskCall::CreateTask {
-            space_path,
-            title,
-            body,
-            stage_slug,
-        } => {
-            let db = db.clone();
-            let row = spawn_board("create_task", move || {
-                <Db as TaskStore>::create_task(
-                    &db,
-                    &space_path,
-                    &title,
-                    body.as_deref(),
-                    stage_slug.as_deref(),
-                )
-            })
-            .await?;
-            serde_json::to_value(row)
-        }
-        TaskCall::EditTask {
-            task_id,
-            title,
-            body,
-            spec_path,
-        } => {
-            let db = db.clone();
-            let row = spawn_board("edit_task", move || {
-                <Db as TaskStore>::edit_task(
-                    &db,
-                    &task_id,
-                    title.as_deref(),
-                    body.as_deref(),
-                    spec_path.as_deref(),
-                )
-            })
-            .await?;
-            serde_json::to_value(row)
-        }
-        TaskCall::MoveTask {
-            space_path,
-            task_id,
-            to_stage,
-        } => {
-            let db = db.clone();
-            let outcome = spawn_board("move_task", move || {
-                <Db as TaskStore>::move_task(&db, &space_path, &task_id, &to_stage)
-            })
-            .await?;
-            serde_json::to_value(outcome)
-        }
-        TaskCall::GetArtifact { task_id, key } => {
-            let db = db.clone();
-            let artifact = spawn_board("get_artifact", move || {
-                <Db as TaskStore>::get_artifact(&db, &task_id, &key)
-            })
-            .await?;
-            serde_json::to_value(artifact)
-        }
-        TaskCall::WriteArtifact {
-            task_id,
-            key,
-            markdown,
-        } => {
-            let db = db.clone();
-            let meta = spawn_board("write_artifact", move || {
-                <Db as TaskStore>::write_artifact(&db, &task_id, &key, &markdown)
-            })
-            .await?;
-            serde_json::to_value(meta)
-        }
-    };
-    value.map_err(|e| TaskStoreError::Invalid {
-        message: format!("task response could not be serialized: {e}"),
-    })
-}
-
-/// One board verb, on the blocking pool, with both error maps applied.
-///
-/// Generic over the error the closure returns, and that is not generality for its
-/// own sake: `list_board` exists ONLY on the `TaskStore` trait (the desktop has no
-/// inherent `list_board` — its flat board read is `list_tasks`), so that arm yields
-/// the crate's `TaskStoreError` while every other arm hits an INHERENT `Db` method
-/// and yields the desktop's `BoardError`. Both belong in this one helper, mapped by
-/// the `From` impls in `storage/db.rs` — the same "one place owns the mapping" split
-/// `From<DbError> for StoreError` uses for the persistence seam.
-///
-/// A panicked blocking task, or a runtime shutting down mid-call, becomes an `Io`
-/// naming the verb, because the Worker shows that sentence to the model and
-/// "the Supervisor's `move_task` call failed" is the truth.
-///
-/// And a call that NEVER returns becomes one too, at `TASK_BOARD_CALL_TIMEOUT` —
-/// with its own sentence (`timed out`, not `failed`), because "the blocking task
-/// died" and "the blocking task was still running after half a minute" are
-/// different facts and the model reads both verbatim.
-async fn spawn_board<T, E, F>(verb: &'static str, f: F) -> Result<T, TaskStoreError>
-where
-    T: Send + 'static,
-    E: Into<TaskStoreError> + Send + 'static,
-    F: FnOnce() -> Result<T, E> + Send + 'static,
-{
-    with_board_deadline(verb, async move {
-        tokio::task::spawn_blocking(f)
-            .await
-            .map_err(|e| TaskStoreError::Io {
-                message: format!("Supervisor `{verb}` board call failed: {e}"),
-            })?
-            .map_err(Into::into)
-    })
-    .await
-}
-
-/// How long one Supervisor-side board call may run before the Worker is answered
-/// with an error. Every layer below this is already bounded or already fast:
-/// `busy_timeout` is 5 s, a healthy board read is sub-millisecond, and the verbs
-/// take one mutex. So this is the backstop for a WEDGED `Db` — the one thing under
-/// this bound that can run forever — and NOT a policy about how long a board read
-/// should take. Nor is it how a DELIVERY failure is seen. This future is awaited
-/// INSIDE the arm's `tokio::spawn` (via `run_task_call` → `spawn_board`), so it
-/// covers exactly two shapes and nothing else: the verb is still running, or the verb
-/// finished and something downstream failed. A frame that never reaches its Worker is
-/// the second shape — the verb ran fine and fast, so this bound never fires for it and
-/// the failure is made VISIBLE by the arm's `diagnostics::record` sites instead. And a
-/// task that PANICS, or that never runs at all (a spawn on a shutting-down runtime),
-/// never reaches this line either — those two are covered by NEITHER this bound nor a
-/// `record` site, and are the residual the docs name.
-const TASK_BOARD_CALL_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Run one board future under `TASK_BOARD_CALL_TIMEOUT`, mapping expiry to the `Io`
-/// sentence the Worker shows the model. Factored out of `spawn_board` so the
-/// deadline is provable with a `pending()` future and a paused clock.
-async fn with_board_deadline<T, E, F>(verb: &'static str, f: F) -> Result<T, TaskStoreError>
-where
-    T: Send + 'static,
-    E: Into<TaskStoreError>,
-    F: std::future::Future<Output = Result<T, E>>,
-{
-    tokio::time::timeout(TASK_BOARD_CALL_TIMEOUT, f)
-        .await
-        .map_err(|_| TaskStoreError::Io {
-            message: format!(
-                "Supervisor `{verb}` board call timed out after {TASK_BOARD_CALL_TIMEOUT:?}"
-            ),
-        })?
-        .map_err(Into::into)
-}
-
-/// Where a board answer must be delivered: the ORIGIN (the Worker that emitted the
-/// frame), never the pump's delivery id. For a Subagent the delivery id is the
-/// PARENT's, and answering it writes a correct `TaskResponse` into the parent's
+/// Where a host-tool answer must be delivered: the ORIGIN (the Worker that emitted
+/// the frame), never the pump's delivery id. For a Subagent the delivery id is the
+/// PARENT's, and answering it writes a correct `HostToolResponse` into the parent's
 /// stdin, where the parent's per-Worker pending map has no such `request_id` and
 /// ignores it exactly as its contract requires — the child then parks with no
 /// bound. `None` means UNROUTABLE: a child frame with no origin must NOT fall back
 /// (ADR 0117). A main session's delivery id IS its own id, so for a main frame the
 /// delivery id is an identity, not a fallback.
+///
+/// This function is deliberately VOCABULARY-FREE — no parameter names a task, a
+/// board or a tool — and that is what let ADR 0102 / issue #183 replace the
+/// `TaskRequest` arm with the generic `HostToolCall` arm without touching the ADR
+/// 0117 rule at all. Keep it that way: a future host tool reaches this same
+/// function, and the first name that says `task` in here is the first sign the rule
+/// is being re-narrowed to the frame family that prompted it.
 ///
 /// A free function and not an inline `match` precisely so all three branches are
 /// unit-testable: the positive "the answer reaches the child" case needs a real
@@ -2225,322 +2052,21 @@ mod tests {
         );
     }
 
-    // ── The D2 task-board router body (issue #180) ───────────────────────────
+    // ── The host-tool answer that never arrives (ADR 0117) ───────────────────
     //
-    // `run_task_call` is the router arm's whole computation, factored out so it is
-    // assertable without a live Worker: the arm itself needs a `WorkerManager` and
-    // an attached session to deliver its answer, and the end-to-end proof of THAT
-    // delivery is `worker_e2e.rs`'s `task_artifact_round_trips_through_a_real_worker`.
-    // What these cases own is the VERB-TO-VERB wiring: that a `TaskCall` reaches the
-    // matching `Db` method, that the answer is the serialized DTO the Worker's arm
-    // deserializes, and that a refusal crosses as the crate's error rather than as a
-    // panic or an `Ok`.
-    //
-    // Non-vacuity: swap one arm's `Db` method for another (say `GetArtifact` calling
-    // `write_artifact`) and the case below naming that verb reddens; delete an arm's
-    // `spawn_blocking` and the runtime's own "no reactor" behaviour is not what
-    // catches it — the `serde_json` shape assertions do, because the DTO would not
-    // arrive.
-
-    /// A `Db` with one Space seeded and one card, as the router finds it.
-    fn seeded_board_db(prefix: &str) -> (crate::test_support::ScratchDir, Arc<Db>, String) {
-        let dir = crate::test_support::ScratchDir::in_env_temp(prefix, "db");
-        let db = Arc::new(Db::open(&dir.join("db.sqlite")).expect("a temp db opens"));
-        let space = "/router/task-call";
-        db.get_board(space)
-            .expect("get_board seeds the five stages");
-        let task = db
-            .create_task(space, "a card", Some("the body"), None)
-            .expect("create_task");
-        (dir, db, task.id)
-    }
-
-    #[tokio::test]
-    async fn run_task_call_writes_and_reads_an_artifact_through_the_db() {
-        let (_dir, db, task_id) = seeded_board_db("router-task-call-roundtrip-");
-
-        let written = run_task_call(
-            &db,
-            TaskCall::WriteArtifact {
-                task_id: task_id.clone(),
-                key: "spec".to_string(),
-                markdown: "ROUTER-SENTINEL".to_string(),
-            },
-        )
-        .await
-        .expect("write_artifact over the router path");
-        assert_eq!(written["key"], "spec", "the meta names the key");
-        assert_eq!(
-            written["bytes"],
-            serde_json::json!("ROUTER-SENTINEL".len()),
-            "`bytes` is the byte length, and it is camelCase on the wire"
-        );
-        // The meta deliberately carries NO markdown (the caller just sent it).
-        assert!(
-            written.get("markdown").is_none(),
-            "the write answer echoes no document — got {written}"
-        );
-
-        let read = run_task_call(
-            &db,
-            TaskCall::GetArtifact {
-                task_id: task_id.clone(),
-                key: "spec".to_string(),
-            },
-        )
-        .await
-        .expect("get_artifact over the router path");
-        assert_eq!(
-            read["markdown"], "ROUTER-SENTINEL",
-            "the markdown rides back, so the Worker's arm can put it in content"
-        );
-
-        // The row is in the DESKTOP's table — the router answered from real storage,
-        // it did not echo its argument.
-        let direct = db
-            .get_artifact(&task_id, "spec")
-            .expect("direct read")
-            .expect("the row exists");
-        assert_eq!(direct.markdown, "ROUTER-SENTINEL");
-    }
-
-    #[tokio::test]
-    async fn run_task_call_answers_a_missing_row_with_null_not_an_error() {
-        let (_dir, db, _task_id) = seeded_board_db("router-task-call-null-");
-
-        // `get_task` on an absent id: the crate's contract is `Ok(None)`, which
-        // serializes to `null` — and F1's arm decodes `null` as "no task found"
-        // rather than as a failure, so an `Err` here would be a behaviour change
-        // visible to the model.
-        let missing = run_task_call(
-            &db,
-            TaskCall::GetTask {
-                task_id: "tsk_absent".to_string(),
-            },
-        )
-        .await
-        .expect("absence is an answer, not an error");
-        assert!(missing.is_null(), "an absent card is `null`, got {missing}");
-
-        let no_artifact = run_task_call(
-            &db,
-            TaskCall::GetArtifact {
-                task_id: "tsk_absent".to_string(),
-                key: "spec".to_string(),
-            },
-        )
-        .await
-        .expect("an absent artifact is an answer too");
-        assert!(no_artifact.is_null(), "got {no_artifact}");
-    }
-
-    #[tokio::test]
-    async fn run_task_call_reports_a_refusal_as_the_crate_error() {
-        let (_dir, db, task_id) = seeded_board_db("router-task-call-refusal-");
-
-        // A dangling task id on a WRITE is `NotFound` (the storage gate exists
-        // because `task_artifacts` has no FK to catch it).
-        let err = run_task_call(
-            &db,
-            TaskCall::WriteArtifact {
-                task_id: "tsk_dangling".to_string(),
-                key: "spec".to_string(),
-                markdown: "orphan".to_string(),
-            },
-        )
-        .await
-        .expect_err("a dangling id refuses");
-        assert!(
-            matches!(&err, TaskStoreError::NotFound { message } if message.contains("tsk_dangling")),
-            "the refusal is `NotFound` naming the id — got {err:?}"
-        );
-
-        // A bad stage slug is `Invalid` and keeps the valid slugs in its sentence.
-        let bad = run_task_call(
-            &db,
-            TaskCall::MoveTask {
-                space_path: "/router/task-call".to_string(),
-                task_id,
-                to_stage: "not-a-column".to_string(),
-            },
-        )
-        .await
-        .expect_err("an unknown slug refuses");
-        assert!(
-            matches!(&bad, TaskStoreError::Invalid { message } if message.contains("backlog")),
-            "a bad slug names the valid columns — got {bad:?}"
-        );
-    }
-
-    /// (the two artifact rules, ON THE ROUTER ARM) a `TaskCall::WriteArtifact`
-    /// carrying a key outside the grammar, or a markdown over the cap, is refused
-    /// as `TaskStoreError::Invalid` and writes nothing.
-    ///
-    /// This is the same rule `tests/fulcrum_seams.rs` pins one layer down, and it
-    /// earns its place by driving the ARBITRARY the Worker actually sends: the
-    /// `TaskCall::WriteArtifact` literal, through `run_task_call`, which is the body
-    /// of the `WorkerInboundEvent::TaskRequest` arm. The seam test proves storage
-    /// refuses; this proves the refusal survives the router's `spawn_board` wrapper
-    /// and arrives as the crate's error rather than as an `Ok` meta or a panic — the
-    /// three shapes a Worker can misread as success.
-    ///
-    /// Non-vacuity: delete the storage checks and both `matches!`s redden (an `Ok`
-    /// arrives); map `BadArtifactKey`/`ArtifactTooLarge` to `Io` instead of `Invalid`
-    /// and the `matches!` reddens while the row count stays green, which is why the
-    /// row assertion is here too.
-    #[tokio::test]
-    async fn run_task_call_refuses_a_bad_artifact_key_and_an_oversized_markdown() {
-        let (_dir, db, task_id) = seeded_board_db("router-task-call-artifact-rules-");
-
-        let err = run_task_call(
-            &db,
-            TaskCall::WriteArtifact {
-                task_id: task_id.clone(),
-                key: "My Spec".to_string(),
-                markdown: "a document the model believed it saved".to_string(),
-            },
-        )
-        .await
-        .expect_err("the tool path must not be wider than the human's");
-        assert!(
-            matches!(&err, TaskStoreError::Invalid { message }
-                if message.contains("My Spec")
-                && message.contains("[a-z0-9][a-z0-9-]{0,39}")),
-            "`Invalid`, naming the key AND the grammar so the model self-corrects \
-             without a second call — got {err:?}"
-        );
-
-        let err = run_task_call(
-            &db,
-            TaskCall::WriteArtifact {
-                task_id: task_id.clone(),
-                key: "spec".to_string(),
-                markdown: "x".repeat(256 * 1024 + 1),
-            },
-        )
-        .await
-        .expect_err("262145 bytes must be refused, never truncated");
-        assert!(
-            matches!(&err, TaskStoreError::Invalid { message }
-                if message.contains("262144") && message.contains("262145")),
-            "`Invalid`, naming the LIMIT and the ACTUAL size — a model that cannot \
-             tell how far over it went cannot decide what to cut — got {err:?}"
-        );
-
-        assert!(
-            db.artifact_keys(&task_id)
-                .expect("artifact_keys")
-                .is_empty(),
-            "and the router's refusals wrote NOTHING — no truncated spec sits on this \
-             card pretending to be whole"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_task_call_lists_the_board_with_artifact_keys() {
-        let (_dir, db, task_id) = seeded_board_db("router-task-call-board-");
-        db.write_artifact(&task_id, "research", "# notes")
-            .expect("write_artifact direct");
-
-        let board = run_task_call(
-            &db,
-            TaskCall::ListBoard {
-                space_path: "/router/task-call".to_string(),
-            },
-        )
-        .await
-        .expect("list_board over the router path");
-        let rows = board.as_array().expect("a board is a JSON array");
-        assert_eq!(rows.len(), 1, "one card, got {board}");
-        assert_eq!(
-            rows[0]["number"],
-            serde_json::json!(1),
-            "camelCase wire keys"
-        );
-        assert_eq!(
-            rows[0]["artifactKeys"],
-            serde_json::json!(["research"]),
-            "the board row carries the artifact KEY names — the whole point of \
-             splitting `BoardRow` from `Artifact`"
-        );
-        // Keys only, never the document.
-        let text = board.to_string();
-        assert!(
-            !text.contains("# notes"),
-            "a board payload must never carry markdown — got {text}"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_task_call_creates_edits_and_moves_and_shapes_each_answer() {
-        let (_dir, db, task_id) = seeded_board_db("router-task-call-verbs-");
-
-        let created = run_task_call(
-            &db,
-            TaskCall::CreateTask {
-                space_path: "/router/task-call".to_string(),
-                title: "second card".to_string(),
-                body: None,
-                stage_slug: Some("doing".to_string()),
-            },
-        )
-        .await
-        .expect("createTask");
-        assert_eq!(
-            created["number"],
-            serde_json::json!(2),
-            "numbered per Space"
-        );
-        assert_eq!(created["stageSlug"], "doing");
-        // The write answer is the crate's `TaskRow`, which has NO artifact field.
-        assert!(
-            created.get("artifactKeys").is_none(),
-            "a write says nothing about artifacts — got {created}"
-        );
-
-        let edited = run_task_call(
-            &db,
-            TaskCall::EditTask {
-                task_id: task_id.clone(),
-                title: Some("renamed".to_string()),
-                body: None,
-                spec_path: None,
-            },
-        )
-        .await
-        .expect("editTask");
-        assert_eq!(edited["title"], "renamed");
-
-        let moved = run_task_call(
-            &db,
-            TaskCall::MoveTask {
-                space_path: "/router/task-call".to_string(),
-                task_id,
-                to_stage: "done".to_string(),
-            },
-        )
-        .await
-        .expect("moveTask");
-        assert_eq!(moved["toStage"], "done");
-        assert_eq!(
-            moved["onEnter"], "none",
-            "`on_enter` crosses as opaque data for the command layer"
-        );
-        assert!(
-            moved.get("note").is_some(),
-            "`note` is `None` and serializes as null, not dropped — got {moved}"
-        );
-        assert!(moved["note"].is_null());
-    }
-
-    // ── The answer that never arrives (ADR 0117) ─────────────────────────────
-    //
-    // A `TaskRequest` the arm cannot answer used to be SILENT three times over:
+    // A `HostToolCall` the arm cannot answer used to be SILENT three times over:
     // no `WorkerManager`, no `handle_for` hit, or a `send_inbound_frame` `Err` —
     // and the Worker sat parked on a `oneshot` with no timeout, which is how
-    // `get_artifact` hung for 255m55s. These cases own the two things that make
-    // that failure class bounded and visible: the deadline on the board call, and
-    // the always-on `diagnostics::record` on every non-answering path.
+    // `get_artifact` hung for 255m55s. What these cases own is the half only
+    // `route_event` can prove: the REPLY ADDRESS, and the always-on
+    // `diagnostics::record` on every non-answering path.
+    //
+    // The OTHER half of that failure class — the deadline on the board CALL —
+    // moved with the code it bounds, to
+    // `agent/host_tools/tests/verbs.rs`. Both of its cases keep their exact names
+    // there (`a_board_call_still_running_at_the_deadline_…` and
+    // `a_board_call_whose_blocking_task_died_…`), so the census sees two MOVES and
+    // no loss.
 
     /// Restores the global diagnostics target to UNARMED on scope exit — INCLUDING
     /// on a panicking assertion, which the plain "call `init(None)` last" shape
@@ -2579,92 +2105,15 @@ mod tests {
     }
 
     /// Only the lines THIS arm writes, so a sibling's line in the shared file can
-    /// neither satisfy a positive assertion nor trip a negative one.
-    fn task_response_lines(content: &str) -> Vec<&str> {
+    /// neither satisfy a positive assertion nor trip a negative one. The prefix is
+    /// the arm's own, `host-tool-response:` — renamed with the frame, because a log
+    /// line that says `task-response:` about a frame that is no longer a task
+    /// request is a lie a supporter reads.
+    fn host_tool_response_lines(content: &str) -> Vec<&str> {
         content
             .lines()
-            .filter(|line| line.contains("task-response:"))
+            .filter(|line| line.contains("host-tool-response:"))
             .collect()
-    }
-
-    /// The deadline, PROVEN: a board future that never completes is answered at
-    /// `TASK_BOARD_CALL_TIMEOUT` with the `Io` sentence the Worker shows the model.
-    ///
-    /// `start_paused` (precedented at `provider_auth/refresh.rs:948`, `:1083`) is
-    /// what makes this cheap — tokio auto-advances its own clock once nothing but a
-    /// timer is left, so the 30 s elapse in microseconds. The turbofish on
-    /// `pending()` is required: a bare `pending()` cannot infer its type.
-    ///
-    /// Non-vacuity: delete the `timeout` from `with_board_deadline` and this test
-    /// hangs FOREVER (a `#[tokio::test]` carries no timeout of its own, and with no
-    /// timer left to advance to the paused clock never moves) — which is the
-    /// mutation proof, run as `timeout 60 cargo test --lib -- a_board_call_still_running`.
-    #[tokio::test(start_paused = true)]
-    async fn a_board_call_still_running_at_the_deadline_answers_an_io_error_naming_the_verb() {
-        let err = with_board_deadline(
-            "get_artifact",
-            std::future::pending::<Result<serde_json::Value, TaskStoreError>>(),
-        )
-        .await
-        .expect_err("a board call still running at the deadline is an error, never silence");
-        assert!(
-            matches!(&err, TaskStoreError::Io { message }
-                if message.contains("get_artifact") && message.contains("timed out")),
-            "`Io`, naming the VERB and the expiry — the model reads this sentence \
-             verbatim and must be able to tell which call died — got {err:?}"
-        );
-        // The duration is a LITERAL on purpose. The other spelling —
-        // `contains(&format!("{TASK_BOARD_CALL_TIMEOUT:?}"))` — rebuilds the expected
-        // substring from the SAME const the production sentence interpolates, so the
-        // two can never disagree and the assertion is tautological; only a literal can
-        // fail here (and `30s` is what `{TASK_BOARD_CALL_TIMEOUT:?}` renders for
-        // `Duration::from_secs(30)`). And the literal is the WHOLE PHRASE and not bare
-        // `"30s"`: a bare `30s` is a substring of `130s` and `230s`, so it would still
-        // pass if the const were lengthened past the value this doc argues for. Pinning
-        // `"timed out after 30s"` pins the sentence AND the number in one assertion.
-        assert!(
-            matches!(&err, TaskStoreError::Io { message }
-                if message.contains("timed out after 30s")),
-            "the sentence names the DURATION too, so a supporter can tell a wedged \
-             `Db` from a misrouted frame without a stopwatch — got {err:?}"
-        );
-    }
-
-    /// The other half of the pair, and the pin that keeps the two sentences
-    /// DISTINGUISHABLE: a `JoinError` (the blocking task panicked, or the runtime
-    /// went away mid-call) still says `failed`, and says it even with the deadline
-    /// in place.
-    ///
-    /// It drives `spawn_board` and not the helper on purpose — the `JoinError`
-    /// mapping lives in the closure `spawn_board` passes, so driving
-    /// `with_board_deadline` here would only assert a string this file hand-wrote.
-    /// The explicit return type on the closure is required (a bare `|| panic!()`
-    /// cannot infer it). NOT `start_paused`: the blocking pool runs on a real
-    /// thread, and an auto-advancing clock would race the deadline against a panic
-    /// that lands in microseconds.
-    #[tokio::test]
-    async fn a_board_call_whose_blocking_task_died_still_says_failed_and_not_timed_out() {
-        let err = spawn_board(
-            "get_artifact",
-            || -> Result<u32, crate::storage::BoardError> { panic!("boom") },
-        )
-        .await
-        .expect_err("a dead blocking task is an error, not a hang");
-        let message = match &err {
-            TaskStoreError::Io { message } => message.clone(),
-            other => panic!("expected `Io`, got {other:?}"),
-        };
-        assert!(
-            message.contains("get_artifact") && message.contains("failed"),
-            "the existing `JoinError` sentence survives the deadline wrapper — got \
-             {message:?}"
-        );
-        assert!(
-            !message.contains("timed out"),
-            "`failed` means the blocking task DIED, `timed out` means it was still \
-             running at the deadline; merging them loses the one fact that tells a \
-             supporter which half to look at — got {message:?}"
-        );
     }
 
     /// The `#[allow(clippy::await_holding_lock)]` is INTENTIONAL (`naming.rs`'s
@@ -2673,7 +2122,7 @@ mod tests {
     /// the `route_event` and the read.
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
-    async fn an_unanswerable_task_request_records_a_diagnostic_naming_the_request_id() {
+    async fn an_unanswerable_host_tool_call_records_a_diagnostic_naming_the_request_id() {
         // The lock is declared FIRST so it outlives both, and `_disable` LAST so it
         // drops FIRST (locals drop in reverse) — which is the order wanted: the
         // process-global target is cleared to UNARMED before the dir it names is
@@ -2687,24 +2136,23 @@ mod tests {
         // unset), which is exactly the arm's first non-answering path — and one of
         // the five the ADR enumerates that produce the identical invisible hang.
         let (_dir, manager, _db, _emitted) =
-            manager_seeded("router-task-request-unanswerable-", &[]);
+            manager_seeded("router-host-tool-call-unanswerable-", &[]);
         manager.route_event(
             "sess-orphan",
             false,
-            WorkerInboundEvent::TaskRequest {
+            WorkerInboundEvent::HostToolCall {
                 request_id: "task-req-42".to_string(),
                 // A MAIN frame with no origin (a stale/foreign Worker binary): it
                 // routes to its delivery id — an identity, not a fallback — and so
                 // reaches the `wm`-missing path this test pins.
                 session_id: None,
-                call: TaskCall::GetTask {
-                    task_id: "tsk_absent".to_string(),
-                },
+                tool: "get_task".to_string(),
+                params: serde_json::json!({ "task_id": "tsk_absent" }),
             },
         );
 
         let content = diagnostics_log(log_dir.path(), "task-req-42").await;
-        let lines = task_response_lines(&content);
+        let lines = host_tool_response_lines(&content);
         assert!(
             lines.iter().any(|line| line.contains("task-req-42")),
             "a dropped board answer is recorded in the always-on log, and the \
@@ -2719,8 +2167,11 @@ mod tests {
              `worker_manager` `OnceLock`) — got {content:?}"
         );
         // The CONTENT rule (`diagnostics`'s module doc: ids and our own error
-        // sentences only, never user content). The `task_id` here is an argument
-        // the MODEL sent, so it must not ride along.
+        // sentences only, never user content). The `task_id` inside `params` is an
+        // argument the MODEL sent, so it must not ride along — and note this is now
+        // a stronger pin than it was: the generic frame carries the whole params
+        // OBJECT, so a `record` site that interpolated `params` would leak the
+        // entire document a `write_artifact` call was carrying.
         assert!(
             !lines.iter().any(|line| line.contains("tsk_absent")),
             "no task id, no key, no prompt text at a `record` call site — got \
@@ -2751,8 +2202,14 @@ mod tests {
     /// The misroute, pinned at the level the bug lived at: the answer goes to the
     /// ORIGIN (`child-1`), and the value the arm used to use (`parent-1`, the
     /// pump's delivery id) is not what comes back.
+    ///
+    /// The three `task_reply_target` cases below are the ADR 0117 rule itself, and
+    /// they are UNCHANGED by the frame rename — the function takes a delivery id, a
+    /// `is_subagent` flag and an optional origin and knows nothing about tasks. That
+    /// is the sense in which the generic frame is a WIDENING of the rule rather than
+    /// a replacement of it: the same three branches now govern every host tool.
     #[test]
-    fn a_subagents_task_request_is_answered_at_its_origin_and_not_its_delivery_id() {
+    fn a_subagents_host_tool_call_is_answered_at_its_origin_and_not_its_delivery_id() {
         assert_eq!(
             task_reply_target("parent-1", true, Some("child-1")),
             Some("child-1".to_string()),
@@ -2801,7 +2258,7 @@ mod tests {
     /// and nothing is left parked on the Supervisor side.
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
-    async fn an_unroutable_task_request_records_a_diagnostic_naming_the_request_id() {
+    async fn an_unroutable_host_tool_call_records_a_diagnostic_naming_the_request_id() {
         // Declaration order is load-bearing (same reasoning as the `an_unanswerable_…`
         // test): `_lock` FIRST so it outlives both, `_disable` LAST so it drops FIRST
         // (locals drop in reverse) and the process-global target is cleared to
@@ -2812,16 +2269,16 @@ mod tests {
         crate::agent::diagnostics::init(Some(log_dir.to_path_buf()));
 
         // `is_subagent: true` + `session_id: None` — a child frame with no origin.
-        let (_dir, manager, _db, _emitted) = manager_seeded("router-task-request-unroutable-", &[]);
+        let (_dir, manager, _db, _emitted) =
+            manager_seeded("router-host-tool-call-unroutable-", &[]);
         manager.route_event(
             "parent-of-orphan",
             true,
-            WorkerInboundEvent::TaskRequest {
+            WorkerInboundEvent::HostToolCall {
                 request_id: "task-req-77".to_string(),
                 session_id: None,
-                call: TaskCall::GetTask {
-                    task_id: "tsk_absent".to_string(),
-                },
+                tool: "get_task".to_string(),
+                params: serde_json::json!({ "task_id": "tsk_absent" }),
             },
         );
 
@@ -2831,7 +2288,7 @@ mod tests {
         // armed dir after `env_lock` is released.
         let lines: Vec<&str> = content
             .lines()
-            .filter(|line| line.contains("task-request:"))
+            .filter(|line| line.contains("host-tool-call:"))
             .collect();
         assert!(
             lines.iter().any(|line| line.contains("task-req-77")),

@@ -70,8 +70,16 @@ import { normalizeToolOutput } from "./toolOutput";
  *
  * FOUR MORE have entered since, and they are the same kind of event — recorded,
  * never silently edited in: the issue #180 D2 task seam's four `details` keys
- * (`board`, `task`, `moveOutcome`, `artifactMeta`), read off the MERGED crate's
- * `tools/exec/task_tools.rs` rather than from a plan. The list is therefore the
+ * (`board`, `task`, `moveOutcome`, `artifactMeta`), read off their producer rather
+ * than from a plan. AS OF ADR 0102 / issue #183 D1 THE PRODUCER MOVED: those four
+ * payloads are emitted by the DESKTOP's host-tool executors
+ * (`src-tauri/src/agent/host_tools/exec.rs`), not by the crate — F3 deleted the
+ * crate's seven task arms, and the specs and executors came here. The four KEYS and
+ * their PAYLOAD SHAPES are unchanged by that move, and that is the contract: the
+ * citations below name the producing function by CONTENT and never by line number,
+ * because the line numbers move with the file. The Rust-side half of the byte-identity
+ * claim is pinned in `src-tauri/src/agent/host_tools/tests/shape.rs`, which asserts
+ * each payload's EXACT key set against the Part-3 fixtures below. The list is the
  * frozen 34 PLUS `calls` PLUS the four D2 task keys = 39. Unlike `calls` these are
  * producer keys NO TS reader names, so all four went to Part 2c's exception table
  * with a reason and to Part 3 with a fixture group, and the Part-2b reader union is
@@ -183,8 +191,10 @@ type ProducerKey = (typeof PRODUCER_KEYS)[number];
  *  tamper seal on the copy above, not a second consumer of it.)
  *
  *  Issue #180 D2 grew this tuple from 35 to 39 — `artifactMeta`, `board`,
- *  `moveOutcome` and `task`, the four keys the merged crate's seven task arms
- *  emit (`task_tools.rs:164,168,213,229,370,460`). That is a live wire change
+ *  `moveOutcome` and `task`, the four keys the seven board/artifact verbs emit.
+ *  Those arms live in the DESKTOP's `agent/host_tools/exec.rs` since ADR 0102 /
+ *  issue #183 D1 (the crate's copy was deleted in F3); cited by function below,
+ *  never by line. That is a live wire change
  *  RECORDED here, not a silent edit: each key also gained a Part-2c reason and a
  *  Part-3 fixture group, which is the sanctioned shape (the `calls` precedent). */
 type FrozenProducerTuple = readonly [
@@ -587,8 +597,9 @@ const ENVELOPE_ENTRY_KEYS = [
  *
  *  `task` (issue #180 D2) is exactly that case, and the reason this is derived
  *  rather than hand-partitioned. The task tools emit `details.task` — a Task-board
- *  ROW (`task_tools.rs`'s `json!({ "task": t })` in `exec_get_task` and in
- *  `row_result`) — while the subagent card reads `task` off a `results[i]` /
+ *  ROW (`agent/host_tools/exec.rs`'s `to_details("task", …)`, reached from
+ *  `get_task`'s `TaskDetail` arm and from the shared `row_result` helper) — while
+ *  the subagent card reads `task` off a `results[i]` /
  *  `progress[i]` ENTRY as that subagent's task description. Same spelling, two
  *  frames, two meanings: the collision `title`, `reason` and `path` already
  *  document for the RAW-INPUT frame, one level deeper. Counting it as spanning
@@ -632,8 +643,8 @@ type UnreadProducerKey = Exclude<ProducerKey, Extract<ProducerKey, (typeof ENVEL
 
 const UNREAD_BY_NAME_REASONS: Readonly<Record<UnreadProducerKey, string>> = {
   bytes: "write (fs_tools.rs:121) — shown only inside normalizeToolOutput's JSON dump; the header reads rawInput.path, not details.bytes",
-  artifactMeta: "write_artifact (task_tools.rs:460) — the D2 task seam's write answer {key,updatedAt,bytes}; no TS card names it, so it rides normalizeToolOutput's JSON dump. D2 deliberately ships NO reader: the artifact chip list comes from the board's `artifactKeys`, not from a tool result",
-  board: "list_board (task_tools.rs:164,168) — the D2 task seam's row payload `[{spacePath,number,title,stageSlug,artifactKeys,…}]`; the board UI renders `get_board`, never a tool result, so the rows are dumped as opaque text",
+  artifactMeta: "write_artifact (agent/host_tools/exec.rs, the `artifactMeta` envelope) — the host tool's write answer {key,updatedAt,bytes}; no TS card names it, so it rides normalizeToolOutput's JSON dump. D2 deliberately ships NO reader: the artifact chip list comes from the board's `artifactKeys`, not from a tool result",
+  board: "list_board (agent/host_tools/exec.rs — both the empty-board and the populated arm) — the host tool's row payload `[{spacePath,number,title,stageSlug,artifactKeys,…}]`; the board UI renders `get_board`, never a tool result, so the rows are dumped as opaque text",
   cancelled: "bash (bash.rs:427) — the cancelled fact is carried to the UI by the tool-call status, not by a details read",
   command: "bash/sudo (bash.rs, interactive/mod.rs sudo arms) — the header's `command` comes from RAW INPUT (summarizeToolCall), a different frame; details.command is dumped, never named",
   customInput: "ask (harness/ask.rs:336-340) — always serialised null; the answer card reads the ask REQUEST payload, not the result details",
@@ -644,7 +655,7 @@ const UNREAD_BY_NAME_REASONS: Readonly<Record<UnreadProducerKey, string>> = {
   extractor: "fetch_content (web/tools.rs:304-311) — provenance, dumped with the rest of the envelope",
   lines: "read (fs_tools.rs:49,67) — the line range the header shows comes from RAW INPUT offset/limit (readLineRange), not from details.lines",
   matches: "find/grep (search.rs:130,182,403) and get_search_content (web/tools.rs:408,421) — the matches are the content text; the count is dumped",
-  moveOutcome: "move_task (task_tools.rs:370) — the D2 task seam's move answer {toStage,onEnter,note}; `onEnter` is opaque to the crate and the desktop's boost note rides the separate `moveTask` COMMAND return (store/tasks.ts's boostNotes), never a tool result, so this copy is dumped",
+  moveOutcome: "move_task (agent/host_tools/exec.rs, the `moveOutcome` envelope) — the host tool's move answer {toStage,onEnter,note}; `onEnter` is opaque to its producer and the desktop's boost note rides the separate `moveTask` COMMAND return (store/tasks.ts's boostNotes), never a tool result, so this copy is dumped",
   occurrences: "edit (fs_tools.rs:183) — dumped; the editChangeStat chip is computed from RAW INPUT edits",
   operation: "manage_todo_list (interactive/mod.rs:227,243,310,349) — the header's `operation` comes from RAW INPUT; the Checklist reads the separate todos_update push",
   path: "read/write/edit/ls/read_skill (fs_tools.rs, skills.rs:196) — the header's `path` comes from RAW INPUT (summarizeToolCall/fileSummaries); details.path is dumped",
@@ -657,7 +668,7 @@ const UNREAD_BY_NAME_REASONS: Readonly<Record<UnreadProducerKey, string>> = {
   scope: "read_skill (skills.rs:162) — provenance, dumped",
   skill: "read_skill (skills.rs:162,196) — the header's skill name comes from RAW INPUT `name`",
   skills: "list_skills (skills.rs:54,65) — a count; the catalog is the content text",
-  task: "get_task / create_task / edit_task (task_tools.rs:213,229) — the D2 task seam's ROW payload on the details ENVELOPE, dumped. NOTE the frame collision this row exists to name: the reader union's `task` is read off a subagent `results[i]` / `progress[i]` ENTRY (the subagent's task description) — a nested frame, which the file's nesting rule charges to its CONTAINER, not to a key. Same spelling, different frame, different meaning, so this producer key is unread and NOT spanning; see `ENVELOPE_READER_FIELDS`",
+  task: "get_task / create_task / edit_task (agent/host_tools/exec.rs — `get_task`'s `TaskDetail` arm and the `row_result` helper the two write verbs share) — the host tool's ROW payload on the details ENVELOPE, dumped. NOTE the frame collision this row exists to name: the reader union's `task` is read off a subagent `results[i]` / `progress[i]` ENTRY (the subagent's task description) — a nested frame, which the file's nesting rule charges to its CONTAINER, not to a key. Same spelling, different frame, different meaning, so this producer key is unread and NOT spanning; see `ENVELOPE_READER_FIELDS`",
   stderr: "sudo_exec (interactive/mod.rs sudo arms) — the failure text comes from details.error (failureText) or the content text, never from details.stderr",
   stdout: "sudo_exec (interactive/mod.rs sudo arms) — success puts the scrubbed stdout in content[0].text; the details copy is dumped",
   title: "fetch_content (web/tools.rs:304-311) — dumped (and NOT the tool-call `title`, which is the tool name: a different frame and a different meaning)",
@@ -1171,14 +1182,14 @@ const DETAILS_FIXTURES: readonly DetailsFixture[] = [
   // Four keys the seven task tools add, shaped off the MERGED crate's DTOs (each
   // `#[serde(rename_all = "camelCase")]`), not off the plan's prose. `get_artifact`
   // is deliberately absent: it emits NO `details` on either arm, because the
-  // markdown would then exist twice in one result (`task_tools.rs`'s own comment
+  // markdown would then exist twice in one result (`exec.rs`'s own comment
   // at :407) — so there is no group to register for it, and inventing one would be
   // the ghost key the vacuity guards exist to catch.
   {
     group: "{board} — list_board (the row payload, keys-only artifacts)",
     emittedBy: [
-      "task_tools.rs:164 (the empty-board arm — `details` still rides)",
-      "task_tools.rs:168 (the populated arm)",
+      "agent/host_tools/exec.rs — `list_board`'s empty-board arm (`details` still rides)",
+      "agent/host_tools/exec.rs — `list_board`'s populated arm",
     ],
     registerKeys: ["board"],
     payload: {
@@ -1202,8 +1213,8 @@ const DETAILS_FIXTURES: readonly DetailsFixture[] = [
   {
     group: "{task} — get_task / create_task / edit_task (the row payload)",
     emittedBy: [
-      "task_tools.rs:213 (get_task's Some arm — the TaskDetail shape, with artifactKeys)",
-      "task_tools.rs:229 (row_result, shared by create_task and edit_task — the TaskRow shape, WITHOUT artifactKeys)",
+      "agent/host_tools/exec.rs — `get_task`'s Some arm (the TaskDetail shape, with artifactKeys)",
+      "agent/host_tools/exec.rs — `row_result`, shared by `create_task` and `edit_task` (the TaskRow shape, WITHOUT artifactKeys)",
     ],
     registerKeys: ["task"],
     payload: {
@@ -1228,7 +1239,7 @@ const DETAILS_FIXTURES: readonly DetailsFixture[] = [
   },
   {
     group: "{moveOutcome} — move_task (the opaque onEnter, all three arms present)",
-    emittedBy: ["task_tools.rs:370"],
+    emittedBy: ["agent/host_tools/exec.rs — `move_task` (the `MoveToolOutcome` mapping, where the lossy-twin rule is enforced)"],
     registerKeys: ["moveOutcome"],
     payload: {
       // `onEnter` is OPAQUE to the crate (the boost it names needs the desktop's
@@ -1239,7 +1250,7 @@ const DETAILS_FIXTURES: readonly DetailsFixture[] = [
   },
   {
     group: "{artifactMeta} — write_artifact (meta only, never the markdown back)",
-    emittedBy: ["task_tools.rs:460"],
+    emittedBy: ["agent/host_tools/exec.rs — `write_artifact` (meta only, never the markdown back)"],
     registerKeys: ["artifactMeta"],
     payload: {
       // `bytes` here is NESTED inside `artifactMeta` and counts against that whole

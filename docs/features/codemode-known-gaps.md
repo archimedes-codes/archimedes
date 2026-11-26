@@ -58,8 +58,14 @@ bridge's owned file sets.
 
 `Bridge::run_nested` is a second, hand-ordered copy of `run_tool_batch`'s decision path.
 The duplication is forced: `dispatch_tool` takes `&mut self` for the whole turn, so a script
-running inside it cannot call it back — the nested built-in goes to `execute_tool` on a
-cloned `ToolCtx` instead.
+running inside it cannot call it back — the nested call goes to a **registry lookup** on the
+loop's own `tool_registry` instead, on a cloned `ToolCtx`. (**Amended 2026-11-25 — this sentence
+used to say `execute_tool`, and that is how it was before ADR 0102 / issue #183.** The lookup is
+now load-bearing rather than incidental: it is what makes a **Host tool** reachable from a script.
+`ALL_TOOLS` is built from the composed advertised set minus the entries whose `ScriptAccess`
+excludes them, so `tools.create_task(…)` is discoverable AND resolvable; had the bridge kept
+calling `execute_tool`, a nested board verb would have answered `unknown tool` while every
+existing test stayed green. The engine pins that with its own nested-host-entry test.)
 
 The gate **decisions** are genuinely reused (`policy_verdict` → `guard_target` →
 `gate_tool` → `deny_tool_result`, same order). What is re-typed is the scaffolding around
