@@ -1,35 +1,59 @@
 ---
 status: live
-last-verified: 2026-11-25
-verified-by: read against this tree at `main` after `fix/card-single-attention-mark` — `lib/readyMarker.ts` (the word + the sentence), `store/interactive.ts` (`isReadyMarker`, `boardAssertsReady`, the `ready` slot), `store/sessions.ts` (`beginTurn`), `lib/sessionStatusRollup.ts` (`cardMarkOf`), `components/TaskCard.tsx` (the one mark), `lib/taskPrompt.ts` (the trailer), `hooks/useTaskBoardAutoRefresh.ts`
+last-verified: 2026-11-26
+verified-by: read against this tree at `feature/mark-done-host-verb` (HEAD `ace2ffbb`) — `src-tauri/src/agent/host_tools/specs.rs` (**EIGHT** specs, `mark_done` the eighth, with `{"properties":{},"required":[]}`), `src-tauri/src/agent/host_tools/exec/session.rs` (`mark_done` — the frame's origin id as its subject, the Subagent refusal), `src-tauri/src/agent/host_tools/tests/surface.rs` (`no_host_tool_spec_names_read_or_subagent`, `the_composed_advertised_set_is_the_twenty_six_names_plus_mark_done`), `src-tauri/src/agent/host_tools/tests/verbs.rs` (the five `mark_done_*` pins), `src-tauri/src/storage/db/mod.rs` (the **20th** `gate` — `sessions` / `ready`, no `DEFAULT`, `backfill_session_ready` on the SAME transaction as the `ALTER`), `src-tauri/src/storage/db/migrations.rs::backfill_session_ready`, `src-tauri/src/storage/db/sessions.rs::set_session_ready`, `src-tauri/src/storage/db/board.rs` + `storage/db/rows.rs` (`TaskCardView.ready`, the per-card `OR`), `src-tauri/src/agent/session/mod.rs` (`send_prompt_with_images` → `set_session_ready(…, Some(false))`), `src/store/interactive.ts` (`ReadyCardEntry`, `readyCardKey`, `applyReadyMarks`, `clearReady`), `src/store/sessions.ts` (`beginTurn`), `src/store/tasks.ts` (`refresh` — the board feed), `src/lib/sessionStatusRollup.ts` (`cardMarkOf`), `components/TaskCard.tsx` (the one mark), `hooks/useTaskBoardAutoRefresh.ts` (the falling-edge trigger). DELETED and confirmed gone — `lib/readyMarker.ts`, `READY_MARKER_TEXT`, `isReadyMarker`, `boardAssertsReady`; `grep -rn` over `src/` gives **0** hits for all four, and this stamp names the shipped mechanism in their place because the previous one named only the deleted ones. Rust and TypeScript read, not executed — no test in this repo reads `docs/`, so the greps above ARE the instrument.
 ---
 
 # The session `ready` marker
 
-A **convention**, not a feature with a verb behind it. A model that wants to say
-"the work on this Session is finished and someone should look at it" writes a todo
-item whose content is the word `ready`. The desktop reads that item and puts a mark
-on every Task card the Session is linked to.
+A **claim the model makes, stored in a column.** A Session that wants to say "the work
+on this Session is finished and someone should look at it" calls the `mark_done`
+**Host tool**, which writes `sessions.ready = 1` for the calling Session. The board
+read carries that flag out as `TaskCardView.ready` — an `OR` over a card's linked
+Sessions — and the desktop puts a bell on every card the read reports ready.
 
-This document exists because the mark **looks** like a persisted state and is not
-one, and because the reason it is a convention is a constraint a future reader will
-otherwise try to "fix".
+This document exists because the mark **looks** like a status and is not one, because
+it is a per-Session fact rendered as a per-Card one, and because it used to be a
+**convention** — a todo item whose content was the single word `ready` — and that
+history is load-bearing rather than incidental: the migration that replaced the word
+READS the word out of stored rows, so a reader who treats the old rule as dead prose
+will break the backfill's premise.
 
 ## The rule, exactly
 
-A `ChecklistItem` marks its Session ready when **both** halves hold:
+A Session is ready when `sessions.ready` is `1` for it. Nothing else sets it.
 
-- `content.trim().toLowerCase() === "ready"` — **exact**, not a substring.
-  `"get the board ready"` is a plan item *about* readiness, and a substring test
-  would mark a card ready for half the English language.
-- `status === "completed"`. A **pending** `"ready"` in a plan means "still need to
-  make it ready" — the opposite of the claim. `in_progress` means the same.
+- `mark_done` writes `1` — and only for the Session that called it. The verb takes NO
+  arguments; its subject is the frame's origin id, so a Session cannot mark another
+  one done, and a **Subagent session**'s call is REFUSED with a reason (a child's
+  completion is not a card's fact — cards link to the Session that launched the work).
+- A turn start writes `0`, unconditionally, from Rust.
+- `NULL` means the column has never been written for that row.
 
-Owners: `READY_MARKER_TEXT` and `isReadyMarker` (`src/store/interactive.ts`) are the
-one definition; `boardAssertsReady` applies it to a list. Both halves are pinned by
-tests in `src/store/interactive.test.ts`.
+The board folds the three states into a `bool` per card: `ready` is true when ANY
+linked Session holds `Some(1)`, so `NULL` and `0` are the same `false` to every
+consumer. `cardMarkOf` then ranks it `waiting` > `ready` > `running`, and one mark
+renders.
 
-## Why a convention and not a tool
+### The retired rule (the migration reads it — do not delete this)
+
+Until 2026-11-26 the mechanism was a word, and its two halves were: a `ChecklistItem`
+with `content.trim().toLowerCase() === "ready"` (**exact**, not a substring — "get the
+board ready" is a plan item *about* readiness) **and** `status === "completed"` (a
+*pending* `"ready"` means "still need to make it ready" — the opposite of the claim).
+`READY_MARKER_TEXT`, `isReadyMarker` and `boardAssertsReady` were the definition and
+they are **deleted**; `src/lib/readyMarker.ts` no longer exists and `interactive.ts`
+scrapes nothing.
+
+Those two halves survive in exactly one place:
+`storage/db/migrations.rs::backfill_session_ready`, the 20th migration's data step,
+which marks `1` exactly the rows whose stored `todos_json` still holds a `completed`
+item whose content is that word — the same exactness, the same status test — so no
+user loses a mark they already had. It writes `1` for a match and NOTHING for a
+non-match, never `0` and never an explicit `NULL`, because absent is already `NULL`
+and `NULL` is the honest answer for a row that never claimed anything.
+
+## Why it was a convention for so long, and why it is a tool now
 
 **A model-facing verb used to be engine-gated, and this repo could not add one.**
 `TaskCall` and `trait TaskStore` lived in `fulcrum-harness`, a **crates.io-pinned**
@@ -37,83 +61,217 @@ dependency (`src-tauri/Cargo.toml`), and `tool_specs()` was the crate's — the 
 contributed **zero** tool specs. A new verb meant an engine change, a crates.io
 publish, and a pin bump here.
 
-**That gate is gone and the marker is still a convention, so read the reason
-carefully.** ADR 0102 / issue #183 landed on 2026-11-25: `trait TaskStore` is deleted
-from the crate and the desktop now ships **seven** of its own **Host tool** specs from
-`src-tauri/src/agent/host_tools/` as data on `StartEnv.host_tools`, so a tool can be
-added without publishing a crate release. **A `mark_ready` verb was nonetheless NOT part
-of that run and is DELIBERATELY DEFERRED** — ADR 0102 §5 caps the run at the seven board
-and artifact verbs and §6 names session lifecycle as the seam's *second consumer, recorded
-but not in scope*. Nothing in this file should be read as promising otherwise: **the
-sentence in `lib/readyMarker.ts` IS the contract today, not a placeholder awaiting a
-tool.** The independent argument below (the engine constructs the `TodoItem` vector, so an
-extra key dies crate-side) is untouched by #183 and holds on its own.
+**That gate is gone, and the verb got built.** ADR 0102 / issue #183 landed on
+2026-11-25: `trait TaskStore` is deleted from the crate and the desktop ships its own
+**Host tool** specs from `src-tauri/src/agent/host_tools/` as data on
+`StartEnv.host_tools`, so a tool can be added without publishing a crate release. The
+run itself shipped **seven** — the board and artifact verbs, carried over verbatim from
+the crate's `tool_specs()` entries 20–26. `mark_done` is the **eighth**, added after
+that run, and it is the first spec text this repo has ever *written* rather than
+inherited. `host_tool_specs()` returns eight; `agent/host_tools/tests/surface.rs` pins
+the count, the disjoint-and-composed census (**27** names, the 26 the model saw at
+0.7.0 plus `mark_done`), and the `read`/`subagent` substring ban.
 
-The obvious shortcut does not work either. The engine **constructs**
-`TodoItem { content, status, description }` and emits the *constructed* vector, so
-an extra key on an item (`"ready": true`) is dropped inside the crate, **before the
-frame the desktop would read exists**. Only the model-authored *string* survives.
-That is the whole reason the marker is a word and not a field.
+**Why the verb is called `mark_done` and not `mark_ready`.** The obvious name is
+banned by a live test. `no_host_tool_spec_names_read_or_subagent`
+(`agent/host_tools/tests/surface.rs`) scans the WHOLE spec — name, description and
+parameters JSON — for the substrings `read` and `subagent`, and it fails on any host
+spec that carries either. `ready` contains `read`. So the flag is called a **flag** and a
+**claim** in every piece of spec prose that exists, and the verb is `mark_done`. Do not
+"fix" the naming mismatch between the verb and the column — it is what the ban forces,
+and the pin is the reason.
 
-The shape a fix would take is **ADR 0102**'s (**issue #183**):
-`StartEnv.host_tools` plus a vocabulary-free `HostToolCall` / `HostToolResponse`
-pair, so the desktop can ship a tool without publishing a crate release.
-**Amended 2026-11-25 — ADR 0102 has since shipped, and this verb is still not built.**
-The mechanism now exists and is exercised by seven board/artifact verbs; a `mark_ready`
-verb is the seam's documented *next* tenant and was explicitly left out of #183's scope.
-So the sentence above about sequencing still describes the state, with one word changed:
-the expensive half is now **available and unbuilt** rather than **approved and unbuilt**.
-**If a `mark_ready` verb is ever built, the read path does not change** — the mark already
-rides a store slot, so such a change swaps the *writer* only. That is why the convention was
-built first: the expensive half was sequenced after the cheap half on purpose, not by
-omission. (The `docs/roadmap/tool-separation.md` this paragraph used to cite is unreachable
-by design — `docs/roadmap/` is gitignored and nothing there is recoverable after a ship;
-ADR 0102 and `docs/features/task-board-known-gaps.md` §2 are the durable records.)
+One caveat about that pin, stated because this doc's whole subject is citations that
+stopped resolving: the test's own comment says the ban exists so that "`worker_e2e`'s
+`!tools_section.contains(\"read\")` assertion" cannot start passing while proving
+nothing. **That assertion no longer exists.** Issue #180 F1 replaced it with
+`assert_advertised_tools`, which enumerates the advertised tool NAMES from the rendered
+`<tools>` bullets and compares them to the case's enabled set — the commit message and
+the comment there both record that the substring form had already been made *vacuous*,
+since any tool whose description merely contained the word would let it pass. So the ban
+is now enforcing a rule whose original justification was retired: the test is live, it
+bites, and its stated reason is stale. That does not make `mark_done` renameable —
+removing the ban is a separate decision with a CI-behaviour argument to re-litigate, not
+a docs correction — but a reader who goes looking for the assertion the comment names will
+find its replacement and should know why.
+
+**Why the marker was a word and not a field, historically.** The engine **constructs**
+`TodoItem { content, status, description }` and emits the *constructed* vector, so an
+extra key on a checklist item (`"ready": true`) is dropped inside the crate, **before
+the frame the desktop would read exists**. Only the model-authored *string* survived
+that path. That is why the original mechanism was a word — and it is also why the word
+was never a good long-term home for the claim: the fix could not be a field on the
+thing the model already writes, it had to be a different channel entirely. That is what
+shipped: a verb that writes a column, and a board read that carries it.
+
+**Correction (2026-11-26) — the two citations this section carried never resolved, and
+the deferral they were built on was never a tracked decision.** This paragraph used to
+say "ADR 0102 §5 caps the run at the seven board and artifact verbs and §6 names
+session lifecycle as the seam's *second consumer, recorded but not in scope*". **There
+is no §5 and no §6 in ADR 0102.** `docs/decisions/0102-the-tool-registry-is-the-engines-sole-dispatch-authority-and-host-tools-arrive-as-data.md`
+has exactly four headings — its title, `Considered options`, `Consequences`, and
+`Amendment (2026-11-25) — as shipped: the D1/D2 boundary, narrow, and ONE WRONG TYPE
+NAME` — and it contains neither the string `mark_ready` nor the word `lifecycle` nor
+the phrase "second consumer". The seven-verb cap that the sentence was paraphrasing
+lived in `docs/roadmap/tool-separation.md`, which is **gitignored** (`docs/roadmap/` is
+in `.gitignore`) and **deleted** — plan families are removed on ship, and ADR 0102's own
+Amendment records that the migration table it carried is "unrecoverable after a ship —
+no checkout, no stash, no dangling blob". **So do not re-cite that file as "the real
+home" of the cap either; that is the same defect one level down, a citation to a page no
+reader can open.** What is true and tracked: ADR 0102's `Consequences` and its
+2026-11-25 `Amendment` are the surviving record of the seven-verb run, and **no tracked
+record ever named session lifecycle as this seam's second consumer.** The deferral was
+real — that run's scope was the board verbs — but it was scoped in a file that no longer
+exists, and this doc dressed that scope up as an ADR section number.
+`docs/features/task-board-known-gaps.md` §2 is the durable record of the seven verbs
+themselves.
+
+**Correction (2026-11-26) — "if a `mark_ready` verb is ever built, the read path does
+not change" was FALSE twice over, and it is the most expensive sentence this doc ever
+carried.** It was false in the verb: one was built, named `mark_done` for the substring
+reason above. It was false in the read path, and that is the half worth learning from:
+the claim did not stay on the same channel. The board payload **gained a field**
+(`TaskCardView.ready`, `storage/db/rows.rs`), the board read **gained a JOIN** on
+`sessions` (`storage/db/board.rs` — the same channel `cost_usd` rides, and the only one
+by which the board learns a per-session SQLite fact about a Session it has never
+opened), and the word-scraping detector was **deleted** from `applyTodoUpdate`
+(`src/store/interactive.ts`), which now writes `todos` and nothing else.
+`storage/db/tests/board.rs` puts three pins on that JOIN, and its header names this very
+sentence as the false premise the change was written against. "The mark already rides a
+store slot, so a verb swaps the *writer* only" was wrong because the store slot was
+**fed by a transcript read**, and a transcript read cannot serve a Session nobody has
+opened — the restart boundary below is the reason the read had to change, and it is why
+the write and the read moved together.
+
+## The column, its three states, and why it has no `DEFAULT`
+
+`sessions.ready` is a nullable `INTEGER` with **no `DEFAULT`**, added by the **20th**
+migration gate in `storage/db/mod.rs` (`gate(&mut conn, "sessions", "ready", …)`;
+`GATED` in `storage/db/tests/open.rs` is a 20-element list and its derivation pin proves
+the set is `Db::open`'s actual gate surface rather than a list someone maintains by hand).
+Three states, which is why `Db::set_session_ready` takes an `Option<bool>`:
+
+| written | means |
+|---|---|
+| `1` | "this Session is done, come look" — the claim `mark_done` makes |
+| `0` | "it was checked and it is NOT ready" — what every turn start writes |
+| `NULL` | the column has never been written for this row |
+
+The missing `DEFAULT` is the load-bearing part of the gate, and it is ADR 0082's
+phantom-`$0.00` discipline with a flag in place of a cost: `DEFAULT 0` would migrate a
+person's whole history into the *second* meaning — a verdict of "checked, and no" about
+work nobody re-checked — and the flag would stop being a fact the moment it arrived.
+`the_ready_gate_arrives_null_for_every_pre_existing_session`
+(`storage/db/tests/migrations.rs`) reads `pragma_table_info('sessions').dflt_value` and
+requires NULL, so a `DEFAULT` added later fails a pin rather than passing the `NULL`
+asserts. `set_session_ready_roundtrips_all_three_states` in
+`storage/db/tests/sessions.rs` pins the three states at the write verb.
+
+The gate's ALTER and its one data step (`backfill_session_ready`) run in **one**
+transaction, so a crash rolls both back and retries on the next open — the
+`todos_json` gate's shape, for the same reason: the data step writes the column the
+ALTER creates, so the two cannot be separated.
+
+**What `NULL` does NOT mean, and this is where the obvious story is false.** `NULL` is
+not "never claimed". `send_prompt_with_images` writes `Some(false)` — `0` — on **every**
+turn start, unconditionally, so `0` is the dominant value for any Session that has ever
+run a turn, a claim-then-worked Session and a never-claimed one land on the same `0`,
+and the turn-start write does not preserve a "claimed then worked" distinction, it
+destroys one. Nothing consumes the difference: the board read, the column's only reader,
+folds the tri-state with `Some(1)` as its sole truthy value, so `NULL` and `0` are the
+same `false` everywhere above storage. `None` is still reachable at the storage layer
+(a hand-written row can hold it) and `set_session_ready` still accepts it; no production
+caller writes it.
 
 ## Why the mark is a slot and not a derivation
 
 The owner's clear rule is **"the next turn on that Session clears it."** That rule
-cannot be derived from the todo list. Deriving readiness as `marker && !inTurn`
-makes the mark **vanish during a turn and reappear when it settles**, because a
-turn that never touches the todo list leaves the marker in place. So `ready` is an
-explicit `Record<string, true>` on `useInteractive`, and `beginTurn` deletes the
-entry (`src/store/sessions.ts`). The cross-store write has an existing precedent:
-`sessions.ts` already calls `useInteractive.applyTodoUpdate` from its history seed.
+cannot be derived. Deriving readiness as `ready && !inTurn` makes the mark **vanish
+during a turn and reappear when it settles**, which is the opposite of the rule — and
+`the mark does NOT come back when the turn settles`
+(`src/store/sessionReadyMark.test.ts`) exists to stop that shape coming back. So the
+render half is an explicit slot on `useInteractive`, `ready: Record<string, readonly
+string[]>` keyed by `readyCardKey(spacePath, taskId)` — **per (Space, card)**, not per
+Session, because `TaskCardView.ready` is a per-CARD `OR` and does not say which link
+carries the claim; keying it by Session would light the bell on a different card that
+merely shares a linked Session (`a card that only links the UNREADY half of a ready
+card's links stays unmarked`, `src/store/boardReadyMarks.test.ts`).
 
-`applyTodoClear` (the `todos_clear` path) also drops the mark: a cleared checklist
-no longer asserts readiness.
+### The clear is TWO writes, and both are needed
 
-## Why the mark is cheap: one funnel
+1. **Rust, at turn start** — `send_prompt_with_images` calls
+   `set_session_ready(session_id, Some(false))` before it dispatches the prompt. It is
+   the ONLY Rust entry that starts a turn (`send_prompt` delegates to it, and the
+   prompt-queue flusher's `sendText` reaches it too), so one placement catches every
+   path. It is best-effort (`let _ =`): a turn must not fail because a boolean column
+   did not clear. **This is the half that survives a restart.** `useInteractive` has no
+   `persist` middleware, so a renderer-only clear is gone on the next launch and the
+   board read would hand the mark back on every boot — worse than the stale mark this
+   column replaced.
+2. **`beginTurn`, in the renderer** — `src/store/sessions.ts` calls
+   `useInteractive.getState().clearReady(sessionId)`. The column is already `0` by the
+   time this runs, so this write changes no truth; it changes **when the card stops
+   lying**. `useTaskBoardAutoRefresh` re-reads the board only on `inTurn`'s **falling
+   edge**, so with the Rust clear alone the bell would be worn for the entire turn that
+   disproves it — and `cardMarkOf` ranks `ready` ABOVE `running`, which is exactly the
+   "running but ready" pair the owner rejected on a real board. The optimistic clear
+   bridges the gap between the column being cleared and the board being read again, and
+   the next settle's read confirms it.
 
-`useInteractive.applyTodoUpdate` is the **only** writer of `todos[sessionId]`, and
-**every** producer goes through it:
+A third writer, `dismissSession`, withdraws the mark when a Session's Worker goes away,
+so a dismissed Session's bell does not wait for that Space's next read (which can be
+minutes). Three writers of one map is deliberate: one writes what is TRUE, the other two
+write what is TRUE A MOMENT EARLIER, and nothing between them derives anything.
 
-1. the live listener — `src/App.tsx`, `listenInteractiveEvent` → `todosUpdate`;
-2. the restart seed — `src/store/sessions.ts` (two call sites, both fed by
-   `commands/history.rs::history_page`, which returns `db.session_todos(...)` on the
-   **first page only**, `before_id.is_none()`);
-3. the close carry — `src/store/sessionLifecycle.ts::onSessionClosed`, which
-   re-applies the board so a still-rendered Session keeps its checklist.
+Ordering costs nothing here: the client's optimistic clear runs BEFORE the `sendPrompt`
+IPC on both dispatch paths (`useChatPromptDispatch.ts` and `store/taskLaunch.ts` both
+call `beginTurn` before they await), so the renderer's copy and the row agree by
+construction whichever lands first.
 
-Reading the marker inside `applyTodoUpdate` therefore yields live detection **and**
-restart persistence with **no new column, no migration, no IPC command, and no
-`src-tauri/` change**.
+`applyTodoClear` (the `todos_clear` path) **no longer** drops the mark. That arm went
+with the word: a checklist says nothing about readiness once readiness is a column, so a
+cleared board is no longer a reason to withdraw a bell. A Session that stops being ready
+has its column cleared in Rust and the next read says so; a DELETED Session is cleared by
+`dismissSession`, which is the close that actually means the claim is over.
 
-`dismissSession` deletes both the board and the mark, and `onSessionClosed`
-re-applies the board immediately afterwards — so a Session closed while ready
-**gets the mark back through the same funnel**, which is correct: the board it is
-still showing still says `ready`.
+## Why the read is the board: the funnel moved
 
-## The restart boundary (honest limit)
+The old funnel was `applyTodoUpdate` — the single writer of `todos[sessionId]`, which
+every producer passed through, so reading the word there bought live detection and
+restart-when-opened for free. **That funnel is retired.** `applyTodoUpdate` writes
+`todos` and nothing else now; two channels for one claim is what this change removed.
 
-The seed restores `todos` only for a Session whose history is **opened**. A Session
-that was never reopened after a restart has no `todos` in the store, and therefore
-**no mark** — even though `todos_json` still holds the marker in the database.
+The new funnel is the **board read**. `useTasks.load` and `useTasks.refresh` both feed
+`applyReadyMarks(spacePath, entries)` with what the read answered, and the feed replaces
+ONE Space's keys and leaves every other Space standing (a Space the user is not looking
+at gets no read at all, and a global replace would wipe its marks). A read that agrees
+with the slot returns the identical state object, because `TasksBoard` subscribes to this
+map and the auto-refresh would otherwise re-render the whole board on every settle.
 
-This is the accepted boundary of the zero-migration design: the owner was offered
-"must survive restart" and chose **"live only, fine."** A persisted per-session
-`ready` column would close it and is a 20th migration gate (`GATED` is pinned at 19
-in `storage/db/tests/open.rs`) — deliberately not paid.
+## The restart boundary — CLOSED, and what closing it cost
+
+The old honest limit: the seed restored `todos` only for a Session whose history was
+**opened**, so a Session never reopened after a restart had no mark even though
+`todos_json` still held the word. That was accepted then as "live only, fine".
+
+**It is closed.** `get_board` JOINs `sessions` and folds `s.ready` into
+`TaskCardView.ready`, so a card reports the bell for a Session the process has never
+opened — `the_board_reports_ready_for_a_session_the_reopened_db_has_never_opened`
+(`storage/db/tests/board.rs`) is that pin, and it is the acceptance criterion for the
+whole change. `list_sessions` was not an alternative: `SessionRow` / `SessionInfo` are
+crates.io-pinned types, so the board's link statement is the only channel by which the
+board learns a per-session SQLite fact about a Session it has not opened — the same one
+`cost_usd` rides.
+
+The cost is the one the doc used to deny: a migration gate, the 20th, plus a field on a
+frozen wire type (`TaskCardView` — REQUIRED, never `Option`, never
+`skip_serializing_if`, for the documented reason every sibling field gives: an optional
+field compiles against every fixture and then renders nothing when real data arrives).
+`TaskCardView.ready` is a `bool` and NOT an `Option<bool>`, which deliberately differs
+from `cost_usd`'s null rule one field above: a figure renders, so "never reported" and
+"a real zero" must stay split all the way to the renderer, while a bell renders NOTHING
+when the answer is no — `NULL` and `0` are the same answer to the question the card asks.
+The tri-state is a STORAGE fact and the card has no use for it.
 
 ## The mark on the card
 
@@ -176,38 +334,82 @@ call sites). Shipped with the mark, in the same branch:
   Space change and unmount. Mounted by **both** `TasksBoard` and `WorkflowsCanvas`.
 - No new Tauri event: the frontend already receives what a settle needs.
 
-## How the model is told: the launch-message trailer
+## How the model is told: the tool description
 
-**A convention nobody is told about is a convention nobody uses**, and nothing in the
-tool descriptions, the system prompt, or the board used to mention it. The tool
-descriptions are engine-owned, so they cannot say it from here, and
-`StartEnv.system_prompt` is not a way out either: the harness's `(Fresh, Some(seed))`
-arm calls `prepend_system` and **never** `build_main_prompt`, so "seeding" a Task
-Session would leave it blind to its own `<tools>` section, its discovered skills, its
-`cwd` and `AGENTS.md`.
+**A convention nobody is told about is a convention nobody uses** — and the telling
+channel moved when the verb landed.
 
-The channel that ships is the **launch message**. `lib/readyMarker.ts` owns the
-sentence, `buildLaunchMessage` appends it **after** the `<task>` block, and every
-card-launched Session gets it automatically — no per-column prose, no per-Space
-setup. It rides the block's side of the injection boundary, so it is never expanded
-(`readyMarker.test.ts` pins that it carries no `$`, and `taskPrompt.test.ts` pins the
-expander's argument).
+It used to be the **launch message**. There was no session verb, the tool descriptions
+were engine-owned and could not say it from here, and `StartEnv.system_prompt` was not a
+way out either: the harness's `(Fresh, Some(seed))` arm calls `prepend_system` and
+**never** `build_main_prompt`, so "seeding" a Task Session would leave it blind to its own
+`<tools>` section, its discovered skills, its `cwd` and `AGENTS.md`. So `lib/readyMarker.ts`
+owned a sentence, `buildLaunchMessage` appended it **after** the `<task>` block, and every
+card-launched Session got it for free.
 
-Both strings live in `lib/readyMarker.ts` on purpose: the detector
-(`store/interactive.ts`) and the instruction must agree on the exact word, and the
-`lib/` layer cannot runtime-import `store/`, so a literal in each layer would drift
-silently. `readyMarker.test.ts` pins the sentence against the constant.
+**That trailer is deleted** (`src/lib/taskPrompt.ts` records the removal where it used to
+sit). `mark_done` now carries its own description, written by this repo, in
+`agent/host_tools/specs.rs`: it says the Session flags itself done, hands it to a person
+for review, takes no arguments because the caller IS the subject, and that the flag
+clears at the start of the next turn. A model learns the affordance from the same place it
+learns every other affordance — the `<tools>` section — which is the only honest home for
+it: a launch-message trailer told a model a rule about a tool that did not exist, and a
+Session started from the sidebar or the workspace never called `buildLaunchMessage` at all,
+so it was never told. `mark_done` is advertised to every Session instead, and
+`list_tools_advertises_mark_done_to_settings` (`agent/host_tools/tests/verbs.rs`) pins that
+Settings lists it too, which means a person can switch it off through `enabled_tools` — the
+one thing the launch-message trailer could never do.
 
-Scope is **every card-launched Session**, including a column with no Skill. Sessions
-started from the sidebar or the workspace never call `buildLaunchMessage` and so are
-not told — correct, since `ready` is a claim about a Task. It is also inert in a
-Space that has `manage_todo_list` switched off in Settings.
+Note what the removal did NOT disturb: the `<task>` block-last pins guard the fact that the
+block is appended AFTER mention expansion, so a card titled `$deploy` cannot inject a
+skill. That is a claim about the expander's argument, not about who is last in the string,
+and dropping a static trailer after the block leaves it exactly as it was — the spy case in
+`taskPrompt.test.ts` still pins it.
 
-**Amended 2026-11-25 — #183 has landed and this sentence has NOT moved, because no session
-verb shipped in it.** The retirement of the marker word is DEFERRED, not scheduled: ADR 0102
-§5 allows no host tool beyond the seven board/artifact verbs and §6 records session lifecycle
-as a later consumer of the same seam. If someone builds a `mark_ready` verb, then this sentence
-moves out of the launch message and into a real tool description, the marker word retires, and
-**the read path does not move** — which is why the convention was built first. Until that
-happens, the launch-message instruction is the only thing telling a model the convention
-exists, and removing it would silently un-ship the feature.
+## Amendment (2026-11-26) — the word retired, and why ADR 0093's dual-reader rule does NOT apply here
+
+The mechanism is now the verb + the column + the board read, described above. The marker
+**word** is retired, and the retirement is the part a careful reader will try to reverse, so
+the argument is written down rather than left to inference.
+
+`docs/decisions/0093-…` rules that a rename which leaves stored data alone must still keep
+**dual readers permanently**: `backfill_session_todos` selects historical rows by the
+literal string `manage_todo_list` out of already-stored `messages.payload_json`, so old rows
+are never rewritten and any reader that stops matching the old spelling silently loses them.
+That rule is correct and it still binds. **It does not bind here, and the difference is the
+direction of the data step.** The `manage_todo_list` → **Checklist** rename renames **no
+data** — the stored rows keep the old spelling forever, so the reader must learn to see both.
+This change **rewrites the data**: `backfill_session_ready` reads every stored marker out of
+`todos_json` at open and lands it in `sessions.ready`, once, in the same transaction as the
+`ALTER`, and `the_ready_backfill_does_not_rerun_on_a_second_open` pins that it runs once.
+After that gate the word in `todos_json` is **read by nothing** — a copy at rest, not a
+source of truth — so a dual reader here would not preserve information, it would maintain a
+SECOND LIVE CHANNEL for one claim, which is precisely what the change set out to remove.
+
+So: do not restore a word-scraping reader in `applyTodoUpdate`, and do not re-add the
+launch-message trailer. Both are deleted on purpose, and the migration is the reason they
+are allowed to stay deleted. What must survive is the *backfill's* copy of the old rule —
+the exact-and-`completed` test in `storage/db/migrations.rs` — because that is the code that
+still reads the word, and it is what keeps a user's existing mark.
+
+Three further things this amendment fixes in place, all of them citations that did not
+resolve (each was checked against this tree, not against the prose that carried it):
+
+- **"ADR 0102 §5 caps the run at the seven board and artifact verbs and §6 names session
+  lifecycle as the seam's second consumer"** — false. ADR 0102 has no numbered sections
+  (`Considered options`, `Consequences`, `Amendment (2026-11-25)` are its headings) and never
+  contains `mark_ready`, `lifecycle`, or "second consumer". The cap lived in a gitignored,
+  deleted plan file; see the correction above for what is actually tracked.
+- **"If a `mark_ready` verb is ever built, the read path does not change"** — false, in both
+  halves; see the correction above. The board payload gained `ready` and the detector was
+  deleted.
+- **"`GATED` is pinned at 19 … deliberately not paid"** — paid. `GATED` is a 20-element list,
+  the 20th gate is `sessions` / `ready`, and the restart boundary that figure was the price of
+  is closed.
+
+And the counts the sibling docs and comments carry: `host_tool_specs()` is **8** (seven
+inherited board/artifact verbs + `mark_done`), and the composed advertised set is **27**
+names (the 26 of 0.7.0, unchanged, plus `mark_done`). Where a comment still says "seven",
+read it as the board/artifact SUBSET — that is what `host_tools/mod.rs` and `specs.rs` mean
+by it, and there the word is right.
+

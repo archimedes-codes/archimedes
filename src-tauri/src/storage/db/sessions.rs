@@ -339,12 +339,24 @@ impl Db {
     /// `Option<i64>` (`None` → `NULL`), and why a `bool` would have been wrong:
     /// `Some(true)` writes `1` ("this Session is done, come look"), `Some(false)`
     /// writes `0` ("it was checked and it is NOT ready"), and `None` writes `NULL`
-    /// ("never claimed" — the state a Session returns to when a new turn starts and
-    /// the old claim is stale). Collapsing `NULL` into `0` would put a verdict on
-    /// every Session nobody re-checked, which is ADR 0082's phantom-`$0.00`
-    /// discipline with a flag in place of a cost; the gate's
+    /// ("this row's column has NEVER been written"). Collapsing `NULL` into `0`
+    /// would put a verdict on every Session nobody re-checked, which is ADR 0082's
+    /// phantom-`$0.00` discipline with a flag in place of a cost; the gate's
     /// `the_ready_gate_arrives_null_for_every_pre_existing_session` pin and the
     /// column's missing `DEFAULT` are what keep the third state real.
+    ///
+    /// WHAT A TURN START WRITES, because the obvious story about `NULL` is false. A
+    /// new turn does NOT reset a claim to `NULL` — `send_prompt_with_images` writes
+    /// `Some(false)`, a `0`, and it does so UNCONDITIONALLY on every turn start. So
+    /// `0` is the dominant value for any Session that has ever run a turn, a
+    /// claim-then-worked Session and a never-claimed one land on the SAME `0`, and
+    /// `0` is therefore NOT evidence that a claim was ever made — this write
+    /// destroys that distinction rather than preserving it. Nothing consumes the
+    /// difference anyway: the board read, this column's only reader, folds the
+    /// tri-state to a `bool` with `Some(1)` as its sole truthy value, so `NULL` and
+    /// `0` are the same `false` to every consumer. `None` stays reachable at this
+    /// layer (a hand-written row can hold it and this verb will write it); no
+    /// production caller does.
     ///
     /// Returns `true` when a row matched, `false` when nothing matched (a missing
     /// row is a no-op, not an error — mirroring `set_session_archived`).
