@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 
 import TasksBoard from "./TasksBoard";
 import { useTasks } from "../store/tasks";
@@ -9,6 +9,7 @@ import { resetStores } from "../test/resetStores";
 import { clearSkillCatalogCache } from "../hooks/useSkillCatalog";
 import {
   getBoard,
+  loadHistory,
   type StageDto,
   type StageWithTasks,
   type TaskCardView,
@@ -23,9 +24,9 @@ import {
  * `TasksBoard.test.tsx` is 914 code lines against a 1,000-line test gate that is a
  * RATCHET (`scripts/file-size-baseline-test.txt`, and the ledger may not be
  * regenerated to accommodate a feature). ADR 0113's mirror rule is the sanctioned
- * answer: a new file per SUBJECT. The subject here is nameable and small — the board
- * reading `useInteractive.ready` and handing one boolean per card down — and it is a
- * different subject from the anatomy and the drag gestures that file owns.
+ * answer: a new file per SUBJECT. The subject here is nameable and small — the mark
+ * arriving on a board read and being handed down as one boolean per card — and it is
+ * a different subject from the anatomy and the drag gestures that file owns.
  *
  * ## What only THIS file can pin
  *
@@ -33,9 +34,19 @@ import {
  * presentational and takes a boolean, so it cannot pin that the BOARD computes that
  * boolean correctly — and that is where the failure that actually ships lives: a
  * board that broadcasts one card's mark to every card, or threads it by the wrong id,
- * or reads the map before the frames land. Only a file that mounts `TasksBoard` over
+ * or reads the slot before the read lands. Only a file that mounts `TasksBoard` over
  * the REAL stores can see those, which is the same division of labour
  * `TasksBoard.test.tsx` documents for the session mark.
+ *
+ * ## The case that outlived the magic word
+ *
+ * `the bell shows for a Session whose history is NEVER read` is the positive proof
+ * that the mark is DURABLE. The retired design scraped a todo item for a word, so
+ * the mark could only exist for a Session whose history something had already read;
+ * that limit used to be pinned as an ABSENCE in `sessionReadyMark.test.ts`, and the
+ * column replaces the absence with a bell. It is asserted here and not in a store
+ * test because the claim is about the whole line — the wire field, the feed, the
+ * slot, the board's read and the glyph — with no history read anywhere in it.
  */
 
 vi.mock("../lib/tauri", async () => {
@@ -59,6 +70,14 @@ vi.mock("../lib/tauri", async () => {
     getBoardStrict: vi.fn().mockResolvedValue(false),
     writeArtifact: vi.fn(),
     getArtifact: vi.fn(),
+    // The transcript read. Mocked for the reason every mock in a factory that
+    // spreads `importActual` exists: an un-mocked wrapper resolves to the REAL one,
+    // which calls `invoke` and rejects outside a webview. It is also the thing the
+    // durability case asserts was NEVER called, so it has to be a mock to be
+    // countable.
+    loadHistory: vi
+      .fn()
+      .mockResolvedValue({ rows: [], hasMore: false, todos: null }),
     startTaskSession: vi.fn(),
     sendPrompt: vi.fn(),
     setSessionConfigOption: vi.fn(),
@@ -153,17 +172,46 @@ const readyGlyphOf = (card: Element): Element | null =>
 const cards = (): HTMLElement[] =>
   within(screen.getByTestId("task-column-doing")).getAllByTestId("task-card");
 
-/** Drive the mark the way the app does: a `todos_update` frame carrying the marker.
- *  NOT a `setState` of `ready`'s shape — the funnel is the only writer of the slot,
- *  so seeding through it pins the same path the live listener and the restart seed
- *  both take, and a `ready` map that stopped being written by `applyTodoUpdate`
- *  reddens here instead of shipping a mark nothing can set. */
-const markSessionReady = (sessionId: string) => {
-  useInteractive.getState().applyTodoUpdate(sessionId, {
-    source: "native",
-    todos: [{ content: "ready", status: "completed" }],
+/** Drive the mark the way the app does now: a BOARD READ that reports the card
+ *  ready, arriving through the real `refresh` action.
+ *
+ *  NOT a `setState` of `ready`'s shape, and no longer a `todos_update` frame
+ *  carrying a magic word: the board read is the only writer of the slot, so
+ *  driving it through `refresh` pins the same path the mount read and the
+ *  auto-refresh both take, and a `ready` map that stopped being written by that
+ *  read reddens here instead of shipping a mark nothing can set.
+ *
+ *  The card the READ answers with is the one that carries `ready: true` — the
+ *  claim lives on the CARD (`TaskCardView.ready`, an OR over its linked Sessions'
+ *  `sessions.ready` column, computed in Rust), which is exactly why a Session that
+ *  is never opened can still wear a bell. The slice is re-pointed too, so a case
+ *  that never awaits this still sees a board the read agrees with. */
+const markSessionReady = (sessionId: string): Promise<void> => {
+  const columns = useTasks.getState().boardsBySpace[SPACE] ?? [];
+  const next = boardWithReady(columns, sessionId, true);
+  useTasks.setState({
+    boardsBySpace: { ...useTasks.getState().boardsBySpace, [SPACE]: next },
   });
+  vi.mocked(getBoard).mockResolvedValue(next);
+  return useTasks.getState().refresh(SPACE);
 };
+
+/** Copy a column set, setting or clearing `ready` on every card that links
+ *  `sessionId`. The wire's own shape is preserved — only the one field the read
+ *  is being asked about moves. */
+const boardWithReady = (
+  columns: StageWithTasks[],
+  sessionId: string,
+  ready: boolean,
+): StageWithTasks[] =>
+  columns.map((column) => ({
+    ...column,
+    tasks: column.tasks.map((card) =>
+      card.sessions.some((link) => link.sessionId === sessionId)
+        ? { ...card, ready }
+        : card,
+    ),
+  }));
 
 beforeEach(() => {
   resetStores();
@@ -177,18 +225,55 @@ beforeEach(() => {
 });
 
 describe("the board wires the ready mark to its cards", () => {
-  it("a card whose linked Session's board carries the marker shows the glyph", async () => {
-    // THE end-to-end line: `todos_update` → `applyTodoUpdate` → `ready` → the board's
-    // per-card read → the glyph. The store is populated WHILE the board is up, which
-    // is what the app-scoped listener does, so the mark appearing is the live path
-    // and not a mount-time accident.
+  it("a card the board read reports ready shows the glyph", async () => {
+    // THE end-to-end line: `sessions.ready` → `get_board` → the board feed → the
+    // board's per-card read → the glyph. The read lands WHILE the board is up,
+    // which is what the auto-refresh does on a turn's falling edge, so the mark
+    // appearing is the live path and not a mount-time accident.
     seedBoard(cardWith("t1", 1, "doing", ["sess_1"]));
     render(<TasksBoard />);
     await waitFor(() => expect(cards()).toHaveLength(1));
     expect(readyGlyphOf(cards()[0]!)).toBeNull();
 
-    markSessionReady("sess_1");
+    // Wrapped in `act` because the feed lands synchronously and re-renders the
+    // board that is mounted — the convention `TasksBoardAutoRefresh.test.tsx` uses
+    // for the same store-driven read.
+    await act(async () => {
+      await markSessionReady("sess_1");
+    });
 
+    await waitFor(() => expect(readyGlyphOf(cards()[0]!)).not.toBeNull());
+  });
+
+  it("the bell shows for a Session whose history is NEVER read", async () => {
+    // THE DEFECT THE COLUMN FIXES, and the replacement for the boundary case
+    // `sessionReadyMark.test.ts` used to pin. Under the todo-scrape design the mark
+    // rode `useInteractive.todos`, which only exists once something has READ a
+    // Session's history — so a Session the user never opened after a restart had no
+    // mark, and its card sat unmarked while the work it did was waiting for a look.
+    // `sessions.ready` is a COLUMN, `get_board` publishes it, and nothing about this
+    // case touches `loadHistory` or `useInteractive.todos`: the board read is the
+    // ONLY thing that happened. That is what makes it a positive proof of durability
+    // rather than the assertion of an in-memory absence.
+    //
+    // The board is mounted over a card whose Session has no transcript, no live row
+    // and no todo board anywhere in the frontend.
+    vi.mocked(loadHistory).mockResolvedValue({
+      rows: [],
+      hasMore: false,
+      todos: null,
+    });
+    const ready = boardWithReady(boardOf(cardWith("t1", 1, "doing", ["sess_cold"])), "sess_cold", true);
+    useTasks.setState({ boardsBySpace: { [SPACE]: ready } });
+    vi.mocked(getBoard).mockResolvedValue(ready);
+
+    render(<TasksBoard />);
+    await waitFor(() => expect(cards()).toHaveLength(1));
+
+    // No history read happened for that Session at all, so the only possible source
+    // of the glyph is the board's own `ready` field.
+    expect(loadHistory).not.toHaveBeenCalled();
+    expect(useInteractive.getState().todos["sess_cold"]).toBeUndefined();
     await waitFor(() => expect(readyGlyphOf(cards()[0]!)).not.toBeNull());
   });
 
@@ -216,7 +301,8 @@ describe("the board wires the ready mark to its cards", () => {
   it("a card with TWO links shows ONE mark when EITHER is ready", async () => {
     // A card is a Task and can own several Sessions; the mark is one glyph, not one
     // per link — the card is a two-line summary by construction and the detail dialog
-    // is the surface that lists Sessions individually.
+    // is the surface that lists Sessions individually. Rust computes the OR; the card
+    // paints the answer.
     seedBoard(cardWith("t1", 1, "doing", ["sess_first", "sess_second"]));
     markSessionReady("sess_second");
 
@@ -242,7 +328,7 @@ describe("the board wires the ready mark to its cards", () => {
     for (const card of cards()) expect(readyGlyphOf(card)).toBeNull();
   });
 
-  it("ONE mark per card: a running Session that marked itself ready shows the bell", async () => {
+  it("ONE mark per card: a running Session that marked its card ready shows the bell", async () => {
     // THE PRECEDENCE, asserted where both inputs are real. This case used to assert
     // the OPPOSITE — spinner and bell together — and that pairing is what the owner
     // saw and rejected: two marks on one card, disagreeing about whether anyone was
@@ -272,18 +358,24 @@ describe("the board wires the ready mark to its cards", () => {
     ).toBeNull();
   });
 
-  it("the mark disappears when a later frame withdraws the marker", async () => {
-    // LIVE in both directions, which is the property a persisted-column design would
-    // not have had for free: the model rewrote its list and dropped the item, the
-    // slot follows, and the glyph goes.
+  it("the mark disappears when a later board read reports the column cleared", async () => {
+    // LIVE in both directions. The clear is Rust's (`send_prompt_with_images` zeroes
+    // the column at turn start), and the next read says so — the slot follows the
+    // read and the glyph goes. Pinned because a feed that only ADDED marks would
+    // leave a bell lit on a card whose column is already `0`.
     seedBoard(cardWith("t1", 1, "doing", ["sess_1"]));
     markSessionReady("sess_1");
     render(<TasksBoard />);
     await waitFor(() => expect(readyGlyphOf(cards()[0]!)).not.toBeNull());
 
-    useInteractive.getState().applyTodoUpdate("sess_1", {
-      source: "native",
-      todos: [{ content: "keep going", status: "in_progress" }],
+    const cleared = boardWithReady(
+      useTasks.getState().boardsBySpace[SPACE] ?? [],
+      "sess_1",
+      false,
+    );
+    vi.mocked(getBoard).mockResolvedValue(cleared);
+    await act(async () => {
+      await useTasks.getState().refresh(SPACE);
     });
 
     await waitFor(() => expect(readyGlyphOf(cards()[0]!)).toBeNull());
@@ -293,14 +385,63 @@ describe("the board wires the ready mark to its cards", () => {
     // THE OWNER'S RULE, at the surface: "the next turn on that session clears it".
     // `beginTurn` is what a send calls, so this is the sequence a user produces by
     // typing a follow-up prompt while the board is open.
+    //
+    // The clear `beginTurn` performs is OPTIMISTIC and it is load-bearing, not
+    // redundant with the Rust-side one: `useTaskBoardAutoRefresh` only re-reads the
+    // board on `inTurn`'s FALLING edge, so nothing would repaint during the turn,
+    // and `cardMarkOf` ranks `ready` ABOVE `running` — the card would wear a bell
+    // for the whole of the turn that disproves it.
     seedBoard(cardWith("t1", 1, "doing", ["sess_1"]));
     markSessionReady("sess_1");
     render(<TasksBoard />);
     await waitFor(() => expect(readyGlyphOf(cards()[0]!)).not.toBeNull());
 
-    useSessions.getState().beginTurn("sess_1");
+    // `act`-wrapped: `beginTurn` writes `inTurn` AND clears the mark, and both
+    // re-render the board that is mounted.
+    await act(async () => {
+      useSessions.getState().beginTurn("sess_1");
+    });
 
     await waitFor(() => expect(readyGlyphOf(cards()[0]!)).toBeNull());
+  });
+
+  it("the mark does NOT come back when the turn settles", async () => {
+    // THE OTHER HALF, and the reason the optimistic clear is not a lie the settle
+    // exposes. The auto-refresh fires `refresh` on `inTurn`'s falling edge; by then
+    // the Rust turn-start clear has already zeroed the column, so the read the
+    // settle triggers answers `ready: false` and confirms the clear rather than
+    // undoing it. A `ready && !inTurn` DERIVATION would restore the bell here —
+    // which is the behaviour the owner rejected — and this case is what stops that
+    // shape being "simplified" back in.
+    seedBoard(cardWith("t1", 1, "doing", ["sess_1"]));
+    markSessionReady("sess_1");
+    render(<TasksBoard />);
+    await waitFor(() => expect(readyGlyphOf(cards()[0]!)).not.toBeNull());
+
+    await act(async () => {
+      useSessions.getState().beginTurn("sess_1");
+    });
+    await waitFor(() => expect(readyGlyphOf(cards()[0]!)).toBeNull());
+
+    // The settle: `inTurn` falls, and the read it schedules carries the cleared
+    // column — Task 4's `send_prompt_with_images` clear already ran in Rust, so the
+    // board read now answers `ready: false` for this card.
+    await act(async () => {
+      useSessions.getState().turnCompleted("sess_1", "end_turn");
+    });
+    vi.mocked(getBoard).mockResolvedValue(
+      boardWithReady(
+        useTasks.getState().boardsBySpace[SPACE] ?? [],
+        "sess_1",
+        false,
+      ),
+    );
+    await act(async () => {
+      await useTasks.getState().refresh(SPACE);
+    });
+
+    expect(useSessions.getState().inTurn["sess_1"]).toBe(false);
+    expect(readyGlyphOf(cards()[0]!)).toBeNull();
   });
 
   it("the ready mark adds no control and no pill to a board of cards", async () => {

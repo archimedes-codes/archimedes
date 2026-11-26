@@ -1,23 +1,29 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useInteractive } from "./interactive";
+import { readyCardKey, useInteractive } from "./interactive";
 
 const S1 = "s1";
 const S2 = "s2";
 
 beforeEach(() => {
+  // THE `ready` SLOT FIRST, and the order is not cosmetic: the `dismissSession` loop
+  // below reads the state, so a slot left dirty by a previous case would be swept up
+  // by it and the case that follows would pass for the wrong reason.
+  //
+  // It cannot ride that loop. `ready` stopped being a SESSION-keyed map when the mark
+  // became a board fact — its keys are (Space, card) — so visiting them would ask the
+  // store to dismiss a Task id. A direct `setState` is what clears one map of this
+  // store from a test; `SessionCostLine.test.tsx:41` does the same for `cost`.
+  useInteractive.setState({ ready: {} });
+
+  // Then everything a previous test may have left behind in the five SESSION-keyed
+  // maps, via the action that owns them.
   const s = useInteractive.getState();
-  // Reset everything a previous test may have left behind. `ready` is in the id
-  // set because it is a session-keyed map like the five above it, and a case that
-  // set the mark and left the board empty (a `todos_clear`, or a reset between two
-  // cases) would otherwise leak the mark into the next case — `dismissSession` is
-  // what drops the key, so an id present ONLY in `ready` still has to be visited.
   for (const id of new Set([
     ...Object.keys(s.requests),
     ...Object.keys(s.todos),
     ...Object.keys(s.agentState),
     ...Object.keys(s.cost),
     ...Object.keys(s.session),
-    ...Object.keys(s.ready),
   ])) {
     s.dismissSession(id);
   }
@@ -213,217 +219,97 @@ describe("todos", () => {
 });
 
 /**
- * THE `ready` MARK — a todo item that says the work on this Session is done.
+ * THE `ready` SLOT — what THIS store still owns about it.
  *
- * ## The convention, exactly
+ * ## What used to be here, and why it is gone
  *
- * A `ChecklistItem` whose `content`, **trimmed and lowercased**, equals `"ready"`
- * **AND** whose `status` is `"completed"`. Nothing else fires it, and nothing else
- * clears it but the next snapshot, a clear, a close, or the next turn.
+ * This file used to carry `the \`ready\` marker`: the exact-`ready`-plus-`completed`
+ * predicate, the substring refusal, the per-snapshot withdrawal, the non-string
+ * `content` guard. All of it died with the convention it tested. Readiness is the
+ * `sessions.ready` COLUMN now — the `mark_done` host verb writes it,
+ * `send_prompt_with_images` clears it, and `get_board` publishes it as
+ * `TaskCardView.ready` — so there is no word to recognise, and a store that scraped
+ * todo items for one was the second channel this removes.
  *
- * ## Why a convention and not a tool verb (do not "fix" this)
+ * ## What is left, and why it is still this file's business
  *
- * A model-facing verb is engine-gated: `TaskCall` / `trait TaskStore` live in
- * `fulcrum-harness`, a crates.io-pinned dependency, and `tool_specs()` is the
- * crate's — the desktop contributes zero tool specs (ADR 0102; the unbuilt fix is
- * roadmap item #183). And the engine CONSTRUCTS `TodoItem { content, status,
- * description }` and emits the constructed vector, so an extra key on a todo item
- * (`"ready": true`) is dropped before a frame exists. Only the model-authored
- * STRING survives the engine. So the marker has to be a conventional item, read by
- * desktop code. `docs/features/session-ready-marker.md` is the doc that records
- * this and where the model learns the convention.
+ * Two facts about the slot are properties of the todo actions rather than of the
+ * board feed, and only a file that calls the todo actions can pin them: a todo
+ * SNAPSHOT must not touch the mark (it has nothing to say about it) and a todo CLEAR
+ * must not withdraw it. Both are negative assertions, and both are the kind a
+ * plausible-looking "cleanup" re-introduces — reading the mark at the todo funnel is
+ * exactly what the old design did.
  *
- * ## Why `completed` is required
- *
- * A PENDING `"ready"` in a plan means "still need to make it ready" — the exact
- * OPPOSITE of the fact the mark reports. The status half of the predicate is not
- * belt-and-braces, it is the difference between the two readings of the same word.
- *
- * ## Why the match is EXACT and not a substring
- *
- * `"get the board ready"` is a plan item about readiness and is not a claim that
- * anything is ready. A substring test would mark a card ready for half the English
- * language.
+ * The slot's POSITIVE behaviour (the board feed, the per-Space replace, the dismiss
+ * clear) lives in `boardReadyMarks.test.ts`, named for that subject, and the
+ * `beginTurn` edge lives in `sessionReadyMark.test.ts`.
  */
-describe("the `ready` marker", () => {
+describe("the `ready` slot is NOT a todo derivation", () => {
   /** One board, one item, whatever the case is about. */
   const board = (...todos: Array<{ content: string; status: string }>) => ({
     source: "native",
     todos,
   });
 
-  it("an exact `ready` item that is COMPLETED sets the mark", () => {
-    useInteractive
-      .getState()
-      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
-    expect(useInteractive.getState().ready[S1]).toBe(true);
+  const READY = { content: "ready", status: "completed" as const };
+
+  it("a snapshot whose item reads `ready` sets NO mark", () => {
+    // THE WORD IS DEAD, pinned as a refusal. This is the exact payload the retired
+    // detector fired on, and the exact edit that would re-open the drift: reading
+    // readiness at the todo funnel again would put two channels behind one bell, with
+    // the todo word winning on a Session whose column is already cleared.
+    useInteractive.getState().applyTodoUpdate(S1, board(READY));
+    expect(useInteractive.getState().ready).toEqual({});
+    // And the board itself still lands — the refusal is about the mark, not a
+    // rejection of the frame.
+    expect(useInteractive.getState().todos[S1]).toEqual([READY]);
   });
 
-  it('a PENDING `ready` does NOT set the mark (it means "not ready yet")', () => {
-    // The half of the predicate a substring-only implementation would drop.
-    useInteractive
-      .getState()
-      .applyTodoUpdate(S1, board({ content: "ready", status: "pending" }));
-    expect(useInteractive.getState().ready[S1]).toBeUndefined();
-  });
-
-  it("an `in_progress` `ready` does NOT set the mark either", () => {
-    useInteractive
-      .getState()
-      .applyTodoUpdate(S1, board({ content: "ready", status: "in_progress" }));
-    expect(useInteractive.getState().ready[S1]).toBeUndefined();
-  });
-
-  it("a plan item that MERELY MENTIONS ready does not fire it", () => {
-    // The exact-match half. Every one of these is a real plan item a model writes;
-    // none of them is a claim that the Session's work is finished.
-    for (const content of [
-      "get the board ready",
-      "Ready for review",
-      "ready when you are",
-      "mark ready",
-      "not ready",
-    ]) {
-      useInteractive
-        .getState()
-        .applyTodoUpdate(S1, board({ content, status: "completed" }));
-      expect(
-        useInteractive.getState().ready[S1],
-        `content: "${content}"`,
-      ).toBeUndefined();
-    }
-  });
-
-  it('padding and case are tolerated (`" Ready "` fires)', () => {
-    // The model authors a STRING and nobody controls its whitespace or its case.
-    // Trimming and lowercasing is the whole normalisation — no other leniency, and
-    // the two cases above pin that.
-    for (const content of [" Ready ", "READY", "\tready\n", "Ready"]) {
-      useInteractive
-        .getState()
-        .applyTodoUpdate(S1, board({ content, status: "completed" }));
-      expect(
-        useInteractive.getState().ready[S1],
-        `content: ${JSON.stringify(content)}`,
-      ).toBe(true);
-    }
-  });
-
-  it("the marker can sit anywhere in the board", () => {
-    useInteractive
-      .getState()
-      .applyTodoUpdate(
-        S1,
-        board(
-          { content: "write the reducer", status: "completed" },
-          { content: "ready", status: "completed" },
-          { content: "ship it", status: "pending" },
-        ),
-      );
-    expect(useInteractive.getState().ready[S1]).toBe(true);
-  });
-
-  it("a later snapshot WITHOUT the marker CLEARS it (the slot is not sticky)", () => {
-    // `applyTodoUpdate` is a SNAPSHOT OVERWRITE, so the mark reads off the same
-    // snapshot: a board that no longer carries the item no longer asserts
-    // readiness. The alternative — a mark that survives until the next turn —
-    // would keep a card marked ready after the model had deleted the item that
-    // said so, and `manage_todo_list` rewrites the WHOLE list on every call, so
-    // "the model removed it" and "the model never wrote it" are the same frame.
-    useInteractive
-      .getState()
-      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
-    expect(useInteractive.getState().ready[S1]).toBe(true);
-    useInteractive
-      .getState()
-      .applyTodoUpdate(
-        S1,
-        board({ content: "keep going", status: "in_progress" }),
-      );
-    expect(useInteractive.getState().ready[S1]).toBeUndefined();
-  });
-
-  it("the marker flipping back to `pending` clears it", () => {
-    // Same snapshot rule, seen from the other side: the model re-opened the item,
-    // so the claim is withdrawn.
-    useInteractive
-      .getState()
-      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
-    useInteractive
-      .getState()
-      .applyTodoUpdate(S1, board({ content: "ready", status: "pending" }));
-    expect(useInteractive.getState().ready[S1]).toBeUndefined();
-  });
-
-  it("a clear drops the mark (a cleared checklist no longer asserts readiness)", () => {
-    // The decision, stated: `applyTodoClear` removes the BOARD, and the board was
-    // the only thing asserting the mark. Keeping the mark while the board is gone
-    // would leave a card claiming "ready" with nothing under the claim — and the
-    // `todos_clear` emitters are a child's teardown and a deleted Session, neither
-    // of which is a Session whose work is waiting to be reviewed.
-    useInteractive
-      .getState()
-      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
-    useInteractive.getState().applyTodoClear(S1);
-    expect(useInteractive.getState().ready[S1]).toBeUndefined();
-  });
-
-  it("the mark is keyed by SESSION and not by anything else", () => {
-    // ADR 0041 again: boards are session-keyed, and the mark is a fact about the
-    // board. `payload.source` is `"native"` for a Main session and a Subagent
-    // session alike, so a mark that consulted it would mis-file.
-    useInteractive
-      .getState()
-      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
-    useInteractive
-      .getState()
-      .applyTodoUpdate(S2, board({ content: "go", status: "pending" }));
-    expect(useInteractive.getState().ready[S1]).toBe(true);
-    expect(useInteractive.getState().ready[S2]).toBeUndefined();
-    // And S2's update did not disturb S1's mark (the write is a spread-copy).
-    useInteractive
-      .getState()
-      .applyTodoUpdate(S2, board({ content: "ready", status: "completed" }));
-    expect(useInteractive.getState().ready[S1]).toBe(true);
-    expect(useInteractive.getState().ready[S2]).toBe(true);
-  });
-
-  it("dismissSession drops the mark with the rest of the session's state", () => {
-    // A close ends the Session; the mark goes with its board, its money and its
-    // gates. `resetStores` cannot be relied on inside a run — this is the runtime
-    // path a real close takes.
-    useInteractive
-      .getState()
-      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
-    useInteractive.getState().dismissSession(S1);
-    expect(useInteractive.getState().ready[S1]).toBeUndefined();
-  });
-
-  it("a malformed payload leaves the mark exactly as it was", () => {
-    // `applyTodoUpdate` returns the SAME state object for a payload with no array,
-    // so a junk frame must neither set nor clear the mark.
-    useInteractive
-      .getState()
-      .applyTodoUpdate(S1, board({ content: "ready", status: "completed" }));
+  it("a snapshot NEVER changes the slot, so a ready card keeps its identity", () => {
+    // Stronger than the case above, and aimed at the shape a refactor takes: a
+    // `ready` key written by the board feed must survive an arbitrary number of todo
+    // frames untouched, INCLUDING its identity — `TasksBoard` subscribes to this map
+    // and zustand compares with `Object.is`.
+    useInteractive.getState().applyReadyMarks("/w/alpha", [
+      { taskId: "t1", ready: true, sessionIds: ["s1"] },
+    ]);
     const before = useInteractive.getState();
-    useInteractive.getState().applyTodoUpdate(S1, { todos: "nope" });
-    useInteractive.getState().applyTodoUpdate(S1, null);
-    expect(useInteractive.getState()).toBe(before);
-    expect(useInteractive.getState().ready[S1]).toBe(true);
+
+    useInteractive.getState().applyTodoUpdate(S1, board(READY));
+    useInteractive.getState().applyTodoUpdate(S1, board({ content: "go", status: "pending" }));
+
+    expect(useInteractive.getState().ready).toBe(before.ready);
   });
 
-  it("an item whose `content` is not a string does not fire the mark", () => {
-    // `useMainChecklistItems` documents that the board casts ANY model-authored
-    // value, so a non-string `content` is reachable. `trim` on one would throw
-    // inside a listener.
-    useInteractive.getState().applyTodoUpdate(S1, {
-      source: "native",
-      todos: [
-        { content: 42, status: "completed" },
-        { content: null, status: "completed" },
-      ],
-    });
-    expect(useInteractive.getState().ready[S1]).toBeUndefined();
+  it("a clear drops the BOARD and leaves the mark standing", () => {
+    // A cleared checklist says nothing about readiness once readiness is a column, so
+    // a `todos_clear` is no longer a reason to withdraw a bell. The two emitters
+    // (a child's teardown, and `deleteSession`) do not need it: a deleted Session's
+    // card loses its link and the next read drops the mark, and a closed one is
+    // cleared by `dismissSession` — the close that actually means the claim is over.
+    useInteractive.getState().applyReadyMarks("/w/alpha", [
+      { taskId: "t1", ready: true, sessionIds: ["s1"] },
+    ]);
+    useInteractive.getState().applyTodoUpdate(S1, board(READY));
+
+    useInteractive.getState().applyTodoClear(S1);
+
+    expect(useInteractive.getState().todos[S1]).toBeUndefined();
+    expect(readyCardKey("/w/alpha", "t1") in useInteractive.getState().ready).toBe(
+      true,
+    );
+  });
+
+  it("a clear for a session with no board is still a no-op (identical state)", () => {
+    // The identity rule the ready arm used to break: with the arm gone, the ONLY
+    // thing this action can change is `todos`, so an id with no board changes nothing
+    // at all — even when that id lights a card.
+    useInteractive.getState().applyReadyMarks("/w/alpha", [
+      { taskId: "t1", ready: true, sessionIds: ["s1"] },
+    ]);
+    const before = useInteractive.getState();
+    useInteractive.getState().applyTodoClear(S1);
+    expect(useInteractive.getState()).toBe(before);
   });
 });
 

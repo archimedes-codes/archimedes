@@ -1076,7 +1076,25 @@ describe("the scanner actually reads the tree", () => {
     // barrel's OWN surface is UNCHANGED: `editTask` was already exported and is
     // already in both pinned API lists below.
     // 70 -> 71 for the Task detail modal redesign: `components/TaskDetailDialog.edit.test.tsx`, which mocks the barrel the documented way and spreads `vi.importActual` (the spread half moves 69 -> 70); the four `components/tasks/*` child tests are presentational and NOT mockers.
-    expect(mockers).toHaveLength(71);
+    // 71 -> 72 for the ready mark moving onto the board read: ONE new mocker,
+    // `src/store/boardReadyMarks.test.ts`, the store suite for the board feed that
+    // writes the `ready` slot from `TaskCardView.ready`. It needs the seam for the
+    // same reason `tasksRefresh.test.ts` does — its subject IS the `get_board` call,
+    // and a case that says "a `refresh` feeds the marks too, not only a `load`" or "a
+    // failed read leaves the marks as they were" is unobservable without a spy on the
+    // wrapper (a real `invoke` rejects in jsdom and lands its sentence in `error`).
+    // It spreads `vi.importActual`, so the spread half moves 70 -> 71 and the one
+    // wholesale replacement is STILL `hooks/useWindowMaximized.test.ts`.
+    // NO mocker is REMOVED by this commit: `sessionReadyMark.test.ts`,
+    // `TasksBoardReady.test.tsx` and `taskPrompt.test.ts` are all edited in place and
+    // the first two keep mocking. The two `src/lib` files this commit DELETES (the
+    // retired marker's vocabulary module and its test) are neither a mocker — the
+    // module owned two STRINGS and read no store — so removing them cannot move this
+    // count. The barrel's OWN surface is UNCHANGED: no
+    // IPC wrapper and no wire type is added or removed (`TaskCardView.ready` landed in
+    // an earlier commit of this line of work), so both pinned API lists below are
+    // untouched.
+    expect(mockers).toHaveLength(72);
     // 69 of the 70 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. The new mockers spread
     // too (they list the arms their own tests drive and leave every other barrel
@@ -1088,7 +1106,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(sweep.listed(f) ?? ""),
       ).length,
-).toBe(70);
+).toBe(71);
   });
 });
 

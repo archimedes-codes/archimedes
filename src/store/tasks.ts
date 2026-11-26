@@ -37,6 +37,13 @@ import {
   type TaskRow,
 } from "../lib/tauri";
 import { describeIpcError } from "../lib/ipcError";
+// THE READY FEED. A store→store edge, and the direction this repo already walks:
+// `sessions.ts` has called into `useInteractive`'s actions (`applyTodoUpdate`,
+// `applyTodoClear`, `seedCostFromRow`, `clearReady`) for the whole life of the ready
+// mark. `layerBoundary.test.ts` governs `lib/` importing `store/`, which this is
+// not. The call goes through the ACTION — `tasks.ts` never writes the other store's
+// map — which is what `boardReadyMarks.test.ts` pins against this file's source.
+import { useInteractive } from "./interactive";
 
 /**
  * The per-Space **Task board** store (spec §2/§3, ADR 0090).
@@ -545,6 +552,38 @@ const paint = (
     boardsBySpace: { ...state.boardsBySpace, [spacePath]: next },
   }));
 
+/** Feed the **ready** slot from a board read — the ONE place a mark is ever set.
+ *
+ * `TaskCardView.ready` is `sessions.ready` OR'd over the card's links, computed in
+ * Rust: the `mark_done` host verb sets the column, `send_prompt_with_images` clears
+ * it at turn start, and this read is what carries it to the bell. That is why a
+ * card whose Session was never opened can wear one — the todo-word design could
+ * only mark a Session whose history something had already read.
+ *
+ * THE CALL IS AN ACTION ON THE OTHER STORE, not a write into its map — the same
+ * discipline `sessions.ts` keeps with `applyTodoUpdate` / `clearReady` — and it is
+ * scoped to `spacePath` so the replace cannot touch another Space's marks.
+ *
+ * IT RIDES `readBoard` AND NOT `paint`, and that is a scheduling fact: `paint` is
+ * what the OPTIMISTIC writes call (a move, a rename, a stage edit), and none of
+ * those changes a Session's readiness. A mark therefore moves only with a READ —
+ * `load` or `refresh` — which is exactly the set of moments the column can have
+ * changed since the last one. */
+const feedReadyMarks = (
+  spacePath: string,
+  columns: StageWithTasks[],
+): void =>
+  useInteractive.getState().applyReadyMarks(
+    spacePath,
+    columns.flatMap((column) =>
+      column.tasks.map((card) => ({
+        taskId: card.task.id,
+        ready: card.ready,
+        sessionIds: card.sessions.map((link) => link.sessionId),
+      })),
+    ),
+  );
+
 /** Replace ONE column's `stage` fields, leaving the cards and every other column
  *  alone. A column the slug does not name is returned UNCHANGED (same object), so
  *  a test can tell a patched slice from a rebuilt one, and a slug that no longer
@@ -683,6 +722,12 @@ const readBoard = async (
   try {
     const columns = await getBoardCommand(spacePath);
     if (epoch !== loadEpoch) return; // a newer read owns the store
+    // The columns this read PUBLISHES, captured out of the `set` below so the ready
+    // feed can read the same value the board painted. A `let` and not a re-derivation
+    // after the `set`: re-deriving would mean a second read of
+    // `state.boardsBySpace[spacePath]` at a later moment, and the position merge is
+    // exactly the kind of thing that would then disagree with what is on screen.
+    let published: StageWithTasks[] = columns;
     set((state) => {
       // F3: a position write for THIS Space that is still in flight owns its column's two
       // coordinates, and this read must not paint over them. See `positionWritesInFlight`
@@ -697,6 +742,7 @@ const readBoard = async (
         inFlight === null || held === undefined
           ? columns
           : keepInFlightPositions(held, columns, inFlight);
+      published = next;
       return {
         boardsBySpace: { ...state.boardsBySpace, [spacePath]: next },
         // The quiet volume writes NOTHING else, so `loading` is absent from the
@@ -705,6 +751,12 @@ const readBoard = async (
         ...(volume === "load" ? { loading: false } : {}),
       };
     });
+    // THE READY FEED, after the paint and OUTSIDE the `set`: the marks belong to a
+    // different store, so they cannot ride this one's patch, and the value it reads
+    // is the columns this read actually published, position merge included. A read
+    // whose epoch was lost returned above, so a superseded read never feeds the slot
+    // with a board that is no longer on screen.
+    feedReadyMarks(spacePath, published);
   } catch (err) {
     if (volume === "refresh") {
       // Logged, and NOTHING else. See the header: the rows on screen are still the

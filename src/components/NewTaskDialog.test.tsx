@@ -11,7 +11,6 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 
 import NewTaskDialog from "./NewTaskDialog";
 import { resetTaskLaunchInFlight } from "../store/taskLaunch";
-import { readyMarkerInstruction } from "../lib/readyMarker";
 import { useTasks } from "../store/tasks";
 import { resetStores } from "../test/resetStores";
 import { clearSkillCatalogCache } from "../hooks/useSkillCatalog";
@@ -518,12 +517,12 @@ describe("NewTaskDialog — Research", () => {
     expect(sent.indexOf("$research")).toBeLessThan(sent.indexOf("<task "));
     expect(sent).not.toContain("<skill");
     expect(sent).toContain("<task ");
-    // Order, not finality: the card's context closes and the ready trailer follows.
-    // See `lib/taskPrompt.test.ts` for why the injection property this used to
-    // stand in for is pinned at the expander's argument instead.
-    expect(sent.trimEnd().endsWith(`</task>\n\n${readyMarkerInstruction}`)).toBe(
-      true,
-    );
+    // The card's context closes the message. This assertion spent the ready
+    // trailer's life reading `</task>\n\n<trailer>`, and it goes back to the
+    // closer now the trailer has retired with the word it taught. The injection
+    // property this was once mistaken for is pinned at the expander's argument, in
+    // `lib/taskPrompt.test.ts`.
+    expect(sent.trimEnd().endsWith("</task>")).toBe(true);
   });
 
   it("Research files the card in the research column AND loads the research skill", async () => {

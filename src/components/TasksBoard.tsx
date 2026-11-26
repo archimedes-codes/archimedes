@@ -11,7 +11,7 @@ import { Spinner } from "./ui/spinner";
 import { useDragCard } from "../hooks/useDragCard";
 import { useTasks } from "../store/tasks";
 import { useSessions } from "../store/sessions";
-import { useInteractive } from "../store/interactive";
+import { readyCardKey, useInteractive } from "../store/interactive";
 import { launchTaskSession } from "../store/taskLaunch";
 import { useMentionCatalogs } from "../hooks/useMentionCatalogs";
 import { describeIpcError } from "../lib/ipcError";
@@ -398,28 +398,34 @@ export default function TasksBoard({
     );
 
   // THE `ready` MARK, read ONCE for the whole board — one subscription, the same
-  // shape `statusById` above takes.
+  // shape `statusById` above uses.
   //
   // A SELECTOR returning a PRIMITIVE (`boolean`), not an object or an array: a
   // selector whose result is a fresh reference every call makes zustand re-render
   // forever (the rule `useActiveSpaceCwd.ts` and `lib/sessionLookup.ts` record).
   // The map itself is what is subscribed, because the per-card answer needs every
-  // card's links, which the selector does not have at selector time.
+  // card's id, which the selector does not have at selector time.
   //
   // The interactive store is one this board ALREADY subscribes to — through
   // `useSessionStatuses`, which reads `requests` out of it — so this is not a new
   // store on the board, it is a second map out of a store the board is already
   // bound to.
-  const readyBySession = useInteractive((s) => s.ready);
+  const readyMarks = useInteractive((s) => s.ready);
 
-  /** The `ready` prop for one card: does ANY linked Session's board carry the
-   *  marker?
+  /** The `ready` prop for one card: did the board read that put this card on screen
+   *  report it ready?
    *
-   *  ANY, and the reason is the same one the sessions chip and the money give: a
-   *  card is a Task and it can own several Sessions, and "one of my Sessions is
-   *  finished and waiting for a look" is the fact a person acts on. Two Sessions
-   *  marked ready is one mark, not two — the card is a two-line summary by
-   *  construction and `TaskDetailDialog` is the surface that lists the Sessions
+   *  ONE key lookup, and the key is (Space, card) — see the `ready` slot's doc in
+   *  `store/interactive.ts` for why the CARD owns the claim rather than any one of
+   *  its Sessions. The signature is unchanged from the per-Session read this
+   *  replaced, and deliberately so: `TaskColumn`, `TaskDetailDialog` and
+   *  `TaskDetailProperties` take the resolved boolean and stay untouched by the swap
+   *  of where it comes from.
+   *
+   *  ANY linked Session being ready is still the fact, and Rust resolves it —
+   *  `TaskCardView.ready` is the OR over the card's links, so a card with two
+   *  Sessions and one claim wears ONE mark, not two. The card is a two-line summary
+   *  by construction and `TaskDetailDialog` is the surface that lists the Sessions
    *  individually.
    *
    *  A FUNCTION and not a pre-built map, for the identical reason `sessionStatusFor`
@@ -434,7 +440,8 @@ export default function TasksBoard({
    *  whenever both are true. That pairing is what the owner rejected on a real
    *  board; see `TaskCardProps.ready`.) */
   const readyFor = (card: TaskCardView): boolean =>
-    card.sessions.some((link) => readyBySession[link.sessionId] === true);
+    activeSpacePath !== null &&
+    readyCardKey(activeSpacePath, card.task.id) in readyMarks;
 
   /** The cross-column gesture, ONE instance for the whole board: it has to see every
    *  column to answer "is the pointer over a different one", so one instance per
