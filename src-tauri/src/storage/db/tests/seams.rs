@@ -74,7 +74,8 @@ fn the_persistence_seam_answers_in_the_crate_error_family() {
 ///
 /// The sibling of the pin above, and the half that INVERTED with the deletion: the
 /// board verbs were reached through a trait whose error type the crate owned, and they
-/// are now reached through `agent/host_tools/exec.rs`, which folds `BoardError` into
+/// are now reached through `agent/host_tools/exec/` (the dispatch in `exec/mod.rs`,
+/// the verb bodies in `exec/board.rs`), which folds `BoardError` into
 /// `HostToolError` (`storage/db/mod.rs`) exactly as the seam used to fold it into the
 /// crate's family. The ascribed types below are the assertion — change the `From`
 /// impl's target and this stops compiling.

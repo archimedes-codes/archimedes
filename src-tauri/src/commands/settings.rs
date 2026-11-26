@@ -140,10 +140,10 @@ impl From<&Model> for ModelDto {
 /// composed set or the ownership claim is a slogan. The other is the engine's
 /// `advertised_tool_specs`. Composition is `tool_specs()` (the crate's 19
 /// **Engine tool**s) ++ [`crate::agent::host_tools::host_tool_specs`] (this repo's
-/// 7 **Host tool**s) — the same two halves the engine composes onto a Session's
+/// 8 **Host tool**s) — the same two halves the engine composes onto a Session's
 /// advertised set from `StartEnv.host_tools`. Reading only the crate's list here
 /// silently omitted every host tool: the "advertised to the model, invisible to
-/// Settings" split, and seven board verbs a user could not disable through
+/// Settings" split, and board verbs a user could not disable through
 /// `enabled_tools`.
 ///
 /// STATELESS (no `tauri::State` param — the command needs no state: BOTH halves are
@@ -889,13 +889,19 @@ mod tests {
                 "missing engine tool {name} in {names:?}"
             );
         }
-        // The HOST tools — the desktop's 7, and the half this assertion exists
+        // The HOST tools — the desktop's 8, and the half this assertion exists
         // for. ADR 0102 §2.3: read the crate's `tool_specs()` alone and Settings
         // silently omits every host tool, which splits the surface into "advertised
-        // to the model, invisible to Settings" and makes the seven board verbs
+        // to the model, invisible to Settings" and makes the board verbs
         // un-disableable through `enabled_tools`. A SUBSET-shaped assertion here is
         // the whole point — the pre-ADR-0102 version of this test passed with all
         // seven missing, because it named no host verb.
+        //
+        // THIS LOOP IS THE ONLY THING THAT NOTICES A NEW HOST VERB REACHING SETTINGS.
+        // The loop above is a subset check and the length check below is COMPUTED from
+        // `host_tool_specs().len()`, so a verb added to the specs passes both without
+        // this list being touched — which is exactly how `mark_done` would have slipped
+        // in un-noticed. Every new host verb goes here.
         for name in [
             "list_board",
             "get_task",
@@ -904,6 +910,7 @@ mod tests {
             "move_task",
             "get_artifact",
             "write_artifact",
+            "mark_done",
         ] {
             assert!(
                 names.iter().any(|n| n == name),

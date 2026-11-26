@@ -118,7 +118,7 @@ impl From<DbError> for StoreError {
 /// model reads verbatim.
 ///
 /// The three kinds are kept rather than collapsed into one `String`, for two
-/// reasons. First, `agent/host_tools/exec.rs::spawn_board` is generic over the error
+/// reasons. First, `agent/host_tools/exec/mod.rs::spawn_host_call` is generic over the error
 /// its closure returns and needs ONE type to fold both `BoardError` (the six inherent
 /// verbs) and `DbError` (the board read's artifact-key enrichment) into. Second, the
 /// distinction is what the tests assert on and what a reader needs: "the card is not

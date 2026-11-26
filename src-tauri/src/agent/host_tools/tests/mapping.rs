@@ -39,6 +39,8 @@ async fn create_task_answers_every_field_of_the_stored_row() {
 
     let created = run(
         &db,
+        None,
+        false,
         "create_task",
         json!({
             "space_path": "/host-tools/map-create",
@@ -106,6 +108,8 @@ async fn edit_task_answers_the_same_fields_and_keeps_what_the_call_did_not_name(
     let (_dir, db) = seeded("ht-map-edit-", "/host-tools/map-edit");
     let created = run(
         &db,
+        None,
+        false,
         "create_task",
         json!({ "space_path": "/host-tools/map-edit", "title": "a card", "body": "a body" }),
     )
@@ -128,6 +132,8 @@ async fn edit_task_answers_the_same_fields_and_keeps_what_the_call_did_not_name(
     // answer must be exactly what the create answer carried.
     let edited = run(
         &db,
+        None,
+        false,
         "edit_task",
         json!({ "task_id": task_id, "spec_path": "docs/spec.md" }),
     )
