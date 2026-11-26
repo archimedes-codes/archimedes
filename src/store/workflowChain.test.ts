@@ -93,7 +93,6 @@ vi.mock("../lib/tauri", async () => {
     sendPrompt: vi.fn(),
     getBoard: vi.fn(),
     reorderTasks: vi.fn(),
-    getTask: vi.fn(),
     editTask: vi.fn(),
     loadHistory: vi.fn(),
     // The **Task badge** map's boot fetch, which `startAndSendLinked` re-calls after a

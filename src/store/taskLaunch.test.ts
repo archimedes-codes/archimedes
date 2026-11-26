@@ -70,7 +70,6 @@ vi.mock("../lib/tauri", async () => {
     sendPrompt: vi.fn(),
     getBoard: vi.fn(),
     reorderTasks: vi.fn(),
-    getTask: vi.fn(),
     editTask: vi.fn(),
     loadHistory: vi.fn(),
     // The auto-advance chain's DECIDER and RUN RECORD. Mocked for the same boot-mock
