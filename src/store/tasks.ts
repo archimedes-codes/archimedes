@@ -37,6 +37,13 @@ import {
   type TaskRow,
 } from "../lib/tauri";
 import { describeIpcError } from "../lib/ipcError";
+// THE READY FEED. A store→store edge, and the direction this repo already walks:
+// `sessions.ts` has called into `useInteractive`'s actions (`applyTodoUpdate`,
+// `applyTodoClear`, `seedCostFromRow`, `clearReady`) for the whole life of the ready
+// mark. `layerBoundary.test.ts` governs `lib/` importing `store/`, which this is
+// not. The call goes through the ACTION — `tasks.ts` never writes the other store's
+// map — which is what `boardReadyMarks.test.ts` pins against this file's source.
+import { readyTicket, useInteractive } from "./interactive";
 
 /**
  * The per-Space **Task board** store (spec §2/§3, ADR 0090).
@@ -545,6 +552,47 @@ const paint = (
     boardsBySpace: { ...state.boardsBySpace, [spacePath]: next },
   }));
 
+/** Feed the **ready** slot from a board read — the ONE place a mark is ever set.
+ *
+ * `TaskCardView.ready` is `sessions.ready` OR'd over the card's links, computed in
+ * Rust: the `mark_done` host verb sets the column, `send_prompt_with_images` clears
+ * it at turn start, and this read is what carries it to the bell. That is why a
+ * card whose Session was never opened can wear one — the todo-word design could
+ * only mark a Session whose history something had already read.
+ *
+ * THE CALL IS AN ACTION ON THE OTHER STORE, not a write into its map — the same
+ * discipline `sessions.ts` keeps with `applyTodoUpdate` / `clearReady` — and it is
+ * scoped to `spacePath` so the replace cannot touch another Space's marks.
+ *
+ * IT RIDES `readBoard` AND NOT `paint`, and that is a scheduling fact: `paint` is
+ * what the OPTIMISTIC writes call (a move, a rename, a stage edit), and none of
+ * those changes a Session's readiness. A mark therefore moves only with a READ —
+ * `load` or `refresh` — which is exactly the set of moments the column can have
+ * changed since the last one.
+ *
+ * `ticket` is the caller's, sampled BEFORE the `await` — see `readyTicket`. It cannot
+ * be sampled here: by the time this runs the read has already landed, so a ticket
+ * taken in this function would always be current and the guard would be vacuous.
+ *
+ * The slot takes `readySessions` and NOT `sessions.map(…)`: the read's claimants are
+ * what let an optimistic clear withdraw ONE claim instead of the card's whole mark. */
+const feedReadyMarks = (
+  spacePath: string,
+  ticket: number,
+  columns: StageWithTasks[],
+): void =>
+  useInteractive.getState().applyReadyMarks(
+    spacePath,
+    ticket,
+    columns.flatMap((column) =>
+      column.tasks.map((card) => ({
+        taskId: card.task.id,
+        ready: card.ready,
+        readySessions: card.readySessions,
+      })),
+    ),
+  );
+
 /** Replace ONE column's `stage` fields, leaving the cards and every other column
  *  alone. A column the slug does not name is returned UNCHANGED (same object), so
  *  a test can tell a patched slice from a rebuilt one, and a slug that no longer
@@ -679,10 +727,23 @@ const readBoard = async (
   // arrived at, and is dropped.
   loadEpoch += 1;
   const epoch = loadEpoch;
+  // The READY FENCE ticket, sampled here and not inside `feedReadyMarks`: it has to
+  // record when the read STARTED, and after the `await` below it always records
+  // "now". A read dispatched before a `beginTurn` must not relight a bell that
+  // `beginTurn` withdrew — `loadEpoch` above cannot see that, because it rejects a
+  // read superseded by ANOTHER read and a turn is not a read. `readyFence` in
+  // `interactive.ts` owns the argument.
+  const ticket = readyTicket();
   if (volume === "load") set({ loading: true, error: null });
   try {
     const columns = await getBoardCommand(spacePath);
     if (epoch !== loadEpoch) return; // a newer read owns the store
+    // The columns this read PUBLISHES, captured out of the `set` below so the ready
+    // feed can read the same value the board painted. A `let` and not a re-derivation
+    // after the `set`: re-deriving would mean a second read of
+    // `state.boardsBySpace[spacePath]` at a later moment, and the position merge is
+    // exactly the kind of thing that would then disagree with what is on screen.
+    let published: StageWithTasks[] = columns;
     set((state) => {
       // F3: a position write for THIS Space that is still in flight owns its column's two
       // coordinates, and this read must not paint over them. See `positionWritesInFlight`
@@ -697,6 +758,7 @@ const readBoard = async (
         inFlight === null || held === undefined
           ? columns
           : keepInFlightPositions(held, columns, inFlight);
+      published = next;
       return {
         boardsBySpace: { ...state.boardsBySpace, [spacePath]: next },
         // The quiet volume writes NOTHING else, so `loading` is absent from the
@@ -705,6 +767,12 @@ const readBoard = async (
         ...(volume === "load" ? { loading: false } : {}),
       };
     });
+    // THE READY FEED, after the paint and OUTSIDE the `set`: the marks belong to a
+    // different store, so they cannot ride this one's patch, and the value it reads
+    // is the columns this read actually published, position merge included. A read
+    // whose epoch was lost returned above, so a superseded read never feeds the slot
+    // with a board that is no longer on screen.
+    feedReadyMarks(spacePath, ticket, published);
   } catch (err) {
     if (volume === "refresh") {
       // Logged, and NOTHING else. See the header: the rows on screen are still the
@@ -868,11 +936,22 @@ export const useTasks = create<BoardState>((set, get) => ({
       // came into the world has no artifacts. It is a REQUIRED field, so this
       // literal must carry it — and an empty list is the honest value, not a
       // placeholder: nothing has been written against a card that is one tick old.
+      //
+      // `ready: false` is that same honesty one level down: `ready` is a fact the
+      // BOARD computes (an OR over the linked Sessions' `sessions.ready` column),
+      // and this card has no links at all — an empty OR is `false`. It is also the
+      // value the board itself gives a link-free card, so the optimistic element
+      // and the next server read agree. `readySessions: []` is the SAME fact stated
+      // as a list, and it is required to keep the invariant
+      // `ready === readySessions.length > 0` true of an optimistic card too — a `[]`
+      // here is also what stops a `beginTurn` from finding a claim to withdraw.
       const card: TaskCardView = {
         task: row,
         sessions: [],
         costUsd: null,
         artifactKeys: [],
+        ready: false,
+        readySessions: [],
       };
       const next =
         at === -1

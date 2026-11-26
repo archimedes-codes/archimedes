@@ -3559,6 +3559,236 @@ async fn a_fresh_send_prompt_clears_a_stale_cap() {
     );
 }
 
+// ── The durable clear: a turn start clears the persisted `ready` claim ───
+//
+// The owner's rule is "the next turn on that Session clears it", and the rule
+// shipped FRONTEND-ONLY first: `beginTurn` → `clearReady`
+// (`src/store/sessions.ts`) drops the mark from `useInteractive`'s map, but
+// `useInteractive` has no `persist` middleware and nothing on the `send_prompt`
+// path wrote `sessions` — so a column cleared only in the renderer came back
+// `ready` on EVERY launch, which is worse than the bug it fixes. These three
+// tests drive the real lifecycle (a `fake_worker` session, a real `Db`) and
+// read the COLUMN, because the claim is only fixed if the byte on disk changes.
+
+/// What `sessions.ready` actually holds for one row, as ONE of four distinct
+/// strings: `"__NO_ROW__"` (no row at all), `"__NONE__"` (a row whose column is
+/// NULL — never written), `"0"` (an explicit "not ready"), `"1"` (a claim).
+///
+/// It goes straight to SQL through an INDEPENDENT connection because `ready` is
+/// deliberately NOT in `SESSION_COLUMNS` — `SessionRow` / `SessionInfo` are the
+/// crates.io-pinned types this column does not widen — so no `Db` verb can
+/// report it. That is the same reason `db/tests/sessions.rs`'s `ready_of` and
+/// this module's own `parent_link.rs` (`parent_of`) reach for a raw connection:
+/// the assertion is about what SQLite holds, not what a desktop getter chooses
+/// to expose. The two sentinels are DISTINCT on purpose (the `parent_of`
+/// discipline): collapsing "no row" into "NULL" would let a test that must prove
+/// a write matched NOTHING pass as though it had written a NULL.
+fn stored_ready(db_path: &Path, id: &str) -> String {
+    rusqlite::Connection::open(db_path)
+        .expect("an independent connection")
+        .query_row(
+            "SELECT COALESCE(CAST(ready AS TEXT), '__NONE__') FROM sessions WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| "__NO_ROW__".to_string())
+}
+
+/// The board read's per-card `ready` for one card — the ONLY consumer the
+/// column has, and the surface the collapse claim below is about.
+fn card_ready(db: &Db, space: &str, card_id: &str) -> bool {
+    db.get_board(space)
+        .expect("the board reads")
+        .iter()
+        .flat_map(|stage| stage.tasks.iter())
+        .find(|card| card.task.id == card_id)
+        .expect("the card is on the board")
+        .ready
+}
+
+/// A turn start clears the stored claim: `ready = 1` becomes `ready = 0`.
+///
+/// THE acceptance criterion for the durable half of the rule. The value is read
+/// from the COLUMN rather than from a store, because the whole reason the write
+/// exists in Rust is that the renderer's copy does not survive a restart — an
+/// assertion against the in-memory mark would go green with the column still
+/// holding `1`, which is precisely the shipped defect.
+#[tokio::test]
+async fn a_turn_start_clears_the_stored_ready_claim() {
+    let dir = temp_config_dir();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+    let (manager, _wm, db) = build_worker_manager(&dir, native_test_catalog(), &sink);
+    let info = manager
+        .start_session(dir.to_path_buf(), &sink)
+        .await
+        .expect("the native session started");
+    let id = info.session_id.clone();
+    let path = dir.join("archimedes.db");
+
+    // The claim `mark_done` writes (Task 3), seeded as the state a restart
+    // would hand the next launch.
+    db.set_session_ready(&id, Some(true))
+        .expect("the claim writes");
+    assert_eq!(
+        stored_ready(&path, &id),
+        "1",
+        "precondition: the row claims readiness — this is the byte a restart reads"
+    );
+
+    let reason = manager
+        .send_prompt_with_images(&id, "and the tests?".to_string(), Vec::new())
+        .await
+        .expect("the turn resolves");
+    assert_eq!(
+        reason,
+        StopReason::EndTurn,
+        "the clear does not disturb the turn it starts (a storage write is not a turn outcome)"
+    );
+    assert_eq!(
+        stored_ready(&path, &id),
+        "0",
+        "a turn start writes 0 over the stored 1 — the claim cannot outlive a restart"
+    );
+
+    let _ = manager.close_session(&id).await;
+}
+
+/// The `NULL` arm: a never-written column is readable, and a turn start moves it
+/// to `0` — with the board's answer UNCHANGED across the move.
+///
+/// This asserts the DOCUMENTED COLLAPSE, not a distinction. `get_board` folds the
+/// tri-state column to a `bool` with `Some(1)` as its only truthy value
+/// (`storage/db/board.rs` ~:174-184), so `NULL` and `0` reach the consumer as the
+/// same `false`. The card is therefore read on BOTH sides of the turn: if the
+/// write had changed the card's answer, the clear would be a visible behaviour
+/// change rather than a durability fix. The row read (`db.session`) is asserted
+/// too — `ready` is not in `SESSION_COLUMNS`, so the write must not disturb the
+/// projection the sidebar and the resume path read.
+#[tokio::test]
+async fn a_turn_start_moves_a_never_written_ready_column_to_zero_without_changing_the_board() {
+    let dir = temp_config_dir();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+    let (manager, _wm, db) = build_worker_manager(&dir, native_test_catalog(), &sink);
+    let info = manager
+        .start_session(dir.to_path_buf(), &sink)
+        .await
+        .expect("the native session started");
+    let id = info.session_id.clone();
+    let path = dir.join("archimedes.db");
+
+    // The column arrives UNWRITTEN (no `DEFAULT`), and the row still reads.
+    assert_eq!(
+        stored_ready(&path, &id),
+        "__NONE__",
+        "precondition: a fresh row's `ready` is NULL — never written, not answered"
+    );
+    assert!(
+        db.session(&id)
+            .expect("the row reads")
+            .is_some_and(|row| row.id == id),
+        "the row reads through the projection that does NOT carry `ready`"
+    );
+
+    // The card that wears this Session, read BEFORE the turn (`NULL`).
+    let space = "/ready-collapse-space";
+    db.get_board(space).expect("the board seeds");
+    let card = db
+        .create_task(space, "collapse pin", None, None)
+        .expect("create");
+    db.link_session(&card.id, &id, None).expect("link");
+    assert!(
+        !card_ready(&db, space, &card.id),
+        "`NULL` folds to `false` on the card"
+    );
+
+    let reason = manager
+        .send_prompt_with_images(&id, "and the tests?".to_string(), Vec::new())
+        .await
+        .expect("the turn resolves");
+    assert_eq!(reason, StopReason::EndTurn);
+
+    assert_eq!(
+        stored_ready(&path, &id),
+        "0",
+        "the write is UNCONDITIONAL, so a Session that has never been claimed ends \
+         its first turn holding 0 — `NULL` means 'this row has never run a turn', \
+         not 'nobody ever claimed it'"
+    );
+    assert!(
+        !card_ready(&db, space, &card.id),
+        "and the card answers the SAME `false` it answered before the turn — no \
+         consumer distinguishes `NULL` from `0`, so the write changes no behaviour"
+    );
+
+    let _ = manager.close_session(&id).await;
+}
+
+/// A turn is NOT failed by a clear that matched no row.
+///
+/// A FENCE, and green BEFORE the implementation — say so, because claiming a red
+/// witness this test does not have would be a false report. `set_session_ready`
+/// is an id-only `UPDATE` that answers `Ok(false)` when nothing matches, so the
+/// missing-row case never WAS an error and nothing here reddens when the clear is
+/// removed. What it fences is the day the clear is rewritten to `?`/`expect` (the
+/// one edit that would turn a matched-no-row into a failed turn, and the edit the
+/// `let _ =` exists to forbid), and it pins the outcome the whole best-effort
+/// posture protects: a live Worker whose `sessions` row is gone still runs its
+/// turn. The row is dropped here (a purge, a retention pass that raced the
+/// prompt, a hand-edited db) and `record_message` takes the SAME missing-row FK
+/// failure on the way in, which is the precedent for the tolerance rather than a
+/// second thing to test.
+#[tokio::test]
+async fn a_missing_row_does_not_fail_the_turn_that_clears_it() {
+    let dir = temp_config_dir();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let sink: Arc<dyn EventSink> = Arc::new(TestSink { tx });
+    let (manager, _wm, db) = build_worker_manager(&dir, native_test_catalog(), &sink);
+    let info = manager
+        .start_session(dir.to_path_buf(), &sink)
+        .await
+        .expect("the native session started");
+    let id = info.session_id.clone();
+    let path = dir.join("archimedes.db");
+
+    db.delete_session(&id).expect("the row is deleted");
+    assert_eq!(
+        stored_ready(&path, &id),
+        "__NO_ROW__",
+        "precondition: the row the turn is about to clear is gone"
+    );
+
+    let reason = manager
+        .send_prompt_with_images(&id, "hi".to_string(), Vec::new())
+        .await
+        .expect("a turn is not failed by a clear that matched no row");
+    assert_eq!(
+        reason,
+        StopReason::EndTurn,
+        "the turn runs and settles on its own facts with no `sessions` row to clear"
+    );
+
+    // The clear is an `UPDATE`, so it cannot conjure a row back — and nothing
+    // else on the path writes the column. Whatever the Worker's store frames did
+    // with the row meanwhile (`ensure_session_row` may well have re-created it),
+    // no row ends this turn HOLDING a readiness value the turn did not earn.
+    let held: i64 = rusqlite::Connection::open(&path)
+        .expect("an independent connection")
+        .query_row(
+            "SELECT COUNT(*) FROM sessions WHERE ready IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the count reads");
+    assert_eq!(
+        held, 0,
+        "a clear that matched nothing wrote nothing anywhere"
+    );
+
+    let _ = manager.close_session(&id).await;
+}
+
 #[test]
 fn session_manager_builder_cyclic_weak_reference_drops_cleanly() {
     let dir = temp_config_dir();

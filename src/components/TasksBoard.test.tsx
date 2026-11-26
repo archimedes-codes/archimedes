@@ -149,8 +149,13 @@ const card = (id: string, number: number, stageSlug: string): TaskCardView => ({
   costUsd: null,
   // REQUIRED on the wire type (issue #180): the board carries artifact KEYS only,
   // never the markdown. `[]` means "this card has no artifacts" — an optional field
-  // would compile here and render nothing when real data arrives.
+  // would compile here and render nothing when real data arrives. `ready` is
+  // REQUIRED for the same reason and `false` is the honest value: the board derives
+  // it as an OR over the linked Sessions' `sessions.ready` column, and this card has
+  // no links at all.
   artifactKeys: [],
+  ready: false,
+  readySessions: [],
 });
 
 /** The NESTED wire shape. A board built flat (`{ slug, label, tasks }`) is the
@@ -961,6 +966,8 @@ describe("TasksBoard — the sessions chip's wiring (issue #174)", () => {
             ],
             costUsd: 1.25,
             artifactKeys: [],
+            ready: false,
+            readySessions: [],
           },
         ],
       },
@@ -1003,6 +1010,8 @@ describe("TasksBoard — opening a card (PR #178)", () => {
             sessions: [{ taskId: "t1", sessionId: "sess_1", stageSlug: "backlog" }],
             costUsd: 0.5,
             artifactKeys: [],
+            ready: false,
+            readySessions: [],
           },
         ],
       },
@@ -1042,8 +1051,22 @@ describe("TasksBoard — opening a card (PR #178)", () => {
       {
         stage: stage("backlog"),
         tasks: [
-          { task: task("t1", 1, "backlog"), sessions: [], costUsd: null, artifactKeys: [] },
-          { task: task("t2", 2, "backlog"), sessions: [], costUsd: null, artifactKeys: [] },
+          {
+            task: task("t1", 1, "backlog"),
+            sessions: [],
+            costUsd: null,
+            artifactKeys: [],
+            ready: false,
+            readySessions: [],
+          },
+          {
+            task: task("t2", 2, "backlog"),
+            sessions: [],
+            costUsd: null,
+            artifactKeys: [],
+            ready: false,
+            readySessions: [],
+          },
         ],
       },
     ];
@@ -1273,6 +1296,10 @@ describe("TasksBoard — the live session-status mark on a card", () => {
     })),
     costUsd: null,
     artifactKeys: [],
+    // The board computes `ready`; these fixtures are about WHICH link a mark came
+    // from on the frontend side, so the storage-side claim stays `false` here.
+    ready: false,
+    readySessions: [],
   });
 
   /** The board seeded with one card in `doing` that owns `sessionIds`. */

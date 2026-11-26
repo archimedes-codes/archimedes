@@ -543,14 +543,19 @@ export interface ArtifactMeta {
 
 /** One board card plus what the board read knows about its Sessions (issue #174).
  *
- * The TS mirror of Rust's `TaskCardView` (`src-tauri/src/storage/db.rs`), which is
- * what `get_board` puts in `StageWithTasks.tasks`. The four keys
- * (`task`/`sessions`/`costUsd`/`artifactKeys`) and the ten inside `task` are frozen
- * TWICE: by `the_task_card_view_wire_keys_are_frozen` in
- * `src-tauri/src/storage/db/tests/mod.rs`, and by its mirror
+ * The TS mirror of Rust's `TaskCardView` (`src-tauri/src/storage/db/rows.rs`), which
+ * is what `get_board` puts in `StageWithTasks.tasks`. The SIX keys
+ * (`task`/`sessions`/`costUsd`/`artifactKeys`/`ready`/`readySessions`) and the ten
+ * inside `task` are frozen TWICE: by `the_task_card_view_wire_keys_are_frozen` in
+ * `src-tauri/src/storage/db/tests/rows.rs`, and by its mirror
  * `the task card view wire keys are frozen (mirror of the Rust pin)` in
  * `src/store/tasks.test.ts`. Both spell the same list, so a rename in either
  * language reddens one of them — this repo holds no automated Rust↔TS shape check.
+ *
+ * (This paragraph used to say FIVE keys and cite `storage/db.rs` and
+ * `db/tests/mod.rs`; both paths moved in the `db` split and nobody re-read the
+ * prose. The key COUNT is the one that was load-bearing and it was stale by
+ * `readySessions`, which is precisely how a drift pin stops being a drift pin.)
  *
  * A WRAPPER, deliberately NOT a field on [`TaskRow`]: `get_task`, `create_task`
  * and `edit_task` all answer a plain `TaskRow`, and had `TaskRow` grown a
@@ -591,6 +596,49 @@ export interface TaskCardView {
    *  never absent (`Vec<String>` has no `None`, and no `skip_serializing_if` runs,
    *  which `the_task_card_view_wire_keys_are_frozen` pins). */
   artifactKeys: string[];
+  /** Whether ANY linked Session claims readiness — the board's bell, and the ONLY
+   *  way a mark reaches a card whose Session has never been opened.
+   *
+   *  Computed in RUST as an `OR` over the card's linked Sessions, so a card with
+   *  NO links is `false` (an empty OR), never `null` and never absent.
+   *
+   *  A `boolean` and NOT `boolean | null`, so its null rule DIFFERS from the
+   *  `costUsd` field above — and that is deliberate, not an inconsistency.
+   *  `costUsd` renders a FIGURE, so ADR 0082's "never reported" (`null`, renders
+   *  nothing) must stay distinguishable from "a real zero" (`0`, renders
+   *  `$0.00`). A bell renders NOTHING when the answer is no, so the column's
+   *  `NULL` ("never claimed") and `0` ("explicitly not ready") are the SAME answer
+   *  to the question this field answers. The tri-state is a storage fact; the
+   *  card's question is binary.
+   *
+   *  REQUIRED, never optional, for the same reason every sibling is: an optional
+   *  field compiles against every fixture in the repo and then renders nothing
+   *  when real data arrives. It is present-and-`false` for a card that is not
+   *  ready (`the_task_card_view_wire_keys_are_frozen` pins that against
+   *  `serde_json`), so a consumer may test `card.ready === false` honestly. */
+  ready: boolean;
+  /** WHICH of the card's linked Sessions claim readiness — the ids whose
+   *  `sessions.ready` column is `1`, in `sessions`' own oldest-link-first order.
+   *
+   *  THE INVARIANT IS TOTAL: `ready === readySessions.length > 0` on every card.
+   *  Rust derives the `boolean` FROM this list (`!ready_sessions.is_empty()`), so
+   *  the two cannot disagree by construction rather than by discipline, and a
+   *  consumer may rely on the empty list being the ONLY spelling of "not ready".
+   *
+   *  WHY A LIST WHEN `ready` ALREADY SAYS YES: `ready` answers "does ANY link
+   *  claim", which is the right answer for a BELL and the wrong one for a CLEAR.
+   *  The optimistic clears (`beginTurn`, `dismissSession`) are handed a SESSION id
+   *  and must withdraw a card's mark only when that Session is what carried it.
+   *  With a `bool` the only question the frontend can ask is "does this card link
+   *  B", and clearing on that unlights a card whose claim (A's) is still set in
+   *  the column — Greptile's first P1 on PR #222, which this field closes.
+   *
+   *  `string[]` and NOT `string[] | null`: "nobody claims" is an ANSWER, and `[]`
+   *  says it without handing the caller a second state. Required and present even
+   *  when empty, pinned by `the_task_card_view_wire_keys_are_frozen` — a
+   *  `skip_serializing_if = "Vec::is_empty"` would make this `undefined` on
+   *  exactly the empty cards and `undefined.length` throws. */
+  readySessions: string[];
 }
 
 

@@ -102,6 +102,8 @@ const card = (id: string, number: number, stageSlug: string): TaskCardView => ({
   sessions: [],
   costUsd: null,
   artifactKeys: [],
+  ready: false,
+  readySessions: [],
 });
 
 /** One column, one card — the board as it looks BEFORE the model writes. */

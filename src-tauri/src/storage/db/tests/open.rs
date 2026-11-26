@@ -1,11 +1,11 @@
-//! Tests for what `db/mod.rs` keeps: `Db::open` and its nineteen migration gates,
+//! Tests for what `db/mod.rs` keeps: `Db::open` and its twenty migration gates,
 //! `SCHEMA`, `LAST_ACTIVITY`, `set_journal_pragmas`.
 //!
 //! The mirror (ADR 0113) gives every production sibling a test child of the same
 //! name; this child is the one that mirrors the PARENT, because `open`, `gate`,
 //! `SCHEMA` and `LAST_ACTIVITY` stay in `mod.rs` — the gate-count pin
 //! (`the_three_task_tables_are_in_schema_and_have_no_gate_entry`) reads this
-//! parent's source text and counts the nineteen gates inside `open`, so moving them
+//! parent's source text and counts the twenty gates inside `open`, so moving them
 //! would move the pin's premise.
 
 use crate::storage::db::*;
@@ -450,7 +450,12 @@ fn title_stage_migrates_existing_titled_sessions_to_stage_2_and_untitled_to_0() 
             todos_json TEXT,
             cost_usd REAL,
             sort_order INTEGER NOT NULL DEFAULT 0,
-            parent_session_id TEXT
+            parent_session_id TEXT,
+            -- COMPLETE EXCEPT `title_stage`, and that is the isolation rule: this
+            -- fixture's ONLY job is the `title_stage` gate's data step, so every
+            -- OTHER gated column — `ready` included — is here to keep its own gate
+            -- silent. See the census in `support.rs`'s header for the two lists.
+            ready INTEGER
         );
         INSERT INTO sessions (id, cwd, created_at, title, capabilities_json)
         VALUES ('s-titled', '/tmp', 1, 'Pre-existing Title', '{}');
@@ -958,11 +963,11 @@ fn gated_columns_in_open_source() -> Vec<(&'static str, &'static str)> {
 /// for why a bare count could not do this job.
 ///
 /// WHAT THIS TEST DOES **NOT** CLAIM, and that narrowing is deliberate. It walks
-/// the fifteen `SCHEMA_WITHOUT_*` fixtures and asserts each omits exactly one
+/// the seventeen `SCHEMA_WITHOUT_*` fixtures and asserts each omits exactly one
 /// gated column; it does NOT assert that every gated column has a fixture here.
-/// Four columns in `GATED` have no `SCHEMA_WITHOUT_*` string, and each was
-/// checked by measurement rather than assumed — three are covered by a dedicated
-/// legacy-database test elsewhere and one was an actual hole, now closed:
+/// THREE columns in `GATED` have no `SCHEMA_WITHOUT_*` string, and each was
+/// checked by measurement rather than assumed — all three are covered by a
+/// dedicated legacy-database test elsewhere:
 ///
 ///   * `sessions.todos_json` — its gate's DATA STEP is the whole subject of two
 ///     dedicated tests in [`super::migrations`]
@@ -980,7 +985,10 @@ fn gated_columns_in_open_source() -> Vec<(&'static str, &'static str)> {
 ///     above), whose inline fixture was **fixed by this change** to carry
 ///     `parent_session_id TEXT`, because it previously omitted TWO gated columns
 ///     and so ran the `parent_session_id` gate inside a test about titling. It
-///     now omits exactly one, which is what the isolation rule asks.
+///     now omits exactly one, which is what the isolation rule asks — and it is
+///     the ONE inline fixture the `ready` gate had to be added to for that to stay
+///     true, because a fixture that gained `ready` while the macro gained it too
+///     would silently run the `ready` gate inside a test about titling.
 ///   * `spaces.trusted` — dedicated legacy probe in the integration target
 ///     `src-tauri/tests/storage.rs::spaces_trusted_column_fresh_and_migrated`,
 ///     which builds the OLD three-column `spaces` table, opens `Db`, and asserts
@@ -989,19 +997,24 @@ fn gated_columns_in_open_source() -> Vec<(&'static str, &'static str)> {
 ///     `spaces` gate), and a unit twin would duplicate an assertion that already
 ///     exists and already names its column — so the honest record is "covered,
 ///     outside the cluster", not a second fixture.
-///   * `sessions.is_subagent` — **this one was a real hole and it is closed.**
-///     Measured: no test asserted anything about this gate's outcome on a legacy
-///     database; the column was merely ABSENT from several other fixtures'
-///     `CREATE TABLE sessions`, so the `ALTER` ran as an unasserted side effect of
-///     someone else's test. It now has `SCHEMA_WITHOUT_IS_SUBAGENT` in
-///     [`super::support`] — in the cluster list below, so this pin's isolation
-///     assertion covers it — and
+///   * `sessions.is_subagent` — **the FOURTH this census used to name, and it is
+///     no longer one of them.** Measured at the time: no test asserted anything
+///     about this gate's outcome on a legacy database; the column was merely ABSENT
+///     from several other fixtures' `CREATE TABLE sessions`, so the `ALTER` ran as
+///     an unasserted side effect of someone else's test. It got
+///     `SCHEMA_WITHOUT_IS_SUBAGENT` in [`super::support`] — in the cluster list
+///     below, so this pin's isolation assertion covers it — and
 ///     `the_is_subagent_gate_arrives_zero_for_every_pre_existing_session` in
-///     [`super::migrations`], beside the other data-step migration tests.
+///     [`super::migrations`], beside the other data-step migration tests. It stays
+///     listed here as the worked example of what this census is FOR: a gated column
+///     with no legacy-database probe anywhere, found by measuring rather than by
+///     someone shipping a migration bug. `sessions.ready` was found the same way and
+///     arrived WITH its fixture and its pin in one change, which is why the count
+///     above is THREE and not four.
 ///
 /// The asymmetry that survives is therefore stated rather than hidden: the
 /// cluster list is the set of gates whose fixture's ONLY job is the gate, and the
-/// four columns above are the gates whose probe is a bigger test's subject. What
+/// three columns above are the gates whose probe is a bigger test's subject. What
 /// is no longer possible is the thing that was possible before — a gated column
 /// with no legacy-database probe anywhere, discovered only when someone shipped a
 /// migration bug.
@@ -1011,7 +1024,7 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
     // IS DOCUMENTATION ONLY — the assertion below sorts both sides, so a reordered
     // `gate` call in `db/mod.rs` does not redden this test and a renamed or added
     // column does.
-    const GATED: [(&str, &str); 19] = [
+    const GATED: [(&str, &str); 20] = [
         ("spaces", "trusted"),
         ("sessions", "archived"),
         ("sessions", "context_usage_json"),
@@ -1027,12 +1040,13 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
         ("stages", "prompt_prefix"),
         ("spaces", "board_strict"),
         ("sessions", "parent_session_id"),
+        ("sessions", "ready"),
         ("spaces", "auto_max_steps"),
         ("spaces", "auto_ceiling_usd"),
         ("stages", "position_x"),
         ("stages", "position_y"),
     ];
-    let fixtures: [(&str, &str); 16] = [
+    let fixtures: [(&str, &str); 17] = [
         ("SCHEMA_WITHOUT_ARCHIVED", SCHEMA_WITHOUT_ARCHIVED),
         ("SCHEMA_WITHOUT_CONTEXT_USAGE", SCHEMA_WITHOUT_CONTEXT_USAGE),
         ("SCHEMA_WITHOUT_IS_SUBAGENT", SCHEMA_WITHOUT_IS_SUBAGENT),
@@ -1041,6 +1055,7 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
             "SCHEMA_WITHOUT_PARENT_SESSION_ID",
             SCHEMA_WITHOUT_PARENT_SESSION_ID,
         ),
+        ("SCHEMA_WITHOUT_READY", SCHEMA_WITHOUT_READY),
         (
             "SCHEMA_WITHOUT_SPACE_SORT_ORDER",
             SCHEMA_WITHOUT_SPACE_SORT_ORDER,
@@ -1196,10 +1211,10 @@ fn the_three_task_tables_are_in_schema_and_have_no_gate_entry() {
     // table of some other shape, which it never did — and it would make
     // `each_cluster_schema_omits_exactly_one_gated_column`'s fixtures lie, so
     // this is the guard that keeps that test honest.
-    // Re-pointed at the PARENT's own text by the ADR 0113 split: all nineteen
+    // Re-pointed at the PARENT's own text by the ADR 0113 split: all twenty
     // `gate(&mut conn, …)` calls live inside `Db::open`, and `open` is what
     // `db/mod.rs` kept, so the parent is still the file whose gate surface this
-    // counts. `migrations.rs` holds the three gate DATA STEPS and calls no gate.
+    // counts. `migrations.rs` holds the four gate DATA STEPS and calls no gate.
     let source = include_str!("../mod.rs");
     for table in ["tasks", "task_sessions", "task_artifacts", "workflow_runs"] {
         let gated = format!("gate(&mut conn, \"{table}\"");

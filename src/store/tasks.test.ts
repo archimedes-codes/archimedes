@@ -175,6 +175,8 @@ const cardOf = (row: TaskRow): TaskCardView => ({
   sessions: [],
   costUsd: null,
   artifactKeys: [],
+  ready: false,
+  readySessions: [],
 });
 
 /** One `task_sessions` link as the wire row carries it. `stageSlug` is NULLABLE on
@@ -196,7 +198,7 @@ const linkedCardOf = (
   sessions: TaskSessionRow[],
   costUsd: number | null,
   artifactKeys: string[] = [],
-): TaskCardView => ({ task: row, sessions, costUsd, artifactKeys });
+): TaskCardView => ({ task: row, sessions, costUsd, artifactKeys, ready: false, readySessions: [] });
 
 /** A two-column board, NESTED the way the wire shape is (`{ stage, tasks }`). */
 const board = (...cols: [StageDto, TaskRow[]][]): StageWithTasks[] =>
@@ -660,6 +662,11 @@ describe("useTasks.createTask / useTasks.linkSession", () => {
     // no Session has ever reported a cost for it. `costUsd: null` and not `0` is
     // ADR 0082 ("never reported" renders NOTHING; a `0` here would be a phantom
     // `$0.00` on the chip), and `undefined` would not be this type at all.
+    //
+    // `ready: false` is the same kind of truth: the board computes it as an OR over
+    // the linked Sessions' `sessions.ready` column, and a card with NO links has an
+    // empty OR — which is `false`, and is exactly what the server-side read gives
+    // the same card, so the optimistic element and the next `get_board` agree.
     const landed = (useTasks.getState().boardsBySpace[SPACE] ?? [])
       .flatMap((c) => c.tasks)
       .find((t) => t.task.id === "t4");
@@ -668,6 +675,8 @@ describe("useTasks.createTask / useTasks.linkSession", () => {
       sessions: [],
       costUsd: null,
       artifactKeys: [],
+      ready: false,
+      readySessions: [],
     });
   });
 
@@ -1393,14 +1402,17 @@ describe("the board's wire shape — the Rust↔TS drift pin (issue #174)", () =
    * test reads a `.ts` file), so the only thing standing between the two is that
    * the key list below is spelled a SECOND time and is BYTE-IDENTICAL to
    * `FROZEN_CARD_KEYS` / `FROZEN_TASK_KEYS` / `FROZEN_LINK_KEYS` in
-   * `src-tauri/src/storage/db/tests/mod.rs::the_task_card_view_wire_keys_are_frozen`.
+   * `src-tauri/src/storage/db/tests/rows.rs::the_task_card_view_wire_keys_are_frozen`.
    * A rename on either side reddens one of the two. Modelled on
    * `closed_reason_spellings_are_frozen`, which is the repo's existing
    * spellings-freeze idiom.
    *
-   * FOUR card keys since #180 added `artifactKeys`. Both pins were widened in the
-   * SAME commit, and that is the only reason either is worth having: a Rust-side
-   * field with no TS-side twin is a mirror that stopped being a mirror.
+   * FOUR card keys since #180 added `artifactKeys`, FIVE since the restart-boundary
+   * change added `ready`, SIX since the two PR #222 P1 fixes added `readySessions`.
+   * Every one of those widenings happened in the
+   * SAME commit as its Rust twin, and that is the only reason either is worth
+   * having: a Rust-side field with no TS-side twin is a mirror that stopped being
+   * a mirror.
    *
    * WHY IT LIVES HERE rather than in `src/lib/tauri/`: `types.ts` is a pure type
    * module — every field it declares vanishes at compile time, so a test of the
@@ -1415,8 +1427,12 @@ describe("the board's wire shape — the Rust↔TS drift pin (issue #174)", () =
    */
   it("the task card view wire keys are frozen (mirror of the Rust pin)", () => {
     // BYTE-IDENTICAL to `FROZEN_CARD_KEYS` in
-    // `src-tauri/src/storage/db/tests/mod.rs::the_task_card_view_wire_keys_are_frozen`.
-    const FROZEN_CARD_KEYS = ["task", "sessions", "costUsd", "artifactKeys"];
+    // `src-tauri/src/storage/db/tests/rows.rs::the_task_card_view_wire_keys_are_frozen`.
+    // SIX keys since the two P1 fixes on PR #222 added `readySessions`. It shares
+    // the line with `"ready"` so this file's CODE-LINE count does not move: the
+    // ratchet refuses a baselined file growing by even one line, and the same
+    // economy is what puts two fields on one line in `App.test.tsx`.
+    const FROZEN_CARD_KEYS = ["task", "sessions", "costUsd", "artifactKeys", "ready", "readySessions"];
     // BYTE-IDENTICAL to `FROZEN_TASK_KEYS` in that same Rust test — the UNCHANGED
     // 10-field `TaskRow`, which the wrapper adds nothing to. That is what keeps
     // `get_task`/`create_task`/`edit_task` (all plain `TaskRow`) telling the truth.
@@ -1433,7 +1449,7 @@ describe("the board's wire shape — the Rust↔TS drift pin (issue #174)", () =
       "updatedAt",
     ];
     // BYTE-IDENTICAL to `FROZEN_LINK_KEYS` in that same Rust test
-    // (`src-tauri/src/storage/db/tests/mod.rs::the_task_card_view_wire_keys_are_frozen`),
+    // (`src-tauri/src/storage/db/tests/rows.rs::the_task_card_view_wire_keys_are_frozen`),
     // which asserts it against the SERIALIZED `value["sessions"][0]`. This is the
     // THIRD list and the one the chip actually reads: `sessionId` is what a click
     // on the card's chip hands to `openSession`, so a `session_id` ↔ `sessionId`
@@ -1474,6 +1490,11 @@ describe("the board's wire shape — the Rust↔TS drift pin (issue #174)", () =
       "TaskSessionRow[]",
       "number | null",
       "string[]",
+      "boolean",
+      // `readySessions` is `string[]` and NOT `string[] | null`: an empty list IS
+      // the answer ("nobody claims"), so there is no absent state for a consumer to
+      // mishandle. Its twin `artifactKeys` is the same shape two slots above.
+      "string[]",
     ]);
     expect(link.map((f) => f.type)).toEqual(["string", "string", "string | null"]);
 
@@ -1493,6 +1514,8 @@ describe("the board's wire shape — the Rust↔TS drift pin (issue #174)", () =
       sessions: [],
       costUsd: null,
       artifactKeys: [],
+      ready: false,
+      readySessions: [],
     };
     expect(Object.keys(unmeasured).sort()).toEqual([...FROZEN_CARD_KEYS].sort());
     expect("costUsd" in unmeasured).toBe(true);
@@ -1503,6 +1526,14 @@ describe("the board's wire shape — the Rust↔TS drift pin (issue #174)", () =
     // typecheck against every fixture and then render no chips at all.
     expect("artifactKeys" in unmeasured).toBe(true);
     expect(unmeasured.artifactKeys).toEqual([]);
+    // `ready` follows the SAME presence rule, and this is the case where the rule
+    // matters MOST: a `skip_serializing_if` on a `bool` would delete the key for
+    // every card that is NOT ready, so the unready cards are exactly the ones that
+    // would lose it. Rust pins the wire (`absent.get("ready")` is present and
+    // `false`); the TS side pins the compiler — `ready?:` would typecheck against
+    // every fixture in the repo and then render no bell when real data arrived.
+    expect("ready" in unmeasured).toBe(true);
+    expect(unmeasured.ready).toBe(false);
 
     // The two #180 artifact shapes, frozen the same way. `Artifact` is the ONLY
     // interface that carries artifact CONTENT across the wire, and its camelCase

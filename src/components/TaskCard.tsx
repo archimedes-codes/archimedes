@@ -217,9 +217,9 @@ export interface TaskCardProps {
    *  beside them, not inside them.
    *
    *  The card does NOT derive it, does not read a store for it, and does not know
-   *  what a todo item is. The marker convention lives in
-   *  `store/interactive.ts` (`READY_MARKER_TEXT`) and the doc
-   *  `docs/features/session-ready-marker.md`; this component paints a boolean.
+   *  what a todo item is. The mark is `TaskCardView.ready`, fed into
+   *  `store/interactive.ts`'s slot by the board read (see `applyReadyMarks`); this
+   *  component paints a boolean.
    */
   ready: boolean;
   /** This card's `useDragCard` spread (`dragProps(task.id)`), or nothing when the

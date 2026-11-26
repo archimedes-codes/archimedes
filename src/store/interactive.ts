@@ -90,71 +90,66 @@ export interface TodoUpdatePayload {
 }
 
 /**
- * THE `ready` MARKER — the one todo item a model writes to say "the work on this
- * Session is done, come and look at it".
+ * THE `ready` MARK — one card's entry in the slot the board read writes.
  *
- * ## The convention, verbatim
+ * `ready` is a COLUMN (`sessions.ready`), not a word. The `mark_done` host verb
+ * sets it, `send_prompt_with_images` clears it at turn start, and `get_board`
+ * publishes the OR over a card's linked Sessions as `TaskCardView.ready`. The
+ * frontend reads that field and nothing else — this module holds no vocabulary, no
+ * item to recognise and no sentence that teaches a model one, which is the point of
+ * the change: one claim, one channel.
  *
- * A `ChecklistItem` whose `content`, trimmed and lowercased, equals `"ready"`
- * **AND** whose `status` is `"completed"`. Exact match on the normalised string —
- * never a substring — and `completed` is mandatory.
+ * A slot entry is `PRESENT AND NON-EMPTY` — the value is the ids of the Sessions
+ * that CLAIM the card (the read's `readySessions`), which is the one hop the two
+ * optimistic clears need: they are handed a SESSION id, and with the claimants
+ * named they can withdraw ONE claim and leave the others standing. A card with no
+ * key is not ready; "no entry" and "no claimants" are the same answer, so neither
+ * is a lie about a card nobody has read (`a card the read reports NOT ready sets
+ * nothing`, `boardReadyMarks.test.ts`).
  *
- * ## Why a CONVENTION and not a tool verb (read before "fixing" this)
+ * ## Why the value is the CLAIMANTS and not every link
  *
- * A model-facing verb is engine-gated. `TaskCall` and `trait TaskStore` live in
- * `fulcrum-harness`, a crates.io-pinned dependency (`src-tauri/Cargo.toml`), and
- * `tool_specs()` is the crate's — the desktop contributes zero tool specs. ADR 0102
- * plus roadmap item #183 (`docs/roadmap/tool-separation.md`) is the approved,
- * unbuilt fix that would let the desktop ship a verb of its own; until that lands,
- * no `TaskCall` arm and no tool spec can be added from this repo.
+ * It used to be every linked id, because `TaskCardView.ready` was a per-CARD `bool`
+ * that could not say which link carried the claim, and the clears could only ask
+ * "does this card link B" — so clearing B deleted the whole card's mark and unlit a
+ * bell that A was still carrying. `readySessions` names the owner, so a clear
+ * removes one id and drops the key only when the list empties. Pinned by
+ * `a turn on the NON-claiming Session leaves the claiming Session's bell lit` and its
+ * `dismissSession` twin in `boardReadyMarks.test.ts`.
  *
- * And the obvious workaround does not work: the engine CONSTRUCTS
- * `TodoItem { content, status, description }` and emits the vector it built, so an
- * extra key on an item (`"ready": true`) is dropped inside the crate, before any
- * frame exists. Only the model-authored STRING survives. That is the whole reason
- * the marker is a conventional item read by desktop code, and the reason this file
- * is where the rule lives.
+ * ## Why the slot is keyed by (Space, card) and NOT by Session
  *
- * ## Why `completed` is required, and why the match is exact
+ * `TaskCardView.ready` is a per-CARD OR: one bell per card, however many Sessions
+ * claim it. Keying by Session would stamp one card's claim onto every Session the
+ * card links — and light the bell on a DIFFERENT card that happens to link one of
+ * them, a card the board read reported NOT ready. `boardReadyMarks.test.ts`
+ * pins exactly that case. Keying by card is what the read actually asserts; the
+ * claimants ride along in the value so `beginTurn` and `dismissSession` can still
+ * resolve a Session into the cards it lights.
  *
- * A PENDING `"ready"` in a plan means "still need to make it ready" — the opposite
- * of the fact the mark reports — so the status half is not a redundant guard. And
- * `"get the board ready"` is a plan item ABOUT readiness; a substring test would
- * mark a card ready for half the English language. Both halves are pinned in
- * `interactive.test.ts`.
+ * ## Why the key carries the Space
  *
- * ## Where the model learns this
- *
- * Nothing in the app tells a model the convention exists. It has to be told — a
- * Stage's prompt prefix, or an on-enter Skill — and `docs/features/session-ready-marker.md`
- * records that plainly, because a convention nobody announces is a convention
- * nobody uses.
+ * `boardsBySpace` is per-Space and so is a read, so the replace must be scoped to
+ * the Space that was read (a global replace would wipe another Space's marks —
+ * `boardReadyMarks.test.ts` pins it). A `spacePath` prefix makes that scoping a
+ * prefix test with no auxiliary bookkeeping to keep coherent, and `readyCardKey` is
+ * the only thing that spells the shape, for the writer and the reader alike.
  */
-export const READY_MARKER_TEXT = "ready";
-
-/** Does this item carry the **ready** marker? See `READY_MARKER_TEXT` for the rule
- *  and for why the rule is a convention rather than a wire field.
- *
- *  The `typeof` guard is not paranoia: `useMainChecklistItems` documents that the
- *  board casts ANY model-authored value out of a persisted row, so a `content` that
- *  is a number or `null` is reachable, and `.trim()` on one would throw inside the
- *  `interactive-event` listener — turning today's dropped frame into a runtime
- *  exception in a listener `App.tsx` deliberately keeps throw-free. */
-export function isReadyMarker(item: ChecklistItem): boolean {
-  return (
-    item.status === "completed" &&
-    typeof item.content === "string" &&
-    item.content.trim().toLowerCase() === READY_MARKER_TEXT
-  );
+export interface ReadyCardEntry {
+  /** The card the read reported — `TaskRow.id`. */
+  taskId: string;
+  /** `TaskCardView.ready`, exactly as the read answered it. */
+  ready: boolean;
+  /** The Sessions that CLAIM this card (`TaskCardView.readySessions`) — NOT every
+   *  Session the card links. The distinction is what makes a partial clear possible. */
+  readySessions: readonly string[];
 }
 
-/** Does this snapshot of a board assert readiness? ONE pass, ONE answer, and the
- *  answer is per-SNAPSHOT: `applyTodoUpdate` overwrites the board, so a snapshot
- *  without the marker withdraws the claim. That is what stops the mark going
- *  sticky-within-a-turn when the model rewrites its list and drops the item. */
-export function boardAssertsReady(todos: readonly ChecklistItem[]): boolean {
-  return todos.some(isReadyMarker);
-}
+/** The slot key for one card in one Space. THE ONLY spelling of it — the board feed
+ *  writes through it and `TasksBoard` reads through it, so the two cannot drift into
+ *  two different shapes of the same string. */
+export const readyCardKey = (spacePath: string, taskId: string): string =>
+  `${spacePath}\u0000${taskId}`;
 
 /**
  * One session's money and tokens, as the `cost_update` frames leave them in the
@@ -275,42 +270,51 @@ interface InteractiveState {
    */
   todos: Record<string, ChecklistItem[]>;
   /**
-   * Sessions whose CURRENT todo snapshot carries the **ready** marker, keyed by
-   * session id. A PRESENCE map (`{ [sessionId]: true }`), so "no entry" and
-   * "false" are the same answer and neither is a lie about a Session nobody has
-   * heard of.
+   * The cards a board read reported **ready**, keyed by [`readyCardKey`] (Space +
+   * Task id). PRESENCE is the claim; the value is the ids of the Sessions that
+   * carry it (`TaskCardView.readySessions`), which is what lets an optimistic clear
+   * withdraw ONE claim instead of the card's whole mark. A card with no key is not
+   * ready, so "no entry" and "no claimants" are the same answer and neither is a
+   * lie about a card nobody has read.
    *
    * ## Why this is an explicit slot and NOT a derivation (do not "simplify" it)
    *
-   * The owner's rule is that the NEXT TURN on a Session clears the mark. That rule
-   * cannot be derived from the todo list: a turn that never calls
-   * `manage_todo_list` leaves the board untouched, so a derived mark would survive
-   * it. And deriving `ready && !inTurn` is worse than wrong — it makes the mark
-   * DISAPPEAR while a turn runs and REAPPEAR when the turn settles, which is the
-   * opposite of "the next turn clears it". So the mark is written when the marker
-   * arrives and cleared by the next `beginTurn`, in two places, and nothing in
-   * between derives it.
+   * The durable fact is `sessions.ready`, and the board read carries it — so this
+   * map is not the store of the claim, it is the RENDER HALF of it, and it exists
+   * for one reason: `useTaskBoardAutoRefresh` re-reads the board only on
+   * `inTurn`'s FALLING edge. Without a slot the bell would therefore stay lit for
+   * the whole of the next turn, and `cardMarkOf` ranks `ready` ABOVE `running` —
+   * the "running but ready" pair the owner rejected on a real board. The
+   * `beginTurn` clear bridges exactly that gap, and the next settle's read confirms
+   * it, because the Rust-side turn-start clear has already zeroed the column.
    *
-   * ## Why detecting it inside `applyTodoUpdate` makes this nearly free
+   * Deriving `ready && !inTurn` instead is worse than wrong: it makes the mark
+   * vanish while a turn runs and REAPPEAR when it settles, which is the opposite of
+   * "the next turn clears it". `the mark does NOT come back when the turn settles`
+   * in `sessionReadyMark.test.ts` and its board twin in
+   * `TasksBoardReady.test.tsx` are what stop that shape coming back.
    *
-   * `applyTodoUpdate` is the ONE funnel for a session's todos — the live
-   * `todos_update` listener (`App.tsx`), the reopen/resume seed
-   * (`sessions.ts`, fed by `history_page`'s `todos`, which is `db.session_todos`
-   * on the first page only), and `sessionLifecycle`'s carry-across-a-close all
-   * route through it, and nothing else writes `todos[sessionId]`. Detecting the
-   * marker THERE therefore yields live detection AND restart persistence from one
-   * call, with no new column, no migration, no IPC command and no engine change.
+   * ## Why the key is (Space, card) and NOT a Session id
    *
-   * ## The honest boundary that falls out of it
+   * `TaskCardView.ready` is a per-CARD OR and one card wears ONE bell. Writing it
+   * per-Session would attribute one card's claim to every Session it links, and
+   * light the bell on a DIFFERENT card that happens to share one of them — a card
+   * the read reported NOT ready. `a card that only links the UNREADY half of a
+   * ready card's links stays unmarked` in `boardReadyMarks.test.ts` is that case.
+   * The Space half of the key is what lets a read replace only the Space it read; a
+   * global replace would wipe another Space's marks, and a Space nobody is looking
+   * at gets no read at all.
    *
-   * The mark rides the board, and a board only exists in this map once something
-   * has read it. A Session whose history is opened after a restart gets its mark
-   * back (the seed re-fires the detection); a Session that is never opened has no
-   * `todos` and therefore no mark. That is the accepted cost of the
-   * zero-migration design — the mark is live-plus-opened-history, not durable
-   * board state. `docs/features/session-ready-marker.md` says so out loud.
+   * ## What this map is NOT any more
+   *
+   * It used to be scraped out of a Session's todo list — a `completed` item whose
+   * content was the single word `ready` — and it used to be keyed by Session, which
+   * meant a Session whose history had never been read had no mark. Both halves are
+   * retired: `mark_done` sets the column, `send_prompt_with_images` clears it, and
+   * the board read is the only thing that feeds this map.
    */
-  ready: Record<string, true>;
+  ready: Record<string, readonly string[]>;
+
   /** The agent state machine (`working`/`idle`/`blocked`) — wired, not rendered in v1. */
   agentState: Record<string, "working" | "idle" | "blocked">;
   /**
@@ -343,9 +347,10 @@ interface InteractiveState {
    * A `todos_update` push: replace this session's board. The payload's
    * `source` is NOT consulted (ADR 0041).
    *
-   * ALSO the one place the **ready** marker is read — see `ready`'s field doc for
-   * why this is the seam that makes live detection and restart persistence one and
-   * the same mechanism.
+   * Writes `todos` and NOTHING else. It used to also read the **ready** marker out
+   * of the snapshot, and that is gone: readiness is a column now
+   * (`sessions.ready`), and the board read is its only reader — see
+   * [`applyReadyMarks`]. Two channels for one claim is what this removed.
    */
   applyTodoUpdate: (sessionId: string, payload: unknown) => void;
   /**
@@ -356,14 +361,82 @@ interface InteractiveState {
    * The key is DELETED, leaving the session's board empty until the next
    * `todos_update`.
    *
-   * The **ready** mark goes with it, on the reasoning recorded at the call below:
-   * a cleared checklist no longer asserts readiness.
+   * It used to drop the **ready** mark with the board, and that arm went with the
+   * word: a checklist says nothing about readiness once readiness is a column, so
+   * a cleared board is no longer a reason to withdraw a bell. A Session that stops
+   * being ready has its column cleared in Rust and the next read says so; a
+   * DELETED Session is cleared by `dismissSession`, which is the close that actually
+   * means the claim is over.
    */
   applyTodoClear: (sessionId: string) => void;
   /**
-   * Withdraw this session's **ready** mark. Called by `sessions.ts`'s `beginTurn`
-   * — the owner's rule is "the next turn on that Session clears it" — and is a
-   * no-op (identical state object) when no mark is set.
+   * THE BOARD FEED — replace ONE Space's **ready** marks with what a board read
+   * just reported. Called by `tasks.ts` after `load`/`refresh` produce columns,
+   * through THIS ACTION and never by poking the map, the same discipline
+   * [`clearReady`] exists for.
+   *
+   * ## Scope: the Space that was read, and only that Space
+   *
+   * Every key of this Space is replaced (so a claim the read no longer carries
+   * goes, and a card that left the board leaves the slot) and every key of any
+   * OTHER Space is left standing — `boardsBySpace` is per-Space, a read covers one,
+   * and a Space the user is not looking at gets no read at all. Pinned by
+   * `the board feed replaces ONE Space's marks only` in `boardReadyMarks.test.ts`.
+   *
+   * ## Identity: an unchanged read changes NOTHING
+   *
+   * A read that agrees with the slot returns the identical state object. `zustand`
+   * compares a selector's result with `Object.is` and `TasksBoard` subscribes to
+   * this map, so a fresh object per read would re-render the whole board every time
+   * the auto-refresh fires.
+   *
+   * ## The ticket: why a read must say when it started
+   *
+   * `ticket` is [`readyTicket`] sampled BEFORE the `get_board` `await`, and a feed
+   * whose ticket predates the last optimistic withdrawal is dropped outright. Without
+   * it a read dispatched before `beginTurn` resolves after it, carries the pre-turn
+   * `ready: true`, and relights a bell the user has just been told is gone —
+   * `loadEpoch` in `tasks.ts` cannot catch that, because it rejects a read superseded
+   * by ANOTHER read and starting a turn is not a read. [`readyFence`] carries the
+   * whole argument and the mid-turn consequence the owner accepted.
+   *
+   * ## The three writers of this map, all of them deliberate
+   *
+   *  1. **This action** — the board feed. The durable answer: it lands the
+   *     `sessions.ready` column the `mark_done` verb sets and
+   *     `send_prompt_with_images` clears, on every mount read and every
+   *     auto-refresh, for Sessions that were never opened.
+   *  2. **[`clearReady`]**, from `sessions.ts`'s `beginTurn` — the OPTIMISTIC
+   *     clear. The column is already zeroed in Rust by then, but no read is
+   *     scheduled until the turn's falling edge, so without it the card wears a
+   *     bell through the whole turn that disproves it.
+   *  3. **`dismissSession`** — the same optimistic withdrawal when a Session's
+   *     Worker goes away, so a dismissed Session's bell does not survive until
+   *     that Space's next board read, which can be minutes.
+   *
+   * Three writers of one map is accepted, not accidental: ONE writes what is TRUE
+   * and the other two write what is TRUE A MOMENT EARLIER. Nothing between them
+   * derives anything, and the two optimistic ones withdraw a CLAIMANT rather than a
+   * card, so a card that also links a Session still holding the column keeps its bell.
+   */
+  applyReadyMarks: (
+    spacePath: string,
+    ticket: number,
+    entries: readonly ReadyCardEntry[],
+  ) => void;
+  /**
+   * Withdraw this Session's **claim** on every ready card that names it, dropping a
+   * card's mark only when it was the last claimant. Called by `sessions.ts`'s
+   * `beginTurn` — the owner's rule is "the next turn on that Session clears it" —
+   * and a no-op (identical state object) when no card names it.
+   *
+   * It takes a SESSION id while the slot is keyed by CARD, and that is the whole
+   * reason a slot entry carries the claimants' ids: `beginTurn` knows which Session
+   * started, and the card the bell is on is one hop away. The claimants — and not
+   * every link — are what make this a PARTIAL withdrawal: a card linking a claiming
+   * A and a silent B keeps its bell when B starts a turn.
+   *
+   * Raises the ready fence even when it withdraws nothing.
    *
    * Lives HERE rather than being spelled as a `useInteractive.setState` from
    * `sessions.ts` so the mark has one owner, and so the cross-store edge is an
@@ -411,6 +484,91 @@ interface InteractiveState {
   dismissSession: (sessionId: string) => void;
 }
 
+/** Do two slot entries name the SAME set of linked Sessions, in the order the board
+ *  published them? An entry's ids are what the two optimistic clears resolve
+ *  through, so a card whose links CHANGED is a changed entry even when it is ready
+ *  both times — a stale id list would leave a newly linked Session unable to clear
+ *  the bell. Order-insensitive on purpose: the value is a set, and a board read that
+ *  re-publishes the same links in another order is not a new fact. */
+const sameLinks = (
+  a: readonly string[] | undefined,
+  b: readonly string[] | undefined,
+): boolean =>
+  a !== undefined &&
+  b !== undefined &&
+  a.length === b.length &&
+  a.every((id) => b.includes(id));
+
+/** Is this slot key a card in this Space? The prefix IS the Space half of
+ *  [`readyCardKey`], which is why no auxiliary per-Space bookkeeping is needed to
+ *  scope a replace. */
+const keyIsInSpace = (key: string, spacePath: string): boolean =>
+  key.startsWith(`${spacePath}\u0000`);
+
+/**
+ * THE READY FENCE — how many optimistic ready withdrawals have happened, EVER.
+ *
+ * ## The race this closes (Greptile's second P1 on PR #222)
+ *
+ * A board read is an `await`. A read dispatched BEFORE a turn started can resolve
+ * AFTER `beginTurn` cleared the bell — it still carries the pre-turn `ready: true` —
+ * and the feed would write the mark straight back. `loadEpoch` in `tasks.ts` cannot
+ * catch this: it rejects a read SUPERSEDED BY ANOTHER READ, and starting a turn is
+ * not a read. The clear left no trace, so the stale answer looked current and the
+ * bell stayed lit through the turn that disproved it.
+ *
+ * ## The protocol
+ *
+ * A reader takes a TICKET ([`readyTicket`]) at the moment it DISPATCHES the read and
+ * hands it to `applyReadyMarks` when the answer lands. The feed drops the feed when
+ * `ticket < readyFence` — something was withdrawn after the read started.
+ *
+ * ## Why a counter and not a per-card tombstone
+ *
+ * The question is "did this read start before the last thing the user was told?",
+ * and one integer answers it for every Space at once. A per-card tombstone would
+ * need a key per card, and a withdrawal is handed a SESSION id — it can name the
+ * cards only through a link list it may be about to delete.
+ *
+ * ## The consequence, stated plainly
+ *
+ * A `mark_done` that lands MID-turn is not painted until the turn settles: the read
+ * that would carry it was dispatched before the clear, so it is dropped. That is the
+ * owner's ruling — `cardMarkOf` ranks `ready` above `running`, so a mid-turn bell
+ * would hide the running dot, and "the bell waits for the settle" is the pairing
+ * that was asked for. The durable claim is never lost, only its paint: the
+ * falling-edge read carries it. The same rule delays a bell on an UNRELATED card
+ * when a turn starts or a Session is dismissed mid-read, which is bounded by that
+ * turn and errs toward not showing a bell that may be a lie.
+ *
+ * ## Why a module `let` and NOT store state
+ *
+ * It is monotonic, and `resetStores()` must NOT rewind it: a counter that went
+ * backwards between tests would admit a stale read a running test means to reject.
+ * `src/test/resetStores.ts` documents that it cannot reach a module `let` — normally
+ * the reason to put bookkeeping in the store; here that reach is exactly what must
+ * not happen. This is the same class as `tasks.ts`'s `loadEpoch`, which carries the
+ * identical warning ("if one is ever added, `reset()` must clear it") — and the
+ * difference is deliberate: `loadEpoch` is cleared because a stale ticket there is
+ * merely redundant, while a stale ticket HERE is a bell that lies. Every reader
+ * samples at DISPATCH time, so a value that only grows cannot go stale across a test
+ * boundary the way a flag would.
+ */
+let readyFence = 0;
+
+/** Take the ticket for a read about to be dispatched. CALL IT BEFORE THE `await`,
+ *  never after — a ticket taken when the answer lands is always current and the
+ *  guard is then vacuous. Exported rather than re-derived so the fence has ONE
+ *  spelling and `tasks.ts` cannot invent a second protocol. */
+export const readyTicket = (): number => readyFence;
+
+/** Raise the fence: an optimistic withdrawal just happened, so no read that started
+ *  before it may paint a bell. Called by BOTH optimistic writers, unconditionally —
+ *  see [`readyFence`] for why even a withdrawal that deletes nothing raises it. */
+const raiseReadyFence = (): void => {
+  readyFence += 1;
+};
+
 export const useInteractive = create<InteractiveState>((set) => ({
   requests: {},
   todos: {},
@@ -447,66 +605,116 @@ export const useInteractive = create<InteractiveState>((set) => ({
       // so any branch on that label mis-files the board (ADR 0041). Do not
       // "restore" one.
       //
-      // THE `ready` MARK IS READ HERE, and this line is the whole reason the
-      // feature costs what it costs. `applyTodoUpdate` is the ONE funnel for a
-      // session's todos: the live `todos_update` listener (`App.tsx`), the
-      // reopen/resume seed (`sessions.ts`, from `history_page`'s `todos`) and
-      // `sessionLifecycle`'s carry-across-a-close all route through it, and
-      // nothing else writes `todos[sessionId]` (verified — `grep -rn
-      // "applyTodoUpdate" src` names those three and no fourth writer, and the
-      // map has no other `set`). Reading the marker at the funnel therefore buys
-      // live detection AND restart persistence for free, with no new column, no
-      // migration, no IPC command and no engine change. Reading it in the
-      // listener instead would need a second read site for the seed, and a second
-      // site is where the two would drift.
-      //
-      // Per-SNAPSHOT, not sticky: `manage_todo_list` rewrites the whole list on
-      // every call, so a snapshot WITHOUT the marker is the model withdrawing the
-      // claim and the mark goes. Pinning that is what keeps the mark from
-      // outliving the item that asserted it.
-      const ready = boardAssertsReady(p.todos);
-      if (ready === sessionId in state.ready) {
-        // Nothing to change in the mark, so the map keeps its IDENTITY — a new
-        // object here would re-render every reader of `ready` on every todo frame
-        // (zustand compares a selector's result with `Object.is`).
-        return { todos: { ...state.todos, [sessionId]: p.todos } };
-      }
-      const nextReady = { ...state.ready };
-      if (ready) nextReady[sessionId] = true;
-      else delete nextReady[sessionId];
-      return {
-        todos: { ...state.todos, [sessionId]: p.todos },
-        ready: nextReady,
-      };
+      // This used to also read the `ready` marker out of the snapshot — one pass
+      // over `p.todos` looking for a `completed` item whose content was the word
+      // `ready` — and to write the mark alongside the board. Both are gone:
+      // readiness is `sessions.ready`, a column the `mark_done` verb sets, and the
+      // board read is its only reader (`applyReadyMarks`). The snapshot write below
+      // is the whole job now.
+      return { todos: { ...state.todos, [sessionId]: p.todos } };
     }),
 
-  clearReady: (sessionId) =>
+  applyReadyMarks: (spacePath, ticket, entries) => {
+    // THE FENCE, checked BEFORE the `set` and before anything is built. A read whose
+    // ticket is older than the fence started before an optimistic withdrawal, so its
+    // payload is out of date about a fact the user has already been told. Dropping
+    // the feed WRITES NOTHING, which is the safe direction: it can never unlight a
+    // bell that is on screen, and the falling-edge read repaints everything.
+    //
+    // The test is `ticket < fence`, NOT `ticket <= fence`. A ticket taken AFTER the
+    // last withdrawal is current and must paint: `beginTurn` raises the fence to N+1
+    // and a read dispatched after it carries N+1, so the ordering that decides this
+    // is the one the counter recorded at DISPATCH time, not the one the promises
+    // resolve in. See [`readyFence`] for the mid-turn consequence the owner accepted.
+    if (ticket < readyFence) return;
     set((state) => {
-      // The identical-object no-op, so a `beginTurn` on a session that never
-      // marked ready does not re-render anything that reads the map.
-      if (!(sessionId in state.ready)) return state;
+      // The claims this read carries, and WHICH Sessions carry each of them. A card
+      // the read reports NOT ready contributes NOTHING — presence is the claim — and
+      // a ready card that names NO claimant contributes nothing either: there is no
+      // Session to resolve an optimistic clear through, and `readyFor` could not have
+      // read such a card anyway.
+      const claims = new Map<string, readonly string[]>();
+      for (const entry of entries) {
+        if (!entry.ready || entry.readySessions.length === 0) continue;
+        claims.set(readyCardKey(spacePath, entry.taskId), entry.readySessions);
+      }
+      // THE NEXT MAP, built before anything is decided: this Space's keys are
+      // REPLACED wholesale (a claim the read withdrew goes, and a card that left the
+      // board leaves the slot) and every OTHER Space's keys are carried over
+      // untouched, because a board read describes one Space and a Space nobody is
+      // looking at is never read.
+      const next: Record<string, readonly string[]> = {};
+      for (const [key, ids] of Object.entries(state.ready)) {
+        if (!keyIsInSpace(key, spacePath)) next[key] = ids;
+      }
+      for (const [key, ids] of claims) next[key] = ids;
+      // IDENTITY PRESERVED when the read agrees with the slot. `TasksBoard`
+      // subscribes to this map and zustand compares a selector's result with
+      // `Object.is`, so a fresh object on every read re-renders the whole board
+      // every time the auto-refresh fires — and the auto-refresh fires on every
+      // turn. Same SIZE and then a per-key compare: the sizes can only agree when
+      // this Space's key set is unchanged, so the compare is over what a read
+      // touches and nothing else.
+      const keys = Object.keys(state.ready);
+      if (keys.length === Object.keys(next).length) {
+        const agreed = keys.every((key) =>
+          keyIsInSpace(key, spacePath)
+            ? sameLinks(next[key], state.ready[key])
+            : next[key] === state.ready[key],
+        );
+        if (agreed) return state;
+      }
+      return { ready: next };
+    });
+  },
+
+  clearReady: (sessionId) => {
+    // The fence goes up UNCONDITIONALLY, before anything is decided and even when
+    // this withdraws nothing. The reason is the fence's own question — "could a
+    // read in flight already know what the user has just been told?" — and a read
+    // dispatched before this call CANNOT know about anything that happens after it,
+    // whether or not this particular card had a mark to delete. Raising only on a
+    // real deletion would let a `beginTurn` on an unlit Session admit a pre-turn
+    // read that misses a `mark_done` that landed mid-turn.
+    raiseReadyFence();
+    set((state) => {
+      // The identical-object no-op, so a `beginTurn` on a Session that lights no
+      // card does not re-render anything that reads the map.
+      const keys = Object.keys(state.ready).filter((key) =>
+        (state.ready[key] ?? []).includes(sessionId),
+      );
+      if (keys.length === 0) return state;
+      // WITHDRAW THE CLAIMANT, not the card. A card linking a claiming Session A
+      // and a silent Session B is ready because of A alone, and `beginTurn(B)` must
+      // leave that bell lit — the column still says `1` for A and the next read will
+      // say so. Deleting the key was the whole of Greptile's first P1: the only
+      // question a `bool` could answer was "does this card link B".
       const ready = { ...state.ready };
-      delete ready[sessionId];
+      for (const key of keys) {
+        const rest = (ready[key] ?? []).filter((id) => id !== sessionId);
+        // The key goes only when the LAST claimant goes, so `ready` and
+        // "the key is present" stay the same statement.
+        if (rest.length === 0) delete ready[key];
+        else ready[key] = rest;
+      }
       return { ready };
-    }),
+    });
+  },
 
   applyTodoClear: (sessionId) =>
     set((state) => {
-      // A clear drops the mark TOO, and that is a decision rather than a
-      // side effect: the board was the only thing asserting readiness, and both
-      // emitters of a `todos_clear` name a Session whose claim is over — a child
-      // session's teardown (`App.tsx`) and a deleted Session (`sessions.ts`'s
-      // `deleteSession`). Leaving a card marked `ready` under a checklist that no
-      // longer exists would be a mark asserting a fact nothing supports.
-      if (!(sessionId in state.todos) && !(sessionId in state.ready))
-        return state;
+      // The BOARD only — the ready arm went with the word. A cleared checklist
+      // says nothing about readiness once readiness is a column, so a clear is no
+      // longer a reason to withdraw a bell: a Session that stops being ready has
+      // `sessions.ready` cleared in Rust and the next board read says so, and a
+      // DELETED Session goes through `dismissSession`, which is the close that
+      // actually means the claim is over.
+      if (!(sessionId in state.todos)) return state;
       // The key goes, leaving the session's board empty until the next
       // `todos_update`.
       const todos = { ...state.todos };
       delete todos[sessionId];
-      const ready = { ...state.ready };
-      delete ready[sessionId];
-      return { todos, ready };
+      return { todos };
     }),
 
   applyState: (sessionId, payload) =>
@@ -585,20 +793,60 @@ export const useInteractive = create<InteractiveState>((set) => ({
       return { cost: { ...state.cost, [sessionId]: next } };
     }),
 
-  dismissSession: (sessionId) =>
+  dismissSession: (sessionId) => {
+    // The same unconditional raise `clearReady` makes, for the same reason: a
+    // Worker going away is a fact no read dispatched before it can know about,
+    // whether or not this Session was carrying a bell. `onSessionClosed` dismisses
+    // EVERY closed Session including Subagents, so this fires on ordinary child
+    // closes too.
+    //
+    // The blast radius is bounded in the direction that matters: dropping a feed
+    // WRITES NOTHING, so an already-painted bell is never unlit by it. The only cost
+    // is that a bell earned between an unrelated close and the next read waits for
+    // that read. It cannot stall the board either — the fence gates the ready slot
+    // ALONE, and column paint goes through `loadEpoch` in `tasks.ts` untouched.
+    raiseReadyFence();
     set((state) => {
       const requests = { ...state.requests };
       delete requests[sessionId];
       const todos = { ...state.todos };
       delete todos[sessionId];
-      // The mark goes with the board it was read off. `sessionLifecycle`'s
-      // `onSessionClosed` re-applies the board AFTER this dismiss (it is the
-      // carry that keeps a still-rendered Session's checklist on screen), and that
-      // re-apply re-detects the marker — so a Session closed while still marked
-      // ready gets its mark back through the very same funnel, which is the
-      // correct answer: the board it is still showing still says `ready`.
-      const ready = { ...state.ready };
-      delete ready[sessionId];
+      // THE THIRD WRITER of the ready slot: a Session whose Worker goes away stops
+      // lighting the cards that link it. This is OPTIMISTIC and it is not redundant
+      // with the next board read — `useTaskBoardAutoRefresh` only schedules a read on
+      // a turn's FALLING edge, so without this a dismissed Session's bell survived
+      // until someone happened to re-read that Space, which can be minutes.
+      //
+      // It does NOT restore on a close any more, and that is a change with the word.
+      // `sessionLifecycle`'s `onSessionClosed` used to re-apply the carried board
+      // after this dismiss, and the marker read at that funnel put the mark back.
+      // Readiness is `sessions.ready` now, and a todo snapshot cannot speak for it:
+      // the claim survives in the COLUMN, and the bell comes back with the next
+      // board read that reports the column still set.
+      //
+      // The identity no-op, for the same reason `clearReady` has one:
+      // `onSessionClosed` dismisses EVERY closed Session, and a child close on a
+      // board carrying marks must not hand `TasksBoard` a fresh map to re-render
+      // for. `ready` therefore keeps its IDENTITY when no key named this Session —
+      // the other five maps are always rebuilt, because a close really does drop
+      // those keys and they are not what this board subscribes to.
+      //
+      // WITHDRAW THE CLAIMANT, not the card — the same rule `clearReady` applies. A
+      // dismissed Session's claim is over, but a card that also links a Session
+      // still holding the column is still ready, and deleting the key would unlight
+      // a bell the next read relights.
+      const readyKeys = Object.keys(state.ready).filter((key) =>
+        (state.ready[key] ?? []).includes(sessionId),
+      );
+      let ready = state.ready;
+      if (readyKeys.length > 0) {
+        ready = { ...state.ready };
+        for (const key of readyKeys) {
+          const rest = (ready[key] ?? []).filter((id) => id !== sessionId);
+          if (rest.length === 0) delete ready[key];
+          else ready[key] = rest;
+        }
+      }
       const agentState = { ...state.agentState };
       delete agentState[sessionId];
       const cost = { ...state.cost };
@@ -606,5 +854,6 @@ export const useInteractive = create<InteractiveState>((set) => ({
       const session = { ...state.session };
       delete session[sessionId];
       return { requests, todos, ready, agentState, cost, session };
-    }),
+    });
+  },
 }));

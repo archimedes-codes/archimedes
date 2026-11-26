@@ -26,6 +26,14 @@
 //! straddle it and where they landed, and carry the poisoned-mutex rationale for
 //! the sites they hold or do not hold.
 
+// ONE TEST CHILD CARRIES A TEST NAMED FOR ANOTHER SUBJECT'S PAYLOAD, and it is a
+// placement correction rather than a new exception to the mirror rule:
+// `the_task_card_view_wire_keys_are_frozen` used to live in [`board`]. It never read
+// a board — it hand-builds a `TaskCardView` and asks `serde_json` what keys come out,
+// which is a shape question about three types declared in `db/rows.rs`, the exact
+// subject of [`rows`]. It moved when `board.rs` passed its size ratchet, because the
+// sanctioned answer to that red is a subject split and not a threshold bump.
+//
 // `support` is declared FIRST, and the `#[macro_use]` attribute is what makes the
 // order matter. It is NOT needed by anything inside `support.rs`: the
 // `SCHEMA_WITHOUT_*` / `SCHEMA_PRE_TASK_BOARD_CONFIG` fixtures are built by

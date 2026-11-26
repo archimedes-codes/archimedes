@@ -508,9 +508,9 @@ pub struct StageWithTasks {
 ///
 /// `#[serde(flatten)]` is deliberately NOT used on `task`: keeping the nested
 /// `task` key makes the two shapes distinguishable in the JSON, and the repo has
-/// no `serde(flatten)` precedent to follow. The four wire keys
-/// (`task`/`sessions`/`costUsd`/`artifactKeys`) are frozen by
-/// `the_task_card_view_wire_keys_are_frozen`, whose TS mirror lives in
+/// no `serde(flatten)` precedent to follow. The SIX wire keys
+/// (`task`/`sessions`/`costUsd`/`artifactKeys`/`ready`/`readySessions`) are frozen
+/// by `the_task_card_view_wire_keys_are_frozen`, whose TS mirror lives in
 /// `src/lib/tauri/types.ts`.
 ///
 /// ADR 0082's two meanings for `sessions.cost_usd` survive the trip in
@@ -533,6 +533,63 @@ pub struct TaskCardView {
     /// every fixture in the repo and then renders nothing when real data arrives.
     /// A card with no artifacts has `artifact_keys: []`.
     pub artifact_keys: Vec<String>,
+    /// Whether ANY linked Session claims readiness — the board's bell, and the
+    /// ONLY way a mark reaches a card whose Session has never been opened.
+    ///
+    /// WHY IT RIDES THIS READ AND NOT A SESSION READ: the board learns a
+    /// per-session SQLite fact for a Session it has never opened through exactly
+    /// ONE channel, the link statement's JOIN on `sessions` (the same one
+    /// `cost_usd` uses). `docs/features/session-ready-marker.md` says a host verb
+    /// "swaps the *writer* only", and that holds for the WRITE path — but the
+    /// frontend's other source for the mark is the transcript of an OPENED
+    /// Session, and after a restart no Session is open. Without this field the
+    /// mark is invisible on boot. `list_sessions` is not an alternative:
+    /// `SessionRow`/`SessionInfo` are crates.io-pinned types.
+    ///
+    /// A `bool` and NOT an `Option<bool>`, and its null rule therefore DIFFERS
+    /// from ADR 0082's on `cost_usd` one field above. That is not an oversight:
+    /// `cost_usd` renders a FIGURE, so "never reported" (renders nothing) and "a
+    /// real zero" (renders `$0.00`) must stay distinguishable all the way to the
+    /// renderer. A bell renders NOTHING when the answer is no, so `NULL` ("never
+    /// claimed") and `0` ("explicitly not ready") are the same answer to the
+    /// question this field answers — collapsing them is honest, and the tri-state
+    /// is a STORAGE fact that the card has no use for. The card's question is
+    /// binary; the column's is not.
+    ///
+    /// `OR` over the card's links, `Some(1)` being the only truthy value, so a
+    /// card with NO links is `false` (an empty OR). Per-CARD, which is why it sits
+    /// here and not on [`TaskSessionRow`] — `FROZEN_LINK_KEYS` stays THREE.
+    /// REQUIRED, never `Option`, never `skip_serializing_if`, for the documented
+    /// reason every sibling field gives: an optional field compiles against every
+    /// fixture in the repo and then renders nothing when real data arrives.
+    pub ready: bool,
+    /// WHICH of this card's linked Sessions claim readiness — the ids whose
+    /// `sessions.ready` column is `1`, oldest-link-first.
+    ///
+    /// ## Why a `bool` is not enough
+    ///
+    /// `ready` answers "does ANY link claim", and for a BELL that is the right
+    /// answer. It is the WRONG answer for a CLEAR. The optimistic clears
+    /// (`beginTurn`, `dismissSession`) are handed a SESSION id and must withdraw
+    /// the card's mark only when that Session is what was carrying it; with a
+    /// `bool` the only question the frontend can ask is "does this card link B",
+    /// and deleting on that unlights a card whose claim (A's) is still set in the
+    /// column. A card linking a claiming and a non-claiming Session is therefore
+    /// the case this field exists for — pinned by
+    /// `the_board_attributes_the_ready_claim_to_the_session_that_made_it`.
+    ///
+    /// ## The invariant
+    ///
+    /// **`ready == !ready_sessions.is_empty()`**, on every card, always. Both are
+    /// folded from the same `mine` over the same links in the same pass, so they
+    /// cannot disagree by construction — and a consumer may rely on the empty list
+    /// being the ONLY spelling of "not ready". That is why this is `Vec<String>`
+    /// and not `Option`: "nobody claims" is an ANSWER, and `[]` says it without
+    /// handing a caller a second state to handle.
+    ///
+    /// Carries ids and not links: the frontend already holds `sessions` for the
+    /// chip row, and the only hop it is missing is the claim's OWNER.
+    pub ready_sessions: Vec<String>,
 }
 
 /// One named **Task artifact** (issue #180, spec §1, ADR 0100): a markdown

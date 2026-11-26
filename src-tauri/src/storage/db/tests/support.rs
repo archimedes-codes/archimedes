@@ -30,25 +30,26 @@
 //! THREE groups of single-reader items stay here anyway, for two different reasons,
 //! and both reasons are the rule's own wording rather than an exception to it:
 //!
-//!   * NINE of the sixteen `SCHEMA_WITHOUT_*` consts (`…_ARCHIVED`,
+//!   * NINE of the seventeen `SCHEMA_WITHOUT_*` consts (`…_ARCHIVED`,
 //!     `…_CONTEXT_USAGE`, `…_COST_USD`, `…_PARENT_SESSION_ID`,
 //!     `…_STAGES_ON_ENTER_SKILL`,
 //!     `…_STAGES_NEXT_SLUGS`, `…_SPACES_BOARD_STRICT`,
 //!     `…_STAGES_POSITION_X`, `…_STAGES_POSITION_Y`) are read ONLY by
 //!     `tests/open.rs`, and they stay.
 //!     That child consumes them as a COMPLETE SET —
-//!     `each_cluster_schema_omits_exactly_one_gated_column` walks all sixteen by name
+//!     `each_cluster_schema_omits_exactly_one_gated_column` walks all seventeen by name
 //!     and asserts each omits exactly one gated column, so the property lives in the
 //!     SET and not in any one string. One consumer of a set is still the reason the
 //!     set exists: the rule counts CONSUMERS, not call sites, and scattering the
 //!     names into their individual children would split a pin that is only assertable
-//!     over all of them. (The other SEVEN have a genuine second reader and need no
+//!     over all of them. (The other EIGHT have a genuine second reader and need no
 //!     defence: `…_SPACE_SORT_ORDER` and `…_SESSION_SORT_ORDER` are read by
 //!     `tests/migrations.rs`, `…_STAGES_AUTO` and `…_STAGES_PROMPT_PREFIX` by
 //!     `tests/stage_lifecycle.rs`, `…_SPACES_AUTO_MAX_STEPS` and
-//!     `…_SPACES_AUTO_CEILING_USD` by `tests/auto_guards.rs`, and
-//!     `…_IS_SUBAGENT` — the newest, added with the gate's first dedicated pin —
-//!     by `tests/migrations.rs`.)
+//!     `…_SPACES_AUTO_CEILING_USD` by `tests/auto_guards.rs`,
+//!     `…_IS_SUBAGENT` by `tests/migrations.rs`, and
+//!     `…_READY` — the newest, added with its gate's own pin — by
+//!     `tests/migrations.rs`.)
 //!
 //! The census above is RE-DERIVED, not inherited, by the commit that added the two
 //! position fixtures: `grep -rl 'SCHEMA_WITHOUT_<NAME>\b' src-tauri/src/ | grep -v
@@ -92,7 +93,7 @@ use crate::types::SessionInfo;
 // 5-table `CREATE` batch (sessions + stages + spaces + messages +
 // native_messages) with EXACTLY ONE gate's column absent and every OTHER
 // gated column present, so `Db::open`'s other gates find their column and stay
-// SILENT: the test observes its own gate, not nineteen gates at once. Two of the
+// SILENT: the test observes its own gate, not twenty gates at once. Two of the
 // five fixtures were NOT isolated before this consolidation (the `archived` one
 // also omitted `trusted`, both `sort_order`s, `context_usage_json`,
 // `is_subagent`, `todos_json` and `cost_usd`, and carried `agent_id` — so it
@@ -238,7 +239,8 @@ CREATE TABLE sessions (
     cost_usd REAL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
-    parent_session_id TEXT
+    parent_session_id TEXT,
+    ready INTEGER
 );
 "
     };
@@ -588,7 +590,8 @@ CREATE TABLE sessions (
     cost_usd REAL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
-    parent_session_id TEXT
+    parent_session_id TEXT,
+    ready INTEGER
 );
 ",
     spaces_with_sort_order
@@ -609,7 +612,8 @@ CREATE TABLE sessions (
     cost_usd REAL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
-    parent_session_id TEXT
+    parent_session_id TEXT,
+    ready INTEGER
 );
 ",
     spaces_with_sort_order
@@ -646,7 +650,8 @@ CREATE TABLE sessions (
     cost_usd REAL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
-    parent_session_id TEXT
+    parent_session_id TEXT,
+    ready INTEGER
 );
 ",
     spaces_with_sort_order
@@ -668,7 +673,8 @@ CREATE TABLE sessions (
     todos_json TEXT,
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
-    parent_session_id TEXT
+    parent_session_id TEXT,
+    ready INTEGER
 );
 ",
     spaces_with_sort_order
@@ -691,7 +697,11 @@ CREATE TABLE sessions (
     todos_json TEXT,
     cost_usd REAL,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    title_stage INTEGER NOT NULL DEFAULT 0
+    title_stage INTEGER NOT NULL DEFAULT 0,
+    -- `ready` IS here: this fixture's ONE omission is `parent_session_id`, and a
+    -- fixture that dropped `ready` too would run two gates inside a test about the
+    -- parent link (the isolation collapse the cluster pin catches).
+    ready INTEGER
 );
 ",
     spaces_with_sort_order
@@ -715,7 +725,8 @@ CREATE TABLE sessions (
     cost_usd REAL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
-    parent_session_id TEXT
+    parent_session_id TEXT,
+    ready INTEGER
 );
 ",
     spaces_without_sort_order
@@ -736,6 +747,35 @@ CREATE TABLE sessions (
     is_subagent INTEGER NOT NULL DEFAULT 0,
     todos_json TEXT,
     cost_usd REAL,
+    title_stage INTEGER NOT NULL DEFAULT 0,
+    parent_session_id TEXT,
+    ready INTEGER
+);
+",
+    spaces_with_sort_order
+);
+
+/// The full 5-table batch with ONLY `sessions.ready` missing — the isolation the
+/// `dflt_value` pin depends on (a pre-existing row NEVER CLAIMED to be done, so the
+/// column must arrive DEFAULT-less; see the `ready` gate in `db/mod.rs`).
+///
+/// The backfill's own source column, `todos_json`, IS present: the gate's data step
+/// reads it, and a fixture without it would exercise a column the gate never
+/// touches rather than the marker conversion the gate performs.
+pub(super) const SCHEMA_WITHOUT_READY: &str = legacy_batch!(
+    "
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    cwd TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    title TEXT,
+    capabilities_json TEXT NOT NULL,
+    archived INTEGER NOT NULL DEFAULT 0,
+    context_usage_json TEXT,
+    is_subagent INTEGER NOT NULL DEFAULT 0,
+    todos_json TEXT,
+    cost_usd REAL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
     parent_session_id TEXT
 );

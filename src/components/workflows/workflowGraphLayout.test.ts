@@ -54,6 +54,8 @@ const card = (id: string, stageSlug: string): TaskCardView => ({
   sessions: [],
   costUsd: null,
   artifactKeys: [],
+  ready: false,
+  readySessions: [],
 });
 
 const column = (

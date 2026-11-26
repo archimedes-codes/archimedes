@@ -21,7 +21,7 @@
 //!
 //! ```text
 //! // BROKEN — compiles, and every move_task answer loses `toStage`
-//! let out = spawn_board("move_task", move || Db::move_task(&db, &space_path, &task_id, &to_stage)).await?;
+//! let out = spawn_host_call("move_task", move || Db::move_task(&db, &space_path, &task_id, &to_stage)).await?;
 //! return Ok(ToolResult::ok_text(text, Some(to_details("moveOutcome", &out)?)));
 //! ```
 //!
@@ -111,6 +111,8 @@ async fn every_details_payload_key_set_matches_the_frozen_frontend_fixtures() {
     // `details.board[]` — the 11 keys of the fixture's one row.
     let board = run(
         &db,
+        None,
+        false,
         "list_board",
         json!({ "space_path": "/host-tools/shape" }),
     )
@@ -137,9 +139,15 @@ async fn every_details_payload_key_set_matches_the_frozen_frontend_fixtures() {
     );
 
     // `details.task` — the WIDER of the two row shapes (the `get_task` one).
-    let detail = run(&db, "get_task", json!({ "task_id": task_id.clone() }))
-        .await
-        .expect("get_task");
+    let detail = run(
+        &db,
+        None,
+        false,
+        "get_task",
+        json!({ "task_id": task_id.clone() }),
+    )
+    .await
+    .expect("get_task");
     assert_eq!(
         keys_of(&details_of(&detail, "get_task")["task"]),
         expected(&[
@@ -160,7 +168,7 @@ async fn every_details_payload_key_set_matches_the_frozen_frontend_fixtures() {
 
     // `details.moveOutcome` — all three, in the fixture's spelling.
     let moved = run(
-        &db,
+        &db, None, false,
         "move_task",
         json!({ "space_path": "/host-tools/shape", "task_id": task_id.clone(), "to_stage": "done" }),
     )
@@ -175,6 +183,8 @@ async fn every_details_payload_key_set_matches_the_frozen_frontend_fixtures() {
     // `details.artifactMeta` — meta only.
     let written = run(
         &db,
+        None,
+        false,
         "write_artifact",
         json!({ "task_id": task_id, "key": "spec", "markdown": "doc" }),
     )
@@ -191,6 +201,8 @@ async fn every_details_payload_key_set_matches_the_frozen_frontend_fixtures() {
     // `artifactKeys`"), so the narrower set is pinned too rather than inferred.
     let created = run(
         &db,
+        None,
+        false,
         "create_task",
         json!({ "space_path": "/host-tools/shape", "title": "keyset card" }),
     )
@@ -248,6 +260,8 @@ async fn a_move_task_answer_carries_to_stage_on_enter_and_note_all_three() {
 
     let result = run(
         &db,
+        None,
+        false,
         "move_task",
         json!({
             "space_path": "/host-tools/shape",
@@ -322,9 +336,15 @@ async fn a_move_task_answer_carries_to_stage_on_enter_and_note_all_three() {
 async fn a_get_task_answer_carries_artifact_keys_with_the_names_on_the_card() {
     let (_dir, db, task_id) = seeded("ht-shape-detail-", true).await;
 
-    let result = run(&db, "get_task", json!({ "task_id": task_id.clone() }))
-        .await
-        .expect("a valid get_task is not an error sentence");
+    let result = run(
+        &db,
+        None,
+        false,
+        "get_task",
+        json!({ "task_id": task_id.clone() }),
+    )
+    .await
+    .expect("a valid get_task is not an error sentence");
 
     let details = details_of(&result, "get_task");
     let task = details
@@ -367,7 +387,7 @@ async fn a_get_task_answer_carries_artifact_keys_with_the_names_on_the_card() {
 async fn an_artifact_less_card_answers_artifact_keys_as_an_empty_array_not_an_absence() {
     let (_dir, db, task_id) = seeded("ht-shape-empty-keys-", false).await;
 
-    let result = run(&db, "get_task", json!({ "task_id": task_id }))
+    let result = run(&db, None, false, "get_task", json!({ "task_id": task_id }))
         .await
         .expect("a valid get_task is not an error sentence");
 
@@ -389,6 +409,8 @@ async fn a_board_answer_carries_artifact_keys_on_every_row() {
 
     let result = run(
         &db,
+        None,
+        false,
         "list_board",
         json!({ "space_path": "/host-tools/shape" }),
     )
@@ -416,6 +438,8 @@ async fn a_board_answer_carries_artifact_keys_on_every_row() {
     // shaping choice and not a storage failure wearing a disguise.
     let full = run(
         &db,
+        None,
+        false,
         "get_artifact",
         json!({ "task_id": task_id, "key": "research" }),
     )
@@ -440,6 +464,8 @@ async fn a_write_answer_reports_the_row_without_artifact_keys() {
 
     let created = run(
         &db,
+        None,
+        false,
         "create_task",
         json!({
             "space_path": "/host-tools/shape",
@@ -464,6 +490,8 @@ async fn a_write_answer_reports_the_row_without_artifact_keys() {
 
     let edited = run(
         &db,
+        None,
+        false,
         "edit_task",
         json!({ "task_id": row["id"], "title": "renamed" }),
     )
@@ -488,6 +516,8 @@ async fn an_artifact_write_answer_is_meta_only_under_the_pinned_key() {
 
     let result = run(
         &db,
+        None,
+        false,
         "write_artifact",
         json!({
             "task_id": task_id,

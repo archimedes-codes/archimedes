@@ -2197,6 +2197,52 @@ impl SessionManager {
         if let Some(db) = &self.driver.db {
             let payload = user_message_payload(&text, &images);
             let _ = db.record_message(session_id, "user", None, &payload.to_string());
+            // THE DURABLE CLEAR of the readiness claim (the "next turn on that
+            // Session clears it" rule) — and it lives HERE because nowhere else
+            // would it survive. The renderer already clears its own copy
+            // (`beginTurn` → `clearReady`), but `useInteractive` has no `persist`
+            // middleware, so a renderer-only clear is GONE on the next launch and
+            // the board read — which is the channel that survives a restart —
+            // would hand the mark back on every boot. That is worse than the
+            // stale mark this column replaced, so the durable half of the rule has
+            // to be written by the process that owns the file. `send_prompt_with_images`
+            // is the ONLY Rust entry that starts a turn (`send_prompt` delegates
+            // here; `commands/sessions.rs` calls this one), so a clear placed here
+            // catches every path, the prompt-queue flusher's `sendText` included.
+            // BEFORE the dispatch below, so the clear is durable before any NEW
+            // claim can be made by this turn's own `mark_done`.
+            //
+            // BEST-EFFORT `let _ =`, for the same reason as the display row above:
+            // a turn must not fail because a boolean column did not clear. The
+            // verb answers `Ok(false)` for an id with no row, so that case is not
+            // even an error; the `let _ =` covers the ones that are (a locked or
+            // full-disk connection), and a user watching a turn refuse to start
+            // over a flag is the worse bug.
+            //
+            // WHAT THE VALUES ACTUALLY MEAN, because the obvious story is false.
+            // `Some(false)` writes `0` = "not ready as of the last turn"; `NULL`
+            // means this ROW has never had the column written at all. It does NOT
+            // mean "never claimed": this write is UNCONDITIONAL on every turn
+            // start, so `0` is the dominant value for any Session that has ever
+            // run a turn and a claim-then-worked Session and a never-claimed one
+            // land on the SAME `0`. `0` is therefore not evidence a claim was ever
+            // made, and this write does not preserve a "claimed then worked" vs
+            // "never claimed" distinction — it destroys one. Nothing consumes
+            // that difference anyway: the board read, the column's only reader,
+            // folds the tri-state to a `bool` with `Some(1)` as its sole truthy
+            // value (`storage/db/board.rs` ~:174-184), so `NULL` and `0` are the
+            // same `false` to every consumer. (A `None` write would keep the
+            // third state reachable for a hand-written row; it is not chosen,
+            // because `0` states the rule out loud — "checked, and no" — and no
+            // consumer can tell the two apart.)
+            //
+            // ORDERING, and it costs nothing: the client's optimistic clear
+            // already runs BEFORE this IPC — `beginTurn(sessionId)` at
+            // `src/hooks/useChatPromptDispatch.ts:321` against the `sendPrompt`
+            // await at `:328`, and `sessions.beginTurn(...)` at
+            // `src/store/taskLaunch.ts:598` against `:606` — so the renderer's
+            // copy and this row agree by construction, whichever lands first.
+            let _ = db.set_session_ready(session_id, Some(false));
         }
 
         // Queue the text + the image attachments on the WORKER's prompt queue

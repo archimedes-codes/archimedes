@@ -14,10 +14,10 @@
 //! knows Tasks exist. Its 110 code lines did not vanish, they MOVED, and where each
 //! half landed is worth naming because the pieces have different owners now:
 //!
-//!   * **the seven verbs' bodies** → `agent/host_tools/exec.rs`, which runs the
+//!   * **the seven verbs' bodies** → `agent/host_tools/exec/board.rs`, which runs the
 //!     INHERENT `Db` methods and maps to the wire DTOs explicitly;
 //!   * **the DTO mapping** (the `number: i64 → u32` narrowing, the `artifact_keys`
-//!     enrichment, the three-field move outcome) → also `exec.rs`, per-verb, because
+//!     enrichment, the three-field move outcome) → also `exec/board.rs`, per-verb, because
 //!     that is the shape the lossy-twin rule needs spelled at the call site;
 //!   * **the DTOs themselves** → `storage::db::rows` as `BoardRow` / `TaskDetail` /
 //!     `MoveToolOutcome`, the desktop's own wire vocabulary;

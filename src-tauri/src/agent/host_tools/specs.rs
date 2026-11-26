@@ -1,51 +1,62 @@
-//! The SEVEN board / artifact `ToolSpec`s, as the DESKTOP advertises them.
+//! The EIGHT host `ToolSpec`s, as the DESKTOP advertises them.
 //!
-//! These were `fulcrum-harness` 0.7.0's `harness/tool_specs.rs` entries 20–26. F3
-//! deleted them from the crate (`tool_specs()` 26 → 19) and ADR 0102 §2.3 moves the
+//! Seven of them were `fulcrum-harness` 0.7.0's `harness/tool_specs.rs` entries 20–26.
+//! F3 deleted them from the crate (`tool_specs()` 26 → 19) and ADR 0102 §2.3 moves the
 //! advertisement to a HOST tool: a spec crosses the boundary as DATA on
 //! `StartEnv::host_tools` and the ENGINE composes `builtins() ++ host_entries`. So
 //! this file is where the desktop's side of that advertised surface now lives, and
-//! it is the first spec text this repo has ever owned.
+//! it is the first spec text this repo has ever owned. The eighth, `mark_done`, is the
+//! first spec text this repo has ever WRITTEN — it has no 0.7.0 ancestor, and the
+//! byte-identity rule below therefore does not reach it.
 //!
-//! # The texts are carried over VERBATIM, and that is a correctness rule
+//! # The seven texts are carried over VERBATIM, and that is a correctness rule
 //!
 //! ADR 0102's byte-identity rule is that the model sees ONE description per tool.
 //! These strings are what 0.7.0 sent for the same seven names, so a Session that
 //! existed before this commit reads the same instructions after it. Re-authoring one
 //! is a prompt change wearing a refactor's clothes — it moves model behaviour
-//! silently, and nothing in the Rust suite can see it. `agent/tests/tool_surface.rs`
-//! pins the seven names and the shape of each `parameters` block; the descriptions
-//! are pinned by the rule in this paragraph and by review, not by a re-spelled
-//! literal (a second copy of a string is a second owner of it).
+//! silently, and nothing in the Rust suite can see it. What pins the seven NAMES and
+//! the shape of each `parameters` block is `super::tests::surface` — the in-crate
+//! mirror of this module (`agent/tests/tool_surface.rs` does not exist and never did;
+//! the citation this paragraph carried was false) — and the descriptions are pinned by
+//! the rule in this paragraph and by review, not by a re-spelled literal (a second
+//! copy of a string is a second owner of it).
 //!
 //! # HARD CONSTRAINT on every string below
 //!
 //! No substring `read`, no substring `subagent` — not in a description, not in a
 //! parameter description, not even inside a word. Both render into the prompt's
-//! `<tools>` section, and `src-tauri/tests/worker_e2e.rs` asserts
-//! `!tools_section.contains("read") && !tools_section.contains("subagent")` as a
-//! SUBSTRING test over the WHOLE rendered section. A description carrying either
-//! word makes that assertion PASS WHILE PROVING NOTHING — a silent CI weakening,
-//! not a failure, and it only shows on the Windows leg. Hence "fetch" / "load" /
-//! "show" instead of "read", and no `thread` / `already` / `spread` / `reads` /
-//! `threshold` either (all contain `read`).
+//! `<tools>` section. The live enforcer is
+//! `no_host_tool_spec_names_read_or_subagent` in `super::tests`, over the WHOLE spec
+//! (name, description AND parameters) — `worker_e2e.rs` used to carry a substring
+//! assertion over the whole rendered section and issue #180 F1 replaced it with an
+//! ENUMERATED-NAMES assertion, because `read` and `subagent` are ENGINE tool NAMES and
+//! a substring test over a section that advertises them can never be satisfied. So
+//! this ban has exactly one owner in this repo and it is that in-crate test; the
+//! substring form is preserved there precisely because a description carrying either
+//! word makes any weaker check PASS WHILE PROVING NOTHING. Hence "fetch" / "load" /
+//! "show" instead of "read". MEASURED, not inherited: `thread`, `already`, `spread`,
+//! `reads` and bare `read` all contain the banned substring, and so does `ready` —
+//! which is why the eighth spec below talks about a flag and a claim and never about
+//! readiness. `threshold` does NOT contain it (`t-h-r-e-s`) and was never in fact
+//! banned; the list this paragraph carried before `mark_done` was written included it
+//! on nothing, and a ban that cannot be measured is a ban someone forgets.
 //!
 //! 0.7.0 enforced this from inside the crate
 //! (`no_task_tool_description_names_read_or_subagent`). That test is deleted with
-//! the crate's specs, so the ban would die silently — which is why
-//! `no_host_tool_spec_names_read_or_subagent` in `super::tests` re-establishes it
-//! here, over the WHOLE spec (name, description AND parameters), not just the
-//! description.
+//! the crate's specs, so the ban would die silently — which is why the in-crate test
+//! named above re-establishes it here.
 
 use serde_json::json;
 
 use crate::agent::harness::ToolSpec;
 
-/// The seven board / artifact verbs, in the order they sat in 0.7.0's `tool_specs()`.
+/// The seven board / artifact verbs IN 0.7.0's `tool_specs()` order, then the eighth.
 ///
 /// The ORDER is load-bearing for one thing only — it is the order the composed
-/// advertised set puts them in, after the 19 engine specs. Keep it stable so a
-/// `<tools>` section diff between 0.7.0 and now is empty for these seven.
+/// advertised set puts them in, after the 19 engine specs. Keep the first seven stable
+/// so a `<tools>` section diff between 0.7.0 and now is empty for those seven;
+/// `mark_done` is NEW, so it appends and moves nothing.
 pub(super) fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
@@ -143,6 +154,22 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                 },
                 "required": ["task_id", "key", "markdown"]
             }),
+        },
+        // The eighth, and the first spec text this repo has ever WRITTEN. Its
+        // vocabulary is deliberate: every word here is one the `read`/`subagent`
+        // substring ban above permits, and the flag is called a FLAG and a CLAIM
+        // throughout because the obvious noun for it (`…ready`) contains the banned
+        // substring. No `parameters` beyond an empty object, because the subject is
+        // the calling Session and arrives on the frame — see `exec::session::mark_done`.
+        ToolSpec {
+            name: "mark_done".into(),
+            description: "Flag THIS Session as done and hand it to a person for review. \
+                          Call it when the work on this Session is finished and a human \
+                          should look at it. Takes no arguments — the Session is the one \
+                          making the call, not a value you pass. The flag clears at the \
+                          start of your next turn."
+                .into(),
+            parameters: json!({ "type": "object", "properties": {}, "required": [] }),
         },
     ]
 }

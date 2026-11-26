@@ -2647,24 +2647,32 @@ export const useSessions = create<SessionsState>((set, get) => ({
 
   beginTurn: (sessionId) => {
     set((state) => ({ inTurn: { ...state.inTurn, [sessionId]: true } }));
-    // THE `ready` MARK'S CLEAR RULE: "the next turn on that Session clears it".
+    // THE `ready` MARK'S OPTIMISTIC CLEAR: "the next turn on that Session clears it".
     //
-    // Why the clear lives HERE and not as a derivation: the mark cannot be read
-    // off `ready && !inTurn`, because that makes it vanish for the duration of a
-    // turn and REAPPEAR when the turn settles — the opposite of the rule, and
-    // pinned against by `the mark does NOT come back when the turn settles` in
-    // `sessionReadyMark.test.ts`. A turn that never calls `manage_todo_list` also
-    // leaves the board untouched, so nothing on the board could ever expire the
-    // mark. It has to be an explicit slot, and a turn start is the one event the
-    // rule names.
+    // The DURABLE clear is not here — it is Rust's. `send_prompt_with_images` zeroes
+    // `sessions.ready` at turn start (Task 4), so by the time this line runs the
+    // column that carries the claim is already `0` and the next board read will say
+    // so. What is here is the RENDER half, and it exists because of one scheduling
+    // fact: `useTaskBoardAutoRefresh` re-reads the board only on `inTurn`'s FALLING
+    // edge. Nothing repaints during a turn, so a bell left in the slot would be worn
+    // for the whole of the turn that disproves it — and `cardMarkOf` ranks `ready`
+    // ABOVE `running`, which is exactly the "running but ready" card the owner
+    // rejected on a real board. This call bridges the gap between the column being
+    // cleared and the board being read again.
     //
-    // Why a call into `useInteractive` from `sessions.ts` is not a new kind of
-    // edge: this file already writes across it twice, at `applyTodoUpdate` in
-    // `openSession` (~line 2223) and again in `resumeSession` (~line 2504), to
-    // seed a reopened Session's board, plus `applyTodoClear` in `deleteSession`.
-    // All of them go through the OTHER store's ACTION rather than poking its map,
-    // and this does the same — which is why `clearReady` exists as an action on
-    // `useInteractive` instead of a `setState` from here.
+    // Why the mark is an explicit slot and not a derivation: `ready && !inTurn` makes
+    // it vanish for the duration of a turn and REAPPEAR when the turn settles, which
+    // is the opposite of the rule. Both directions are pinned — `the mark does NOT
+    // come back when the turn settles` here and its board twin in
+    // `TasksBoardReady.test.tsx`.
+    //
+    // Why a call into `useInteractive` from `sessions.ts` is not a new kind of edge:
+    // this file already writes across it three times — `applyTodoUpdate` in
+    // `openSession` and again in `resumeSession` to seed a reopened Session's board,
+    // and `applyTodoClear` in `deleteSession` — and `tasks.ts` now makes a fourth
+    // (`applyReadyMarks`, the board feed). All of them go through the OTHER store's
+    // ACTION rather than poking its map, which is why `clearReady` exists as an
+    // action on `useInteractive` instead of a `setState` from here.
     useInteractive.getState().clearReady(sessionId);
   },
 

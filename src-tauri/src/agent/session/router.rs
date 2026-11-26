@@ -359,12 +359,12 @@ impl SessionManager {
                 // UI-scope key it is). Meanwhile a miss is never silently discardable:
                 // every path below that fails to answer records an always-on
                 // `diagnostics` line. Note what the bound does and does NOT cover:
-                // `spawn_board` bounds the board CALL, so a verb that is stuck is
+                // `spawn_host_call` bounds the host CALL, so a verb that is stuck is
                 // answered, but a verb that ran fine and fast and then failed to reach
                 // its Worker is a DELIVERY failure this bound never fires for — that is
                 // made VISIBLE by the `record` sites below, not by the deadline (the
-                // same scope `TASK_BOARD_CALL_TIMEOUT`'s own doc now states, in
-                // `agent/host_tools/exec.rs`). So a miss is visible, and a wedged verb
+                // same scope `HOST_CALL_TIMEOUT`'s own doc now states, in
+                // `agent/host_tools/exec/mod.rs`). So a miss is visible, and a wedged verb
                 // is bounded — two different mechanisms, not one.
                 //
                 // THE FRAME VOCABULARY IN THE LINES BELOW IS `host-tool-*`, and that is
@@ -377,12 +377,28 @@ impl SessionManager {
                 // reads.
                 let db = self.driver.db.clone();
                 let wm = self.worker_manager.get().cloned();
+                // Captured BEFORE the spawn for the SAME reason `db` and `wm` are:
+                // `route_event` takes `&self`, so the spawned future cannot borrow
+                // across the `tokio::spawn` and every value it needs must be owned by
+                // the time the future is built. `is_subagent` still needs no capture
+                // for `task_reply_target` below (that decision is made HERE, not in the
+                // future), but the future needs its own copy — hence `is_sub` — because
+                // `host_tools::run` refuses a child's `mark_done` and only the frame's
+                // own flag can answer that question. `origin_for_exec` is the frame's
+                // ORIGIN id, and it is what `mark_done` takes its SUBJECT from: a host
+                // verb whose subject is the caller reads it off the frame and never out
+                // of `params`, which is untrusted model JSON (ADR 0117's rule, of which
+                // this is the second consequence — the first being `task_reply_target`).
+                let origin_for_exec = origin_id.clone();
+                let is_sub = is_subagent;
                 // Decided BEFORE the spawn, so the early `return` below exits
                 // `route_event` with nothing spawned and nothing left parked on the
                 // Supervisor side (`route_event` returns `()` and this `match evt` is
                 // its entire body, so `return` skips nothing). `is_subagent` is
-                // `route_event`'s second parameter and needs no capture, because the
-                // decision is made here and not in the spawned future.
+                // `route_event`'s second parameter and needs no capture for THIS
+                // decision, which is made here and not in the spawned future — the
+                // future gets its own copy above, because `mark_done`'s child refusal
+                // is decided in there.
                 let reply_target =
                     match task_reply_target(session_id, is_subagent, origin_id.as_deref()) {
                         Some(target) => target,
@@ -405,7 +421,16 @@ impl SessionManager {
                     // when the executors lived in the crate. No behaviour change; the
                     // kind simply stopped crossing.
                     let result: Result<ToolResult, String> = match db {
-                        Some(db) => crate::agent::host_tools::run(&db, &tool, params).await,
+                        Some(db) => {
+                            crate::agent::host_tools::run(
+                                &db,
+                                origin_for_exec.as_deref(),
+                                is_sub,
+                                &tool,
+                                params,
+                            )
+                            .await
+                        }
                         None => Err("Supervisor database not available".to_string()),
                     };
                     let Some(wm) = wm else {

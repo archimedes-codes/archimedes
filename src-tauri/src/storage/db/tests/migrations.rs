@@ -1,6 +1,6 @@
-//! Tests for `db/migrations.rs`: the one-time `todos_json` backfill, the two
-//! `sort_order` seeds (ADR 0073, ADR 0075), and the `sessions.is_subagent`
-//! gate's arrival value.
+//! Tests for `db/migrations.rs`: the one-time `todos_json` backfill, the
+//! `sessions.ready` gate and its marker conversion, the two `sort_order` seeds
+//! (ADR 0073, ADR 0075), and the `sessions.is_subagent` gate's arrival value.
 //!
 //! The data steps are the sibling half of a gate — `gate` commits the `ALTER` and
 //! the data step as ONE transaction — so these tests are about re-open behaviour:
@@ -598,8 +598,9 @@ fn legacy_db_migration_backfills_both_manage_todo_list_and_manage_checklist() {
 fn backfill_predicate_names_both_literals_and_renames_nothing() {
     // Reads `db/migrations.rs`, the sibling the ADR 0113 split moved the backfill
     // into. THE SLICE IS SCOPED BY `"\npub(super) fn "`, MEASURED, not guessed:
-    // this file holds exactly THREE items and all three are `pub(super) fn` at
-    // column 0, so `"\nfn "` — the delimiter this pin used while the code still
+    // this file holds FOUR items now (the `ready` backfill arrived beside the other
+    // three) and all four are `pub(super) fn` at column 0, so `"\nfn "` — the
+    // delimiter this pin used while the code still
     // lived in the single `db.rs` — occurs ZERO times here and the slice silently
     // ran to end of file (6,736 of 8,307 chars: the backfill body PLUS both seed
     // functions PLUS the `///` doc comments above them — 17 `///` lines in the
@@ -802,5 +803,289 @@ fn the_is_subagent_gate_arrives_zero_for_every_pre_existing_session() {
         db.list_sessions(true).expect("list_sessions").len(),
         2,
         "the gate ran once, not twice, and the rows are still visible"
+    );
+}
+
+/// (the `ready` gate) a pre-existing database whose `sessions` table predates the
+/// `ready` column must open CLEANLY (the one-time migration adds the column), and
+/// every pre-existing row must read `ready IS NULL`.
+///
+/// `NULL` — not `0` — is the load-bearing half, and it is the argument
+/// `cost_usd_column_migration_on_a_preexisting_db` in [`super::open`] makes about a
+/// phantom `$0.00`, one column over: `NULL` means "this Session never claimed to be
+/// done", which is the truth for every row written before this column existed, while
+/// `0` is an ANSWER — "it was re-checked and it is not ready" — about work nobody
+/// re-checked. A `DEFAULT 0` would migrate a whole history into a claim nobody made.
+/// The migration therefore has NO `DEFAULT`, and the `dflt_value` arm below pins that
+/// directly rather than inferring it from the reads (the `cost_usd` pin's reason: the
+/// `NULL` reads below would ALSO pass under a `DEFAULT 0` plus an
+/// `UPDATE … = NULL` backfill someone later "improved").
+///
+/// The fixture is `SCHEMA_WITHOUT_READY`: every OTHER gated column is present, so
+/// the sibling gates stay silent and this test observes its own gate.
+///
+/// WHY THIS SITE PANICS ON A POISONED MUTEX (AGENTS.md's poisoned-mutex rule): the
+/// lock guards `Db`'s ONE shared `rusqlite::Connection` — a single, shared resource a
+/// panic mid-transaction can leave genuinely unusable — so this `.expect` panics
+/// rather than recovering, matching every other site in this tree; the worked example
+/// to cite is the production `record_messages_batch`.
+#[test]
+fn the_ready_gate_arrives_null_for_every_pre_existing_session() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-ready-gate-", "scratch");
+    let path = preexisting_db(
+        &dir,
+        SCHEMA_WITHOUT_READY,
+        "INSERT INTO sessions (id, cwd, created_at, capabilities_json) \
+         VALUES ('s1', '/x/nope-not-a-folder', 1, '{}');\n\
+         INSERT INTO sessions (id, cwd, created_at, capabilities_json) \
+         VALUES ('s2', '/x/nope-not-a-folder', 2, '{}');\n",
+    );
+
+    {
+        let db = Db::open(&path).expect("the ready gate runs on open");
+        let has: i64 = db
+            .conn
+            .lock()
+            .expect("db mutex poisoned")
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'ready'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("pragma_table_info should read");
+        assert_eq!(has, 1, "the `ready` column is in place after the gate");
+
+        // The DDL's DEFAULT, pinned directly rather than inferred from the reads.
+        let default_value: Option<String> = db
+            .conn
+            .lock()
+            .expect("db mutex poisoned")
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('sessions') WHERE name = 'ready'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("pragma_table_info should read");
+        assert_eq!(
+            default_value, None,
+            "`ready` has NO column DEFAULT — NULL means 'never claimed', 0 means \
+             'checked and not ready'"
+        );
+
+        // Neither row carried a `ready` marker, so neither was backfilled: the
+        // gate's data step writes `1` for a match and NOTHING for a non-match.
+        assert_eq!(
+            raw_scalar(&db, "SELECT COUNT(*) FROM sessions WHERE ready IS NULL"),
+            2,
+            "both pre-existing rows read NULL — the backfill never writes 0 or NULL \
+             to a non-match, they are simply left absent"
+        );
+        assert_eq!(
+            raw_scalar(&db, "SELECT COUNT(*) FROM sessions WHERE ready = 1"),
+            0,
+            "NOT ONE row was migrated into the claimed state — no row here carried \
+             a completed `ready` item"
+        );
+    }
+
+    // A SECOND open of the already-migrated file is a clean no-op (the
+    // `pragma_table_info` probe skips the `ALTER` and with it the backfill).
+    let db = Db::open(&path).expect("a re-open of the migrated db must succeed");
+    assert_eq!(
+        raw_scalar(&db, "SELECT COUNT(*) FROM sessions WHERE ready IS NULL"),
+        2,
+        "the gate ran once, not twice, and the rows still read NULL"
+    );
+}
+
+/// (the `ready` backfill) the gate's data step converts a stored todo item that IS
+/// the readiness marker into `ready = 1`, and NOTHING else.
+///
+/// The four non-matches below are the four ways the old convention could be
+/// mis-scraped, and each one is a false "come look at me" if the predicate is
+/// widened: a `pending` item (the marker was written but never completed), a phrase
+/// that merely CONTAINS the word, and a sentence that ENDS on it. The fifth row is a
+/// Subagent child — deliberately included, because a child's row exists in this
+/// table, a later `mark_done` refuses it, and converting its stale word is what keeps
+/// "one channel" true.
+#[test]
+fn the_ready_backfill_marks_only_a_completed_ready_item() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-ready-backfill-", "scratch");
+    let path = preexisting_db(
+        &dir,
+        SCHEMA_WITHOUT_READY,
+        // (a) THE MATCH: a `completed` item whose content is exactly `ready`.
+        "INSERT INTO sessions (id, cwd, created_at, capabilities_json, todos_json) \
+         VALUES ('s_ready', '/x/nope-not-a-folder', 1, '{}', \
+         '[{\"content\":\"ready\",\"status\":\"completed\"}]');\n\
+         -- (b) the marker PENDING: never completed, so never a claim.\n\
+         INSERT INTO sessions (id, cwd, created_at, capabilities_json, todos_json) \
+         VALUES ('s_pending', '/x/nope-not-a-folder', 2, '{}', \
+         '[{\"content\":\"ready\",\"status\":\"pending\"}]');\n\
+         -- (c) a phrase that merely starts with the word.\n\
+         INSERT INTO sessions (id, cwd, created_at, capabilities_json, todos_json) \
+         VALUES ('s_phrase', '/x/nope-not-a-folder', 3, '{}', \
+         '[{\"content\":\"Ready for review\",\"status\":\"completed\"}]');\n\
+         -- (d) a sentence that ends on the word.\n\
+         INSERT INTO sessions (id, cwd, created_at, capabilities_json, todos_json) \
+         VALUES ('s_sentence', '/x/nope-not-a-folder', 4, '{}', \
+         '[{\"content\":\"get the board ready\",\"status\":\"completed\"}]');\n\
+         -- (e) a real checklist WITH a completed marker among other items.\n\
+         INSERT INTO sessions (id, cwd, created_at, capabilities_json, todos_json) \
+         VALUES ('s_mixed', '/x/nope-not-a-folder', 5, '{}', \
+         '[{\"content\":\"ship it\",\"status\":\"completed\"},{\"content\":\"ready\",\"status\":\"completed\"}]');\n\
+         -- (f) a SUBAGENT child carrying the stale marker.\n\
+         INSERT INTO sessions (id, cwd, created_at, capabilities_json, is_subagent, todos_json) \
+         VALUES ('s_child', '/x/nope-not-a-folder', 6, '{}', 1, \
+         '[{\"content\":\"ready\",\"status\":\"completed\"}]');\n\
+         -- (g) no todos at all.\n\
+         INSERT INTO sessions (id, cwd, created_at, capabilities_json) \
+         VALUES ('s_none', '/x/nope-not-a-folder', 7, '{}');",
+    );
+
+    let db = Db::open(&path).expect("the ready backfill must not brick startup");
+
+    let of = |id: &str| -> Option<i64> {
+        db.conn
+            .lock()
+            .expect("db mutex poisoned")
+            .query_row(
+                "SELECT ready FROM sessions WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .expect("the row exists")
+    };
+    assert_eq!(
+        of("s_ready"),
+        Some(1),
+        "a completed `ready` item becomes 1 — that is the stored claim"
+    );
+    assert_eq!(
+        of("s_pending"),
+        None,
+        "a PENDING `ready` item is not a claim — it stays NULL"
+    );
+    assert_eq!(
+        of("s_phrase"),
+        None,
+        "`Ready for review` is not the marker, whatever its case"
+    );
+    assert_eq!(
+        of("s_sentence"),
+        None,
+        "`get the board ready` is not the marker either"
+    );
+    assert_eq!(
+        of("s_mixed"),
+        Some(1),
+        "a completed marker anywhere in a real checklist is still the claim"
+    );
+    assert_eq!(
+        of("s_child"),
+        Some(1),
+        "a SUBAGENT child's stale marker is converted too — its row exists, a later \
+         mark_done refuses it, and leaving the word live would keep a second channel \
+         alive"
+    );
+    assert_eq!(of("s_none"), None, "a row with no todos is untouched");
+}
+
+/// (the `ready` backfill, the malformed row) a `todos_json` that is not valid JSON
+/// skips THAT row and never aborts the migration — the open still succeeds and the
+/// sibling rows are still converted.
+///
+/// This is the `backfill_session_todos` error convention (`let Ok(…) else { continue }`),
+/// and it is load-bearing for a data migration in a user's database: one malformed
+/// row refusing the whole `ALTER` would brick startup for every session the person
+/// has. The array-shape and non-string-field guards below are the same convention
+/// applied to the shapes this column can actually hold.
+#[test]
+fn the_ready_backfill_skips_malformed_todos_json_and_still_opens() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-ready-malformed-", "scratch");
+    let path = preexisting_db(
+        &dir,
+        SCHEMA_WITHOUT_READY,
+        // (a) not JSON at all.
+        "INSERT INTO sessions (id, cwd, created_at, capabilities_json, todos_json) \
+         VALUES ('s_garbage', '/x/nope-not-a-folder', 1, '{}', 'not valid json at all {');\n\
+         -- (b) valid JSON, not an array (an object where the array is required).\n\
+         INSERT INTO sessions (id, cwd, created_at, capabilities_json, todos_json) \
+         VALUES ('s_object', '/x/nope-not-a-folder', 2, '{}', \
+         '{\"content\":\"ready\",\"status\":\"completed\"}');\n\
+         -- (c) an array whose `content` is not a string.\n\
+         INSERT INTO sessions (id, cwd, created_at, capabilities_json, todos_json) \
+         VALUES ('s_number', '/x/nope-not-a-folder', 3, '{}', \
+         '[{\"content\":7,\"status\":\"completed\"}]');\n\
+         -- (d) an array whose `status` is missing entirely.\n\
+         INSERT INTO sessions (id, cwd, created_at, capabilities_json, todos_json) \
+         VALUES ('s_nostatus', '/x/nope-not-a-folder', 4, '{}', \
+         '[{\"content\":\"ready\"}]');\n\
+         -- (e) the row that proves the loop kept going after four skips.\n\
+         INSERT INTO sessions (id, cwd, created_at, capabilities_json, todos_json) \
+         VALUES ('s_after', '/x/nope-not-a-folder', 5, '{}', \
+         '[{\"content\":\"ready\",\"status\":\"completed\"}]');",
+    );
+
+    let db = Db::open(&path).expect("a malformed todos_json must not fail the migration");
+    assert_eq!(
+        raw_scalar(&db, "SELECT COUNT(*) FROM sessions WHERE ready = 1"),
+        1,
+        "exactly one row was converted — the four malformed shapes were skipped, \
+         not fatal, and the loop reached the row after them"
+    );
+    assert_eq!(
+        raw_scalar(&db, "SELECT COUNT(*) FROM sessions WHERE ready IS NULL"),
+        4,
+        "the four malformed rows are absent rather than answered"
+    );
+}
+
+/// (the `ready` gate's data step runs ONCE) a re-open neither re-runs the backfill
+/// nor resurrects a claim a person has since cleared.
+///
+/// The gate makes this true structurally — the `ALTER` and the data step are ONE
+/// transaction behind ONE `pragma_table_info` probe, so a second open finds the
+/// column and runs neither — but the assertion is what catches a future data step
+/// moved OUT of the gate, where it would run on every open and overwrite a `NULL`
+/// the caller wrote deliberately (the turn-start clear in a later task is exactly
+/// such a write).
+#[test]
+fn the_ready_backfill_does_not_rerun_on_a_second_open() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-ready-once-", "scratch");
+    let path = preexisting_db(
+        &dir,
+        SCHEMA_WITHOUT_READY,
+        "INSERT INTO sessions (id, cwd, created_at, capabilities_json, todos_json) \
+         VALUES ('s1', '/x/nope-not-a-folder', 1, '{}', \
+         '[{\"content\":\"ready\",\"status\":\"completed\"}]');",
+    );
+
+    let db = Db::open(&path).expect("the ready gate runs on open");
+    assert_eq!(
+        raw_scalar(&db, "SELECT COUNT(*) FROM sessions WHERE ready = 1"),
+        1,
+        "the first open converts the stored marker"
+    );
+    // Clear it, the way the later turn-start verb will. RAW SQL rather than the
+    // verb, on purpose: this file's subject is the gate's data step, and a pin
+    // about a data step re-running must not be hostage to the verb that later
+    // clears the flag.
+    db.conn
+        .lock()
+        .expect("db mutex poisoned")
+        .execute(
+            "UPDATE sessions SET ready = NULL WHERE id = 's1'",
+            rusqlite::params![],
+        )
+        .expect("the clear should land");
+    drop(db);
+
+    let db = Db::open(&path).expect("a re-open of the migrated db must succeed");
+    assert_eq!(
+        raw_scalar(&db, "SELECT COUNT(*) FROM sessions WHERE ready IS NULL"),
+        1,
+        "the second open re-ran neither the ALTER nor the backfill — the cleared \
+         row stays cleared"
     );
 }

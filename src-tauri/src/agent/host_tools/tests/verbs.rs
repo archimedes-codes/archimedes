@@ -47,6 +47,8 @@ async fn a_write_and_a_read_round_trip_an_artifact_through_the_db() {
 
     let written = run(
         &db,
+        None,
+        false,
         "write_artifact",
         json!({ "task_id": task_id, "key": "spec", "markdown": "HOST-SENTINEL" }),
     )
@@ -62,6 +64,8 @@ async fn a_write_and_a_read_round_trip_an_artifact_through_the_db() {
 
     let read = run(
         &db,
+        None,
+        false,
         "get_artifact",
         json!({ "task_id": task_id, "key": "spec" }),
     )
@@ -89,9 +93,15 @@ async fn a_missing_row_answers_a_sentence_and_not_an_error() {
     // Absence is an ANSWER. An `is_error` result invites the model to retry the same
     // id, and 0.7.0's arms were explicit about that; the wire's `null` encoding is
     // gone (the executor builds the `ToolResult` now) but the BEHAVIOUR is carried.
-    let missing = run(&db, "get_task", json!({ "task_id": "tsk_absent" }))
-        .await
-        .expect("absence is an answer, not an error");
+    let missing = run(
+        &db,
+        None,
+        false,
+        "get_task",
+        json!({ "task_id": "tsk_absent" }),
+    )
+    .await
+    .expect("absence is an answer, not an error");
     assert!(
         !missing.is_error,
         "an absent card is NOT a failed tool result"
@@ -104,6 +114,8 @@ async fn a_missing_row_answers_a_sentence_and_not_an_error() {
 
     let no_artifact = run(
         &db,
+        None,
+        false,
         "get_artifact",
         json!({ "task_id": "tsk_absent", "key": "spec" }),
     )
@@ -124,6 +136,8 @@ async fn a_refusal_answers_the_model_facing_sentence_naming_the_offending_value(
     // `task_artifacts` has no FK to catch it).
     let err = run(
         &db,
+        None,
+        false,
         "write_artifact",
         json!({ "task_id": "tsk_dangling", "key": "spec", "markdown": "orphan" }),
     )
@@ -145,6 +159,8 @@ async fn a_refusal_answers_the_model_facing_sentence_naming_the_offending_value(
     // round trip).
     let bad = run(
         &db,
+        None,
+        false,
         "move_task",
         json!({
             "space_path": "/host-tools/verbs",
@@ -171,6 +187,8 @@ async fn an_illegal_artifact_key_and_an_oversized_markdown_are_refused_and_write
 
     let err = run(
         &db,
+        None,
+        false,
         "write_artifact",
         json!({
             "task_id": task_id,
@@ -188,6 +206,8 @@ async fn an_illegal_artifact_key_and_an_oversized_markdown_are_refused_and_write
 
     let err = run(
         &db,
+        None,
+        false,
         "write_artifact",
         json!({
             "task_id": task_id,
@@ -218,7 +238,7 @@ async fn a_missing_required_parameter_names_the_key() {
 
     // A model that gets `space_path` back can fix it; one that gets `invalid params`
     // cannot. This is the reason the helper names the key.
-    let err = run(&db, "list_board", json!({}))
+    let err = run(&db, None, false, "list_board", json!({}))
         .await
         .expect_err("no space_path");
     assert!(
@@ -231,6 +251,8 @@ async fn a_missing_required_parameter_names_the_key() {
     // thing, and quietly dropping it would write a task without the body asked for.
     let err = run(
         &db,
+        None,
+        false,
         "create_task",
         json!({ "space_path": "/host-tools/verbs", "title": "t", "body": 42 }),
     )
@@ -252,6 +274,8 @@ async fn an_optional_field_absent_or_null_leaves_the_card_field_alone() {
     // `exec::edit_task`.
     run(
         &db,
+        None,
+        false,
         "edit_task",
         json!({ "task_id": task_id, "title": "renamed", "body": null }),
     )
@@ -274,6 +298,8 @@ async fn an_empty_board_is_an_answer_that_still_carries_its_rows() {
 
     let result = run(
         &db,
+        None,
+        false,
         "list_board",
         json!({ "space_path": "/host-tools/nothing-here" }),
     )
@@ -299,7 +325,7 @@ async fn an_unknown_tool_name_refuses_loudly_rather_than_parking() {
     // name `exec::exec` does not handle means `host_tool_specs()` and the dispatch
     // drifted apart — advertised and unreachable, the one failure class this whole
     // refactor can hide. The honest answer names itself.
-    let err = run(&db, "not_a_host_tool", json!({}))
+    let err = run(&db, None, false, "not_a_host_tool", json!({}))
         .await
         .expect_err("an unhosted name is a failure, never a silent park");
     assert!(
@@ -326,6 +352,8 @@ async fn a_title_that_cleans_to_nothing_is_refused_and_writes_no_card() {
     for refused in ["", "   ", "\n\t \n", "\"\"", "''"] {
         let err = run(
             &db,
+            None,
+            false,
             "create_task",
             json!({
                 "space_path": "/host-tools/verbs",
@@ -354,6 +382,8 @@ async fn a_title_that_cleans_to_nothing_is_refused_and_writes_no_card() {
     // Without this half, "refuse blank titles" could be satisfied by refusing titles.
     let created = run(
         &db,
+        None,
+        false,
         "create_task",
         json!({ "space_path": "/host-tools/verbs", "title": "  a   model\'s   title  " }),
     )
@@ -387,7 +417,7 @@ async fn an_edit_with_a_title_that_cleans_to_nothing_keeps_the_stored_label() {
 
     for refused in ["", "   ", "\n\t \n", "\"\"", "''"] {
         let err = run(
-            &db,
+            &db, None, false,
             "edit_task",
             json!({ "task_id": task_id, "title": refused }),
         )
@@ -412,6 +442,8 @@ async fn an_edit_with_a_title_that_cleans_to_nothing_keeps_the_stored_label() {
     // is a KEEP.
     let renamed = run(
         &db,
+        None,
+        false,
         "edit_task",
         json!({ "task_id": task_id, "title": "  renamed   by   the   model  " }),
     )
@@ -424,6 +456,8 @@ async fn an_edit_with_a_title_that_cleans_to_nothing_keeps_the_stored_label() {
 
     let untouched = run(
         &db,
+        None,
+        false,
         "edit_task",
         json!({ "task_id": task_id, "body": "a new body" }),
     )
@@ -446,7 +480,7 @@ async fn an_edit_with_a_title_that_cleans_to_nothing_keeps_the_stored_label() {
 }
 
 /// The deadline, PROVEN: a board future that never completes is answered at
-/// `TASK_BOARD_CALL_TIMEOUT` with the `Io` sentence the model reads.
+/// `HOST_CALL_TIMEOUT` with the `Io` sentence the model reads.
 ///
 /// `start_paused` (precedented at `provider_auth/refresh.rs:948`, `:1083`) is what
 /// makes this cheap — tokio auto-advances its own clock once nothing but a timer is
@@ -473,7 +507,7 @@ async fn a_board_call_still_running_at_the_deadline_answers_an_io_error_naming_t
          and must be able to tell which call died — got {err:?}"
     );
     // The duration is a LITERAL on purpose. The other spelling —
-    // `contains(&format!("{TASK_BOARD_CALL_TIMEOUT:?}"))` — rebuilds the expected
+    // `contains(&format!("{HOST_CALL_TIMEOUT:?}"))` — rebuilds the expected
     // substring from the SAME const the production sentence interpolates, so the two
     // can never disagree and the assertion is tautological; only a literal can fail
     // here (and `30s` is what that const renders as). And the literal is the WHOLE
@@ -502,7 +536,7 @@ async fn a_board_call_whose_blocking_task_died_still_says_failed_and_not_timed_o
     // sentence about that is `failed`. The `&'static str` leak makes the closure
     // `'static` so the panic lands INSIDE the blocking task and reaches the
     // `JoinError` arm rather than aborting the test process.
-    let err = exec::spawn_board::<i32, crate::storage::BoardError, _>("get_task", || {
+    let err = exec::spawn_host_call::<i32, crate::storage::BoardError, _>("get_task", || {
         let boom: &'static str = Box::leak("deliberate blocking-task panic".into());
         panic!("{boom}")
     })
@@ -517,5 +551,229 @@ async fn a_board_call_whose_blocking_task_died_still_says_failed_and_not_timed_o
         !sentence.contains("timed out"),
         "and NOT `timed out`: the call did not run long, it died. Conflating the two \
          tells the model to wait. Got: {sentence}"
+    );
+}
+
+// ── `mark_done` — the verb whose subject is the FRAME, not `params` ───────────
+//
+// These drive `run` DIRECTLY. They deliberately do NOT go through the
+// `WorkerInboundEvent::HostToolCall` fixtures in `agent/session/tests/mod.rs`
+// (`:2143`, `:2277`): those pin ADR 0117's DIAGNOSTICS paths, and their
+// `manager_seeded` fixture never wires `worker_manager`, so nothing spawns, no verb
+// executes and the assertions pass on a dropped frame. A `mark_done` test written
+// there would be GREEN AND PROVE NOTHING — it could not tell a working verb from an
+// absent arm.
+//
+// Non-vacuity, the mutation this family exists to catch: DELETE the `"mark_done"` arm
+// from `exec::exec` and every case below reddens — the four that expect an answer
+// because the dispatch's loud unknown-name refusal arrives instead of the write, and
+// the two refusals because the sentence stops naming a Subagent / an origin id. Swap
+// the write for `set_session_archived` and the board assertion reddens.
+
+/// A recorded Session — the FK target a `task_sessions` link needs, and the row
+/// `mark_done` writes.
+///
+/// Built here rather than borrowed from `storage/db/tests/support.rs`'s
+/// `title_session`, which is `pub(super)` to that mirror tree and single-consumer by
+/// its own file's rule; a second consumer would move it, and this commit has no
+/// business re-partitioning another subject's fixtures.
+fn record_session(db: &Db, id: &str) {
+    db.record_session(&crate::agent::SessionInfo {
+        session_id: id.to_string(),
+        cwd: std::path::PathBuf::from("/tmp/proj"),
+        capabilities: json!({ "piSessionId": id, "loadSession": true }),
+        config_options: None,
+        archived: false,
+        title: None,
+        context_usage: None,
+        cost_usd: None,
+        is_subagent: false,
+    })
+    .expect("record_session (the link's FK target)");
+}
+
+/// A card with ONE linked Session — the shape a real launch leaves behind, and the
+/// only shape on which a `mark_done` claim is OBSERVABLE: the column itself is not in
+/// `SESSION_COLUMNS`, so the board's per-card `ready` fold is the public read.
+async fn card_with_session(
+    prefix: &str,
+    session_id: &str,
+) -> (crate::test_support::ScratchDir, Arc<Db>, String) {
+    let (dir, db, task_id) = seeded(prefix).await;
+    record_session(&db, session_id);
+    db.link_session(&task_id, session_id, None)
+        .expect("link_session (the card's bell needs the link)");
+    (dir, db, task_id)
+}
+
+/// The card's `ready` flag as the BOARD READ reports it — the channel that reaches
+/// the renderer, and the one that survives a restart (Task 2).
+fn board_ready(db: &Db, task_id: &str) -> bool {
+    db.get_board("/host-tools/verbs")
+        .expect("get_board")
+        .iter()
+        .flat_map(|stage| stage.tasks.iter())
+        .find(|card| card.task.id == task_id)
+        .unwrap_or_else(|| panic!("the card `{task_id}` is on the board"))
+        .ready
+}
+
+#[tokio::test]
+async fn mark_done_marks_the_frames_own_session_and_the_board_sees_the_claim() {
+    let (_dir, db, task_id) = card_with_session("ht-verb-mark-done-", "sess-caller").await;
+    assert!(
+        !board_ready(&db, &task_id),
+        "a fresh card is NOT claiming anything — the assertion below discriminates"
+    );
+
+    let result = run(&db, Some("sess-caller"), false, "mark_done", json!({}))
+        .await
+        .expect("a main Session's own `mark_done` is a legal call");
+
+    assert!(!result.is_error, "the claim succeeds — it is not a refusal");
+    assert!(
+        text_of(&result).contains("done"),
+        "the sentence tells the model its Session is done — got {:?}",
+        text_of(&result)
+    );
+    assert!(
+        result.details.is_none(),
+        "and it ships NO `details` key: a new one costs four coordinated edits in \
+         `toolDetailsRegistry.test.ts` and reddens `pnpm build`'s `AssertEqual` seal. \
+         The mark reaches the UI through the BOARD read, not through a tool payload."
+    );
+
+    assert!(
+        board_ready(&db, &task_id),
+        "THE WRITE LANDED, seen through the board read the renderer uses"
+    );
+}
+
+#[tokio::test]
+async fn mark_done_twice_is_the_same_claim_and_still_succeeds() {
+    let (_dir, db, task_id) = card_with_session("ht-verb-mark-done-twice-", "sess-caller").await;
+
+    run(&db, Some("sess-caller"), false, "mark_done", json!({}))
+        .await
+        .expect("the first claim");
+    let second = run(&db, Some("sess-caller"), false, "mark_done", json!({}))
+        .await
+        .expect("a model that calls it twice is not punished for it");
+
+    assert!(
+        !second.is_error,
+        "the second call is an `Ok` — the write is an idempotent `UPDATE`, and a \
+         refusal here would teach the model that a repeat is a problem"
+    );
+    assert!(board_ready(&db, &task_id));
+}
+
+#[tokio::test]
+async fn mark_done_refuses_a_subagent_by_name_and_writes_nothing() {
+    // A CHILD's frame carries the CHILD's own id, and a child's claim renders nowhere:
+    // cards link to the launching Session, and a child's `todos_update` never persists
+    // either (`router.rs:46-52`). So the child is REFUSED. A silent `Ok` here is the
+    // exact defect this card exists to remove — a supporter could not tell it from a
+    // mark that landed.
+    let (_dir, db, task_id) = card_with_session("ht-verb-mark-done-child-", "sess-parent").await;
+
+    let err = run(&db, Some("s-child"), true, "mark_done", json!({}))
+        .await
+        .expect_err("a Subagent's `mark_done` is a REFUSAL, never a no-op");
+
+    assert!(
+        err.contains("Subagent"),
+        "the refusal names WHOSE call it rejected and WHY — the model reads this \
+         verbatim and has to be able to change what it is doing — got {err}"
+    );
+    assert!(
+        err.contains("launched"),
+        "and it points at the fix: finish in the Session that launched the work — \
+         got {err}"
+    );
+    assert!(
+        !board_ready(&db, &task_id),
+        "and the refusal wrote NOTHING — no card is claiming a handoff nobody made"
+    );
+}
+
+#[tokio::test]
+async fn mark_done_refuses_a_frame_with_no_origin_and_never_borrows_the_delivery_id() {
+    // ADR 0117's rule, second consequence: a delivery id is not a reply address and it
+    // is not a SUBJECT either. `task_reply_target`'s own doc refuses the fallback for
+    // the same reason, and a fallback here would mark whichever Session the pump
+    // happened to re-key the frame to.
+    let (_dir, db, task_id) = card_with_session("ht-verb-mark-done-noorigin-", "sess-caller").await;
+
+    let err = run(&db, None, false, "mark_done", json!({}))
+        .await
+        .expect_err("no origin id is a REFUSAL, never a default");
+
+    assert!(
+        err.contains("frame"),
+        "the refusal says the frame carried no origin id — got {err}"
+    );
+    assert!(
+        !board_ready(&db, &task_id),
+        "and NOTHING was written: defaulting to the delivery id would be a mark on a \
+         Session nobody chose"
+    );
+}
+
+#[tokio::test]
+async fn mark_done_ignores_a_session_id_the_model_put_in_params() {
+    // THE UN-SPOOFABILITY PIN. `params` is untrusted model JSON; the frame's origin id
+    // is Worker-supplied. A model that NAMES another session must move nothing — if
+    // this verb ever learns to look in `params`, this is the case that reddens.
+    let (dir, db, task_id) = card_with_session("ht-verb-mark-done-spoof-", "sess-caller").await;
+    let victim = "/host-tools/verbs";
+    let other_card = db
+        .create_task(victim, "someone else's card", None, None)
+        .expect("a second card");
+    record_session(&db, "sess-victim");
+    db.link_session(&other_card.id, "sess-victim", None)
+        .expect("link the second card to the session the model names");
+
+    let result = run(
+        &db,
+        Some("sess-caller"),
+        false,
+        "mark_done",
+        json!({ "session_id": "sess-victim", "task_id": other_card.id }),
+    )
+    .await
+    .expect("extra keys are ignored, not refused — the spec advertises no parameters");
+
+    assert!(
+        board_ready(&db, &task_id),
+        "the CALLER's card is the one that claims it"
+    );
+    assert!(
+        !board_ready(&db, &other_card.id),
+        "and the session the model NAMED is untouched — the subject came from the \
+         frame. Result was {:?}",
+        text_of(&result)
+    );
+    drop(dir);
+}
+
+#[tokio::test]
+async fn list_tools_advertises_mark_done_to_settings() {
+    // The Settings half of the acceptance criteria, on the SAME door the user sees.
+    // `commands/settings.rs`'s own test gains the verb in its host loop; this is the
+    // one that asks the COMMAND rather than the spec list.
+    let names = crate::commands::settings::list_tools()
+        .await
+        .expect("the composed tool list builds");
+    assert!(
+        names.iter().any(|n| n == "mark_done"),
+        "`mark_done` must be in the Settings list or the user cannot disable it — \
+         got {names:?}"
+    );
+    assert_eq!(
+        names.len(),
+        crate::agent::harness::tool_specs().len()
+            + crate::agent::host_tools::host_tool_specs().len(),
+        "and the Settings list is still exactly engine ++ host, each name once"
     );
 }

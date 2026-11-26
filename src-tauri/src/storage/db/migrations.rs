@@ -1,11 +1,11 @@
-//! The **migration data steps** of `db`: the one-time backfill and the two
+//! The **migration data steps** of `db`: the two one-time backfills and the two
 //! one-time seeds, lifted verbatim out of the unit that was `storage/db.rs`
 //! (ADR 0113).
 //!
-//! ⚠️ These three free functions are called from inside `Db::open`'s `gate`
+//! ⚠️ These four free functions are called from inside `Db::open`'s `gate`
 //! closures, which STAY in [`super`] — `gate` is the transaction factory that
 //! makes an `ALTER` and its data step one atomic unit. Moving the data steps here
-//! moves no gate: all nineteen `gate(&mut conn, …)` calls are inside `open`, and
+//! moves no gate: all twenty `gate(&mut conn, …)` calls are inside `open`, and
 //! `backfill_predicate_names_both_literals_and_renames_nothing` pins that this
 //! file's own body carries the dual literal match it names.
 
@@ -123,6 +123,94 @@ pub(super) fn backfill_session_todos(conn: &Connection) -> Result<(), DbError> {
             conn.execute(
                 "UPDATE sessions SET todos_json = ?2 WHERE id = ?1",
                 params![session_id, serialized],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// One-time backfill of `sessions.ready` from the readiness marker already stored in
+/// `sessions.todos_json` (the column this gate's `ALTER` creates in the same
+/// transaction).
+///
+/// THIS IS THE LAST PLACE IN THE CODEBASE THAT WILL EVER READ THAT WORD. The
+/// readiness flag used to be derived by scraping `todos_json` for an item whose
+/// content is the word `ready`; the `mark_done` host verb writes this column
+/// instead, and nothing after this migration reads the word again. The literal is
+/// spelled INLINE here and nowhere else for exactly ADR 0093's reason: the rows this
+/// reads are ALREADY WRITTEN in users' databases and are never rewritten, so the one
+/// place that converts them is the one place that may name the old spelling — a shared
+/// constant would advertise a vocabulary the rest of the codebase no longer speaks,
+/// and the dual-match rule (keep the old literal, add the new mechanism, rename
+/// NOTHING) is what keeps the conversion from silently backfilling nothing.
+///
+/// THE SHAPE READ HERE IS A BARE ARRAY. `sessions.todos_json` holds a JSON ARRAY of
+/// `{content, status, description?}` objects — NOT the `payload_json` → `rawInput`
+/// → `todoList` traversal `backfill_session_todos` above walks, which parses the
+/// `messages` table (a different column, a different shape, a different tool envelope).
+/// What this borrows from that helper is only its ERROR CONVENTION: a malformed row is
+/// `continue`d, never `?`ed, because one bad row must not abort a migration that runs
+/// inside the `ALTER`'s transaction — that would refuse the open and brick startup for
+/// every session the person has. Every guard below therefore `.get(…)`s and
+/// `.and_then(Value::as_*)`s and `continue`s on a miss.
+///
+/// Subagent children ARE included, deliberately: a child's row exists in this table,
+/// a later `mark_done` refuses it, and converting its stale word is what keeps "one
+/// channel" true rather than leaving a second, dead one live in the data.
+///
+/// The write is `1` for a match and NOTHING for a non-match — never `0`, never an
+/// explicit `NULL`. Absent is already `NULL`, and `NULL` is the honest answer for a
+/// row that never claimed anything.
+pub(super) fn backfill_session_ready(conn: &Connection) -> Result<(), DbError> {
+    let mut stmt =
+        conn.prepare("SELECT id, todos_json FROM sessions WHERE todos_json IS NOT NULL")?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    // Close the read cursor before the writes start (the `backfill_session_todos`
+    // hygiene — a live Statement is not a compile or SQLite requirement).
+    drop(stmt);
+
+    for (session_id, todos_json) in rows {
+        // A malformed row is SKIPPED, not fatal (see the doc above): `?` here would
+        // abort the whole gate and refuse `Db::open`.
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&todos_json) else {
+            continue;
+        };
+        // `todos_json` holds a BARE ARRAY — an object, a string or a number is not a
+        // checklist and gets the same skip.
+        let Some(items) = value.as_array() else {
+            continue;
+        };
+
+        let mut claimed = false;
+        for item in items {
+            // BOTH halves are required, and neither alone is the marker: a `pending`
+            // `ready` item is a to-do, not a claim, and a COMPLETED item whose content
+            // merely contains the word ("Ready for review", "get the board ready") is
+            // prose. The comparison is exact after `trim()` and case-folded, because
+            // the stored content is model-written text. `eq_ignore_ascii_case` rather
+            // than `to_ascii_lowercase() ==` because clippy's `manual_ignore_case_cmp`
+            // gate asks for it and the two are identical here — the target is already
+            // lowercase ASCII, so nothing about what matches changes.
+            if item.get("status").and_then(serde_json::Value::as_str) != Some("completed") {
+                continue;
+            }
+            let Some(content) = item.get("content").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if content.trim().eq_ignore_ascii_case("ready") {
+                claimed = true;
+                break;
+            }
+        }
+
+        if claimed {
+            conn.execute(
+                "UPDATE sessions SET ready = 1 WHERE id = ?1",
+                params![session_id],
             )?;
         }
     }
