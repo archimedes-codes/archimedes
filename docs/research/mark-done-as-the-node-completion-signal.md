@@ -3,6 +3,7 @@ status: current
 last-verified: 2026-11-26
 verified-by: "5 researcher angles (3 local code reads, 2 web) + direct reads of this tree at `feature/mark-done-host-verb` HEAD `3f40f7a1` + one read-only query pass over the live database at `~/.local/share/archimedes/archimedes.db` (514 MB, newest Session row `1795689660601`). Web: n8n official docs (docs.n8n.io), LangChain/LangGraph, OpenAI Agents SDK, Temporal, AWS Step Functions, GitHub Actions, CrewAI, Slack; 2 arXiv papers. Local claims are `repo:path:line`; DB claims name their SQL. Rust and TypeScript were READ, not executed — no test was run for this report."
 task: tsk_d9ef65b5-0df4-4e65-b048-46ed101aa582
+decisions: D1-D6 recorded from the owner in the research session of 2026-11-26; they are approved intent, not findings
 ---
 
 # `mark_done` as the node-completion signal
@@ -34,10 +35,15 @@ Seven findings reframe the card rather than answer it:
 5. **The decision is computable in Rust at the moment of the claim.** Everything it needs is
    already in Rust's hands; what Rust cannot do is *launch*. That forces a split — decide in
    Rust, hand the frontend an instruction — and it is the split that escapes findings 3 and 4.
-6. **The two owner answers recorded below are in tension with each other**, and the tension is
-   the first thing the design must resolve.
+6. **The two owner answers were in tension; the tension is now resolved as D4.** The settle edge
+   advances **only when the ready flag is set at settle** — so an un-claimed settle never moves a
+   card, and the claim remains the earlier path.
 7. **"n8n-style" is doing two incompatible jobs in the ask.** n8n is the *wrong* reference for
    the completion signal and the *right* one for the graph.
+
+**Every design question this report was commissioned to open is now decided** (D1–D6 below). What
+remains open is implementation risk, listed in §Gaps — above all the claim/settle double-fire,
+which D4 makes *mandatory* to deduplicate rather than merely advisable.
 
 ---
 
@@ -59,17 +65,39 @@ model's alternative route out of a column is closed unless it has claimed.
 has chosen to act on it. Recorded as the decision. §5 states what the surveyed industry does
 with a claim it chooses to trust, so the choice is made with the evidence in hand.
 
-### Where D1 and D2 disagree
+**D4 — The settle edge advances only when the ready flag is set at settle.** This resolves the
+D1↔D2 tension in the consistent reading: an **un-claimed settle never moves a card**, the claim is
+the earlier path, and the move_task gate closes the model's last route out of a column. So the
+rule is *the claim is the only thing that advances a card* — reachable either directly or, if the
+claim has not yet been acted on, by the settle that follows it. **The un-claimed settle therefore
+has a stated, pinned behaviour: close the run, say so in the transcript, do not move.** No new
+timeout and no new state; the existing `stopChain` already does exactly that shape.
 
-D1 keeps the settle as a trigger. D2's premise is that an un-claimed settle should *not* be able
-to move a card. Under a literal "claim OR settle", **an un-claimed settle advances anyway** —
-which is the behaviour the owner rejected when it was offered as an option.
+**D5 — The model's `move_task` is gated on the flag AND a claimed move becomes LIVE.** Chosen over
+"gating only" precisely so the gate does not collapse the claimer into the mover for nothing: if a
+model move runs the destination's launch the way a pill click does, then the claim is what makes
+the move consequential rather than a formality preceding an inert write. See the finding below —
+this makes the model the **fourth** launcher and the first one that is not a person.
 
-**Reading that makes them consistent (inference, must be confirmed):** the settle path advances
-only when the Session's ready flag is set at settle time. Then the claim fires first and moves,
-the later settle is deduplicated, and an un-claimed settle does not move — D2's intent survives,
-and "whichever fires first" still holds for every claimed case. **This is recorded as an
-inference about intent, not as a resolved answer.**
+**D6 — The graph shape is outcome-routed single successor.** `mark_done` gains an outcome value,
+edges gain a name, exactly one edge fires per claim. **Fork and join are explicitly out of scope**
+and stay blocked by `tasks.stage_slug` holding one value and `idx_workflow_runs_open` being
+partially UNIQUE. ADR 0099's pre-authorised `stage_transitions` table remains the named home for
+whichever change needs per-edge data first — outcome labels may be that moment, but D6 can be
+shipped on the JSON array if a name fits it, and the migration should be priced separately rather
+than assumed.
+
+### Where D1 and D2 disagreed — resolved by D4
+
+D1 kept the settle as a trigger. D2's premise is that an un-claimed settle should *not* be able to
+move a card. Under a literal "claim OR settle", **an un-claimed settle advances anyway** — which is
+the behaviour the owner rejected when it was offered as an option.
+
+**Resolved: the settle path advances only when the Session's ready flag is set at settle time
+(D4).** The claim fires first and moves; the later settle is deduplicated; an un-claimed settle
+does not move. D2's intent survives intact and "whichever fires first" still holds for every
+claimed case. **D4 makes the dedupe in §Gaps mandatory rather than advisable** — two paths now
+derive the same destination for the same link.
 
 ### Two premises in D2 the tree contradicts
 
@@ -97,10 +125,19 @@ general property is the opposite of the premise; the live config is one point in
   whole purpose is moving a card on a human's explicit instruction. A model that was told *"move
   it to Approved"* must now also claim done first. Note the consequence for separation of
   duties: the gate makes the claimer and the mover **the same party**, which is the opposite of
-  the one guardrail the survey found actually shipped (§5, GitHub's *Prevent self-review*). The
-  surviving guards are then only that a model move is **inert** — per the `move-task` Skill and
-  the code, a model `move_task` fires no `on_enter` and launches nothing — and the Rust-side
-  budget, which a model `move_task` does not pass through at all.
+  the one guardrail the survey found actually shipped (§5, GitHub's *Prevent self-review*).
+
+**This paragraph described the state before D5, and D5 changes it.** As written at the time of the
+finding, the surviving guards against a gated-but-obedient model move were (a) that a model move is
+**inert** — it fires no `on_enter` and launches nothing — and (b) the Rust-side budget, which a
+model `move_task` does not pass through. **D5 removes guard (a)** by making a claimed model move
+live, and in doing so it removes the main reason the gate was defensible: an inert move the model
+could not use to drive anything was a low-stakes thing to require a claim of, whereas a *live* move
+starts a Session. **What remains after D5 is therefore only guard (b), plus the fact that a model
+move still does not pass through `workflowRunStep` — so a model-driven move is currently unbudgeted,
+and D5 makes that a real hole rather than a theoretical one.** Any spec written from this report must
+either route the live claimed move through `workflowRunStep` or state why an unbudgeted model-driven
+launch is acceptable.
 
 **The half of D2 that is clean:** gate the *model's* verb only. Human drags and pill clicks stay
 ungated, because `ready` is a per-Session claim and a person owes no claim to anyone. That split
@@ -291,7 +328,49 @@ edge needs to carry anything."* Outcome-labelled edges are that moment. Nothing 
 `stages.rs:147-151`). A graph that is a program can loop forever, and the only thing between that
 and a runaway is the 20-step bound.
 
-### 8. The three smaller open questions, answered by the tree
+### 8. Only three things launch a Session today, and a drag is not one of them
+
+Material to D5, and not stated anywhere in the card. `grep -rn launchTaskSession src` excluding
+tests gives **three** call sites, and **all three are a person's gesture**:
+
+| launcher | site |
+|---|---|
+| the card's arrow pill | `src/components/TasksBoard.tsx:221` |
+| the detail modal's destination button | `src/components/TaskDetailDialog.tsx:202` |
+| the auto-chain's next link | `src/store/taskLaunch.ts:642` |
+
+A plain drag goes through `useDragCard` → `useTasks.moveTask` → the `move_task` IPC command, and
+that command's live half is **only** the `on_enter == "compact"` boost
+(`src-tauri/src/commands/tasks.rs:690-696`) — it never launches a Session. And the live database
+has `on_enter = 'none'` on **all 41 stages**, so today a drag into any column in any Space starts
+nothing at all. The `move-task` Skill's claim that "a model `move_task` fires no `on_enter` hook
+and no launch — only a human drag or pill click runs the full verb" is therefore **half true**: a
+drag runs the full verb and the full verb still launches nothing.
+
+Consequences the design must carry:
+
+- **D5 makes the model the fourth launcher and the first that is not a person.** That is a real
+  widening of who may start a Session on a card, and it should be stated as such in the spec
+  rather than arriving as a side effect of "make a claimed move live".
+- **The cheapest honest implementation of "live" is to route the claimed move through
+  `launchTaskSession`**, which is already the one owner of move-then-start-then-send and is
+  already what ADR 0119 §6 demands the chain use. That means the live move lives in the frontend,
+  so the Rust-side gate and the frontend-side launch are **two halves of one decision and must not
+  be able to disagree** — the same two-authority shape ADR 0098 exists to prevent.
+- **"Live" and the `ask`-gate deadlock collide directly.** `launchTaskSession` must be `void`ed,
+  not awaited (the deadlock is documented at `taskLaunch.ts`'s own header and ADR 0119 §5). A
+  claimed model move that awaits its own launch re-creates the stall.
+- Because a claimed model move now launches, **D2's blast radius grows**: a Session told by the
+  `move-task` Skill to move a card on a human's instruction will be refused until it claims done,
+  and the three Skills that instruct `move_task` (`move-task`, `research`,
+  `update-task-with-findings`) are all installed and will hit it. Either those Skills gain the
+  claim step, or the gate needs a shape that distinguishes "the human asked for this move" from
+  "the model decided this move" — and the findings show **no signal currently distinguishes them**
+  (`exec/mod.rs:115-134` passes no identity to board verbs, and a `params`-borne flag would be
+  model-supplied and therefore forgeable). **This is the single largest unresolved implementation
+  risk in D5.**
+
+### 9. The three smaller open questions, answered by the tree
 
 - **Move vs clear race.** A move touches `ready` in **no way at any layer** — `grep "ready"` over
   `storage/db/tasks.rs`, `commands/tasks.rs`, `host_tools/exec/board.rs` is empty, and
@@ -310,23 +389,42 @@ and a runaway is the 20-step bound.
 
 ---
 
-## Unresolved Contradictions
+## Contradictions found, and which are now closed
+
+**Closed by the decisions above:**
+
+- **D1↔D2** — resolved as **D4** (the settle advances only when the ready flag is set, so an
+  un-claimed settle cannot move a card). See §"Where D1 and D2 disagreed".
+- **The trust inversion vs the bounds surviving** — these turned out to be two questions, not one.
+  The claim chooses *whether* to step; the Rust-side verdict decides *whether it may*. Separating
+  them dissolves the apparent conflict (§5).
+
+**Still open, and each one needs an answer in the spec:**
 
 1. **n8n is the wrong reference for the trigger and the right one for the graph.** Its completion
    signal is engine-derived from *data presence* — precisely the model D1/D3 reject. Its graph
    semantics (node-owned outputs, inert edges, opt-in joins, durable authenticated waits) are the
    right target. "n8n-style" must be resolved to one of the two before design.
-2. **D1 and D2 are in tension** (§"Where D1 and D2 disagree"). Under a literal reading, D1
-   re-admits the exact behaviour D2 exists to prevent. The consistent reading is offered as an
-   inference and **must be confirmed with the owner**.
-3. **D2's gate collapses claimer and mover into one party**, inverting the only separation-of-duties
-   guardrail the survey found shipped. Recorded as the cost of a deliberate choice, not as an
-   objection.
-4. **ADR 0098's front-matter says `superseded-by: 0107`** while ADR 0119 §1 and ADR 0120 §7 both
+2. **The unbudgeted model-driven launch is NOT resolved, and D5 made it real.**
+   `workflowRunStep` has exactly **one** production call site — `src/store/workflowChain.ts:418` —
+   so nothing on the model's `move_task` path is ever measured against the step bound or the USD
+   ceiling. While a model move was inert that was harmless; D5 makes a claimed model move **launch
+   a Session**, so the 20-step bound and the $10 ceiling currently govern only the paths the model
+   does not take. The spec must either route the live claimed move through `workflowRunStep` or
+   state why an unbudgeted model-driven launch is acceptable.
+3. **D5 makes the claimer and the mover the same party for both halves of the decision** — the same
+   model both claims done and launches the next Session. This inverts the only separation-of-duties
+   guardrail the survey found actually shipped. Recorded as the cost of a deliberate choice, not as
+   an objection.
+4. **No signal distinguishes "the human asked for this move" from "the model decided this move"**,
+   which is what D5's gate needs in order to spare the three installed Skills that instruct
+   `move_task`. A `params`-borne flag would be model-supplied and therefore forgeable. Largest
+   unresolved implementation risk in D5 (see finding 8).
+5. **ADR 0098's front-matter says `superseded-by: 0107`** while ADR 0119 §1 and ADR 0120 §7 both
    still treat `on_enter_skill` as live. ADR 0120 itself flags this as "the one ambiguity in the
    house pattern". Unresolved on disk; it touches this work because `on_enter_skill` is what the
    next link launches.
-5. **Gate counts in the docs disagree with the tree.** ADR 0119 §1 says 17 gates, the research doc
+6. **Gate counts in the docs disagree with the tree.** ADR 0119 §1 says 17 gates, the research doc
    `workflows-as-the-boards-configuration.md` says 12; the tree has **20** (`GATED` in
    `storage/db/tests/open.rs:1027-1048`). Neither doc was updated when `ready`, `position_x` and
    `position_y` landed.
@@ -354,13 +452,25 @@ and a runaway is the 20-step bound.
 - **The `board_strict = 0` measurement is of one machine's database**, not of the product's users.
   It describes what today's owner has configured, not what a shipped default must protect.
 
-## Routing note for the design phase
+## What the design phase has to work with
 
-The owner answered "I don't know" to the graph-shape question. The evidence gives a clean split:
-**outcome-routed single successor is expressible today; fork and join are blocked by two named
-schema facts plus ADR 0120 §6.** The design must either take the first and record the second as
-explicitly out of scope, or accept the edge-table migration ADR 0099 pre-authorises as the vessel
-for both.
+Every design question this card opened is now decided — **D1 through D6 above are the approved
+block**. `specify` should treat them as settled intent, not as options, and spend its effort on the
+four things the decisions do *not* answer:
 
-The three things the design cannot avoid: the unloaded-slice no-op (finding 3), the
-claim/settle double-fire (§Gaps), and the D1↔D2 tension.
+1. **Where the decision is made.** Finding 2 shows the claim-time decision is computable in Rust
+   and that Rust cannot launch — so the shape is *decide in Rust, hand the frontend an instruction*.
+   That placement is what escapes the unloaded-slice no-op and the `ask`-gate stall; keeping it in
+   the settle handler inherits both.
+2. **Deduplication, now mandatory under D4.** Two paths derive one destination for one link.
+   `idx_workflow_runs_open` already guarantees one open run per card and is the obvious place to
+   hang it. The failure mode to design against is a **second Session launched on one card** and
+   **`workflowRunStep` counting two steps for one link**.
+3. **Budgeting the model-driven move** (open contradiction 2). One call site today.
+4. **How the gate spares the obedient model** (open contradiction 4). Three installed Skills
+   instruct `move_task`; today nothing distinguishes a human-instructed model move from a
+   self-directed one, and a `params` flag is forgeable.
+
+Fork and join are **out of scope by D6** and must be recorded as such rather than left implied by
+the phrase "the canvas is the program". The three things the design cannot avoid are the
+unloaded-slice no-op (finding 3), the claim/settle double-fire (§Gaps), and the unbudgeted launch.
