@@ -83,8 +83,8 @@ use tauri::State;
 
 use crate::agent::{debuglog, EventSink, SessionError, SessionInfo, SessionManager, TasksError};
 use crate::storage::{
-    AdvanceVerdict, Artifact, ArtifactMeta, AutoGuards, Db, FieldPatch, MoveAuthor, StageRow,
-    StageWithTasks, TaskNumberRow, TaskRow, TaskSessionRow,
+    AdvanceAdvice, AdvanceVerdict, Artifact, ArtifactMeta, AutoGuards, Db, FieldPatch, MoveAuthor,
+    StageRow, StageWithTasks, TaskNumberRow, TaskRow, TaskSessionRow,
 };
 
 /// What a `move_task` reports: the destination stage's `on_enter`, plus — only
@@ -1353,6 +1353,62 @@ pub async fn workflow_run_step(
     db_call(
         tauri::async_runtime::spawn_blocking(move || {
             db.workflow_run_step(&space_path, &task_id, cost_delta_usd)
+        })
+        .await,
+    )
+}
+
+/// Ask what one Session's `mark_done` claim does to its card - the settle fallback's door.
+///
+/// The SAME function the model's `mark_done` call runs inside
+/// (`agent/host_tools/exec/session.rs`), so the claim and the fallback cannot disagree
+/// about the same card. The frontend needs this second door because the instruction that
+/// rides the tool result is consumed once, by the turn that produced it: a model that
+/// ignores its own tool result leaves nobody to act, and at settle time the renderer
+/// cannot answer "did this Session claim?" at all - `beginTurn` withdraws the claimant,
+/// the ready-mark feed drops anything older than the last clear, and `ready` is not in
+/// `SESSION_COLUMNS` with `SessionRow` crates.io-pinned. Rust can answer it, because
+/// `sessions.ready` is its own column.
+///
+/// `session_id` is the ONLY subject argument, and that is the whole security property,
+/// carried over from the host verb: the caller names a Session and nothing else, and the
+/// card, the Space, the launching column, the edge and both budgets are all resolved from
+/// it in the database. There is no `task_id` to forge and no `space_path` to shop for a
+/// cheaper budget - the same hole [`workflow_run_step`] closed when it stopped believing
+/// its own `space_path`.
+///
+/// `cost_delta_usd` is optional and, as in [`workflow_run_step`], the two arms are NOT
+/// interchangeable: `None` means the fold adds nothing (the ceiling still runs against
+/// spend already banked on the open run), while a `0.0` sent for "unknown" would arm a
+/// ceiling permanently that was written to stay unarmed until money appears. The settle
+/// handler passes the REAL delta - this is where the ceiling is evaluated, and once this
+/// command replaces `workflowRunStep` on that path it is the only ceiling evaluation left.
+///
+/// `outcome` is deliberately NOT a parameter. It is the name of an edge the model typed
+/// into its own `mark_done` call; a settle has no such thing to report, and `None` takes
+/// the head edge - which is exactly what the claim did when the model named nothing, so
+/// the two doors resolve the same destination for the same card.
+///
+/// Answers [`AdvanceAdvice`] and not a bare slug, for the reason `AdvanceVerdict`'s doc
+/// gives plus one more: the destination is a whole `StageRow` so the launch needs no
+/// board slice (`slug`, `label`, `onEnterSkill`, `promptPrefix` from one row - ADR 0098),
+/// and the card identity rides because `launchTaskSession` needs a card and a Space and a
+/// caller that starts from a `sessionId` has neither.
+///
+/// Errors ride [`board_call`], because the decider answers `BoardError` - the family the
+/// six board verbs answer, which is why no new wire kind appears and no
+/// `From<DbError> for TasksError` was invented. The ceiling and the step bound are not
+/// errors here; they are fields of a successful answer.
+#[tauri::command]
+pub async fn workflow_advance_advice(
+    state: State<'_, Arc<Db>>,
+    session_id: String,
+    cost_delta_usd: Option<f64>,
+) -> Result<AdvanceAdvice, TasksError> {
+    let db = state.inner().clone();
+    board_call(
+        tauri::async_runtime::spawn_blocking(move || {
+            db.workflow_advance_advice(&session_id, None, cost_delta_usd)
         })
         .await,
     )

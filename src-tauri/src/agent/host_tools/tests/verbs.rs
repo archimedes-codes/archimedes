@@ -769,16 +769,258 @@ async fn mark_done_marks_the_frames_own_session_and_the_board_sees_the_claim() {
         "the sentence tells the model its Session is done — got {:?}",
         text_of(&result)
     );
+    // PIN #1, RE-POINTED. This used to assert `details.is_none()` — the shape from
+    // before `mark_done` decided anything. It now asserts the OPPOSITE, and the reason
+    // is the headline: the decision is made in Rust and Rust cannot launch, so the
+    // instruction has to leave in the answer or it dies in a tool result nobody re-reads.
+    // A regression to `details: None` here is not a cosmetic change, it is the feature
+    // silently turning back into a flag nobody acts on.
+    let advice = result.details.as_ref().expect(
+        "`mark_done` answers with `details.advanceAdvice` — the launch instruction. \
+         Without it the frontend has no claim-path channel at all and the card never \
+         moves, which is the defect this verb exists to remove.",
+    )["advanceAdvice"]
+        .clone();
+    assert_eq!(
+        advice["reason"], "not_automatic",
+        "the seeded board flags NO column `auto`, so the honest answer is that the \
+         card stays put — an `advance: true` here would be a decision the database \
+         never authorised"
+    );
+    assert_eq!(advice["advance"], false);
+    assert_eq!(
+        advice["taskId"], task_id,
+        "and the card identity rides the answer, because the claim path holds only a \
+         `sessionId` and `launchTaskSession` needs the card and the Space"
+    );
     assert!(
-        result.details.is_none(),
-        "and it ships NO `details` key: a new one costs four coordinated edits in \
-         `toolDetailsRegistry.test.ts` and reddens `pnpm build`'s `AssertEqual` seal. \
-         The mark reaches the UI through the BOARD read, not through a tool payload."
+        advice["spacePath"].is_string() && advice["maxSteps"].is_number(),
+        "the effective numbers ride along so the caller never invents one: TypeScript \
+         holds no copy of the fallback bounds — got {advice}"
+    );
+    assert!(
+        advice["destination"].is_null(),
+        "a non-auto advance carries no destination (PRESENT and null, never absent — \
+         the reader branches on this key)"
     );
 
     assert!(
         board_ready(&db, &task_id),
         "THE WRITE LANDED, seen through the board read the renderer uses"
+    );
+}
+
+/// **THE HEADLINE, at the model's door.** `mark_done` in an `auto` column answers
+/// `advance: true` with a destination row — against a `Db` that has never had its board
+/// read, so no seeding and no slice.
+///
+/// `get_board` is deliberately absent from this fixture: the five columns arrive from
+/// `create_task`'s own seed, which is what makes this a database-driven decision and not
+/// a slice-driven one. That distinction is the defect this feature removes.
+#[tokio::test]
+async fn mark_done_in_an_auto_column_answers_a_destination_and_names_it_in_the_text() {
+    let (_dir, db, task_id) = card_with_session("ht-verb-mark-done-auto-", "sess-auto").await;
+    db.set_stage_auto("/host-tools/verbs", "backlog", true)
+        .expect("flag the launched column auto");
+
+    let result = run(&db, Some("sess-auto"), false, "mark_done", json!({}))
+        .await
+        .expect("the claim is legal");
+
+    let advice = result.details.as_ref().expect("details")["advanceAdvice"].clone();
+    assert_eq!(advice["advance"], true, "auto on + a claim = advance");
+    assert_eq!(
+        advice["destination"]["slug"], "research",
+        "the D15 `sort_order + 1` fallback resolves the next column on an UNCONFIGURED \
+         board — the same fallback that makes the forward gate bite; got {advice}"
+    );
+    assert_eq!(
+        advice["destination"]["onEnterSkill"], "research",
+        "the destination is a whole row, so the launch needs no board slice to know \
+         which Skill to load (ADR 0098)"
+    );
+    assert_eq!(advice["alreadyLaunched"], false);
+    assert_eq!(
+        advice["taskId"], task_id,
+        "the card identity rides the answer — the claim path holds only a `sessionId`"
+    );
+    assert_eq!(advice["spacePath"], "/host-tools/verbs");
+    assert!(
+        text_of(&result).contains("research"),
+        "the model is told where the card went — got {:?}",
+        text_of(&result)
+    );
+
+    // The step write is proven through the PUBLIC door by
+    // `mark_done_quotes_the_spaces_own_bound_and_not_a_literal`, which sets a 1-step
+    // Space and watches the SECOND claim refuse — the only way to observe `steps` from
+    // outside `storage/db` is its effect on a later verdict, and that is a stronger
+    // proof than reading the column.
+}
+
+/// **The bell survives a non-auto claim** — through the BOARD READ the renderer uses,
+/// which is the only channel that reaches a card whose Session was never opened.
+///
+/// The first draft asserted this in prose and pinned it nowhere. `board_ready` is the
+/// helper that exists to pin it: it reads `TaskCardView.ready`, the folded `bool`, and
+/// the test below reads `readySessions` beside it so the owner of the claim is named and
+/// not merely implied.
+#[tokio::test]
+async fn mark_done_in_a_non_auto_column_leaves_the_card_and_keeps_the_bell_lit() {
+    let (_dir, db, task_id) = card_with_session("ht-verb-mark-done-bell-", "sess-bell").await;
+    // No `set_stage_auto` — a seeded column is NOT auto, and that is the case.
+
+    let result = run(&db, Some("sess-bell"), false, "mark_done", json!({}))
+        .await
+        .expect("a non-auto claim is still a legal claim");
+
+    assert!(
+        board_ready(&db, &task_id),
+        "THE BELL SURVIVES — an `auto` refusal must not withdraw the claim"
+    );
+    let card = db
+        .get_board("/host-tools/verbs")
+        .expect("get_board")
+        .into_iter()
+        .flat_map(|stage| stage.tasks)
+        .find(|card| card.task.id == task_id)
+        .expect("the card is on the board");
+    assert_eq!(
+        card.ready_sessions,
+        vec!["sess-bell".to_string()],
+        "and the board names WHO claims it, so the renderer can show the owner"
+    );
+    assert_eq!(card.task.stage_slug, "backlog", "the card did not move");
+    assert_eq!(
+        result.details.as_ref().expect("details")["advanceAdvice"]["reason"],
+        "not_automatic"
+    );
+    assert!(
+        text_of(&result).contains("not automatic"),
+        "and the model is TOLD the column is not automatic, so it does not try the \
+         move again through `move_task` and eat a forward-gate refusal — got {:?}",
+        text_of(&result)
+    );
+}
+
+/// The answer text quotes the bounds **from the advice**, never a literal this file holds.
+///
+/// The mutation this exists for is a `20` typed into `sentence_for`: a Space that
+/// configured `1` would then be told it hit a 20-step bound, and no other test can see
+/// it because every other fixture runs on the fallback.
+#[tokio::test]
+async fn mark_done_quotes_the_spaces_own_bound_and_not_a_literal() {
+    let (_dir, db, task_id) = card_with_session("ht-verb-mark-done-bound-", "sess-bound").await;
+    db.upsert_space("/host-tools/verbs", false)
+        .expect("upsert_space");
+    db.set_auto_guards("/host-tools/verbs", Some(1), Some(4.0))
+        .expect("a ONE-step, $4.00 Space");
+    db.set_stage_auto("/host-tools/verbs", "backlog", true)
+        .expect("auto");
+
+    // The first claim advances and spends the one permitted step.
+    run(&db, Some("sess-bound"), false, "mark_done", json!({}))
+        .await
+        .expect("the first claim");
+
+    // A second Session on the same card, claimed against the spent bound.
+    record_session(&db, "sess-bound-2");
+    db.link_session(&task_id, "sess-bound-2", Some("backlog"))
+        .expect("link the second Session");
+    let second = run(&db, Some("sess-bound-2"), false, "mark_done", json!({}))
+        .await
+        .expect("the second claim is legal, it just refuses to advance");
+
+    let advice = &second.details.as_ref().expect("details")["advanceAdvice"];
+    assert_eq!(advice["reason"], "max_steps", "got {advice}");
+    assert_eq!(advice["maxSteps"], 1, "the Space's number");
+    let text = text_of(&second);
+    assert!(
+        text.contains("1-step"),
+        "the sentence names ONE step, the number this Space chose — a literal `20` in \
+         `sentence_for` would pass every other test in this file; got {text}"
+    );
+    assert!(
+        !text.contains("20-step"),
+        "and it does not quote the shipped fallback for a Space that did not choose \
+         it; got {text}"
+    );
+}
+
+/// `params` is read for `outcome` and for NOTHING else — the narrow form of the
+/// un-spoofability rule, pinned against the enum the spec now advertises.
+///
+/// A legitimate `outcome` value must be accepted (it is in the advertised enum) and must
+/// not be able to smuggle a subject: the same call names a victim card and a victim
+/// session alongside it, and the victim stays untouched.
+#[tokio::test]
+async fn mark_done_accepts_an_outcome_and_still_refuses_every_id_in_params() {
+    let (_dir, db, task_id) = card_with_session("ht-verb-mark-done-params-", "sess-p1").await;
+    db.set_stage_auto("/host-tools/verbs", "backlog", true)
+        .expect("auto");
+    let victim = db
+        .create_task("/host-tools/verbs", "someone else's card", None, None)
+        .expect("a second card");
+    record_session(&db, "sess-victim");
+    db.link_session(&victim.id, "sess-victim", Some("backlog"))
+        .expect("link the victim");
+
+    let result = run(
+        &db,
+        Some("sess-p1"),
+        false,
+        "mark_done",
+        json!({
+            "outcome": "done",
+            "session_id": "sess-victim",
+            "task_id": victim.id,
+            "space_path": "/somewhere/else",
+        }),
+    )
+    .await
+    .expect("extra keys are ignored, not refused");
+
+    assert!(
+        !result.is_error,
+        "a legal `outcome` is accepted, and the junk beside it is ignored"
+    );
+    assert!(
+        board_ready(&db, &task_id),
+        "the CALLER's card is the one that claimed"
+    );
+    assert!(
+        !board_ready(&db, &victim.id),
+        "and the session the model NAMED is untouched — `params` was read for `outcome` \
+         alone. Text was {:?}",
+        text_of(&result)
+    );
+    // The destination came from the CALLER's card, in the seeded Space — not from the
+    // `space_path` the model tried to pass.
+    let advice = &result.details.as_ref().expect("details")["advanceAdvice"];
+    assert_eq!(advice["taskId"], task_id);
+    assert_eq!(advice["spacePath"], "/host-tools/verbs");
+}
+
+/// A wrong-typed `outcome` is refused naming the key, not silently dropped.
+///
+/// `opt_str`'s documented rule, applied to the one key this verb reads: `outcome: 42`
+/// means the model meant to send something and sent the wrong thing, and quietly
+/// ignoring it would advance a card on an edge the model did not name.
+#[tokio::test]
+async fn mark_done_refuses_a_wrong_typed_outcome_naming_the_key() {
+    let (_dir, db, _task_id) = card_with_session("ht-verb-mark-done-badtype-", "sess-bt").await;
+    let err = run(
+        &db,
+        Some("sess-bt"),
+        false,
+        "mark_done",
+        json!({ "outcome": 42 }),
+    )
+    .await
+    .expect_err("a present-but-wrong-typed parameter is an error, not a silent None");
+    assert!(
+        err.contains("outcome"),
+        "the refusal names the KEY so the model can fix it — got {err}"
     );
 }
 

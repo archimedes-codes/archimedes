@@ -53,6 +53,9 @@
 mod support;
 
 mod artifacts;
+// The single decider's arm order is this file's central subject, so it mirrors its
+// own production sibling.
+mod advise;
 mod auto_guards;
 mod board;
 // The forward-reachability BFS (D8/D15) has its own child because its production
@@ -65,6 +68,9 @@ mod parent_link;
 mod retention;
 mod rows;
 mod seams;
+// The session→card read (D16) is its own child because its production sibling is
+// its own file — the mirror rule names the file, not the verb.
+mod session_card;
 mod sessions;
 mod spaces;
 // The two SUBJECT children that replaced `stages.rs` — see the header above for

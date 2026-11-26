@@ -163,13 +163,39 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         // the calling Session and arrives on the frame — see `exec::session::mark_done`.
         ToolSpec {
             name: "mark_done".into(),
-            description: "Flag THIS Session as done and hand it to a person for review. \
-                          Call it when the work on this Session is finished and a human \
-                          should look at it. Takes no arguments — the Session is the one \
-                          making the call, not a value you pass. The flag clears at the \
-                          start of your next turn."
+            description: "Flag THIS Session as done and hand it to a person. Call it when \
+                          the work on this Session is finished and a human should look at \
+                          it. It is also the ONLY way a card moves FORWARD on the board: \
+                          the answer names the column it advanced to, or says plainly why \
+                          it stayed where it was. The flag itself clears at the start of \
+                          your next turn. The one argument is optional and names which \
+                          transition to take when this column has more than one; leave it \
+                          out to take the first."
                 .into(),
-            parameters: json!({ "type": "object", "properties": {}, "required": [] }),
+            // THE VOCABULARY IS THE DIFFICULT HALF, and every value below was measured
+            // against the ban at the top of this file. `needs_review` and bare `review`
+            // LOOK cleared in the plan that drafted this list and are not: `review`
+            // contains the substring `read` (`r-e-v-i-e-w`), so it fails the same test
+            // `ready` fails. `done`/`failed`/`error`/`success`/`blocked`/`partial`/
+            // `finished`/`complete`/`handoff` are the survivors, and the sentence above
+            // says "transition" rather than the obvious four-letter word for a board's
+            // second column for the same reason. A model that sends a value NOT in this
+            // list is not refused — the head edge fires and the answer says so — because
+            // an unlabelled board is the ordinary case and an invented name must not
+            // stall a chain.
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["done", "failed", "error", "success", "blocked",
+                                 "partial", "finished", "complete", "handoff"],
+                        "description": "Which transition to take out of this column, when \
+                                        more than one is wired. Omit it to take the first."
+                    }
+                },
+                "required": []
+            }),
         },
     ]
 }

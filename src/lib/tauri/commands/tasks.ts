@@ -68,6 +68,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AdvanceAdvice,
   AdvanceVerdict,
   Artifact,
   ArtifactMeta,
@@ -670,6 +671,43 @@ export async function workflowRunStep(
   return invoke<AdvanceVerdict>("workflow_run_step", {
     spacePath,
     taskId,
+    costDeltaUsd,
+  });
+}
+
+/**
+ * Ask Rust what ONE Session's `markDone` claim does to its card — the settle fallback's
+ * door, and the same decider the model's own `mark_done` tool call runs through.
+ *
+ * `AdvanceAdvice`'s header carries the whole argument for why this question is answered
+ * in Rust and cannot be answered here; the short form is that at settle time the renderer
+ * cannot tell whether the Session claimed, cannot see a board slice in the case an
+ * unattended chain actually settles in, and must not re-derive the next column — two
+ * authorities for one decision is the shape ADR 0098 exists to prevent.
+ *
+ * ONE argument plus an optional cost figure, and that shape IS the security property:
+ * `sessionId` is the only subject, and the card, the Space, the launched column, the edge
+ * and both budgets are all resolved from it in the database. There is no `taskId` to
+ * forge and no `spacePath` to shop for a cheaper Space's budget.
+ *
+ * `costDeltaUsd` follows `workflowRunStep`'s rule byte for byte and for the same reason:
+ * `null` means "this settle reported no figure", the fold then adds nothing, and the
+ * ceiling still runs against whatever earlier settles banked. Sending `0` for "unknown"
+ * would arm a ceiling permanently that was written to stay unarmed until money appears —
+ * ADR 0082's phantom zero. This IS the arm where a real delta exists, and once this
+ * wrapper replaces `workflowRunStep` on the settle path it is the only ceiling
+ * evaluation left in the tree.
+ *
+ * Rejects only on a database failure. A refusal to advance is a SUCCESSFUL answer with
+ * `advance: false` and a `reason` — the ceiling and the step bound are fields, not
+ * errors, because a settle-handler must never fail a Session over bookkeeping.
+ */
+export async function workflowAdvanceAdvice(
+  sessionId: string,
+  costDeltaUsd: number | null,
+): Promise<AdvanceAdvice> {
+  return invoke<AdvanceAdvice>("workflow_advance_advice", {
+    sessionId,
     costDeltaUsd,
   });
 }

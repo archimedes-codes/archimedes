@@ -362,6 +362,39 @@ impl Db {
         cost_delta_usd: Option<f64>,
     ) -> Result<AdvanceVerdict, DbError> {
         let guard = self.conn.lock().expect("db mutex poisoned");
+        Self::workflow_run_step_on(&guard, space_path, task_id, cost_delta_usd)
+    }
+
+    /// Record one auto-advance on a connection the caller already holds.
+    ///
+    /// The whole verb above, spelled on `&Connection`, leaving [`Db::workflow_run_step`]
+    /// the one line that takes the lock. The pair is [`Db::auto_guards`] /
+    /// [`Db::auto_guards_on`] and that pair's doc states the reason, which binds here
+    /// harder than it binds there: the connection mutex is **not reentrant** (ADR 0119 §2),
+    /// so a verb that holds the guard and calls `workflow_run_step` **deadlocks rather
+    /// than reads** — and the failure is a hung test binary, not an `Err`.
+    /// [`Db::workflow_advance_advice`] holds the one lock the whole
+    /// read→step→read has to ride (the TOCTOU argument above is ITS argument too, with
+    /// a launch on the other side of the race), so it is the caller this shape exists
+    /// for, and the only one.
+    ///
+    /// The alternative — letting the advice re-implement the arithmetic instead — is
+    /// what this shape refuses: a second copy of the `steps + 1` upsert and the
+    /// `>=`/`>` comparisons beside the first is two spend counters that a later edit
+    /// can edit apart, and a spend counter that drifts is a bound that fails open.
+    ///
+    /// EVERY RULE of [`Db::workflow_run_step`]'s doc above is this function's contract
+    /// as well — the cost arms, the card's-own-Space rule, the one-lock shape, the
+    /// guard read after the write, the `NULL` ≠ `0` discipline, `>` on steps and `>=`
+    /// on cost, and the write-is-not-conditional-on-the-verdict ordering. Nothing is
+    /// restated here because nothing changed: this is the same statements in the same
+    /// order with the lock taken by the caller.
+    pub(super) fn workflow_run_step_on(
+        guard: &rusqlite::Connection,
+        space_path: &str,
+        task_id: &str,
+        cost_delta_usd: Option<f64>,
+    ) -> Result<AdvanceVerdict, DbError> {
         // THE CARD'S SPACE, read under the SAME lock, before anything is written.
         //
         // WHY THE VERB DOES NOT TRUST ITS OWN ARGUMENT. `space_path` still arrives
@@ -498,7 +531,7 @@ impl Db {
         // until the read-back above runs, and a guard read before the write would
         // measure a step that had not happened yet against a bound that might be
         // edited before it did.
-        let guards = Self::auto_guards_on(&guard, space_path)?;
+        let guards = Self::auto_guards_on(guard, space_path)?;
         // `NULL` → the shipped fallback. NOT `unwrap_or(0)`: zero is a value a
         // person types, and reading an unset Space as zero would switch
         // auto-chaining off for every Space that never opened the editor.

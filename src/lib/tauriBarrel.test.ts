@@ -213,9 +213,10 @@ const domainModules = (): string[] =>
  * expectation from the file under test makes the guard green on any change. A
  * name may only enter or leave this list on purpose, in a commit that says so.
  *
- * It measures 176 names, re-measured at T6a (the auto-advance guard verdict:
- * `AdvanceVerdict` + `ChainStop`, both TYPE-ONLY, so `TAURI_RUNTIME_API` — which
- * measures 86 on the same tree — gains neither). An earlier version of this
+ * It measures 178 names, re-measured at the mark-done node signal (the advance
+ * advice: `AdvanceAdvice`, TYPE-ONLY, plus its `workflowAdvanceAdvice` wrapper, so
+ * `TAURI_RUNTIME_API` — which measures 87 on the same tree — gains the wrapper and
+ * not the type). An earlier version of this
  * sentence said "133 names as of issue #126/#127/#132" and an earlier one before
  * that said "107 names: 58 types + 49 functions"; both were prose no assertion
  * reads and both went stale. THE ARRAY IS THE EXPECTATION. The two figures above
@@ -299,6 +300,16 @@ const TAURI_PUBLIC_API = [
   // barrel is a type the runtime will re-declare by hand — and a hand-copied
   // `maxSteps`/`ceilingUsd` pair is the duplicated guard policy the verdict exists
   // to remove.
+  //
+  // (mark-done node signal) `AdvanceAdvice` enters on the SAME precedent and for the
+  // SAME reason: it is what `workflowAdvanceAdvice` answers with (whether the
+  // Session's card advances, WHERE, and the EFFECTIVE bounds the decision was
+  // measured against), and it is TYPE-ONLY — it vanishes at runtime, so
+  // `TAURI_RUNTIME_API` does NOT gain it, while the wrapper that returns it enters
+  // BOTH lists below. Named for the Rust `Serialize` type it mirrors
+  // (`src-tauri/src/storage/db/advise.rs`) rather than as `AdvanceAdviceDto`, on the
+  // `SpaceRow` / `AutoGuards` rule.
+  "AdvanceAdvice",
   "AdvanceVerdict",
   "ChainStop",
   "attentionArm",
@@ -530,6 +541,16 @@ const TAURI_PUBLIC_API = [
   // wrapper, its command and its `Db` verb: nothing called it, and the consumer
   // gate could not see that because the wrapper's own `invoke("workflow_run_open")`
   // literal counted as its consumer.
+  //
+  // (mark-done node signal) `workflowAdvanceAdvice` is the THIRD name in this family
+  // and it enters for the reason the paragraph above states: it is a RUNTIME wrapper,
+  // registered in `src-tauri/src/lib.rs` in the same commit that adds its re-export
+  // line here, and `check-commands.sh` counts its literal `invoke("…")` call site as
+  // that command's consumer — so a registration without an entry here reddens the
+  // gate, and an entry without a registration reddens this file. The one TYPE name it
+  // trades in, `AdvanceAdvice`, is declared above and stays out of the runtime list
+  // (the `workflowRunStep`/`WorkflowRunRow` precedent).
+  "workflowAdvanceAdvice",
   "workflowRunClose",
   "workflowRunStep",
   "ToolCallContent",
@@ -694,6 +715,15 @@ const TAURI_RUNTIME_API = [
   // and its `Db` verb — all dead IPC, and the consumer gate could not see that
   // because the wrapper's own `invoke("workflow_run_open")` literal counted as the
   // command's only consumer.
+  //
+  // (mark-done node signal) `workflowAdvanceAdvice` enters HERE TOO — it is a RUNTIME
+  // value (a command wrapper), registered in `src-tauri/src/lib.rs` in this same
+  // commit, and `check-commands.sh` counts its literal
+  // `invoke("workflow_advance_advice")` call site as that command's consumer, which
+  // is why a registration and an entry here are one change and not two. The one TYPE
+  // name it trades in, `AdvanceAdvice`, is in `TAURI_PUBLIC_API` ONLY — it vanishes
+  // at runtime (the `workflowRunStep`/`WorkflowRunRow` precedent one line above).
+  "workflowAdvanceAdvice",
   "workflowRunClose",
   "workflowRunStep",
   // (spec D3/D9/D12) The app-wide **Task badge** read — a RUNTIME wrapper. It is

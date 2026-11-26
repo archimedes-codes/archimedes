@@ -1581,6 +1581,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open
 //     in `rows`, imported by nothing in `src/` except `db/tests/rows.rs`. They are the
 //     arity side of the drift guards, so their only consumer is the test tree.
 
+// THE SINGLE DECIDER. One function, one lock, and the only verb in this unit whose
+// input is a Session id: it resolves the card, the Space, the frozen launching
+// column, the edge, the dedupe and both budgets, then answers with an INSTRUCTION
+// rather than a launch — because `storage` never names `crate::agent` (measured: zero
+// occurrences outside a comment) and a launch needs a `SessionManager` this layer
+// cannot name. `MoveOutcome::on_enter` and `MoveToolOutcome::note` are the in-repo
+// template for returning a fact as data for exactly that reason.
+mod advise;
 mod artifacts;
 mod auto_guards;
 mod board;
@@ -1594,6 +1602,11 @@ mod parent_link;
 mod retention;
 mod rows;
 mod seams;
+// The session→card read (D16) is its own subject: it answers a question no other
+// sibling asks (which card does THIS Session own, and what does that card sit on),
+// and its only caller is the decider above — which is why its read lives on
+// `&Connection` and not `&self`.
+mod session_card;
 mod sessions;
 mod spaces;
 mod stages;
@@ -1613,9 +1626,19 @@ use migrations::{
 // `MessageRow` / `SessionRow` are NOT here — they stay behind the
 // `pub use fulcrum_harness::store_rows::{…}` above, which is where they live.
 pub use rows::{
-    Artifact, ArtifactMeta, BoardRow, MoveOutcome, MoveToolOutcome, SessionRecency, SpaceRow,
-    StageRow, StageWithTasks, TaskCardView, TaskDetail, TaskNumberRow, TaskRow, TaskSessionRow,
+    AdvanceAdvice, Artifact, ArtifactMeta, BoardRow, MoveOutcome, MoveToolOutcome, SessionRecency,
+    SpaceRow, StageRow, StageWithTasks, TaskCardView, TaskDetail, TaskNumberRow, TaskRow,
+    TaskSessionRow,
 };
+
+// The two types the decider's read layer answers with. `CardOfSession` is the row
+// [`Db::card_of_session`] returns and `AdvanceAdvice` is what
+// [`Db::workflow_advance_advice`] returns, so both have to be spellable outside
+// `storage/db/` for the same mechanical reason every line above exists: `mod db;` is
+// private in `storage/mod.rs`, so a `pub` item in a private sibling is not nameable
+// past `storage/` without this widening — and a public method whose return type is
+// not nameable is a private-interface leak the compiler rejects outright.
+pub use session_card::CardOfSession;
 
 // `MoveAuthor` is the forward gate's discriminator and it is part of `Db::move_task`'s
 // signature, so both of the verb's doors have to be able to NAME it: `commands/tasks.rs`

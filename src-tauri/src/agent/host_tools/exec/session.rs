@@ -10,16 +10,19 @@
 
 use std::sync::Arc;
 
-use crate::agent::tools::ToolResult;
-use crate::storage::{Db, HostToolError};
+use serde_json::Value;
 
-use super::spawn_host_call;
+use crate::agent::tools::ToolResult;
+use crate::storage::{AdvanceAdvice, Db, HostToolError};
+
+use super::{opt_str, spawn_host_call, to_details};
 
 /// `mark_done` — this Session claims its work is done and a person should look at it.
 ///
-/// No `params` at all (the spec advertises `{"properties":{},"required":[]}`), and the
-/// interface risk is entirely in who is allowed to make the claim — the two refusals
-/// below and the one answer that reports writing nothing.
+/// ONE optional parameter — `outcome`, the name of the transition to take — and the
+/// interface risk is still entirely in who is allowed to make the claim: the two
+/// refusals below, the one answer that reports writing nothing, and the rule that
+/// `params` is read for `outcome` and for no id of any kind.
 ///
 /// # Why the subject is the frame's origin id and never a value in `params`
 ///
@@ -43,15 +46,30 @@ use super::spawn_host_call;
 /// exists to remove, and `Ok` is the one answer a supporter cannot distinguish from a
 /// mark that landed.
 ///
-/// # What the answer does NOT carry
+/// # The instruction that rides the answer
 ///
-/// `details: None`, and that is a decision and not an omission.
-/// `src/lib/toolDetailsRegistry.test.ts` freezes the producer-key tuple, so a NEW
-/// `details` key costs four coordinated edits in that file and `pnpm build` fails via
-/// its `AssertEqual` seal if one step is skipped. `super::board::get_artifact` is the
-/// in-tree precedent for a verb that answers with a sentence alone. The mark reaches
-/// the UI through the BOARD read (`TaskCardView.ready`, ADR 0113's follow-up), which
-/// is the channel that survives a restart — a tool-result payload would not be.
+/// `details.advanceAdvice`, and it is the reason this verb takes `params` at all. Rust
+/// decides and the frontend acts — see [`crate::storage::db::advise`]'s header for why
+/// the decision cannot live in TypeScript and why the ACT cannot be done here — so the
+/// answer has to carry the instruction or the decision dies in a tool result nobody
+/// re-reads.
+///
+/// The mark ITSELF still reaches the UI through the BOARD read (`TaskCardView.ready`),
+/// which is the channel that survives a restart; a tool-result payload is not that, and
+/// `advanceAdvice` is not a second copy of the flag. It is the one fact a restart cannot
+/// reconstruct — that THIS turn's claim resolved to THIS destination — and the claim path
+/// consumes it once, from the tool result it is sitting in.
+///
+/// Adding the key costs four coordinated edits in
+/// `src/lib/toolDetailsRegistry.test.ts` (the frozen producer tuple, its length pin, the
+/// fixture group, and the annotated reason in the unread-key table). Two of the four
+/// fail the BUILD via that file's `AssertEqual` seal and its exhaustive
+/// `Record<UnreadProducerKey, string>`; the other two — the length pin and the fixture
+/// group — are caught by `vitest run` on that file (guard 3's runtime read, and guard
+/// 4's fixture coverage), so the full bar has to RUN that file, which is why the plan
+/// names it explicitly rather than trusting `vitest run src/components` to reach it.
+/// Either way a skipped edit is loud, and that is the point of the seal — the four are
+/// named in the commit that lands them.
 ///
 /// # The row that is not there
 ///
@@ -66,6 +84,7 @@ pub(super) async fn mark_done(
     db: &Arc<Db>,
     origin: Option<&str>,
     is_subagent: bool,
+    params: &Value,
 ) -> Result<ToolResult, HostToolError> {
     if is_subagent {
         return Err(HostToolError::Invalid {
@@ -84,28 +103,137 @@ pub(super) async fn mark_done(
         });
     };
 
+    // THE ONE PARAMETER, and the rule that keeps it the only one. `params` is read for
+    // `outcome` and NOTHING else: no `session_id`, no `task_id`, no `space_path`. A
+    // session id in `params` is a session id the model chose, and cards link to the
+    // launching Session, so honouring one would let this Session mark ANOTHER's card —
+    // the un-spoofability pin in `super::tests::verbs` is what reddens if this line ever
+    // grows a second `opt_str`.
+    // Owned, because the closure below runs on the blocking pool and is `'static`.
+    let outcome: Option<String> = opt_str(params, "outcome")?.map(str::to_string);
+
     // Two bindings, because the id has to survive the closure that consumes it: the
     // `false` sentence below NAMES the id, and a refusal that does not say what it
     // rejected is a refusal the model cannot act on (the rule `missing` states for a
     // parameter and `BoardError`'s `Display` states for a card id).
     let session_id = session_id.to_string();
     let origin_session_id = session_id.clone();
+    let advice_session_id = session_id.clone();
+    // A second binding for the same reason the id has two: the closure consumes one and
+    // the sentence below names what the model actually asked for.
+    let named_outcome = outcome.clone();
     let db = db.clone();
-    let claimed = spawn_host_call("mark_done", move || {
-        Db::set_session_ready(&db, &origin_session_id, Some(true))
+
+    // ONE blocking call for the write AND the decision. They are one call because the
+    // decision reads `sessions.ready` — the flag this call writes — so deciding before
+    // the write would answer `unclaimed` about the very claim it is answering for, and
+    // deciding in a second call would put a lock between the two that a concurrent turn
+    // start can clear the flag across.
+    //
+    // The tuple is the shape `spawn_host_call` needs (one `Send + 'static` value); the
+    // `BoardError` half converts through the `From` impl this helper is generic over,
+    // which is exactly the reason that genericity exists.
+    let (claimed, advice) = spawn_host_call::<_, HostToolError, _>("mark_done", move || {
+        let claimed = Db::set_session_ready(&db, &origin_session_id, Some(true))?;
+        // `None` for the cost delta, always, on this door. The turn is still running
+        // and `sessions.cost_usd` is a RUNNING TOTAL, so the delta for THIS turn does not
+        // exist yet — the frontend computes it from a before-turn snapshot at settle.
+        // `None` is NOT "skip the ceiling": it means the fold adds nothing and the
+        // comparison still runs against whatever earlier settles banked on the open run,
+        // so a chain that has already blown its ceiling stops here rather than launching
+        // one more link. The settle fallback is where a real figure arrives.
+        let advice = db.workflow_advance_advice(&advice_session_id, outcome.as_deref(), None)?;
+        Ok((claimed, advice))
     })
     .await?;
 
-    // Two sentences, because `set_session_ready` answers `false` for an id that
-    // matches no row and an `Ok` that says "marked" about a row it did not touch is
-    // the confident lie this whole card is about. Both carry `details: None`.
-    let sentence = if claimed {
-        "this Session is marked done — a person should look at it".to_string()
-    } else {
-        format!(
+    Ok(ToolResult::ok_text(
+        sentence_for(&session_id, claimed, named_outcome.as_deref(), &advice),
+        Some(to_details("advanceAdvice", &advice)?),
+    ))
+}
+
+/// The model-facing sentence, built from what the DECIDER returned and never from a
+/// number this file holds.
+///
+/// `max_steps` and `ceiling_usd` are interpolated from the advice because the effective
+/// bounds are Rust-only on purpose — a literal `20` here would be a policy number
+/// smuggled into a second file, and a Space that configured `3` would be told it hit 20.
+/// The same reason `AdvanceVerdict` carries those fields at all: a caller given only
+/// `advance: false` can say a chain stopped and nothing about why.
+///
+/// Every branch says what HAPPENED to the card, because that is the fact the model
+/// cannot get from anywhere else — the flag it just set it can see in its own tool
+/// result, and the column it is in it can see in its prompt. What it cannot see is
+/// whether the card moved, and a model that does not know has been measured to try the
+/// move again through `move_task`, which the forward gate then refuses.
+fn sentence_for(
+    session_id: &str,
+    claimed: bool,
+    outcome: Option<&str>,
+    advice: &AdvanceAdvice,
+) -> String {
+    // The one arm where the write itself failed, and the reason it is not an error: the
+    // caller cannot retry its way into a row that does not exist, and a failed tool
+    // result invites exactly that. It still comes FIRST, because an `Ok` that says
+    // "marked" about a row it did not touch is the confident lie this verb exists to
+    // remove — and an advance decided for a phantom Session would be its twin.
+    if !claimed {
+        return format!(
             "mark_done wrote nothing: this frame's origin session id `{session_id}` \
-             matches no Session row"
-        )
-    };
-    Ok(ToolResult::ok_text(sentence, None))
+             matches no Session row, so nothing was flagged and nothing advanced"
+        );
+    }
+    if advice.advance {
+        let label = advice
+            .destination
+            .as_ref()
+            .map(|d| format!("`{}`", d.slug))
+            .unwrap_or_else(|| "the next column".to_string());
+        return if advice.reason == "advanced_unnamed_edge" {
+            format!(
+                "this Session is marked done and its card advanced to {label} — this \
+                 column has no transition named `{}`, so the first one was taken",
+                outcome.unwrap_or("")
+            )
+        } else {
+            format!("this Session is marked done and its card advanced to {label}")
+        };
+    }
+    // The refusals, each naming what the model can do about it. The bound arms quote the
+    // numbers AS THE ADVICE RETURNED THEM.
+    match advice.reason.as_str() {
+        "max_steps" => format!(
+            "this Session is marked done, but the chain is at its {}-step bound, so the \
+             card stayed put",
+            advice.max_steps.unwrap_or(0)
+        ),
+        "cost_ceiling" => match advice.ceiling_usd {
+            Some(ceiling) => format!(
+                "this Session is marked done, but the chain has reached its ${ceiling:.2} \
+                 ceiling, so the card stayed put"
+            ),
+            // No figure to quote. `None` means "no ceiling is configured", and it must
+            // NOT be rendered as `$0.00` — that would be ADR 0082's phantom zero, in a
+            // sentence, on the one number a person might act on.
+            None => "this Session is marked done, but the chain has reached its cost \
+                     ceiling, so the card stayed put"
+                .to_string(),
+        },
+        "not_automatic" => "this Session is marked done and flagged for review; this \
+                            column is not automatic, so the card stayed put and a person \
+                            moves it"
+            .to_string(),
+        "already_advanced" => "this Session is marked done; this handoff has already \
+                               launched, so nothing moved again"
+            .to_string(),
+        "unclaimed" => "this Session is marked done; the card did not advance".to_string(),
+        "no_next_stage" => "this Session is marked done and flagged for review; this \
+                            column leads nowhere, so the card stayed put"
+            .to_string(),
+        // No card to advance. The flag still landed, and that is the whole truth.
+        _ => "this Session is marked done — a person should look at it, though this \
+              Session is not linked to a card, so nothing moved on the board"
+            .to_string(),
+    }
 }

@@ -27,6 +27,13 @@ use serde::{Deserialize, Serialize};
 use fulcrum_harness::store_rows::{MessageRow, SessionRow};
 
 use super::stages::{lenient_next_outcomes, lenient_next_slugs};
+// [`AdvanceAdvice`] below carries the SHARED chain-stop vocabulary rather than a
+// string of its own, so this module names `ChainStop` — the same widening
+// `storage/mod.rs` performs when it re-exports the type beside it. The one upward
+// edge this module already declares (the two lenient stage decoders) is documented in
+// the header; this is a second, and it is for a view type that answers in the
+// workflow subject's vocabulary.
+use super::workflow_runs::ChainStop;
 
 /// The ONE `sessions` SELECT list every `SessionRow` read uses, as a const
 /// array of column names.
@@ -631,6 +638,100 @@ pub struct TaskCardView {
     pub ready_sessions: Vec<String>,
 }
 
+/// What one Session's `mark_done` claim ANSWERS with: whether its card advances,
+/// where to, and the numbers the decision was measured against.
+///
+/// MODELLED FIELD-FOR-FIELD ON [`crate::storage::AdvanceVerdict`], including that
+/// type's central rule — **the answer carries the effective numbers it was computed
+/// from**, because TypeScript holds no copy of [`crate::storage::DEFAULT_AUTO_MAX_STEPS`]
+/// or [`crate::storage::DEFAULT_AUTO_CEILING_USD`] and must not invent them. A policy
+/// number duplicated across the wire is a policy number that drifts, so the caller is
+/// handed the bound AND the verdict, and can write "this chain hit its 20-step bound"
+/// instead of "this chain hit its bound".
+///
+/// # Why this is a different type from `AdvanceVerdict` and not a widening of it
+///
+/// `AdvanceVerdict` answers "may the chain take another step?" — a bookkeeping
+/// question about a run row. This answers "what should happen to this card right
+/// now?" — a decision with a destination attached, made for a Session that holds
+/// nothing but its own id. The two differ in shape as well as in subject: this one
+/// carries a `StageRow` (so the frontend needs no board slice, ADR 0098), the card
+/// identity (so the claim path, which holds only a `sessionId`, has inputs for a
+/// launch), and `already_launched` (the dedupe's read, which `reason` cannot carry
+/// because `already_advanced` and `cost_ceiling` are mutually exclusive answers from
+/// one call and Task 4's close/no-close rule needs both facts at once).
+///
+/// # `reason` is the narrative and `stop` is the bound
+///
+/// `stop` is the SHARED [`crate::storage::ChainStop`] vocabulary — the same one
+/// `workflow_run_close`'s `stop_reason` column holds — and it is `Some` only for the
+/// three answers that ARE that vocabulary: `cost_ceiling`, `max_steps`,
+/// `no_next_stage`. The other refusals (`unlinked`, `unclaimed`, `not_automatic`,
+/// `already_advanced`) are facts about a Session and a column, not chain stops, and
+/// inventing a `ChainStop` variant for each would be an enum change plus a migration
+/// to spell what a string already says. So `advance: false` with `stop: None` is a
+/// real and reachable combination HERE, where it is not in `AdvanceVerdict` — read
+/// `reason` for the story and `stop` for the bound.
+///
+/// # Why three fields are `Option` when `AdvanceVerdict`'s are not
+///
+/// `task_id`, `space_path`, `max_steps` and `ceiling_usd` are all `None` on exactly
+/// ONE arm: `unlinked`, where the Session owns no card, so there is no Space, so
+/// there is nothing to measure a bound against. `AdvanceVerdict` can promise
+/// `max_steps` is never `None` because it cannot be called without a card; this can
+/// be, and the alternative — reporting the shipped fallback for a Space that was
+/// never resolved — is the exact move `Db::workflow_run_step` refuses when its
+/// `task_id` names no card ("report a verdict as though the Space had chosen them").
+/// Absent beats invented. Every arm that CAN carry a bound stop DOES carry the
+/// number, so no sentence a caller writes from this payload can quote a bound it did
+/// not receive.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdvanceAdvice {
+    /// May the card advance to [`Self::destination`]? `false` is not a failure — it
+    /// says nothing moved and the reason is in [`Self::reason`].
+    pub advance: bool,
+    /// The bound that stopped the chain, when one did. `None` does NOT mean
+    /// `advance` — see the header: the Session-shaped refusals have no spelling in
+    /// this vocabulary and are told by `reason` instead.
+    pub stop: Option<ChainStop>,
+    /// The destination column, whole — `slug`, `label`, `onEnterSkill` and
+    /// `promptPrefix` all from this ONE row, which is ADR 0098's rule that the Skill
+    /// a Session loads, the label a sentence names and the prompt it prepends cannot
+    /// disagree about which column was meant. `Some` exactly when `advance` is `true`.
+    pub destination: Option<StageRow>,
+    /// What happened, as one of the frozen spellings the header names. This is the
+    /// field a caller writes its sentence from, and the one Task 4 branches its
+    /// close/no-close rule against alongside [`Self::already_launched`].
+    pub reason: String,
+    /// The EFFECTIVE step bound this advice was measured against. `None` only on the
+    /// `unlinked` arm — see the header.
+    pub max_steps: Option<i64>,
+    /// The EFFECTIVE ceiling this advice was measured against. `None` means "no
+    /// ceiling figure exists to quote" — either no ceiling is configured, or the
+    /// `unlinked` arm's missing Space. Both spell the same instruction to a caller:
+    /// do not quote a dollar figure, and do NOT read it as zero
+    /// ([`crate::storage::AdvanceVerdict`]'s `ceiling_usd` says why a `null` cost can
+    /// never trip a ceiling, and that limitation is inherited whole).
+    pub ceiling_usd: Option<f64>,
+    /// The card this Session owns — an input to the launch, which the claim path
+    /// cannot derive because it holds only a `sessionId`. `None` on `unlinked`.
+    pub task_id: Option<String>,
+    /// The Space that card lives in, for the same reason. `None` on `unlinked`.
+    pub space_path: Option<String>,
+    /// Arm 3's dedupe READ: has a link row already been written for this card at the
+    /// destination this claim resolves to?
+    ///
+    /// Read-only, and computed BEFORE the ceiling comparison, so a ceiling-tripped
+    /// answer still carries it. Task 4's rule is "close the run only when the chain
+    /// ends here", and this is the mechanical test for that — `reason` alone cannot
+    /// express it, because a ceiling stop on a link that already launched must NOT
+    /// close the run (closing resets `cost_usd` to NULL on the next run, and a NULL
+    /// cost can never trip a ceiling, so the close would hand the chain a fresh
+    /// ceiling allowance).
+    pub already_launched: bool,
+}
+
 /// One named **Task artifact** (issue #180, spec §1, ADR 0100): a markdown
 /// document owned by a Task, stored as a row of `task_artifacts`.
 ///
@@ -731,7 +832,7 @@ pub struct MoveOutcome {
 //
 // THE SHAPE IS A CONTRACT, NOT AN IMPLEMENTATION DETAIL. `src/lib/
 // toolDetailsRegistry.test.ts` pins `details.board`, `details.task`,
-// `details.moveOutcome` and `details.artifactMeta` in a 39-key frozen tuple, and
+// `details.moveOutcome` and `details.artifactMeta` in a 40-key frozen tuple, and
 // `pnpm build` fails on a drop, an add, a reorder or a widening. Renaming a field
 // here reddens that file (run it EXPLICITLY — `vitest run src/components` does not
 // reach it) and the shape assertion in `agent/host_tools/tests/shape.rs`.
