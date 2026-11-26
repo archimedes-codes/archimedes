@@ -925,15 +925,37 @@ WHERE finished_at IS NULL`, i.e. **one open run per card**, refused at the INSER
 before being tempted: that index is what stops the spend bound **failing open** ("a second open row would
 count a chain against a stranger's `steps` and spend"), so relaxing it is not a UI decision.
 
-**What ships instead of silence.** `NodeDestinations` renders one element, `destination-fanout`, only when
-the list holds more than one destination, and `fanOutSentence` names the followed head and the unfollowed
-tail by label: *"Follows <head> only. <others> are not followed. A card lives in exactly one column, so this
-is not several parallel runs — the other edges only say what a drag may land on while Strict workflow is
-on."* A head whose own slug cannot be resolved gets its own clause ("no column this read can resolve carries
-that slug, so the chain follows nothing here"), because "follows a ghost" is a third answer and not the same
-as "follows nothing". Pinned by the cases in `NodeDestinations.test.tsx`'s
-`the destination list — the fan-out truth`. The unfollowed edges are not decorative either: under **Strict
-workflow** they still say what a drag *may* land on.
+**What ships instead of silence.** `NodeDestinations` renders one element, `destination-fanout`, and
+`fanOutSentence` names the followed head and the unfollowed tail by label: *"Follows <head> only. <others>
+are not followed. A card lives in exactly one column, so this is not several parallel runs — the other edges
+only say what a drag may land on while Strict workflow is on."* A head whose own slug cannot be resolved gets
+its own clause ("no column this read can resolve carries that slug, so the chain follows nothing here"),
+because "follows a ghost" is a third answer and not the same as "follows nothing". Pinned by the cases in
+`NodeDestinations.test.tsx`'s `the destination list — the fan-out truth`. The unfollowed edges are not
+decorative either: under **Strict workflow** they still say what a drag *may* land on.
+
+**AMENDED — "only when the list holds more than one" and "not followed" are both conditional now, and this
+section went false with the UI rather than the other way round.** `stages.next_outcomes` gives an edge an
+optional NAME, positional to `next_slugs`, and `mark_done` carries an optional outcome: `advise.rs` picks
+**the first edge whose label the claim named** and falls back to the head only when nothing matches. Three
+consequences for the paragraph above:
+
+- a **named non-head edge is followed**, on a claim that names it, so the tail clause holds only for a
+  column whose edges all carry no name — which is every board that predates the column, since it has no
+  SQL `DEFAULT` and is never backfilled. `fanOutSentence` prints the old wording for exactly that case and a
+  named-edge wording otherwise, and both are pinned;
+- the caption now also prints at **one** destination when that single edge is named, because the honest
+  sentence there is that the name changes nothing — one edge means a matching claim and a non-matching claim
+  both take it;
+- two edges to the **same** destination are legal data (`set_stage_next` validates each element names a real
+  column, never that the list is a set) and `workflowGraphLayout`'s `edgeIdOf` gained the outcome so they
+  render as two wires instead of collapsing into one.
+
+What did NOT move: **exactly one edge fires per claim.** A name selects a door; it does not open two. The
+schema limits above, the partial unique index, and §10's parallelism verdict all stand — the named-edge
+sentence keeps the anti-fork clause in its own words. Fixed in the same commit as the UI, per the
+citation-drift rule `docs/features/session-ready-marker.md` records: a corrected panel beside an uncorrected
+ADR is the failure mode, so ADR 0120 §6, `CONTEXT.md`'s **Fan-out** entry and this section moved together.
 
 **What true fork/join would take, so nobody re-derives it.** Either (1) a **card-fork model** —
 `tasks.stage_slug` becomes a membership relation, a card sits in N columns, and every surface reading "the

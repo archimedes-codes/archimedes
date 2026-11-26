@@ -291,13 +291,18 @@ function seedBoardSlice(columns: StageWithTasks[]): void {
     }
     return { ...found.stage, positionX: x, positionY: y };
   });
-  vi.mocked(setStageNext).mockImplementation(async (_space, slug, slugs) => {
-    const found = seeded.find((c) => c.stage.slug === slug);
-    if (found === undefined) {
-      throw { kind: "not_found", message: `no stage ${slug}` };
-    }
-    return { ...found.stage, nextSlugs: slugs };
-  });
+  // BOTH columns echo, because `set_stage_next` writes and answers BOTH in one `UPDATE`
+  // — they are positional, and a mock that dropped the labels would let the store merge
+  // back a row whose names describe the graph that USED to be there.
+  vi.mocked(setStageNext).mockImplementation(
+    async (_space, slug, slugs, outcomes) => {
+      const found = seeded.find((c) => c.stage.slug === slug);
+      if (found === undefined) {
+        throw { kind: "not_found", message: `no stage ${slug}` };
+      }
+      return { ...found.stage, nextSlugs: slugs, nextOutcomes: outcomes ?? null };
+    },
+  );
   act(() => {
     useSessions.setState({ activeSpacePath: SPACE });
     useTasks.setState({ boardsBySpace: { [SPACE]: columns }, loading: false });
@@ -390,6 +395,39 @@ beforeEach(() => {
   vi.mocked(getBoard).mockResolvedValue([]);
   vi.mocked(getBoardStrict).mockResolvedValue(false);
   vi.mocked(getAutoGuards).mockResolvedValue({ maxSteps: null, ceilingUsd: null });
+});
+
+interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/* `SVGElement.getBBox`, stubbed for THIS FILE ONLY.
+ *
+ * jsdom implements no SVG geometry, and xyflow's `EdgeText` — the component the builtin
+ * `default` edge renders an `Edge.label` through — calls `edgeTextRef.current.getBBox()`
+ * in a `useEffect` and throws `C.current.getBBox is not a function` without it. So the
+ * stub is what makes "a person can label an edge and the label renders on the canvas"
+ * testable AT ALL rather than a claim about the library's types.
+ *
+ * WHY THE ANSWER IS ALL ZEROS. `EdgeText` uses the box for two things only: the
+ * `translate()` on the label group and `visibility={width ? "visible" : "hidden"}`. A
+ * zero box therefore leaves the label group RENDERED with its text in the DOM (which is
+ * what every assertion here reads) and simply hides the background `<rect>`. Returning a
+ * made-up non-zero width would let a test pass that depends on a number no browser
+ * produced. `src/test/setup.tsx` deliberately carries only the stubs a majority of files
+ * need and says the per-file ones stay, so this belongs here and not there — the canvas
+ * files are the only ones that render an xyflow edge label.
+ */
+beforeAll(() => {
+  (Element.prototype as unknown as { getBBox?: () => Rect }).getBBox = () => ({
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+  });
 });
 
 describe("WorkflowsCanvas — drag to connect", () => {
@@ -663,6 +701,81 @@ describe("WorkflowsCanvas — drag to connect", () => {
     await settled();
 
     expect(setStageNext).not.toHaveBeenCalled();
+  });
+
+  it("PRESERVES the edge names already on the column when a drag appends an edge", async () => {
+    // THE DRAG HALF of the preserve decision, and the reason `onConnect` cannot stay a
+    // 3-arg call. `setStageNext`'s 4th argument defaults to `slugs.map(() => null)`, so
+    // omitting it is not "leave the labels alone" — it is "this write labels nothing",
+    // and every name the person typed in the panel would go away as a side effect of a
+    // drag that only ADDED a destination. Data loss dressed as an add, on the surface with
+    // the least explicit feedback in the app.
+    //
+    // The drag still writes NO name for its own edge — a pointer gesture has no keyboard
+    // in it, so `null` is the honest value — but it carries the stored names for the edges
+    // it is not touching.
+    seedBoardSlice([
+      column("backlog", {
+        nextSlugs: ["todo"],
+        nextOutcomes: ["failed"],
+      }),
+      column("todo", { nextSlugs: [] }),
+      column("doing", { nextSlugs: [] }),
+    ]);
+    const { container } = render(<WorkflowsCanvas />);
+    await settled();
+
+    await dragHandle(
+      handleOf(container, "backlog", "source"),
+      handleOf(container, "doing", "target"),
+      { x: 500, y: 300 },
+    );
+    await settled();
+
+    expect(setStageNext).toHaveBeenCalledTimes(1);
+    expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["todo", "doing"], [
+      "failed",
+      null,
+    ]);
+    // And the name survives in the picture, not just on the wire.
+    expect(
+      document.querySelector('[data-testid="rf__edge-backlog->todo:failed"]'),
+    ).toBeTruthy();
+  });
+
+  it("draws a NEW named edge beside an existing one, once the store answers", async () => {
+    // The canvas half of "two edges to one destination both render", arriving through the
+    // write path rather than a seeded slice: the person drags twice to `todo` and the
+    // second edge is only legal because the layout can now give it its own id. The drag
+    // itself writes no name, so a case like this needs the panel to name it — what is
+    // pinned here is that appending an UNNAMED second edge to a NAMED first one is
+    // accepted (different ids, so no xyflow warning) rather than refused as a duplicate.
+    seedBoardSlice([
+      column("backlog", {
+        nextSlugs: ["todo"],
+        nextOutcomes: ["failed"],
+      }),
+      column("todo", { nextSlugs: [] }),
+    ]);
+    const { container } = render(<WorkflowsCanvas />);
+    await settled();
+
+    await dragHandle(
+      handleOf(container, "backlog", "source"),
+      handleOf(container, "todo", "target"),
+      { x: 500, y: 52 },
+    );
+    await settled();
+
+    expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["todo", "todo"], [
+      "failed",
+      null,
+    ]);
+    await settled();
+    const drawn = [...document.querySelectorAll(".react-flow__edge")].map((el) =>
+      el.getAttribute("data-id"),
+    );
+    expect(drawn.sort()).toEqual(["backlog->todo", "backlog->todo:failed"]);
   });
 
   it("writes nothing when the destination is already there", async () => {

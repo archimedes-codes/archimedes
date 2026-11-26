@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 import { NodeDestinations } from "./NodeDestinations";
+import { EDGE_OUTCOME_SUGGESTIONS } from "../../lib/workflowEdgeWrite";
 
 /**
  * The **destination list** of the node-settings panel — the three states of
@@ -53,6 +54,7 @@ function renderDestinations(
   destinations: string[] | null,
   headResolvable = true,
   impliedSlug: string | null = null,
+  outcomes: (string | null)[] | null = null,
 ) {
   const onWrite = vi.fn();
   const onAdd = vi.fn();
@@ -60,6 +62,7 @@ function renderDestinations(
     <NodeDestinations
       stageSlug="backlog"
       destinations={destinations}
+      outcomes={outcomes}
       candidates={CANDIDATES}
       labelOf={labelOf}
       headResolvable={headResolvable}
@@ -89,14 +92,31 @@ function renderDestinations(
 const addTrigger = (): HTMLElement =>
   screen.getByRole("combobox", { name: "Add a destination for backlog" });
 
-/** The chips only. `/^destination-/` would also catch `destination-state` and
- *  `destination-fanout`, and the dialog's own suite had no fan-out element to
- *  exclude — the lookahead keeps the inherited `destination-<slug>` needle intact
- *  while making this query mean "the chips". */
+/** The chips' DESTINATION NAMES, in chip order — the label span of each chip and nothing
+ *  else.
+ *
+ *  The label span has its own needle (`destination-label-<slug>[:<name>]`) precisely
+ *  because the name-`Select` now lives INSIDE the chip span: reading a chip's whole
+ *  `textContent` returns `"Doingo name"` — the trigger's text rides along — so an order
+ *  assertion built on the container would be asserting on a widget's placeholder rather
+ *  than on a destination. `NodeSettingsBody.test.tsx` reads the same needle for the same
+ *  reason.
+ *
+ *  The chip CONTAINER (`destination-<slug>[:<name>]`) remains what a test selects to make
+ *  a claim about a chip as a whole — uniqueness, presence, a name in the needle. */
 const chipText = (): string[] =>
+  screen.getAllByTestId(/^destination-label-/).map((el) => el.textContent ?? "");
+
+/** The NAME each chip carries, in chip order — `null` for an unnamed edge. Read off the
+ *  chip container's needle, which is where the component puts the name. */
+const chipNames = (): (string | null)[] =>
   screen
-    .getAllByTestId(/^destination-(?!state|fanout)/)
-    .map((el) => el.textContent ?? "");
+    .getAllByTestId(/^destination-(?!state|fanout|label)/)
+    .map((el) => {
+      const id = el.getAttribute("data-testid") ?? "";
+      const at = id.indexOf(":");
+      return at === -1 ? null : id.slice(at + 1);
+    });
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -177,7 +197,7 @@ describe("the destination list — the three states of next_slugs (ADR 0099)", (
     // its slug — `StageDestinations`' rule, inherited: dropping it would shrink the
     // workflow on screen, which is what `set_stage_next` refuses to write.
     renderDestinations(["ghost"]);
-    expect(screen.getByTestId("destination-ghost").textContent).toBe("ghost");
+    expect(screen.getByTestId("destination-label-ghost").textContent).toBe("ghost");
   });
 });
 
@@ -186,7 +206,7 @@ describe("the destination list — the two whole-list writes", () => {
     const { onAdd } = renderDestinations(["doing"]);
     fireEvent.click(addTrigger());
     fireEvent.click(screen.getByRole("option", { name: "Done" }));
-    expect(onAdd).toHaveBeenCalledWith("done");
+    expect(onAdd).toHaveBeenCalledWith("done", null);
   });
 
   it("offers exactly the candidates it was handed, one item each", async () => {
@@ -210,7 +230,7 @@ describe("the destination list — the two whole-list writes", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Remove Doing from backlog" }),
     );
-    expect(onWrite).toHaveBeenCalledWith(["done"]);
+    expect(onWrite).toHaveBeenCalledWith(["done"], [null]);
   });
 
   it("reordering keeps the FIRST entry the card's primary next step", () => {
@@ -218,7 +238,7 @@ describe("the destination list — the two whole-list writes", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Move Done earlier in backlog" }),
     );
-    expect(onWrite).toHaveBeenCalledWith(["done", "doing"]);
+    expect(onWrite).toHaveBeenCalledWith(["done", "doing"], [null, null]);
   });
 
   it("the first chip has no earlier slot, and the affordance is inert rather than absent", () => {
@@ -240,7 +260,7 @@ describe("the destination list — the two whole-list writes", () => {
     expect(addTrigger().textContent).toBe("Add a destination");
     fireEvent.click(addTrigger());
     fireEvent.click(screen.getByRole("option", { name: "Done" }));
-    expect(onAdd).toHaveBeenCalledWith("done");
+    expect(onAdd).toHaveBeenCalledWith("done", null);
     // The store's paint is what hands the component the longer list, and the longer
     // list is what the `key` changes on. Without that key the UNCONTROLLED `Select`
     // keeps showing `Done`, and picking `doing` again is a silent no-op the person
@@ -251,31 +271,106 @@ describe("the destination list — the two whole-list writes", () => {
 });
 
 describe("the destination list — the fan-out truth", () => {
-  /* `next_slugs` is an ORDERED list and the auto-chain follows `[0]` ONLY:
-   * `nextStepOf` in `src/lib/workflowGraph.ts` takes
-   * `nextStepSlugs(columns, stage)[0]` and returns that one column. A card lives in
-   * exactly one column, so a second destination is not a second parallel Session —
-   * it is one followed edge and one the chain ignores. The panel therefore NAMES the
-   * live edge rather than rendering two identical-looking wires. */
+  /* `next_slugs` is an ORDERED list and, until the edge name landed, the auto-chain
+   * followed `[0]` and NOTHING else: `nextStepOf` takes `nextStepSlugs(…)[0]`. A card
+   * lives in exactly one column, so a second destination was one followed edge and one
+   * the chain ignored, and the panel said so out loud.
+   *
+   * `next_outcomes` (D6/D13) changes what that sentence may claim. `advise.rs` now takes
+   * "the FIRST edge whose label is the outcome the `mark_done` claim named", falling back
+   * to the head when nothing matches — so a labelled non-head edge IS followed, on a
+   * claim that names it. The old sentence's tail ("`<others>` are not followed") is false
+   * the moment any edge carries a name, and a corrected UI beside an uncorrected sentence
+   * is the citation-drift failure `docs/features/session-ready-marker.md` documents.
+   *
+   * What does NOT change is the count of edges that fire: still exactly ONE per claim,
+   * because `tasks.stage_slug` holds one value and `idx_workflow_runs_open` is a partial
+   * UNIQUE index. Routing is a CHOICE between edges, not a fork, and every sentence below
+   * keeps that distinction in its own words. */
 
-  it("names the followed edge and says the others are not followed", () => {
+  it("says the tail is NOT followed when no edge carries a name — the unchanged sentence", () => {
+    // THE "IDENTICAL TO TODAY" PIN for this caption, and the reason the labelled text is
+    // a SEPARATE branch rather than a rewrite: an unlabelled board is every board that
+    // exists today (`next_outcomes` has no SQL DEFAULT and is never backfilled), and its
+    // sentence must be the one it has always printed.
     renderDestinations(["doing", "done"]);
     const fanout = screen.getByTestId("destination-fanout").textContent ?? "";
     expect(fanout).toContain("Follows Doing only");
     expect(fanout).toMatch(/Done is not followed/);
     // The wrong inference, refused in words: this is not a fork.
     expect(fanout).toMatch(/one column/);
+    // And the labelled wording must NOT leak into the unlabelled case.
+    expect(fanout).not.toMatch(/names an edge|claim/);
   });
 
-  it("names every unfollowed edge when a third joins", () => {
+  it("names every unfollowed edge when a third joins, with none of them labelled", () => {
     renderDestinations(["doing", "done", "archive"]);
     expect(screen.getByTestId("destination-fanout").textContent).toMatch(
       /Done and Archive are not followed/,
     );
   });
 
-  it("stays silent for one destination, for [] and for null", () => {
+  it("says a labelled non-head edge IS followed when a claim names it", () => {
+    // THE SENTENCE THAT WENT FALSE, corrected. `done` is at index 1 — the position the
+    // old text filed under "not followed" — and it now carries `success`, so a
+    // `mark_done` claim naming `success` advances the card there. Printing the old
+    // sentence beside that chip would be a panel contradicting its own chips.
+    renderDestinations(["doing", "done"], true, null, [null, "success"]);
+    const fanout = screen.getByTestId("destination-fanout").textContent ?? "";
+    expect(fanout).toContain("Follows Doing unless a claim names an edge");
+    expect(fanout).toMatch(/Done \(success\) fires when a claim names success/);
+    // The OLD claim, gone: `done` is no longer merely a permission.
+    expect(fanout).not.toMatch(/is not followed/);
+  });
+
+  it("says exactly ONE edge fires per claim, so a named fan-out is still not a fork", () => {
+    // The half of the old sentence that is still TRUE and must survive the rewrite: one
+    // `stage_slug` per card and one open `workflow_runs` row per card. Routing picks a
+    // door; it does not open two.
+    renderDestinations(["done", "doing"], true, null, ["failed", "success"]);
+    const fanout = screen.getByTestId("destination-fanout").textContent ?? "";
+    expect(fanout).toMatch(/exactly one edge fires/);
+    expect(fanout).toMatch(/not several parallel runs/);
+    expect(fanout).toMatch(/Done \(failed\) and Doing \(success\) fire when a claim names them/);
+  });
+
+  it("earns its place at ONE destination when that edge carries a name", () => {
+    // The `length > 1` gate is right for an unlabelled list and wrong for a labelled one:
+    // with a name on the only edge there IS something to disambiguate — the person who
+    // just typed a name believes they configured routing. And the true thing to say is
+    // that they did not: with one edge, a matching claim and a non-matching claim both
+    // land on that same edge (`advise.rs` falls back to the head), so the name changes
+    // nothing. A panel that stayed silent here let them keep believing otherwise.
+    renderDestinations(["done"], true, null, ["failed"]);
+    const fanout = screen.getByTestId("destination-fanout").textContent ?? "";
+    expect(fanout).toMatch(/names the only edge/);
+    expect(fanout).toMatch(/changes nothing/);
+  });
+
+  it("still says the chain follows NOTHING when a single NAMED edge is a ghost", () => {
+    // THE CLAUSE SURVIVES THE NEW BRANCH. "A claim that names it and a claim that names
+    // nothing both take it" is only true of an edge that leads somewhere: `nextStepOf`
+    // yields NOTHING for a slug this read cannot resolve, so a named edge to a ghost is
+    // not a door at all. A one-edge branch that returned early without consulting
+    // `headResolvable` would print a confident sentence about a hop the runtime refuses to
+    // take — the same invention the two-edge ghost case exists to refuse.
+    renderDestinations(["ghost"], false, null, ["failed"]);
+    const fanout = screen.getByTestId("destination-fanout").textContent ?? "";
+    // Case-insensitive deliberately: in the two-edge branch this clause continues a
+    // sentence ("… and no column this read can resolve …") and here it STARTS one, so a
+    // case-sensitive pin would be pinning the punctuation of a neighbouring clause.
+    expect(fanout).toMatch(/no column this read can resolve/i);
+    expect(fanout).toMatch(/follows nothing here/i);
+    // And the name's own sentence is still there beside it — the two claims are
+    // independent, so both print.
+    expect(fanout).toMatch(/changes nothing/);
+  });
+
+  it("stays silent for one UNNAMED destination, for [] and for null", () => {
     const { unmount } = renderDestinations(["doing"]);
+    expect(screen.queryByTestId("destination-fanout")).toBeNull();
+    unmount();
+    renderDestinations(["doing"], true, null, [null]);
     expect(screen.queryByTestId("destination-fanout")).toBeNull();
     unmount();
     renderDestinations([]);
@@ -290,11 +385,15 @@ describe("the destination list — the fan-out truth", () => {
     // node for such an edge and `nextStepOf` yields NOTHING for it — an unresolvable
     // head has no column to launch — so the sentence must not promise a live hop.
     // `headResolvable` is the caller's answer, not a guess this component makes.
-    renderDestinations(["ghost", "done"], false);
+    //
+    // It stays the HEAD's clause even once the tail is labelled: a tail that routes on a
+    // claim does not make an unresolvable head live, so the two clauses are independent
+    // and both print.
+    renderDestinations(["ghost", "done"], false, null, [null, "success"]);
     const fanout = screen.getByTestId("destination-fanout").textContent ?? "";
-    expect(fanout).toContain("Follows ghost only");
-    expect(fanout).toMatch(/no column this read can resolve/);
-    expect(fanout).toMatch(/follows nothing here/);
+    expect(fanout).toContain("Follows ghost");
+    expect(fanout).toMatch(/no column this read can resolve/i);
+    expect(fanout).toMatch(/follows nothing here/i);
   });
 
   it("does NOT claim a dead chain for a column whose label equals its own slug", () => {
@@ -319,3 +418,202 @@ describe("the destination list — the fan-out truth", () => {
     expect(fanout).not.toMatch(/follows nothing/);
   });
 });
+
+describe("the destination list — naming an edge (D6/D13)", () => {
+  /* An outcome is an OPTIONAL LABEL on an outgoing edge, and until a person can type one
+   * D6's routing is unreachable: `mark_done` can name a transition all day and `advise.rs`
+   * will find no edge carrying it and fall back to the head. So this is the deliverable
+   * the done-when rests on, not a decoration on the chip row.
+   *
+   * The vocabulary is `EDGE_OUTCOME_SUGGESTIONS` — a mirror of the enum `mark_done`
+   * advertises in `specs.rs`. It is a SUGGESTION and not a validator: `next_outcomes` has
+   * no `CHECK` and `set_stage_next` validates labels against nothing, so a name outside
+   * the list still writes and still routes. That is why the list is imported from the one
+   * module that owns the edge write rather than typed out here a second time. */
+
+  it("offers every edge a name control, and it reads `no name` when the edge carries none", () => {
+    renderDestinations(["doing", "done"]);
+    expect(
+      screen.getByRole("combobox", {
+        name: "Name the edge to Doing from backlog",
+      }).textContent,
+    ).toBe("no name");
+    expect(
+      screen.getByRole("combobox", {
+        name: "Name the edge to Done from backlog",
+      }).textContent,
+    ).toBe("no name");
+  });
+
+  it("shows the name the edge already carries", () => {
+    renderDestinations(["doing", "done"], true, null, [null, "handoff"]);
+    expect(
+      screen.getByRole("combobox", {
+        name: "Name the edge to Done from backlog",
+      }).textContent,
+    ).toContain("handoff");
+  });
+
+  it("writes the WHOLE positional list when one edge is named, leaving the other slots alone", async () => {
+    // A whole-list write, because that is the shape `set_stage_next` takes — and the
+    // positional rule makes it dangerous: `outcomes[i]` names `slugs[i]`, so a write that
+    // sent `["handoff"]` for the second edge would either mismatch the length (the
+    // `EdgeOutcomeCount` refusal) or shift `failed` off the edge it belongs to. A shifted
+    // label is a card that advances on the wrong claim, invisibly.
+    const { onWrite } = renderDestinations(["doing", "done"], true, null, ["failed", null]);
+    fireEvent.click(
+      screen.getByRole("combobox", { name: "Name the edge to Done from backlog" }),
+    );
+    await screen.findByRole("option", { name: "handoff" });
+    fireEvent.click(screen.getByRole("option", { name: "handoff" }));
+    expect(onWrite).toHaveBeenCalledWith(["doing", "done"], ["failed", "handoff"]);
+  });
+
+  it("clears a name back to `no name`, which is null and NOT the empty string", async () => {
+    // `null` is the only spelling of "this edge carries no label". `""` would be a label
+    // that renders as nothing — the `promptPrefix` `""`-vs-`null` defect, one column over,
+    // and here it would also be a label no claim can name because the enum has no `""`.
+    const { onWrite } = renderDestinations(["doing"], true, null, ["failed"]);
+    fireEvent.click(
+      screen.getByRole("combobox", { name: "Name the edge to Doing from backlog" }),
+    );
+    await screen.findByRole("option", { name: "no name" });
+    fireEvent.click(screen.getByRole("option", { name: "no name" }));
+    expect(onWrite).toHaveBeenCalledWith(["doing"], [null]);
+  });
+
+  it("offers exactly the names mark_done advertises, plus `no name`", async () => {
+    // Compared as a SET and as the enum's own membership, because a picker offering a name
+    // the tool cannot send is a control that can only fail. `ready` is the measured case:
+    // it is illegal in `specs.rs` (it contains `read`) and must not appear here.
+    renderDestinations(["doing"]);
+    fireEvent.click(
+      screen.getByRole("combobox", { name: "Name the edge to Doing from backlog" }),
+    );
+    await screen.findByRole("option", { name: "handoff" });
+    const offered = screen
+      .getAllByRole("option")
+      .map((el) => el.textContent ?? "");
+    expect(offered.sort()).toEqual(
+      ["no name", ...EDGE_OUTCOME_SUGGESTIONS].sort(),
+    );
+    expect(offered).not.toContain("ready");
+    expect(offered).not.toContain("review");
+  });
+
+  it("keys a labelled chip apart from an unlabelled one to the SAME destination", () => {
+    // The testid hazard. `destination-${slug}` was unique because a destination could only
+    // appear once; `["done","done"]` labelled `failed`/`success` is legal data now, and two
+    // spans sharing a testid means a test — or a person using an assistive tech that reads
+    // the DOM structure — cannot tell which edge it is looking at. The name joins the
+    // needle exactly where it joins `edgeIdOf` on the canvas, so both surfaces name an
+    // edge the same way.
+    renderDestinations(["done", "done"], true, null, ["failed", "success"]);
+    expect(screen.getByTestId("destination-done:failed")).toBeTruthy();
+    expect(screen.getByTestId("destination-done:success")).toBeTruthy();
+    expect(screen.getAllByTestId(/^destination-done/)).toHaveLength(2);
+  });
+
+  it("keeps `destination-<slug>` for an UNLABELLED edge — the inherited needle survives", () => {
+    // Every existing case in this file and in `NodeSettingsBody.test.tsx` selects
+    // `destination-${slug}`. Those needles staying put is the panel-side half of "an
+    // unlabelled board is identical to today".
+    renderDestinations(["ghost"]);
+    expect(screen.getByTestId("destination-label-ghost").textContent).toBe("ghost");
+    expect(screen.queryByTestId("destination-ghost:null")).toBeNull();
+    // And the chip really is UNNAMED rather than named something that reads as blank.
+    expect(chipNames()).toEqual([null]);
+  });
+
+  it("removes one edge of a labelled pair and keeps the other's name", async () => {
+    // Removing an edge is a whole-list write of BOTH columns, and the survivor's label has
+    // to ride along in the same call. Dropping index 0 shifts index 1 down by one, so the
+    // outcomes list must be filtered by the SAME predicate or `success` lands on the wrong
+    // edge — the shift `EdgeOutcomeCount` cannot see, because the lengths still agree.
+    const { onWrite } = renderDestinations(["done", "doing"], true, null, ["failed", "success"]);
+    fireEvent.click(screen.getByRole("button", { name: "Remove Done from backlog" }));
+    expect(onWrite).toHaveBeenCalledWith(["doing"], ["success"]);
+  });
+
+  it("reorders a labelled pair with its names, so the head's label stays the head's", async () => {
+    // Reordering `next_slugs` without reordering `next_outcomes` is the same shift defect
+    // wearing a different gesture: the head is the edge a claim that names nothing takes,
+    // so swapping the slugs and not the labels swaps which name the head carries.
+    const { onWrite } = renderDestinations(["done", "doing"], true, null, ["failed", "success"]);
+    fireEvent.click(screen.getByRole("button", { name: "Move Doing earlier in backlog" }));
+    expect(onWrite).toHaveBeenCalledWith(["doing", "done"], ["success", "failed"]);
+  });
+});
+
+describe("the destination list — naming the edge a NEW destination gets", () => {
+  /* A drag-to-connect can carry a name (the canvas writes `null` — a pointer gesture has
+   * no keyboard in it), but the panel is where a person actually composes a routing table,
+   * and two of its edges to one destination is the shape they want: `done` on `failed` and
+   * `done` on `success`. The add-`Select` therefore needs a name to add WITH, or the rule
+   * refuses the second `done` (an unnamed duplicate) and the picker never offers it. */
+
+  it("carries the chosen name into the add, so a second edge to one destination is reachable", async () => {
+    const { onAdd } = renderDestinations(["done"]);
+    fireEvent.click(
+      screen.getByRole("combobox", { name: "Name for a new edge from backlog" }),
+    );
+    await screen.findByRole("option", { name: "success" });
+    fireEvent.click(screen.getByRole("option", { name: "success" }));
+    fireEvent.click(addTrigger());
+    fireEvent.click(screen.getByRole("option", { name: "Doing" }));
+    expect(onAdd).toHaveBeenCalledWith("doing", "success");
+  });
+
+  it("adds with a null name when no name was picked — the ordinary case", async () => {
+    const { onAdd } = renderDestinations(["done"]);
+    fireEvent.click(addTrigger());
+    fireEvent.click(screen.getByRole("option", { name: "Doing" }));
+    expect(onAdd).toHaveBeenCalledWith("doing", null);
+  });
+
+  it("reports the picked name upward, so the caller can widen its candidate set with it", async () => {
+    // THE REASON THERE IS A CALLBACK AT ALL. `canConnectStages` refuses an unnamed edge
+    // onto a destination the list already holds and ALLOWS a named one, so WHICH OPTIONS
+    // ARE LEGAL depends on the name about to be added. A caller that computed its option
+    // set with `outcome = null` would never offer the second edge to one destination,
+    // however the name control read — a control that cannot be reached is the
+    // dead-control shape this repo refuses.
+    //
+    // The pick is OWNED HERE (the panel's own rule: "the drafts live here and die here")
+    // and the callback is one-directional, so this case asserts the REPORT and not a
+    // mirrored prop: a component that took the name back down as a prop would have two
+    // owners of one draft and could write a label the trigger never showed.
+    const onPending = vi.fn();
+    render(
+      <NodeDestinations
+        stageSlug="backlog"
+        destinations={["done"]}
+        candidates={CANDIDATES}
+        labelOf={labelOf}
+        onPendingOutcomeChange={onPending}
+        onWrite={vi.fn()}
+        onAdd={vi.fn()}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("combobox", { name: "Name for a new edge from backlog" }),
+    );
+    await screen.findByRole("option", { name: "success" });
+    fireEvent.click(screen.getByRole("option", { name: "success" }));
+    expect(onPending).toHaveBeenCalledWith("success");
+    // And the trigger says so — the name the payload will carry is the name on screen.
+    expect(
+      screen.getByRole("combobox", { name: "Name for a new edge from backlog" })
+        .textContent,
+    ).toContain("success");
+  });
+
+  it("reads `no name` on the add control by default", () => {
+    renderDestinations(["done"]);
+    expect(
+      screen.getByRole("combobox", { name: "Name for a new edge from backlog" })
+        .textContent,
+    ).toBe("no name");
+  });
+});
+
