@@ -2,7 +2,7 @@
 //! context usage, todos, cost, archive, title, order, recency, delete).
 //!
 //! ⚠️ This child is the mirror's ONE ledgered exception to ADR 0112's 1,000-code-line
-//! test gate — the 30 session tests are one subject and ADR 0113 forbids naming a
+//! test gate — the 31 session tests are one subject and ADR 0113 forbids naming a
 //! second child for a subject that does not exist, so the size is baselined rather
 //! than split further.
 
@@ -1481,4 +1481,108 @@ fn session_on(id: &str, cwd: &Path, is_subagent: bool) -> SessionInfo {
         cost_usd: None,
         is_subagent,
     }
+}
+
+/// (the `ready` verb) `set_session_ready` writes the three states the column has
+/// and reports whether a row matched.
+///
+/// The three writes are the whole contract, and the third one is the half a
+/// `bool` cannot spell: `Some(true)` is the claim ("come look"), `Some(false)` is
+/// an explicit answer ("checked, not ready"), and `None` CLEARS it back to
+/// "never claimed" — the state a Session returns to when a new turn starts and the
+/// old readiness is stale. A `bool` parameter would collapse that third state into
+/// the second one, which is the `cost_usd` NULL ≠ 0 discipline with a flag in place
+/// of a cost, and the reason this verb takes `Option<bool>` and binds `Option<i64>`.
+///
+/// The `None` arm is asserted against a row that previously held `1`, not a fresh
+/// one: clearing a NULL is a no-op that a broken `UPDATE … = NULL` would also
+/// survive, so only the `1 → NULL` transition proves the write lands.
+///
+/// A missing id returns `Ok(false)` — the same shape `set_session_archived` and
+/// `set_session_title` have (a missing row is not an error).
+#[test]
+fn set_session_ready_roundtrips_all_three_states() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-readyverb-test-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    db.record_session(&title_session("sess-1"))
+        .expect("record_session should succeed");
+    db.record_session(&title_session("sess-2"))
+        .expect("record_session should succeed");
+
+    // A fresh row is ABSENT, not answered — the column has no `DEFAULT`.
+    assert_eq!(
+        ready_of(&db, "sess-1"),
+        None,
+        "a recorded session reads NULL, not 0"
+    );
+
+    // 1 — the claim.
+    assert!(
+        db.set_session_ready("sess-1", Some(true))
+            .expect("set_session_ready should succeed"),
+        "a matching row returns true"
+    );
+    assert_eq!(ready_of(&db, "sess-1"), Some(1), "Some(true) writes 1");
+
+    // 0 — the explicit answer, and NOT the same value as NULL.
+    assert!(
+        db.set_session_ready("sess-1", Some(false))
+            .expect("set_session_ready should succeed"),
+        "a matching row returns true"
+    );
+    assert_eq!(
+        ready_of(&db, "sess-1"),
+        Some(0),
+        "Some(false) writes 0 — a stored answer, distinct from the absent state"
+    );
+
+    // NULL — the clear (the turn-start state).
+    assert!(
+        db.set_session_ready("sess-1", None)
+            .expect("set_session_ready should succeed"),
+        "a matching row returns true"
+    );
+    assert_eq!(
+        ready_of(&db, "sess-1"),
+        None,
+        "None clears a stored 1/0 back to NULL"
+    );
+
+    // The write is per-row: `sess-2` was never touched.
+    assert_eq!(
+        ready_of(&db, "sess-2"),
+        None,
+        "the verb updates ONE row by id and no other"
+    );
+
+    // A missing id is a no-op returning false (mirrors `set_session_archived`).
+    assert!(
+        !db.set_session_ready("no-such-session", Some(true))
+            .expect("should not error"),
+        "a missing row is a no-op returning false"
+    );
+    assert_eq!(
+        raw_scalar(&db, "SELECT COUNT(*) FROM sessions WHERE ready IS NOT NULL"),
+        0,
+        "and it wrote nothing anywhere"
+    );
+}
+
+/// One row's `ready` flag, read through the raw connection as `Option<i64>`.
+///
+/// It goes straight to SQL because `ready` is deliberately NOT in
+/// `SESSION_COLUMNS`: the board read path (a later task) is what surfaces it, and
+/// the `SessionRow` projection is not widened by this change — the same discipline
+/// `board_strict` and the two auto-guard columns follow, where a column is read and
+/// written by SQL alone and the wire type is untouched.
+fn ready_of(db: &Db, id: &str) -> Option<i64> {
+    db.conn
+        .lock()
+        .expect("db mutex poisoned")
+        .query_row(
+            "SELECT ready FROM sessions WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .expect("the row exists")
 }

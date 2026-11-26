@@ -14,7 +14,7 @@
 //!
 //! This parent holds what every subject shares and what the pins read: the three
 //! error types and their `From` maps, the `Db` struct, [`Db::open`] **whole**
-//! (its nineteen `gate` calls ARE the migration surface, and
+//! (its twenty `gate` calls ARE the migration surface, and
 //! `the_three_task_tables_are_in_schema_and_have_no_gate_entry` counts them from
 //! this file's text), `gate`, `set_journal_pragmas`, `LAST_ACTIVITY` and `SCHEMA`.
 //! Every subject lives in the sibling that names it — [`sessions`], [`messages`],
@@ -975,6 +975,37 @@ impl Db {
             tx.execute("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT", [])?;
             Ok(())
         })?;
+        // One-time migration for pre-existing databases: add `ready` to `sessions`
+        // (fresh databases already have it from `SCHEMA`) and convert the rows that
+        // ALREADY carry the readiness claim. The ALTER and the backfill run in ONE
+        // transaction, so a crash rolls both back and retries on the next open — the
+        // `todos_json` gate's shape, and for the same reason: this column's data step
+        // writes a column this ALTER creates, so the two cannot be separated.
+        //
+        // NO `DEFAULT`, and that is the load-bearing part of this gate. It is the
+        // `cost_usd` argument (issue #105, D5 / ADR 0082) one column over: `NULL`
+        // means "this Session never claimed to be done" and renders NOTHING, while
+        // `0` means "it was re-checked and it is not ready" and renders an answer.
+        // A `DEFAULT 0` would migrate a person's whole history into the second
+        // meaning — a verdict about work nobody re-checked — and the readiness column
+        // would stop being a fact the moment it arrived. That no-default rule is
+        // asserted by `the_ready_gate_arrives_null_for_every_pre_existing_session`,
+        // which reads `pragma_table_info('sessions').dflt_value` and requires NULL, so
+        // a `DEFAULT` added here fails a pin rather than passing the `NULL` asserts.
+        //
+        // The backfill is the ONLY data step, and it is narrow on purpose: it marks
+        // `1` exactly the rows whose stored checklist holds a COMPLETED item whose
+        // content is the word `ready` — the claim the frontend used to scrape out of
+        // `todos_json` — and writes NOTHING to any other row, because absent is
+        // already `NULL` and `NULL` is the honest answer for them.
+        gate(&mut conn, "sessions", "ready", |tx| {
+            tx.execute("ALTER TABLE sessions ADD COLUMN ready INTEGER", [])?;
+            // The backfill helper takes `&Connection`; deref coercion reaches it
+            // from the `&mut Transaction`, so the data step runs on the SAME
+            // transaction as the ALTER above.
+            backfill_session_ready(tx)?;
+            Ok(())
+        })?;
         // The two per-Space auto-chain GUARDS (the workflow-graph work). Rides the
         // `spaces` row exactly as `board_strict` two gates up does — a new COLUMN on
         // a table an existing user database already holds, which is gate territory
@@ -1173,7 +1204,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- parent was never known", which is honest for the children whose parent row
     -- is already gone. See the `parent_session_id` gate in `Db::open` and
     -- `parent_session_id_column_migration_on_a_preexisting_db`.
-    parent_session_id TEXT
+    parent_session_id TEXT,
+    -- THREE meanings live in this one nullable column and the absence of a
+    -- `DEFAULT` is what keeps them three: NULL = "this Session NEVER CLAIMED to be
+    -- done" (never marked, or the claim was cleared at the start of a new turn),
+    -- 0 = "it was checked and it is NOT ready" (an explicit answer), 1 = "it claimed
+    -- readiness; come look". A `DEFAULT 0` would migrate every pre-existing row into
+    -- the second meaning — an answer about work nobody re-checked — which is exactly
+    -- the phantom-`$0.00` collapse `cost_usd`'s gate documents and pins, so this
+    -- column arrives DEFAULT-less and the gate below backfills only the rows that
+    -- genuinely carry the old stored marker.
+    ready INTEGER
 );
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY,
@@ -1397,7 +1438,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open
 // declares `pub` is ONLY what a re-export below names, and every one of those
 // re-exports is the retention/`rows` precedent doing its job: a `pub` item in a
 // private module is unreachable outside `storage/` without the line, and each
-// entry states who needs it. Nothing is declared `pub(crate)` at all. The 28
+// entry states who needs it. Nothing is declared `pub(crate)` at all. The 29
 // `pub(super)` items the children do carry fall into THREE
 // categories, and naming all three is the point — the sentence this block replaced
 // claimed the first category was the only one:
@@ -1406,7 +1447,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open
 //     read by every subject that runs a `SELECT`, plus `stages`' five helpers,
 //     `seams`' `space_key`, and `auto_guards`' guard projection — which
 //     `workflow_runs` reads while it holds the one lock that read has to ride.
-//   * PARENT→CHILD (3): the three `migrations` data steps, imported by `mod.rs` just
+//   * PARENT→CHILD (4): the four `migrations` data steps, imported by `mod.rs` just
 //     below and called from inside `open`'s `gate` closures. `pub(super)` is what the
 //     PARENT needs here, not a sibling reaching sideways — so none of them can be a
 //     plain `fn`, and `pub(super)` is the honest spelling of a child's API its parent
@@ -1430,8 +1471,10 @@ mod stages;
 mod tasks;
 mod workflow_runs;
 
-// `Db::open`'s gates run these three data steps inside their own transactions.
-use migrations::{backfill_session_todos, seed_session_sort_order, seed_space_sort_order};
+// `Db::open`'s gates run these four data steps inside their own transactions.
+use migrations::{
+    backfill_session_ready, backfill_session_todos, seed_session_sort_order, seed_space_sort_order,
+};
 
 // The 11 row/view types the split moved to [`rows`]. `storage/mod.rs`'s
 // `pub use db::{…}` list names them, so this re-export is the whole integration
