@@ -93,7 +93,7 @@ fn the_board_verbs_fold_into_the_host_tool_error_with_their_sentences_intact() {
     // own `Display` rendered ONCE — never re-spelled per mapping arm, which is how a
     // `#[error(...)]` edit and a mapping table drift apart.
     let absent: Result<MoveOutcome, HostToolError> =
-        Db::move_task(&db, &space, "tsk_absent", "doing").map_err(Into::into);
+        Db::move_task(&db, &space, "tsk_absent", "doing", MoveAuthor::Person).map_err(Into::into);
     let err = match absent {
         Ok(_) => panic!("a move of a card that does not exist must refuse"),
         Err(e) => e,
@@ -124,6 +124,50 @@ fn the_board_verbs_fold_into_the_host_tool_error_with_their_sentences_intact() {
         matches!(&err, HostToolError::Invalid { message }
             if message.contains("My Spec") && message.contains("[a-z0-9][a-z0-9-]{0,39}")),
         "`Invalid`, naming the key AND the grammar — got {err:?}"
+    );
+
+    // D7's forward gate folds the SAME way: `Invalid`, and the model's teaching
+    // sentence survives the fold whole.
+    //
+    // ONE HONEST LIMIT on what this can prove. The explicit
+    // `BoardError::ForwardMoveRefused` arm in the `From` impl and the catch-all that
+    // follows it BOTH answer `Invalid`, so no runtime assertion can tell "named in
+    // the table" from "fell through" — the observable claim is the VARIANT and the
+    // SENTENCE, and the arm's explicitness is a fact a reviewer reads in the match
+    // list. What this pin does catch is the two failures that ARE observable: a fold
+    // to `NotFound` (which would tell the model a column is missing when nothing is)
+    // or to `Io` (which would tell it to retry), and a sentence that lost
+    // `mark_done` on the way through.
+    let forward: Result<MoveOutcome, HostToolError> =
+        Db::move_task(&db, &space, &created.id, "done", MoveAuthor::Model).map_err(Into::into);
+    let err = match forward {
+        Ok(_) => panic!(
+            "a forward move on a SEEDED board (every `next_slugs` NULL) must refuse — \
+             a silent `Ok` here means the D15 fallback is inert and the gate is decoration"
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&err, HostToolError::Invalid { message } if message.contains("mark_done")),
+        "`Invalid`, carrying `mark_done` — got {err:?}"
+    );
+    // The card's id is a uuid, so it is the ONE part of the sentence that cannot be
+    // a literal; the sentence around it is spelled out whole, which is the half that
+    // must not drift.
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "cannot move {} forward from backlog to done: forward moves go through \
+             `mark_done`, which flags the Session and advances the card. Call \
+             `mark_done` when the work is finished and a person should look at it; \
+             move backward or sideways with this verb.",
+            created.id
+        ),
+        "the sentence is `BoardError`'s own, spelled as a LITERAL here exactly as the \
+         `no task with id tsk_absent` pin above spells its own — so rewording \
+         `ForwardMoveRefused` reddens this AND the `agent/board_error_map.rs` copy \
+         that `commands/tasks/tests/board.rs` pins against the same wording. A model \
+         reading a silent paraphrase is a model whose sentence drifted"
     );
 
     // And a `DbError` (the board read's enrichment path is the only one a host tool

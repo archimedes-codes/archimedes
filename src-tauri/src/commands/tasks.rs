@@ -83,8 +83,8 @@ use tauri::State;
 
 use crate::agent::{debuglog, EventSink, SessionError, SessionInfo, SessionManager, TasksError};
 use crate::storage::{
-    AdvanceVerdict, Artifact, ArtifactMeta, AutoGuards, Db, FieldPatch, StageRow, StageWithTasks,
-    TaskNumberRow, TaskRow, TaskSessionRow,
+    AdvanceVerdict, Artifact, ArtifactMeta, AutoGuards, Db, FieldPatch, MoveAuthor, StageRow,
+    StageWithTasks, TaskNumberRow, TaskRow, TaskSessionRow,
 };
 
 /// What a `move_task` reports: the destination stage's `on_enter`, plus — only
@@ -678,7 +678,11 @@ pub async fn move_task(
         let stage_move = to_stage.clone();
         board_call(
             tauri::async_runtime::spawn_blocking(move || {
-                db_move.move_task(&space_move, &task_move, &stage_move)
+                // `MoveAuthor::Person`, and it is the door that makes it that and
+                // not a judgement about trust: this is the IPC command a human drag
+                // arrives on, and D11 keeps a person unrestricted by the forward
+                // gate. The Strict gate above this call still binds a drag.
+                db_move.move_task(&space_move, &task_move, &stage_move, MoveAuthor::Person)
             })
             .await,
         )?

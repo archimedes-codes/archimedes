@@ -92,6 +92,35 @@ impl From<BoardError> for TasksError {
             BoardError::StrictMoveRefused { from, to, allowed } => TasksError::NotFound(format!(
                 "cannot move to {to} from {from} — allowed: {allowed}"
             )),
+            // D7's forward gate rides `NotFound` with the Strict gate ABOVE it and
+            // re-spells its own sentence for the same reason every arm here does:
+            // nothing branches on a distinct `kind` for a board refusal —
+            // `store/tasks.ts` reverts its optimistic paint on ANY rejection kind
+            // and renders `message` — so a new wire string would be one more no
+            // reader reads.
+            //
+            // THE PLAN ASKED FOR `TasksError::Invalid` AND THERE IS NO SUCH
+            // VARIANT, measured at this HEAD: the family is `Database`, `NotFound`,
+            // `EmptyTitle`, `BadArtifactKey`, `ArtifactTooLarge`, `Other`, and the
+            // instruction that governs is the plan's own "do NOT add a `TasksError`
+            // variant". `NotFound` is where the tree already puts a workflow-policy
+            // refusal on a move — the Strict arm one line above is the precedent,
+            // and its doc says the reason: the sentence IS the answer, and
+            // `IpcErrorLine` renders it under `role="alert"`.
+            //
+            // This arm is also, honestly, the wire path a PERSON never takes: the
+            // gate fires only for `MoveAuthor::Model` and the IPC command passes
+            // `MoveAuthor::Person`, so no drag can raise it. It exists because the
+            // match is exhaustive over an enum the storage layer grows, and folding
+            // it correctly beats a `unreachable!()` that would panic inside
+            // `spawn_blocking` — the argument `From<BoardError> for HostToolError`
+            // makes for its own catch-all.
+            BoardError::ForwardMoveRefused { task_id, from, to } => TasksError::NotFound(format!(
+                "cannot move {task_id} forward from {from} to {to}: forward moves \
+                 go through `mark_done`, which flags the Session and advances the \
+                 card. Call `mark_done` when the work is finished and a person \
+                 should look at it; move backward or sideways with this verb."
+            )),
             BoardError::SelfLoop { slug } => {
                 TasksError::NotFound(format!("stage {slug} cannot lead to itself"))
             }

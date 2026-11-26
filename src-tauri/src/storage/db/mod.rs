@@ -322,6 +322,45 @@ pub enum BoardError {
         allowed: String,
     },
 
+    /// D7's forward gate: a MODEL asked `move_task` to take a card to a column the
+    /// graph says is REACHABLE from the one it is in, and forward moves are
+    /// `mark_done`'s alone. Only reachable for the `MoveAuthor::Model` door
+    /// (`storage/db/tasks.rs`) — a person's drag is unrestricted (D11) and this
+    /// variant is not constructible from that door.
+    ///
+    /// THE SENTENCE IS THE DELIVERABLE, not a diagnostic, and it is written to the
+    /// same rule [`BoardError::StrictMoveRefused`]'s doc states — naming what is
+    /// legal "is the whole UI this needs". A model that gets a bare "not allowed"
+    /// retries with a different column; one that is told which verb does the move
+    /// stops calling this one. So it names the origin and the destination (the two
+    /// things it just asked about), names `mark_done` TWICE (once as the door, once
+    /// as the call to make), states the condition for making it ("when the work is
+    /// finished and a person should look at it"), and closes with what THIS verb is
+    /// still for — backward and sideways moves — so the refusal does not read as
+    /// "the board is locked".
+    ///
+    /// TWO WORDS ARE BANNED from it, and the ban is not stylistic:
+    /// `agent/host_tools/tests/surface.rs`'s `no_host_tool_spec_names_read_or_subagent`
+    /// scans whole spec text for `read` and `subagent` because a spec containing
+    /// either makes `worker_e2e`'s `!tools_section.contains("read")` assertion pass
+    /// while proving nothing. `ready` contains `read`, and so do `thread`, `already`,
+    /// `spread` and `reads` — the obvious word for the destination column of a board
+    /// is therefore unusable here, as is any sentence about what the Session has
+    /// "already" done. `agent/host_tools/tests/verbs.rs` pins the two substrings on
+    /// THIS sentence, because the refusal text travels as a tool RESULT and a future
+    /// rewording that reaches for "ready" would otherwise redden only the Windows
+    /// leg's grep, far from the edit.
+    #[error(
+        "cannot move {task_id} forward from {from} to {to}: forward moves go through `mark_done`, \
+         which flags the Session and advances the card. Call `mark_done` when the work is finished \
+         and a person should look at it; move backward or sideways with this verb."
+    )]
+    ForwardMoveRefused {
+        task_id: String,
+        from: String,
+        to: String,
+    },
+
     /// `set_stage_next` refuses a slug equal to its own origin. A self-loop is a
     /// button that moves a card to the column it is already in — a control that
     /// appears to do something and does nothing.
@@ -423,6 +462,14 @@ pub enum BoardError {
 ///   discovery round trip, and that sentence is what the model reads.
 /// - `StrictMoveRefused` → `Invalid`, likewise: the call was well-formed and the
 ///   Space's own workflow gate refused it. `allowed` rides for the same reason.
+/// - `ForwardMoveRefused` → `Invalid` for the SAME reason and not a new one: the
+///   arguments parsed, the card and both columns exist, and the Space's graph plus
+///   D7 make the move inadmissible for THIS door. It is emphatically not `NotFound`
+///   — nothing is missing — and not `Io`, which would tell the model to retry a
+///   write that refuses identically forever. `Invalid`'s own definition
+///   ("well-formed and still not admissible") is exactly a policy refusal, and the
+///   sentence that arrives is `BoardError`'s `Display`, which is the deliverable:
+///   it teaches the model to call `mark_done` instead.
 /// - `Sqlite` → `Io`, with the same sentence preservation as the `DbError` map
 ///   above.
 ///
@@ -473,6 +520,11 @@ impl From<BoardError> for HostToolError {
             | BoardError::EmptyTitle
             | BoardError::MissingStage { .. }
             | BoardError::StrictMoveRefused { .. }
+            // D7's forward gate, and it is REACHABLE — `move_task` is a host tool
+            // and this is the refusal that model's door gets. See the doc bullet
+            // above: a well-formed call the Space's graph refuses is `Invalid`'s
+            // own definition, and the sentence is the teaching text.
+            | BoardError::ForwardMoveRefused { .. }
             | BoardError::StageNotEmpty { .. }
             | BoardError::StageReferenced { .. }
             | BoardError::LastStage { .. }
@@ -1532,6 +1584,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open
 mod artifacts;
 mod auto_guards;
 mod board;
+// The edge GRAPH question (forward reachability) is its own subject: it reads the
+// `stages` rows the `stages` sibling writes but answers a traversal question none
+// of those verbs ask, and its only caller is `tasks.rs`'s `move_task`.
+mod edges;
 mod messages;
 mod migrations;
 mod parent_link;
@@ -1560,6 +1616,14 @@ pub use rows::{
     Artifact, ArtifactMeta, BoardRow, MoveOutcome, MoveToolOutcome, SessionRecency, SpaceRow,
     StageRow, StageWithTasks, TaskCardView, TaskDetail, TaskNumberRow, TaskRow, TaskSessionRow,
 };
+
+// `MoveAuthor` is the forward gate's discriminator and it is part of `Db::move_task`'s
+// signature, so both of the verb's doors have to be able to NAME it: `commands/tasks.rs`
+// (Person) and `agent/host_tools/exec/board.rs` (Model). It lives in the `tasks` sibling
+// beside `MoveOutcome` because that is the verb it gates, and `mod tasks;` is private in
+// `storage/mod.rs`, so without this line the two callers cannot spell the type at all —
+// the same widening the `rows` re-export above performs for a private sibling's items.
+pub use tasks::MoveAuthor;
 
 // The workflow subject's PUBLIC surface: the run record and the VERDICT a step
 // answers with (`AdvanceVerdict` + the `ChainStop` vocabulary it carries), from

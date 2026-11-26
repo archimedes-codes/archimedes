@@ -55,6 +55,9 @@ mod support;
 mod artifacts;
 mod auto_guards;
 mod board;
+// The forward-reachability BFS (D8/D15) has its own child because its production
+// sibling is its own file — the mirror rule names the file, not the verb.
+mod edges;
 mod messages;
 mod migrations;
 mod open;

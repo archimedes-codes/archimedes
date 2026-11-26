@@ -13,7 +13,7 @@
 //! `tests`, not `tasks`.
 
 use crate::commands::tasks::{board_call, db_call, require_position_pair, stage_slug_from_label};
-use crate::storage::{Db, DbError};
+use crate::storage::{Db, DbError, MoveAuthor};
 
 /// (spec §5) the label→slug derivation: lowercase, runs of anything outside
 /// `[a-z0-9-]` collapse to ONE `-`, and a label with no slug characters derives
@@ -185,8 +185,13 @@ fn strict_move_refusals_reach_the_wire_naming_the_legal_destinations() {
         .create_task(space, "governed", None, None)
         .expect("create_task");
 
-    let err = board_call(Ok::<_, String>(db.move_task(space, &card.id, "done")))
-        .expect_err("done is not an edge of backlog");
+    let err = board_call(Ok::<_, String>(db.move_task(
+        space,
+        &card.id,
+        "done",
+        MoveAuthor::Person,
+    )))
+    .expect_err("done is not an edge of backlog");
     assert_eq!(err.kind(), "not_found", "the kind the board reverts on");
     let message = err.to_string();
     assert!(

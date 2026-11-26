@@ -21,7 +21,7 @@
 //!
 //! ```text
 //! // BROKEN — compiles, and every move_task answer loses `toStage`
-//! let out = spawn_host_call("move_task", move || Db::move_task(&db, &space_path, &task_id, &to_stage)).await?;
+//! let out = spawn_host_call("move_task", move || Db::move_task(&db, &space_path, &task_id, &to_stage, MoveAuthor::Model)).await?;
 //! return Ok(ToolResult::ok_text(text, Some(to_details("moveOutcome", &out)?)));
 //! ```
 //!
@@ -167,10 +167,24 @@ async fn every_details_payload_key_set_matches_the_frozen_frontend_fixtures() {
     );
 
     // `details.moveOutcome` — all three, in the fixture's spelling.
+    //
+    // THE CARD IS POSITIONED BY THE HUMAN DOOR for the same reason
+    // [`a_move_task_answer_carries_to_stage_on_enter_and_note_all_three`] now does:
+    // this asserts a SUCCESSFUL answer's key set, and on the default board's
+    // fallback chain every column is forward-reachable from `backlog`, so the
+    // model's `backlog → done` call is a refusal with no `details` to grade. A
+    // person positions it (D11) and the model moves BACKWARD, which is allowed.
+    db.move_task(
+        "/host-tools/shape",
+        &task_id,
+        "done",
+        crate::storage::MoveAuthor::Person,
+    )
+    .expect("the human door positions the card");
     let moved = run(
         &db, None, false,
         "move_task",
-        json!({ "space_path": "/host-tools/shape", "task_id": task_id.clone(), "to_stage": "done" }),
+        json!({ "space_path": "/host-tools/shape", "task_id": task_id.clone(), "to_stage": "doing" }),
     )
     .await
     .expect("move_task");
@@ -257,6 +271,22 @@ fn expected(keys: &[&str]) -> Vec<String> {
 #[tokio::test]
 async fn a_move_task_answer_carries_to_stage_on_enter_and_note_all_three() {
     let (_dir, db, task_id) = seeded("ht-shape-move-", false).await;
+    // THE CARD IS POSITIONED BY THE HUMAN DOOR, and it is a consequence of the
+    // forward gate rather than a workaround for it. This pin asserts the SHAPE of a
+    // SUCCESSFUL move, and `details_of` refuses to grade a failure — so the model's
+    // call has to be admissible. On the default board the `sort_order + 1` fallback
+    // makes every column reachable from `backlog`, so a `backlog → doing` call is
+    // now a refusal and there is no shape to read. `MoveAuthor::Person` moves it to
+    // `done` (a person is unrestricted, D11) and the model then moves it BACKWARD,
+    // which is allowed and inert (D10). The keys under test are identical either
+    // way; only the direction changed.
+    db.move_task(
+        "/host-tools/shape",
+        &task_id,
+        "done",
+        crate::storage::MoveAuthor::Person,
+    )
+    .expect("the human door positions the card");
 
     let result = run(
         &db,

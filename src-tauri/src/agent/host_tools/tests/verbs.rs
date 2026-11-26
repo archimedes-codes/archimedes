@@ -334,6 +334,139 @@ async fn an_unknown_tool_name_refuses_loudly_rather_than_parking() {
     );
 }
 
+/// (D9 — the sentence IS the deliverable) a model's forward `move_task` is refused
+/// on the HOST-TOOL PATH with the sentence that teaches it `mark_done`.
+///
+/// This is the model-facing half of the gate, and it is pinned HERE rather than only
+/// in `storage/db/tests/tasks.rs` because the thing under test is what a model
+/// READS: `BoardError`'s `Display`, folded through `From<BoardError> for
+/// HostToolError` into `HostToolError::Invalid`, rendered once by `exec::run` and
+/// carried as the frame's `String`. Six assertions, each closing a hole the others
+/// leave:
+///
+///   1. it names `mark_done` — the refusal is worthless without the replacement;
+///   2. it names BOTH columns — the model asked about two of them;
+///   3. it names the CARD — the same argument `a_refusal_answers_the_model_facing_
+///      sentence_naming_the_offending_value` makes for a dangling id;
+///   4. it says the move is FORWARD, so the model can tell this refusal from a
+///      `MissingStage` and does not retry with a different column at random;
+///   5. it still offers backward/sideways, so a refusal does not read as "the board
+///      is locked" and cost a turn to discover otherwise;
+///   6. it contains NEITHER banned substring. That arm is not tidiness:
+///      `surface.rs`'s `no_host_tool_spec_names_read_or_subagent` scans whole SPEC
+///      text, and `worker_e2e`'s `!tools_section.contains("read")` assertion is only
+///      meaningful while nothing the model can see contains it. A refusal sentence
+///      reaches the model as a tool RESULT, so the same ban binds it — and the
+///      obvious word for a board's second column, `ready`, contains `read`. `thread`,
+///      `already`, `spread` and `reads` are out for the same reason. Nothing else in
+///      the tree checks THIS string for those substrings, so without arm 6 a
+///      rewording that reaches for "ready" reddens only the Windows leg's grep, far
+///      from the edit that caused it.
+///
+/// The fixture is the DEFAULT board on purpose: `seeded` calls `get_board`, every
+/// `next_slugs` is NULL, and the refusal therefore proves the D15 fallback is wired
+/// all the way to the model's door — not just into the BFS.
+#[tokio::test]
+async fn a_models_forward_move_is_refused_with_the_sentence_that_teaches_mark_done() {
+    let (_dir, db, task_id) = seeded("ht-verb-forward-").await;
+
+    let err = run(
+        &db,
+        None,
+        false,
+        "move_task",
+        json!({
+            "space_path": "/host-tools/verbs",
+            "task_id": task_id,
+            "to_stage": "done",
+        }),
+    )
+    .await
+    .expect_err("a forward move on the default board refuses (D7 + D15)");
+
+    assert!(
+        err.contains("mark_done"),
+        "the refusal names the verb that does the move — a model told only what it \
+         CANNOT do tries again; got {err}"
+    );
+    assert!(
+        err.contains("backlog") && err.contains("done"),
+        "both columns it asked about are named; got {err}"
+    );
+    assert!(
+        err.contains(&task_id),
+        "and so is the card, the same rule the dangling-id refusal follows; got {err}"
+    );
+    assert!(
+        err.contains("forward"),
+        "the refusal says WHY, so the model does not read this as a bad slug and \
+         retry with another column; got {err}"
+    );
+    assert!(
+        err.contains("backward"),
+        "and it says what this verb is still for, so a refusal is not mistaken for \
+         a locked board; got {err}"
+    );
+    for banned in ["read", "subagent"] {
+        assert!(
+            !err.contains(banned),
+            "the refusal contains `{banned}`, which makes worker_e2e's \
+             !tools_section.contains(\"{banned}\") assertion pass while proving \
+             nothing — rewrite the SENTENCE, not this test (`ready`, `thread`, \
+             `already`, `spread` and `reads` all contain the substring). Got: {err}"
+        );
+    }
+
+    // And the move did not happen, through the door a model can actually reach.
+    let read = run(&db, None, false, "get_task", json!({ "task_id": task_id }))
+        .await
+        .expect("get_task")
+        .details
+        .expect("a found card carries its row");
+    assert_eq!(
+        read["task"]["stageSlug"], "backlog",
+        "a refused move writes NOTHING, on the model's door as on the person's"
+    );
+}
+
+/// (D11 on the host-tool path's counterpart) the SAME card, moved BACKWARD by the
+/// model, is allowed — the sentence above is a forward refusal and nothing else.
+///
+/// Pinned beside it because a gate that refused everything would satisfy every
+/// assertion in the test above except this one.
+#[tokio::test]
+async fn a_models_backward_move_still_answers_a_move_and_not_a_sentence() {
+    let (_dir, db, task_id) = seeded("ht-verb-backward-").await;
+    // Position the card by the human door: on the default board every column is
+    // forward-reachable from `backlog`, so a model cannot get itself to `done`.
+    db.move_task(
+        "/host-tools/verbs",
+        &task_id,
+        "done",
+        crate::storage::MoveAuthor::Person,
+    )
+    .expect("the person's door positions the card");
+
+    let moved = run(
+        &db,
+        None,
+        false,
+        "move_task",
+        json!({
+            "space_path": "/host-tools/verbs",
+            "task_id": task_id,
+            "to_stage": "backlog",
+        }),
+    )
+    .await
+    .expect("backward is not forward (D10)");
+    assert!(
+        !moved.is_error,
+        "a backward move is a move, not a refusal: {:?}",
+        moved.content.first()
+    );
+}
+
 /// The title rule, ON THE HOST-TOOL PATH: a `create_task` whose title cleans to
 /// nothing is refused with the ONE sentence, and writes no card.
 ///
