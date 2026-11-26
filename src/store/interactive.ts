@@ -99,20 +99,32 @@ export interface TodoUpdatePayload {
  * item to recognise and no sentence that teaches a model one, which is the point of
  * the change: one claim, one channel.
  *
- * A slot entry is `PRESENT AND TRUE` — the value is the card's linked Session ids,
- * which is the one hop the two optimistic clears need (they are handed a SESSION id
- * and must find the cards that link it). A card whose claim is not present is not
- * ready; "no entry" and "false" are the same answer, so neither is a lie about a
- * card nobody has read.
+ * A slot entry is `PRESENT AND NON-EMPTY` — the value is the ids of the Sessions
+ * that CLAIM the card (the read's `readySessions`), which is the one hop the two
+ * optimistic clears need: they are handed a SESSION id, and with the claimants
+ * named they can withdraw ONE claim and leave the others standing. A card with no
+ * key is not ready; "no entry" and "no claimants" are the same answer, so neither
+ * is a lie about a card nobody has read (`a card the read reports NOT ready sets
+ * nothing`, `boardReadyMarks.test.ts`).
+ *
+ * ## Why the value is the CLAIMANTS and not every link
+ *
+ * It used to be every linked id, because `TaskCardView.ready` was a per-CARD `bool`
+ * that could not say which link carried the claim, and the clears could only ask
+ * "does this card link B" — so clearing B deleted the whole card's mark and unlit a
+ * bell that A was still carrying. `readySessions` names the owner, so a clear
+ * removes one id and drops the key only when the list empties. Pinned by
+ * `a turn on the NON-claiming Session leaves the claiming Session's bell lit` and its
+ * `dismissSession` twin in `boardReadyMarks.test.ts`.
  *
  * ## Why the slot is keyed by (Space, card) and NOT by Session
  *
- * `TaskCardView.ready` is a per-CARD OR and does not say WHICH link carries the
- * claim. Writing it per-Session would therefore attribute one card's claim to every
- * Session the card links — and light the bell on a DIFFERENT card that happens to
- * link one of them, a card the board read reported NOT ready. `boardReadyMarks.test.ts`
+ * `TaskCardView.ready` is a per-CARD OR: one bell per card, however many Sessions
+ * claim it. Keying by Session would stamp one card's claim onto every Session the
+ * card links — and light the bell on a DIFFERENT card that happens to link one of
+ * them, a card the board read reported NOT ready. `boardReadyMarks.test.ts`
  * pins exactly that case. Keying by card is what the read actually asserts; the
- * Session ids ride along in the value so `beginTurn` and `dismissSession` can still
+ * claimants ride along in the value so `beginTurn` and `dismissSession` can still
  * resolve a Session into the cards it lights.
  *
  * ## Why the key carries the Space
@@ -128,8 +140,9 @@ export interface ReadyCardEntry {
   taskId: string;
   /** `TaskCardView.ready`, exactly as the read answered it. */
   ready: boolean;
-  /** The card's linked Session ids (`TaskCardView.sessions[].sessionId`). */
-  sessionIds: readonly string[];
+  /** The Sessions that CLAIM this card (`TaskCardView.readySessions`) — NOT every
+   *  Session the card links. The distinction is what makes a partial clear possible. */
+  readySessions: readonly string[];
 }
 
 /** The slot key for one card in one Space. THE ONLY spelling of it — the board feed
@@ -257,12 +270,12 @@ interface InteractiveState {
    */
   todos: Record<string, ChecklistItem[]>;
   /**
-   * The cards the LAST BOARD READ reported **ready**, keyed by
-   * [`readyCardKey`] (Space + Task id). PRESENCE is the claim; the value is that
-   * card's linked Session ids, which is the one hop the two optimistic clears need
-   * (they are handed a SESSION id and must find the cards that link it). A card
-   * with no key is not ready, so "no entry" and "false" are the same answer and
-   * neither is a lie about a card nobody has read.
+   * The cards a board read reported **ready**, keyed by [`readyCardKey`] (Space +
+   * Task id). PRESENCE is the claim; the value is the ids of the Sessions that
+   * carry it (`TaskCardView.readySessions`), which is what lets an optimistic clear
+   * withdraw ONE claim instead of the card's whole mark. A card with no key is not
+   * ready, so "no entry" and "no claimants" are the same answer and neither is a
+   * lie about a card nobody has read.
    *
    * ## Why this is an explicit slot and NOT a derivation (do not "simplify" it)
    *
@@ -279,18 +292,18 @@ interface InteractiveState {
    * vanish while a turn runs and REAPPEAR when it settles, which is the opposite of
    * "the next turn clears it". `the mark does NOT come back when the turn settles`
    * in `sessionReadyMark.test.ts` and its board twin in
-   * `TasksBoardReady.test.ts.ts` are what stop that shape coming back.
+   * `TasksBoardReady.test.tsx` are what stop that shape coming back.
    *
    * ## Why the key is (Space, card) and NOT a Session id
    *
-   * `TaskCardView.ready` is a per-CARD OR over the card's linked Sessions and does
-   * not say WHICH link carries the claim. Writing it per-Session would attribute one
-   * card's claim to every Session it links, and light the bell on a DIFFERENT card
-   * that happens to share one of them — a card the read reported NOT ready.
-   * `a card that only links the UNREADY half of a ready card's links stays
-   * unmarked` in `boardReadyMarks.test.ts` is that case. The Space half of the key
-   * is what lets a read replace only the Space it read; a global replace would wipe
-   * another Space's marks, and a Space nobody is looking at gets no read at all.
+   * `TaskCardView.ready` is a per-CARD OR and one card wears ONE bell. Writing it
+   * per-Session would attribute one card's claim to every Session it links, and
+   * light the bell on a DIFFERENT card that happens to share one of them — a card
+   * the read reported NOT ready. `a card that only links the UNREADY half of a
+   * ready card's links stays unmarked` in `boardReadyMarks.test.ts` is that case.
+   * The Space half of the key is what lets a read replace only the Space it read; a
+   * global replace would wipe another Space's marks, and a Space nobody is looking
+   * at gets no read at all.
    *
    * ## What this map is NOT any more
    *
@@ -301,6 +314,7 @@ interface InteractiveState {
    * the board read is the only thing that feeds this map.
    */
   ready: Record<string, readonly string[]>;
+
   /** The agent state machine (`working`/`idle`/`blocked`) — wired, not rendered in v1. */
   agentState: Record<string, "working" | "idle" | "blocked">;
   /**
@@ -376,6 +390,16 @@ interface InteractiveState {
    * this map, so a fresh object per read would re-render the whole board every time
    * the auto-refresh fires.
    *
+   * ## The ticket: why a read must say when it started
+   *
+   * `ticket` is [`readyTicket`] sampled BEFORE the `get_board` `await`, and a feed
+   * whose ticket predates the last optimistic withdrawal is dropped outright. Without
+   * it a read dispatched before `beginTurn` resolves after it, carries the pre-turn
+   * `ready: true`, and relights a bell the user has just been told is gone —
+   * `loadEpoch` in `tasks.ts` cannot catch that, because it rejects a read superseded
+   * by ANOTHER read and starting a turn is not a read. [`readyFence`] carries the
+   * whole argument and the mid-turn consequence the owner accepted.
+   *
    * ## The three writers of this map, all of them deliberate
    *
    *  1. **This action** — the board feed. The durable answer: it lands the
@@ -392,21 +416,27 @@ interface InteractiveState {
    *
    * Three writers of one map is accepted, not accidental: ONE writes what is TRUE
    * and the other two write what is TRUE A MOMENT EARLIER. Nothing between them
-   * derives anything.
+   * derives anything, and the two optimistic ones withdraw a CLAIMANT rather than a
+   * card, so a card that also links a Session still holding the column keeps its bell.
    */
   applyReadyMarks: (
     spacePath: string,
+    ticket: number,
     entries: readonly ReadyCardEntry[],
   ) => void;
   /**
-   * Withdraw every **ready** mark held by a card that links this Session. Called
-   * by `sessions.ts`'s `beginTurn` — the owner's rule is "the next turn on that
-   * Session clears it" — and a no-op (identical state object) when no such mark
-   * exists.
+   * Withdraw this Session's **claim** on every ready card that names it, dropping a
+   * card's mark only when it was the last claimant. Called by `sessions.ts`'s
+   * `beginTurn` — the owner's rule is "the next turn on that Session clears it" —
+   * and a no-op (identical state object) when no card names it.
    *
    * It takes a SESSION id while the slot is keyed by CARD, and that is the whole
-   * reason a slot entry carries the card's Session ids: `beginTurn` knows which
-   * Session started, and the card the bell is on is one hop away.
+   * reason a slot entry carries the claimants' ids: `beginTurn` knows which Session
+   * started, and the card the bell is on is one hop away. The claimants — and not
+   * every link — are what make this a PARTIAL withdrawal: a card linking a claiming
+   * A and a silent B keeps its bell when B starts a turn.
+   *
+   * Raises the ready fence even when it withdraws nothing.
    *
    * Lives HERE rather than being spelled as a `useInteractive.setState` from
    * `sessions.ts` so the mark has one owner, and so the cross-store edge is an
@@ -475,6 +505,70 @@ const sameLinks = (
 const keyIsInSpace = (key: string, spacePath: string): boolean =>
   key.startsWith(`${spacePath}\u0000`);
 
+/**
+ * THE READY FENCE — how many optimistic ready withdrawals have happened, EVER.
+ *
+ * ## The race this closes (Greptile's second P1 on PR #222)
+ *
+ * A board read is an `await`. A read dispatched BEFORE a turn started can resolve
+ * AFTER `beginTurn` cleared the bell — it still carries the pre-turn `ready: true` —
+ * and the feed would write the mark straight back. `loadEpoch` in `tasks.ts` cannot
+ * catch this: it rejects a read SUPERSEDED BY ANOTHER READ, and starting a turn is
+ * not a read. The clear left no trace, so the stale answer looked current and the
+ * bell stayed lit through the turn that disproved it.
+ *
+ * ## The protocol
+ *
+ * A reader takes a TICKET ([`readyTicket`]) at the moment it DISPATCHES the read and
+ * hands it to `applyReadyMarks` when the answer lands. The feed drops the feed when
+ * `ticket < readyFence` — something was withdrawn after the read started.
+ *
+ * ## Why a counter and not a per-card tombstone
+ *
+ * The question is "did this read start before the last thing the user was told?",
+ * and one integer answers it for every Space at once. A per-card tombstone would
+ * need a key per card, and a withdrawal is handed a SESSION id — it can name the
+ * cards only through a link list it may be about to delete.
+ *
+ * ## The consequence, stated plainly
+ *
+ * A `mark_done` that lands MID-turn is not painted until the turn settles: the read
+ * that would carry it was dispatched before the clear, so it is dropped. That is the
+ * owner's ruling — `cardMarkOf` ranks `ready` above `running`, so a mid-turn bell
+ * would hide the running dot, and "the bell waits for the settle" is the pairing
+ * that was asked for. The durable claim is never lost, only its paint: the
+ * falling-edge read carries it. The same rule delays a bell on an UNRELATED card
+ * when a turn starts or a Session is dismissed mid-read, which is bounded by that
+ * turn and errs toward not showing a bell that may be a lie.
+ *
+ * ## Why a module `let` and NOT store state
+ *
+ * It is monotonic, and `resetStores()` must NOT rewind it: a counter that went
+ * backwards between tests would admit a stale read a running test means to reject.
+ * `src/test/resetStores.ts` documents that it cannot reach a module `let` — normally
+ * the reason to put bookkeeping in the store; here that reach is exactly what must
+ * not happen. This is the same class as `tasks.ts`'s `loadEpoch`, which carries the
+ * identical warning ("if one is ever added, `reset()` must clear it") — and the
+ * difference is deliberate: `loadEpoch` is cleared because a stale ticket there is
+ * merely redundant, while a stale ticket HERE is a bell that lies. Every reader
+ * samples at DISPATCH time, so a value that only grows cannot go stale across a test
+ * boundary the way a flag would.
+ */
+let readyFence = 0;
+
+/** Take the ticket for a read about to be dispatched. CALL IT BEFORE THE `await`,
+ *  never after — a ticket taken when the answer lands is always current and the
+ *  guard is then vacuous. Exported rather than re-derived so the fence has ONE
+ *  spelling and `tasks.ts` cannot invent a second protocol. */
+export const readyTicket = (): number => readyFence;
+
+/** Raise the fence: an optimistic withdrawal just happened, so no read that started
+ *  before it may paint a bell. Called by BOTH optimistic writers, unconditionally —
+ *  see [`readyFence`] for why even a withdrawal that deletes nothing raises it. */
+const raiseReadyFence = (): void => {
+  readyFence += 1;
+};
+
 export const useInteractive = create<InteractiveState>((set) => ({
   requests: {},
   todos: {},
@@ -520,17 +614,29 @@ export const useInteractive = create<InteractiveState>((set) => ({
       return { todos: { ...state.todos, [sessionId]: p.todos } };
     }),
 
-  applyReadyMarks: (spacePath, entries) =>
+  applyReadyMarks: (spacePath, ticket, entries) => {
+    // THE FENCE, checked BEFORE the `set` and before anything is built. A read whose
+    // ticket is older than the fence started before an optimistic withdrawal, so its
+    // payload is out of date about a fact the user has already been told. Dropping
+    // the feed WRITES NOTHING, which is the safe direction: it can never unlight a
+    // bell that is on screen, and the falling-edge read repaints everything.
+    //
+    // The test is `ticket < fence`, NOT `ticket <= fence`. A ticket taken AFTER the
+    // last withdrawal is current and must paint: `beginTurn` raises the fence to N+1
+    // and a read dispatched after it carries N+1, so the ordering that decides this
+    // is the one the counter recorded at DISPATCH time, not the one the promises
+    // resolve in. See [`readyFence`] for the mid-turn consequence the owner accepted.
+    if (ticket < readyFence) return;
     set((state) => {
-      // The claims this read carries, and the links each ready card has. A card the
-      // read reports NOT ready contributes NOTHING — presence is the claim — and a
-      // ready card that links NO Session contributes nothing either: there is no
-      // Session to resolve an optimistic clear through, and `readyFor` could not
-      // have read such a card anyway.
+      // The claims this read carries, and WHICH Sessions carry each of them. A card
+      // the read reports NOT ready contributes NOTHING — presence is the claim — and
+      // a ready card that names NO claimant contributes nothing either: there is no
+      // Session to resolve an optimistic clear through, and `readyFor` could not have
+      // read such a card anyway.
       const claims = new Map<string, readonly string[]>();
       for (const entry of entries) {
-        if (!entry.ready || entry.sessionIds.length === 0) continue;
-        claims.set(readyCardKey(spacePath, entry.taskId), entry.sessionIds);
+        if (!entry.ready || entry.readySessions.length === 0) continue;
+        claims.set(readyCardKey(spacePath, entry.taskId), entry.readySessions);
       }
       // THE NEXT MAP, built before anything is decided: this Space's keys are
       // REPLACED wholesale (a claim the read withdrew goes, and a card that left the
@@ -559,9 +665,18 @@ export const useInteractive = create<InteractiveState>((set) => ({
         if (agreed) return state;
       }
       return { ready: next };
-    }),
+    });
+  },
 
-  clearReady: (sessionId) =>
+  clearReady: (sessionId) => {
+    // The fence goes up UNCONDITIONALLY, before anything is decided and even when
+    // this withdraws nothing. The reason is the fence's own question — "could a
+    // read in flight already know what the user has just been told?" — and a read
+    // dispatched before this call CANNOT know about anything that happens after it,
+    // whether or not this particular card had a mark to delete. Raising only on a
+    // real deletion would let a `beginTurn` on an unlit Session admit a pre-turn
+    // read that misses a `mark_done` that landed mid-turn.
+    raiseReadyFence();
     set((state) => {
       // The identical-object no-op, so a `beginTurn` on a Session that lights no
       // card does not re-render anything that reads the map.
@@ -569,10 +684,22 @@ export const useInteractive = create<InteractiveState>((set) => ({
         (state.ready[key] ?? []).includes(sessionId),
       );
       if (keys.length === 0) return state;
+      // WITHDRAW THE CLAIMANT, not the card. A card linking a claiming Session A
+      // and a silent Session B is ready because of A alone, and `beginTurn(B)` must
+      // leave that bell lit — the column still says `1` for A and the next read will
+      // say so. Deleting the key was the whole of Greptile's first P1: the only
+      // question a `bool` could answer was "does this card link B".
       const ready = { ...state.ready };
-      for (const key of keys) delete ready[key];
+      for (const key of keys) {
+        const rest = (ready[key] ?? []).filter((id) => id !== sessionId);
+        // The key goes only when the LAST claimant goes, so `ready` and
+        // "the key is present" stay the same statement.
+        if (rest.length === 0) delete ready[key];
+        else ready[key] = rest;
+      }
       return { ready };
-    }),
+    });
+  },
 
   applyTodoClear: (sessionId) =>
     set((state) => {
@@ -666,7 +793,19 @@ export const useInteractive = create<InteractiveState>((set) => ({
       return { cost: { ...state.cost, [sessionId]: next } };
     }),
 
-  dismissSession: (sessionId) =>
+  dismissSession: (sessionId) => {
+    // The same unconditional raise `clearReady` makes, for the same reason: a
+    // Worker going away is a fact no read dispatched before it can know about,
+    // whether or not this Session was carrying a bell. `onSessionClosed` dismisses
+    // EVERY closed Session including Subagents, so this fires on ordinary child
+    // closes too.
+    //
+    // The blast radius is bounded in the direction that matters: dropping a feed
+    // WRITES NOTHING, so an already-painted bell is never unlit by it. The only cost
+    // is that a bell earned between an unrelated close and the next read waits for
+    // that read. It cannot stall the board either — the fence gates the ready slot
+    // ALONE, and column paint goes through `loadEpoch` in `tasks.ts` untouched.
+    raiseReadyFence();
     set((state) => {
       const requests = { ...state.requests };
       delete requests[sessionId];
@@ -691,13 +830,22 @@ export const useInteractive = create<InteractiveState>((set) => ({
       // for. `ready` therefore keeps its IDENTITY when no key named this Session —
       // the other five maps are always rebuilt, because a close really does drop
       // those keys and they are not what this board subscribes to.
+      //
+      // WITHDRAW THE CLAIMANT, not the card — the same rule `clearReady` applies. A
+      // dismissed Session's claim is over, but a card that also links a Session
+      // still holding the column is still ready, and deleting the key would unlight
+      // a bell the next read relights.
       const readyKeys = Object.keys(state.ready).filter((key) =>
         (state.ready[key] ?? []).includes(sessionId),
       );
       let ready = state.ready;
       if (readyKeys.length > 0) {
         ready = { ...state.ready };
-        for (const key of readyKeys) delete ready[key];
+        for (const key of readyKeys) {
+          const rest = (ready[key] ?? []).filter((id) => id !== sessionId);
+          if (rest.length === 0) delete ready[key];
+          else ready[key] = rest;
+        }
       }
       const agentState = { ...state.agentState };
       delete agentState[sessionId];
@@ -706,5 +854,6 @@ export const useInteractive = create<InteractiveState>((set) => ({
       const session = { ...state.session };
       delete session[sessionId];
       return { requests, todos, ready, agentState, cost, session };
-    }),
+    });
+  },
 }));

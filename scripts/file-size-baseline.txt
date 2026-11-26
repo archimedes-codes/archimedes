@@ -14,4 +14,4 @@
 1055	src-tauri/src/commands/agents.rs
 866	src-tauri/src/agent/provider_auth/refresh.rs
 734	src-tauri/src/commands/update.rs
-706	src/store/tasks.ts
+710	src/store/tasks.ts

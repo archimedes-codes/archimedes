@@ -96,6 +96,7 @@ const linked = (): TaskCardView => ({
   costUsd: 1.75,
   artifactKeys: ["spec"],
   ready: false,
+  readySessions: [],
 });
 
 const bare = (row: TaskRow): TaskCardView => ({
@@ -104,6 +105,7 @@ const bare = (row: TaskRow): TaskCardView => ({
   costUsd: null,
   artifactKeys: [],
   ready: false,
+  readySessions: [],
 });
 
 const board = (): StageWithTasks[] => [

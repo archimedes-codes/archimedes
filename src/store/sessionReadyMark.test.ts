@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStores } from "../test/resetStores";
 import { useSessions } from "./sessions";
-import { readyCardKey, useInteractive } from "./interactive";
+import { readyCardKey, readyTicket, useInteractive } from "./interactive";
 import { loadHistory } from "../lib/tauri";
 import type { SessionInfo } from "../lib/tauri";
 
@@ -99,8 +99,8 @@ const readyItem = { content: "ready", status: "completed" as const };
  *  only writer, so seeding through it pins the same path the mount read and the
  *  auto-refresh take, and a slot that stopped being written by that read reddens here. */
 const markReady = (sessionId: string, taskId = `task-for-${sessionId}`) => {
-  useInteractive.getState().applyReadyMarks(SPACE, [
-    { taskId, ready: true, sessionIds: [sessionId] },
+  useInteractive.getState().applyReadyMarks(SPACE, readyTicket(), [
+    { taskId, ready: true, readySessions: [sessionId] },
   ]);
   return taskId;
 };
@@ -189,8 +189,8 @@ describe("beginTurn clears the ready mark", () => {
     useSessions.getState().beginTurn("s1");
     expect(isMarked(taskId)).toBe(false);
 
-    useInteractive.getState().applyReadyMarks(SPACE, [
-      { taskId, ready: true, sessionIds: ["s1"] },
+    useInteractive.getState().applyReadyMarks(SPACE, readyTicket(), [
+      { taskId, ready: true, readySessions: ["s1"] },
     ]);
     expect(isMarked(taskId)).toBe(true);
   });

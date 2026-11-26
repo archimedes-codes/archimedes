@@ -113,6 +113,7 @@ const card = (id: string, number: number, stageSlug: string): TaskCardView => ({
   costUsd: null,
   artifactKeys: [],
   ready: false,
+  readySessions: [],
 });
 
 const SEED: StageWithTasks[] = [

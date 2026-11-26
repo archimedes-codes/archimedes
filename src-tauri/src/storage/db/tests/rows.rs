@@ -458,3 +458,218 @@ fn stage_row_from_maps_the_two_position_columns_on_a_row_that_carries_them() {
         "and the appended rungs did not shift the rungs before them"
     );
 }
+
+/// The DRIFT PIN for the board's card payload (issue #174).
+///
+/// WHY THIS LIVES IN `tests/rows.rs` AND NOT `tests/board.rs`: it was written beside
+/// the board read, but it never touched one. It constructs a `TaskCardView` BY HAND
+/// and asks `serde_json` what keys it emits — a shape question about three types
+/// declared in `db/rows.rs`, which is exactly what this mirror child guards, and
+/// ADR 0113's mirror rule puts it here. It moved when `board.rs` passed its size
+/// ratchet, which is the sanctioned answer to that red (a subject split), not a
+/// threshold bump: the block was 127 code lines of shape pin sitting in a file whose
+/// subject is the board READ. `db/tests/mod.rs`'s header names the one production
+/// sibling with no same-named child; this is not a second exception, it is the rule
+/// applied to a payload type.
+///
+/// `types.ts`'s `TaskCardView` is a HAND-WRITTEN mirror — no Rust↔TS shape pin
+/// exists in this repo — so the THREE key lists below (`FROZEN_CARD_KEYS`,
+/// `FROZEN_TASK_KEYS`, `FROZEN_LINK_KEYS`) are spelled a second time in
+/// `src/store/tasks.test.ts` as `the task card view wire keys are frozen (mirror
+/// of the Rust pin)`, byte-identical. A rename on either side reddens one of the
+/// two. Modelled on `closed_reason_spellings_are_frozen`.
+#[test]
+fn the_task_card_view_wire_keys_are_frozen() {
+    // The TS mirror is `src/lib/tauri/types.ts`'s
+    // `export interface TaskCardView { task: TaskRow; sessions: TaskSessionRow[];
+    // costUsd: number | null; artifactKeys: string[]; ready: boolean;
+    // readySessions: string[]; }` — these SIX keys, in this order, no more.
+    // `artifactKeys` joined in #180, `ready` in the restart-boundary change, and
+    // `readySessions` with the two PR #222 review fixes (a per-card `bool` cannot
+    // say WHICH link claims, so an optimistic clear unlighted another Session's
+    // bell). All six are REQUIRED, never optional: an optional field compiles
+    // against every fixture and renders nothing when real data arrives.
+    //
+    // The comparison below SORTS, so the literal order here is documentation of
+    // the declaration order (which the TS-side mirror pins UNSORTED), not the
+    // mechanism of the check.
+    const FROZEN_CARD_KEYS: [&str; 6] = [
+        "task",
+        "sessions",
+        "costUsd",
+        "artifactKeys",
+        "ready",
+        "readySessions",
+    ];
+    // The TS mirror of these TEN is `export interface TaskRow` in the same file.
+    const FROZEN_TASK_KEYS: [&str; 10] = [
+        "id",
+        "spacePath",
+        "number",
+        "title",
+        "body",
+        "specPath",
+        "stageSlug",
+        "sortOrder",
+        "createdAt",
+        "updatedAt",
+    ];
+    // The TS mirror of these THREE is `export interface TaskSessionRow` in the
+    // SAME file (`src/lib/tauri/types.ts`), spelled byte-identically by its
+    // mirror test `the task card view wire keys are frozen (mirror of the Rust
+    // pin)` in `src/store/tasks.test.ts`. This is the list the chip reads
+    // (`sessions[].sessionId`), so it is frozen alongside the other two.
+    const FROZEN_LINK_KEYS: [&str; 3] = ["taskId", "sessionId", "stageSlug"];
+
+    let view = TaskCardView {
+        task: TaskRow {
+            id: "tsk_frozen".to_string(),
+            space_path: "/board-space/frozen".to_string(),
+            number: 1,
+            title: "frozen".to_string(),
+            body: None,
+            spec_path: None,
+            stage_slug: "backlog".to_string(),
+            sort_order: 0,
+            created_at: 0,
+            updated_at: 0,
+        },
+        sessions: vec![TaskSessionRow {
+            task_id: "tsk_frozen".to_string(),
+            session_id: "sess-frozen".to_string(),
+            stage_slug: None,
+        }],
+        cost_usd: Some(1.75),
+        artifact_keys: vec!["spec".to_string()],
+        ready: true,
+        ready_sessions: vec!["sess-frozen".to_string()],
+    };
+    let value = serde_json::to_value(&view).expect("TaskCardView serializes");
+
+    let mut card_keys: Vec<&str> = value
+        .as_object()
+        .expect("a struct serializes to a map")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    card_keys.sort_unstable();
+    let mut expected_card_keys = FROZEN_CARD_KEYS;
+    expected_card_keys.sort_unstable();
+    assert_eq!(
+        card_keys, expected_card_keys,
+        "the card payload is exactly `{{task, sessions, costUsd, artifactKeys, ready, \
+         readySessions}}` — `#[serde(flatten)]` is deliberately NOT used, so the nested \
+         `task` key is part of the wire shape, and `artifactKeys` is REQUIRED (never \
+         `skip_serializing_if`), so a card with no artifacts sends `[]`"
+    );
+
+    let task = value.get("task").expect("the nested task key");
+    let mut task_keys: Vec<&str> = task
+        .as_object()
+        .expect("task is a map")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    task_keys.sort_unstable();
+    let mut expected_task_keys = FROZEN_TASK_KEYS;
+    expected_task_keys.sort_unstable();
+    assert_eq!(
+        task_keys, expected_task_keys,
+        "`task` is the UNCHANGED 10-field `TaskRow` in camelCase — the wrapper adds \
+         nothing to it, which is what keeps get_task/create_task/edit_task honest"
+    );
+
+    // The THIRD list: the nested link the chip actually reads. `sessions[0]` is
+    // the only place `sessionId` reaches the card at all, so without this the
+    // `session_id` ↔ `sessionId` seam sat unfrozen on a path the UI depends on —
+    // a rename would redden nothing here and silently blank every chip.
+    let link = &value["sessions"][0];
+    let mut link_keys: Vec<&str> = link
+        .as_object()
+        .expect("a link is a map")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    link_keys.sort_unstable();
+    let mut expected_link_keys = FROZEN_LINK_KEYS;
+    expected_link_keys.sort_unstable();
+    assert_eq!(
+        link_keys, expected_link_keys,
+        "`sessions[]` is exactly `{{taskId, sessionId, stageSlug}}` — `sessionId` is \
+         what the card's chip opens, so this key is load-bearing, not decoration"
+    );
+
+    assert_eq!(
+        value.get("costUsd").and_then(serde_json::Value::as_f64),
+        Some(1.75),
+        "`cost_usd` rides the wire as `costUsd` (rename_all = camelCase)"
+    );
+    // The `None` half of ADR 0082 has to survive the wire too: the key must be
+    // PRESENT and `null`, not absent. A `skip_serializing_if` would delete it and
+    // the TS mirror's `number | null` would be a lie the frontend could not tell.
+    let unmeasured = TaskCardView {
+        task: view.task,
+        sessions: vec![],
+        cost_usd: None,
+        artifact_keys: vec![],
+        ready: false,
+        ready_sessions: vec![],
+    };
+    let absent = serde_json::to_value(&unmeasured).expect("the null-cost card serializes");
+    assert!(
+        absent.get("costUsd").is_some(),
+        "`costUsd` must be PRESENT when there is no figure — a `skip_serializing_if` \
+         would make the key vanish and the TS mirror's `number | null` would be a lie"
+    );
+    assert!(
+        absent.get("costUsd").expect("the key is there").is_null(),
+        "…and it is JSON `null`, which is what `moneyOf(null)` renders as nothing"
+    );
+    // `artifactKeys` obeys the same rule as `costUsd`: PRESENT when there is
+    // nothing to show. `Vec<String>` has no `None`, so an empty list is the whole
+    // story — but a `skip_serializing_if = "Vec::is_empty"` would make the key
+    // vanish and the TS mirror's required `artifactKeys: string[]` would be a lie
+    // the frontend could not distinguish from a stale payload.
+    assert_eq!(
+        absent
+            .get("artifactKeys")
+            .and_then(serde_json::Value::as_array),
+        Some(&Vec::<serde_json::Value>::new()),
+        "`artifactKeys` must be PRESENT and `[]` on a card with no artifacts — a \
+         required wire key, not an optional one"
+    );
+    // `ready` obeys the SAME presence rule as the two above, and for the same
+    // reason — but note WHAT is being pinned is different. `costUsd` had to stay
+    // present to keep ADR 0082's `null`-vs-`0` distinction readable; there is no
+    // such distinction here (`false` is the whole answer). What this pin guards is
+    // the cheaper failure: a `skip_serializing_if = "std::ops::Not::not"` would
+    // make the key vanish on every card that is NOT ready, and the TS mirror's
+    // required `ready: boolean` would then be a field the frontend reads as
+    // `undefined` — falsy today by luck, and a lie the moment anything tests
+    // `card.ready !== false`.
+    assert!(
+        absent.get("ready").is_some(),
+        "`ready` must be PRESENT when the card is NOT ready — a `skip_serializing_if` \
+         would delete the key exactly for the cards that need it"
+    );
+    assert_eq!(
+        absent.get("ready").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "…and it is JSON `false`, not `null` — the card's question is binary, so \
+         there is no third state on the wire"
+    );
+    // `readySessions` obeys `artifactKeys`' rule and NOT `ready`'s: it is a LIST, so
+    // "nobody claims" is `[]` and the key must still be PRESENT. This is the pin that
+    // keeps the wire invariant `ready == readySessions.length > 0` TOTAL — a
+    // `skip_serializing_if = "Vec::is_empty"` would make the field `undefined` on
+    // exactly the cards where it is empty, and the TS consumer's `.length` would
+    // throw there.
+    assert_eq!(
+        absent
+            .get("readySessions")
+            .and_then(serde_json::Value::as_array),
+        Some(&Vec::<serde_json::Value>::new()),
+        "`readySessions` must be PRESENT and `[]` on a card nobody claims — the \
+         empty list IS the answer, so it is never absent"
+    );
+}

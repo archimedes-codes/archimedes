@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { readyCardKey, useInteractive } from "./interactive";
+import { readyCardKey, readyTicket, useInteractive } from "./interactive";
 
 const S1 = "s1";
 const S2 = "s2";
@@ -270,8 +270,8 @@ describe("the `ready` slot is NOT a todo derivation", () => {
     // `ready` key written by the board feed must survive an arbitrary number of todo
     // frames untouched, INCLUDING its identity — `TasksBoard` subscribes to this map
     // and zustand compares with `Object.is`.
-    useInteractive.getState().applyReadyMarks("/w/alpha", [
-      { taskId: "t1", ready: true, sessionIds: ["s1"] },
+    useInteractive.getState().applyReadyMarks("/w/alpha", readyTicket(), [
+      { taskId: "t1", ready: true, readySessions: ["s1"] },
     ]);
     const before = useInteractive.getState();
 
@@ -287,8 +287,8 @@ describe("the `ready` slot is NOT a todo derivation", () => {
     // (a child's teardown, and `deleteSession`) do not need it: a deleted Session's
     // card loses its link and the next read drops the mark, and a closed one is
     // cleared by `dismissSession` — the close that actually means the claim is over.
-    useInteractive.getState().applyReadyMarks("/w/alpha", [
-      { taskId: "t1", ready: true, sessionIds: ["s1"] },
+    useInteractive.getState().applyReadyMarks("/w/alpha", readyTicket(), [
+      { taskId: "t1", ready: true, readySessions: ["s1"] },
     ]);
     useInteractive.getState().applyTodoUpdate(S1, board(READY));
 
@@ -304,8 +304,8 @@ describe("the `ready` slot is NOT a todo derivation", () => {
     // The identity rule the ready arm used to break: with the arm gone, the ONLY
     // thing this action can change is `todos`, so an id with no board changes nothing
     // at all — even when that id lights a card.
-    useInteractive.getState().applyReadyMarks("/w/alpha", [
-      { taskId: "t1", ready: true, sessionIds: ["s1"] },
+    useInteractive.getState().applyReadyMarks("/w/alpha", readyTicket(), [
+      { taskId: "t1", ready: true, readySessions: ["s1"] },
     ]);
     const before = useInteractive.getState();
     useInteractive.getState().applyTodoClear(S1);

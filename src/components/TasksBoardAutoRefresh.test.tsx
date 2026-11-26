@@ -131,6 +131,7 @@ const card = (id: string, number: number): TaskCardView => ({
   costUsd: null,
   artifactKeys: [],
   ready: false,
+  readySessions: [],
 });
 
 /** One column. `titles` are the card NUMBERS the read answers with, so a case says

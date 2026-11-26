@@ -43,7 +43,7 @@ import { describeIpcError } from "../lib/ipcError";
 // mark. `layerBoundary.test.ts` governs `lib/` importing `store/`, which this is
 // not. The call goes through the ACTION — `tasks.ts` never writes the other store's
 // map — which is what `boardReadyMarks.test.ts` pins against this file's source.
-import { useInteractive } from "./interactive";
+import { readyTicket, useInteractive } from "./interactive";
 
 /**
  * The per-Space **Task board** store (spec §2/§3, ADR 0090).
@@ -568,18 +568,27 @@ const paint = (
  * what the OPTIMISTIC writes call (a move, a rename, a stage edit), and none of
  * those changes a Session's readiness. A mark therefore moves only with a READ —
  * `load` or `refresh` — which is exactly the set of moments the column can have
- * changed since the last one. */
+ * changed since the last one.
+ *
+ * `ticket` is the caller's, sampled BEFORE the `await` — see `readyTicket`. It cannot
+ * be sampled here: by the time this runs the read has already landed, so a ticket
+ * taken in this function would always be current and the guard would be vacuous.
+ *
+ * The slot takes `readySessions` and NOT `sessions.map(…)`: the read's claimants are
+ * what let an optimistic clear withdraw ONE claim instead of the card's whole mark. */
 const feedReadyMarks = (
   spacePath: string,
+  ticket: number,
   columns: StageWithTasks[],
 ): void =>
   useInteractive.getState().applyReadyMarks(
     spacePath,
+    ticket,
     columns.flatMap((column) =>
       column.tasks.map((card) => ({
         taskId: card.task.id,
         ready: card.ready,
-        sessionIds: card.sessions.map((link) => link.sessionId),
+        readySessions: card.readySessions,
       })),
     ),
   );
@@ -718,6 +727,13 @@ const readBoard = async (
   // arrived at, and is dropped.
   loadEpoch += 1;
   const epoch = loadEpoch;
+  // The READY FENCE ticket, sampled here and not inside `feedReadyMarks`: it has to
+  // record when the read STARTED, and after the `await` below it always records
+  // "now". A read dispatched before a `beginTurn` must not relight a bell that
+  // `beginTurn` withdrew — `loadEpoch` above cannot see that, because it rejects a
+  // read superseded by ANOTHER read and a turn is not a read. `readyFence` in
+  // `interactive.ts` owns the argument.
+  const ticket = readyTicket();
   if (volume === "load") set({ loading: true, error: null });
   try {
     const columns = await getBoardCommand(spacePath);
@@ -756,7 +772,7 @@ const readBoard = async (
     // is the columns this read actually published, position merge included. A read
     // whose epoch was lost returned above, so a superseded read never feeds the slot
     // with a board that is no longer on screen.
-    feedReadyMarks(spacePath, published);
+    feedReadyMarks(spacePath, ticket, published);
   } catch (err) {
     if (volume === "refresh") {
       // Logged, and NOTHING else. See the header: the rows on screen are still the
@@ -925,13 +941,17 @@ export const useTasks = create<BoardState>((set, get) => ({
       // BOARD computes (an OR over the linked Sessions' `sessions.ready` column),
       // and this card has no links at all — an empty OR is `false`. It is also the
       // value the board itself gives a link-free card, so the optimistic element
-      // and the next server read agree.
+      // and the next server read agree. `readySessions: []` is the SAME fact stated
+      // as a list, and it is required to keep the invariant
+      // `ready === readySessions.length > 0` true of an optimistic card too — a `[]`
+      // here is also what stops a `beginTurn` from finding a claim to withdraw.
       const card: TaskCardView = {
         task: row,
         sessions: [],
         costUsd: null,
         artifactKeys: [],
         ready: false,
+        readySessions: [],
       };
       const next =
         at === -1

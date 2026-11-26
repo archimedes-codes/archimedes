@@ -172,6 +172,7 @@ const card = (id: string, number: number, stageSlug: string): TaskCardView => ({
   costUsd: null,
   artifactKeys: [],
   ready: false,
+  readySessions: [],
 });
 
 /** The seeded board: cards on the FIRST two columns and none on the third, so the

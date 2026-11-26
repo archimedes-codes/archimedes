@@ -144,6 +144,7 @@ const cardWith = (
   // readiness. Task 5 swaps the consumer; until then the field is unused, so
   // `false` is the honest value for a card the board never read.
   ready: false,
+  readySessions: [],
 });
 
 const boardOf = (...cards: TaskCardView[]): StageWithTasks[] => [
@@ -198,7 +199,14 @@ const markSessionReady = (sessionId: string): Promise<void> => {
 
 /** Copy a column set, setting or clearing `ready` on every card that links
  *  `sessionId`. The wire's own shape is preserved — only the one field the read
- *  is being asked about moves. */
+ *  is being asked about moves.
+ *
+ *  `readySessions` moves WITH it, because the wire carries the invariant
+ *  `ready === readySessions.length > 0` and a fixture that broke it would be a
+ *  board Rust could never answer. The named `sessionId` is the CLAIMANT, which is
+ *  also what makes the two optimistic clears reachable from here: a clear withdraws
+ *  the claimant's id, so a card this helper marked through `sess_1` is clearable by
+ *  `beginTurn("sess_1")` and NOT by a turn on some other link. */
 const boardWithReady = (
   columns: StageWithTasks[],
   sessionId: string,
@@ -208,7 +216,7 @@ const boardWithReady = (
     ...column,
     tasks: column.tasks.map((card) =>
       card.sessions.some((link) => link.sessionId === sessionId)
-        ? { ...card, ready }
+        ? { ...card, ready, readySessions: ready ? [sessionId] : [] }
         : card,
     ),
   }));

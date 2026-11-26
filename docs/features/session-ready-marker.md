@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-11-26
-verified-by: read against this tree at `feature/mark-done-host-verb` (HEAD `ace2ffbb`) — `src-tauri/src/agent/host_tools/specs.rs` (**EIGHT** specs, `mark_done` the eighth, with `{"properties":{},"required":[]}`), `src-tauri/src/agent/host_tools/exec/session.rs` (`mark_done` — the frame's origin id as its subject, the Subagent refusal), `src-tauri/src/agent/host_tools/tests/surface.rs` (`no_host_tool_spec_names_read_or_subagent`, `the_composed_advertised_set_is_the_twenty_six_names_plus_mark_done`), `src-tauri/src/agent/host_tools/tests/verbs.rs` (the five `mark_done_*` pins), `src-tauri/src/storage/db/mod.rs` (the **20th** `gate` — `sessions` / `ready`, no `DEFAULT`, `backfill_session_ready` on the SAME transaction as the `ALTER`), `src-tauri/src/storage/db/migrations.rs::backfill_session_ready`, `src-tauri/src/storage/db/sessions.rs::set_session_ready`, `src-tauri/src/storage/db/board.rs` + `storage/db/rows.rs` (`TaskCardView.ready`, the per-card `OR`), `src-tauri/src/agent/session/mod.rs` (`send_prompt_with_images` → `set_session_ready(…, Some(false))`), `src/store/interactive.ts` (`ReadyCardEntry`, `readyCardKey`, `applyReadyMarks`, `clearReady`), `src/store/sessions.ts` (`beginTurn`), `src/store/tasks.ts` (`refresh` — the board feed), `src/lib/sessionStatusRollup.ts` (`cardMarkOf`), `components/TaskCard.tsx` (the one mark), `hooks/useTaskBoardAutoRefresh.ts` (the falling-edge trigger). DELETED and confirmed gone — `lib/readyMarker.ts`, `READY_MARKER_TEXT`, `isReadyMarker`, `boardAssertsReady`; `grep -rn` over `src/` gives **0** hits for all four, and this stamp names the shipped mechanism in their place because the previous one named only the deleted ones. Rust and TypeScript read, not executed — no test in this repo reads `docs/`, so the greps above ARE the instrument.
+verified-by: read against this tree at `feature/mark-done-host-verb` (HEAD `ace2ffbb`) — `src-tauri/src/agent/host_tools/specs.rs` (**EIGHT** specs, `mark_done` the eighth, with `{"properties":{},"required":[]}`), `src-tauri/src/agent/host_tools/exec/session.rs` (`mark_done` — the frame's origin id as its subject, the Subagent refusal), `src-tauri/src/agent/host_tools/tests/surface.rs` (`no_host_tool_spec_names_read_or_subagent`, `the_composed_advertised_set_is_the_twenty_six_names_plus_mark_done`), `src-tauri/src/agent/host_tools/tests/verbs.rs` (the five `mark_done_*` pins), `src-tauri/src/storage/db/mod.rs` (the **20th** `gate` — `sessions` / `ready`, no `DEFAULT`, `backfill_session_ready` on the SAME transaction as the `ALTER`), `src-tauri/src/storage/db/migrations.rs::backfill_session_ready`, `src-tauri/src/storage/db/sessions.rs::set_session_ready`, `src-tauri/src/storage/db/board.rs` + `storage/db/rows.rs` (`TaskCardView.ready` — the per-card `OR`, DERIVED as `!ready_sessions.is_empty()` — and `TaskCardView.readySessions`, the claimants), `src-tauri/src/storage/db/tests/rows.rs` (`the_task_card_view_wire_keys_are_frozen`, SIX card keys, MOVED here from `tests/board.rs`), `src-tauri/src/agent/session/mod.rs` (`send_prompt_with_images` → `set_session_ready(…, Some(false))`), `src/store/interactive.ts` (`ReadyCardEntry`, `readyCardKey`, `readyFence` + `readyTicket` + `raiseReadyFence`, `applyReadyMarks`, `clearReady`), `src/store/sessions.ts` (`beginTurn`), `src/store/tasks.ts` (`refresh` — the board feed), `src/lib/sessionStatusRollup.ts` (`cardMarkOf`), `components/TaskCard.tsx` (the one mark), `hooks/useTaskBoardAutoRefresh.ts` (the falling-edge trigger). DELETED and confirmed gone — `lib/readyMarker.ts`, `READY_MARKER_TEXT`, `isReadyMarker`, `boardAssertsReady`; `grep -rn` over `src/` gives **0** hits for all four, and this stamp names the shipped mechanism in their place because the previous one named only the deleted ones. Rust and TypeScript read, not executed — no test in this repo reads `docs/`, so the greps above ARE the instrument.
 ---
 
 # The session `ready` marker
@@ -192,10 +192,21 @@ during a turn and reappear when it settles**, which is the opposite of the rule 
 (`src/store/sessionReadyMark.test.ts`) exists to stop that shape coming back. So the
 render half is an explicit slot on `useInteractive`, `ready: Record<string, readonly
 string[]>` keyed by `readyCardKey(spacePath, taskId)` — **per (Space, card)**, not per
-Session, because `TaskCardView.ready` is a per-CARD `OR` and does not say which link
-carries the claim; keying it by Session would light the bell on a different card that
-merely shares a linked Session (`a card that only links the UNREADY half of a ready
-card's links stays unmarked`, `src/store/boardReadyMarks.test.ts`).
+Session, because `TaskCardView.ready` is a per-CARD `OR` and one card wears ONE bell;
+keying it by Session would light the bell on a different card that merely shares a
+linked Session (`a card that only links the UNREADY half of a ready card's links stays
+unmarked`, `src/store/boardReadyMarks.test.ts`).
+
+**The slot's VALUE is the CLAIMANTS, not every link.** It used to hold every linked
+Session id, because the read carried only a per-card `bool` and could not say which link
+claimed. That made the optimistic clears unable to do anything except ask "does this card
+link B" and delete the whole mark — so a turn on a silent Session unlit a bell that a
+different Session was still carrying in the column. `TaskCardView.readySessions` names
+the owner, and a clear now removes ONE id and drops the key only when the list empties
+(`a turn on the NON-claiming Session leaves the claiming Session's bell lit`, and its
+`dismissSession` twin). The invariant `ready === readySessions.length > 0` is total and
+is **structural in Rust**: `board.rs` folds the list and derives the `bool` from
+`!ready_sessions.is_empty()` rather than folding both, so the two cannot drift.
 
 ### The clear is TWO writes, and both are needed
 
@@ -221,12 +232,16 @@ card's links stays unmarked`, `src/store/boardReadyMarks.test.ts`).
 A third writer, `dismissSession`, withdraws the mark when a Session's Worker goes away,
 so a dismissed Session's bell does not wait for that Space's next read (which can be
 minutes). Three writers of one map is deliberate: one writes what is TRUE, the other two
-write what is TRUE A MOMENT EARLIER, and nothing between them derives anything.
+write what is TRUE A MOMENT EARLIER, and nothing between them derives anything. **All
+three now also raise the ready fence** — see "The ticket" below — and the two optimistic
+ones withdraw a CLAIMANT rather than a card.
 
 Ordering costs nothing here: the client's optimistic clear runs BEFORE the `sendPrompt`
 IPC on both dispatch paths (`useChatPromptDispatch.ts` and `store/taskLaunch.ts` both
 call `beginTurn` before they await), so the renderer's copy and the row agree by
-construction whichever lands first.
+construction whichever lands first. (What ordering now DOES cost is the ready fence —
+a read dispatched before that clear is dropped. That is the fence working, and it is
+argued in its own section rather than here.)
 
 `applyTodoClear` (the `todos_clear` path) **no longer** drops the mark. That arm went
 with the word: a checklist says nothing about readiness once readiness is a column, so a
@@ -242,11 +257,37 @@ restart-when-opened for free. **That funnel is retired.** `applyTodoUpdate` writ
 `todos` and nothing else now; two channels for one claim is what this change removed.
 
 The new funnel is the **board read**. `useTasks.load` and `useTasks.refresh` both feed
-`applyReadyMarks(spacePath, entries)` with what the read answered, and the feed replaces
+`applyReadyMarks(spacePath, ticket, entries)` with what the read answered, and the feed
+replaces
 ONE Space's keys and leaves every other Space standing (a Space the user is not looking
 at gets no read at all, and a global replace would wipe its marks). A read that agrees
 with the slot returns the identical state object, because `TasksBoard` subscribes to this
 map and the auto-refresh would otherwise re-render the whole board on every settle.
+
+### The ticket: a read must say when it STARTED
+
+A board read is an `await`, so a read dispatched **before** a turn starts can resolve
+**after** `beginTurn` cleared the bell, carrying the pre-turn `ready: true` — and it would
+write the mark straight back. `loadEpoch` (`src/store/tasks.ts`) cannot catch this: it
+rejects a read superseded by **another read**, and starting a turn is not a read.
+
+So the slot has a monotonic counter, `readyFence` (a module `let` in
+`src/store/interactive.ts`). A reader takes a ticket from `readyTicket()` **before** the
+`await` and hands it to `applyReadyMarks`; the feed drops the feed when
+`ticket < readyFence`. Both optimistic writers raise the fence **unconditionally** — even
+when they withdraw nothing, because the fence's question is "could a read in flight
+already know what the user has just been told?", and it cannot.
+
+**The accepted consequence, which is a product decision and not an artefact:** a
+`mark_done` that lands MID-turn is not painted until the turn settles, because the read
+that would carry it was dispatched before the clear. The owner chose this explicitly —
+`cardMarkOf` ranks `ready` ABOVE `running`, so a mid-turn bell would hide the running dot,
+and "the bell waits for the settle" is the pairing wanted on a real board. The durable
+claim is never lost, only its paint: the falling-edge read carries it
+(`the falling-edge read after the turn lights the bell the mid-turn claim earned`).
+Dropping a feed **writes nothing**, so it can never unlight a bell already on screen, and
+it gates the ready slot ONLY — column paint still goes through `loadEpoch`
+(`the fence gates the ready slot ONLY — a dropped feed still paints the columns`).
 
 ## The restart boundary — CLOSED, and what closing it cost
 
@@ -263,7 +304,7 @@ crates.io-pinned types, so the board's link statement is the only channel by whi
 board learns a per-session SQLite fact about a Session it has not opened — the same one
 `cost_usd` rides.
 
-The cost is the one the doc used to deny: a migration gate, the 20th, plus a field on a
+The cost is the one the doc used to deny: a migration gate, the 20th, plus fields on a
 frozen wire type (`TaskCardView` — REQUIRED, never `Option`, never
 `skip_serializing_if`, for the documented reason every sibling field gives: an optional
 field compiles against every fixture and then renders nothing when real data arrives).
@@ -272,6 +313,17 @@ from `cost_usd`'s null rule one field above: a figure renders, so "never reporte
 "a real zero" must stay split all the way to the renderer, while a bell renders NOTHING
 when the answer is no — `NULL` and `0` are the same answer to the question the card asks.
 The tri-state is a STORAGE fact and the card has no use for it.
+
+`readySessions: string[]` joined it with the PR #222 review fixes, and it is a LIST and
+NOT `string[] | null` for the mirror-image reason: "nobody claims" is an ANSWER, so `[]`
+says it and there is no absent state for a consumer to mishandle. Both halves of the
+presence rule are pinned against `serde_json`
+(`the_task_card_view_wire_keys_are_frozen`, now SIX card keys). **That pin moved** from
+`storage/db/tests/board.rs` to `storage/db/tests/rows.rs` when `board.rs` passed its size
+ratchet — it hand-builds a `TaskCardView` and asks what keys come out, which is a shape
+question about types declared in `db/rows.rs` and never read a board, so the move is the
+subject split the ratchet asks for and not a threshold edit. `db/tests/mod.rs`'s header
+records it.
 
 ## The mark on the card
 

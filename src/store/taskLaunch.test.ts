@@ -197,6 +197,7 @@ function column(
       // REQUIRED wire field: the board computes `ready` as an OR over the linked
       // Sessions' `sessions.ready` column, and a fixture with no links has no claim.
       ready: false,
+      readySessions: [],
     })),
   };
 }

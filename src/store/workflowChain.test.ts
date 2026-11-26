@@ -165,7 +165,7 @@ function chainBoard(): StageWithTasks[] {
  *  card that has none — `ready` is an OR over the linked Sessions' `sessions.ready`
  *  column and this card has no links to contribute to it. */
 function card(task: TaskRow): TaskCardView {
-  return { task, sessions: [], costUsd: null, artifactKeys: [], ready: false };
+  return { task, sessions: [], costUsd: null, artifactKeys: [], ready: false, readySessions: [] };
 }
 
 /** Paint a board AND put the card in the column its `stageSlug` names.

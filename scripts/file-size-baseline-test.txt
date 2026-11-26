@@ -20,6 +20,5 @@
 1152	src-tauri/src/storage/db/tests/sessions.rs
 1109	src-tauri/tests/provider_oauth_flow.rs
 1079	src-tauri/src/storage/batching/tests/mod.rs
-1078	src/store/tasks.test.ts
+1076	src/store/tasks.test.ts
 1051	src/components/SidePane.test.tsx
-1039	src-tauri/src/storage/db/tests/board.rs

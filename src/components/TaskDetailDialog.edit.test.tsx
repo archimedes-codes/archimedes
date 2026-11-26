@@ -94,6 +94,7 @@ function column(slug: string, label = slug, tasks: TaskRow[] = []): StageWithTas
       // The board computes `ready` (an OR over the linked Sessions' column); a
       // fixture with no links has no claim, so `false` is the honest value.
       ready: false,
+      readySessions: [],
     })),
   };
 }

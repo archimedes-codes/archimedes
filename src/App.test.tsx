@@ -2543,7 +2543,7 @@ describe("App (the Task board view)", () => {
             // line. `false` is the honest value here too — the board computes
             // `ready` as an OR over `sessions.ready`, and nothing in this fixture
             // has claimed readiness.
-            artifactKeys: [], ready: false,
+            artifactKeys: [], ready: false, readySessions: [],
           },
         ],
       },

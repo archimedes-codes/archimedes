@@ -170,18 +170,35 @@ impl Db {
                                 cost = Some(cost.unwrap_or(0.0) + value);
                             }
                         }
-                        // The readiness fold, and it is deliberately NOT the fold
-                        // above. `sessions.ready` is a tri-state COLUMN (NULL =
-                        // never claimed, 0 = explicitly not, 1 = claimed) and the
-                        // card answers a BINARY question, so `Some(1)` is the only
-                        // truthy value and NULL and 0 both fold to `false`. ADR
-                        // 0082's NULL/zero distinction does NOT carry over: it
-                        // exists because `cost_usd` renders a FIGURE and must tell
-                        // "never reported" from "a real zero"; a bell renders
-                        // NOTHING when the answer is no, so collapsing the two is
-                        // honest here. An `OR`, so ONE claiming Session is enough
-                        // and a card with no links is `false` (an empty OR).
-                        let ready = mine.iter().any(|(_, _, claimed)| *claimed == Some(1));
+                        // THE READINESS FOLD, in two steps that are ONE decision.
+                        // `sessions.ready` is a tri-state COLUMN (NULL = never
+                        // claimed, 0 = explicitly not, 1 = claimed) and the card
+                        // answers a BINARY question, so `Some(1)` is the only truthy
+                        // value and NULL and 0 both fold to `false`. ADR 0082's
+                        // NULL/zero distinction does NOT carry over: it exists
+                        // because `cost_usd` renders a FIGURE and must tell "never
+                        // reported" from "a real zero"; a bell renders NOTHING when
+                        // the answer is no, so collapsing the two is honest here.
+                        //
+                        // STEP 1 — the ATTRIBUTION, over the same `mine` in the same
+                        // order (links are oldest-first from the statement and the
+                        // `mine` filter is stable, so this is oldest-link-first).
+                        // `ready` says a bell is owed; this says WHO owes it — the
+                        // one hop the optimistic clears lack, since they are handed a
+                        // Session id and must not withdraw a mark that another
+                        // Session is still carrying.
+                        let ready_sessions: Vec<String> = mine
+                            .iter()
+                            .filter(|(_, _, claimed)| *claimed == Some(1))
+                            .map(|(link, _, _)| link.session_id.clone())
+                            .collect();
+                        // STEP 2 — the BELL, DERIVED from the list instead of folded
+                        // alongside it, so `ready == !ready_sessions.is_empty()` is
+                        // STRUCTURAL and not a discipline two parallel folds could
+                        // drift out of. The "one claimer is enough" OR is the
+                        // `is_empty`, and the card-with-no-links case is the empty
+                        // list, so the empty OR is still `false`.
+                        let ready = !ready_sessions.is_empty();
                         // Same trick as `mine` above: the artifact rows arrived
                         // `(task_id, key)` ordered by `rowid ASC`, so a stable
                         // filter keeps each card's keys oldest-write-first with no
@@ -197,6 +214,7 @@ impl Db {
                             cost_usd: cost,
                             artifact_keys: mine_keys,
                             ready,
+                            ready_sessions,
                         }
                     })
                     .collect(),

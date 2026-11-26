@@ -155,6 +155,7 @@ function column(
       costUsd: null,
       artifactKeys: [],
       ready: false,
+      readySessions: [],
     })),
   };
 }
