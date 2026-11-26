@@ -34,6 +34,7 @@ import {
 } from "./workflowGraphLayout";
 import {
   canConnectStages,
+  nextOutcomesAfterConnect,
   nextSlugsAfterConnect,
 } from "../../lib/workflowEdgeWrite";
 import { useSessions } from "../../store/sessions";
@@ -483,10 +484,26 @@ export default function WorkflowsCanvas() {
         connection.source,
         connection.target,
       );
-      if (next === null) return;
-      void setStageNext(activeSpacePath, connection.source, next).catch(
-        () => {},
+      // THE LABEL LIST, and the drag must not skip it. `setStageNext`'s 4th argument
+      // defaults to `slugs.map(() => null)` — omitting it CLEARS every name on the
+      // column — so a 3-arg call here would silently un-name the edges a person labelled
+      // in the panel, as a side effect of a gesture that only added a destination. The
+      // drag writes NO name for its own edge (a pointer gesture has no keyboard in it, so
+      // `null` is the honest value) and carries the stored names for the edges it is not
+      // touching. Same owner as the panel, so the two surfaces cannot disagree — which is
+      // known-gaps §10b's rule: a guard belongs here and not in the handler.
+      const outcomes = nextOutcomesAfterConnect(
+        columns,
+        connection.source,
+        connection.target,
       );
+      if (next === null || outcomes === null) return;
+      void setStageNext(
+        activeSpacePath,
+        connection.source,
+        next,
+        outcomes,
+      ).catch(() => {});
     },
     [activeSpacePath, columns, setStageNext],
   );

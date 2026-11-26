@@ -244,6 +244,39 @@ beforeEach(() => {
   vi.mocked(getAutoGuards).mockResolvedValue({ maxSteps: null, ceilingUsd: null });
 });
 
+interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/* `SVGElement.getBBox`, stubbed for THIS FILE ONLY.
+ *
+ * jsdom implements no SVG geometry, and xyflow's `EdgeText` — the component the builtin
+ * `default` edge renders an `Edge.label` through — calls `edgeTextRef.current.getBBox()`
+ * in a `useEffect` and throws `C.current.getBBox is not a function` without it. So the
+ * stub is what makes "a person can label an edge and the label renders on the canvas"
+ * testable AT ALL rather than a claim about the library's types.
+ *
+ * WHY THE ANSWER IS ALL ZEROS. `EdgeText` uses the box for two things only: the
+ * `translate()` on the label group and `visibility={width ? "visible" : "hidden"}`. A
+ * zero box therefore leaves the label group RENDERED with its text in the DOM (which is
+ * what every assertion here reads) and simply hides the background `<rect>`. Returning a
+ * made-up non-zero width would let a test pass that depends on a number no browser
+ * produced. `src/test/setup.tsx` deliberately carries only the stubs a majority of files
+ * need and says the per-file ones stay, so this belongs here and not there — the canvas
+ * files are the only ones that render an xyflow edge label.
+ */
+beforeAll(() => {
+  (Element.prototype as unknown as { getBBox?: () => Rect }).getBBox = () => ({
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+  });
+});
+
 describe("WorkflowsCanvas — the nodes", () => {
   it("draws one node per column, labelled from the row", async () => {
     seedBoardSlice([column("backlog"), column("todo"), column("doing", {}, 2)]);
@@ -387,6 +420,70 @@ describe("WorkflowsCanvas — the edges", () => {
     expect(document.querySelectorAll(".react-flow__edge")).toHaveLength(0);
     // And the column says so, which is the visible half of the same fact.
     expect(screen.getByTestId("workflow-node-dead-end-backlog")).toBeTruthy();
+  });
+
+  it("draws TWO edges to one destination when they carry different names", async () => {
+    // THE ACCEPTANCE CRITERION, rendered. `["done","done"]` labelled `failed`/`success` is
+    // legal data (`set_stage_next` validates each element names a real column, never that
+    // the list is a set) and `advise.rs` routes a claim by edge label — so both routes
+    // fire. With `edgeIdOf` keyed on the pair alone the layout's dedupe swallowed the
+    // second hop: one route in the database, ONE wire on the canvas, and no warning
+    // anywhere. A layout test proves the array holds two entries; only this proves xyflow
+    // paints both.
+    seedBoardSlice([
+      column("backlog", {
+        nextSlugs: ["done", "done"],
+        nextOutcomes: ["failed", "success"],
+      }),
+      column("done", { nextSlugs: [] }),
+    ]);
+    render(<WorkflowsCanvas />);
+    await settled();
+    const drawn = [...document.querySelectorAll(".react-flow__edge")].map((el) =>
+      el.getAttribute("data-id"),
+    );
+    expect(drawn.sort()).toEqual(["backlog->done:failed", "backlog->done:success"]);
+    // Both land on the same target node — the picture shows a choice of doors, not two
+    // destinations.
+    expect(screen.getByTestId("workflow-node-dead-end-done")).toBeTruthy();
+  });
+
+  it("renders the edge name as the edge's label on the canvas", async () => {
+    // A person can label an edge, and the label is VISIBLE. `label` is a first-class
+    // `EdgeLabelOptions` field in `@xyflow/react@13.0.3` and the builtin `default` edge
+    // renders it through `BaseEdge` → `EdgeText`, which is why `WorkflowsCanvas.tsx`
+    // passes no `edgeTypes` and needs no custom edge component. Reading it off the DOM is
+    // what makes that a fact rather than a reading of the library's types: an edge whose
+    // name never reaches the picture is a label the person cannot verify they set.
+    seedBoardSlice([
+      column("backlog", { nextSlugs: ["done"], nextOutcomes: ["handoff"] }),
+      column("done", { nextSlugs: [] }),
+    ]);
+    render(<WorkflowsCanvas />);
+    await settled();
+    const edge = document.querySelector(
+      ".react-flow__edge[data-id='backlog->done:handoff']",
+    );
+    expect(edge).toBeTruthy();
+    expect(edge!.textContent).toContain("handoff");
+  });
+
+  it("renders NO label element for an unlabelled edge — the board a person has today", async () => {
+    // The byte-identical pin on the render side, beside the literal `data-id` pins
+    // elsewhere in this file. `next_outcomes` has no SQL `DEFAULT` and is never
+    // backfilled, so EVERY board that exists today is unlabelled; if the layout spread
+    // `label: null` onto every edge instead of omitting the key, xyflow would render an
+    // empty label group on every wire of every board.
+    seedBoardSlice([column("backlog", { nextSlugs: ["done"] }), column("done")]);
+    render(<WorkflowsCanvas />);
+    await settled();
+    const edge = document.querySelector(".react-flow__edge[data-id='backlog->done']");
+    expect(edge).toBeTruthy();
+    expect(edge!.textContent ?? "").toBe("");
+    // `EdgeText` returns `null` when there is no label, so neither its group nor its
+    // background rect exists at all — not "an empty label painted on every wire".
+    expect(document.querySelector(".react-flow__edge-textwrapper")).toBeNull();
+    expect(document.querySelector(".react-flow__edge-textbg")).toBeNull();
   });
 
   it("keeps an edge to a column the read cannot name, and shows it as missing", async () => {

@@ -17,6 +17,8 @@ import {
 import { useTasks } from "../../store/tasks";
 import {
   canConnectStages,
+  edgeOutcomesOf,
+  nextOutcomesAfterConnect,
   nextSlugsAfterConnect,
 } from "../../lib/workflowEdgeWrite";
 import { nextStepSlugs } from "../../lib/workflowGraph";
@@ -135,6 +137,18 @@ export function NodeSettingsBody({
   /** The extra prompt being typed, or `null` when the field shows the STORED prefix. A
    *  SECOND `useState` rather than one Record, on the same argument `draft` makes. */
   const [prefixDraft, setPrefixDraft] = useState<string | null>(null);
+  /** The name picked for the NEXT added edge, mirrored out of `NodeDestinations` for ONE
+   *  reason: `candidates` below has to be computed WITH it. `canConnectStages` refuses an
+   *  unnamed edge onto a destination the column already holds and ALLOWS a named one, so
+   *  the option set is a function of the name — a panel that computed it with
+   *  `outcome = null` would never offer a second edge to one destination, and D6's
+   *  two-way routing would be unreachable from the one surface built to configure it.
+   *
+   *  A MIRROR and not an owner: `NodeDestinations` holds the draft and passes the name to
+   *  `onAdd` itself, so the payload can never disagree with what its trigger shows. This
+   *  is the same one-directional shape the panel's text drafts use ("the drafts live here
+   *  and die here"), with the reporting added because a second file needs to see it. */
+  const [pendingOutcome, setPendingOutcome] = useState<string | null>(null);
   /** Is THIS node waiting on a delete destination? The dialog held this in its parent
    *  because the invariant was dialog-wide (one open question at a time, across N
    *  rows). Here there is exactly one node on screen, so the flag has one possible
@@ -204,7 +218,10 @@ export function NodeSettingsBody({
     }
   };
 
-  const addDestination = async (destination: string): Promise<void> => {
+  const addDestination = async (
+    destination: string,
+    outcome: string | null,
+  ): Promise<void> => {
     // THE SAME RULE THE CANVAS DRAG USES. This used to re-spell it inline
     // (`const current = stage.nextSlugs ?? []; if (current.includes(destination)) return;`)
     // and `lib/workflowEdgeWrite.ts` was extracted precisely so that re-spelling could not
@@ -217,23 +234,50 @@ export function NodeSettingsBody({
     // omitting the column, and it checks that BOTH endpoints exist in the loaded slice.
     // `null → [destination]` (configuring the column) and appending to `[]` are unchanged,
     // which is what `writes the one-item list…` pins on both surfaces.
-    const next = nextSlugsAfterConnect(columns, stage.slug, destination);
+    const next = nextSlugsAfterConnect(
+      columns,
+      stage.slug,
+      destination,
+      outcome,
+    );
+    // THE LABEL LIST, from the same owner and the same predicate — and this is the line
+    // that stops a data-loss bug. `setStageNext`'s 4th argument is optional and defaults
+    // to `slugs.map(() => null)`, so a 3-arg call here would clear every name the person
+    // had already put on this column's edges while they were ADDING a destination. The
+    // append answers the stored names plus the new one; see `nextOutcomesAfterConnect`.
+    const nextOutcomes = nextOutcomesAfterConnect(
+      columns,
+      stage.slug,
+      destination,
+      outcome,
+    );
     // `null` is a refusal, and the panel's `Select` offers only real, non-self,
     // not-yet-stored slugs — so today it is unreachable from this control. Writing nothing
     // is still the right answer for it: the alternative is a `set_stage_next` call the
     // server refuses and an error line for a gesture the picker should not have offered.
-    if (next === null) return;
+    // BOTH lists are checked because the write refuses a length mismatch (`EdgeOutcomeCount`);
+    // the two derivations share one predicate, so one answers `null` exactly when the other
+    // does, and there is no reachable state that writes a destination without its slot.
+    if (next === null || nextOutcomes === null) return;
     try {
-      await setStageNext(spacePath, stage.slug, next);
+      await setStageNext(spacePath, stage.slug, next, nextOutcomes);
     } catch {
       // Reverted; the store's line explains it (an unknown slug or a self-loop REFUSES
       // rather than dropping the entry — spec §4).
     }
   };
 
-  const writeDestinations = async (next: string[]): Promise<void> => {
+  const writeDestinations = async (
+    next: string[],
+    outcomes: (string | null)[],
+  ): Promise<void> => {
     try {
-      await setStageNext(spacePath, stage.slug, next);
+      // BOTH columns, ONE call, always the same length — `set_stage_next` refuses a
+      // mismatch with `EdgeOutcomeCount` before it writes, because a shifted label is a
+      // card that advances on the wrong claim. `NodeDestinations` owns the positional
+      // arithmetic (it is the file that knows which chip was touched); this file owns the
+      // verb, which is the split its header has always drawn.
+      await setStageNext(spacePath, stage.slug, next, outcomes);
     } catch {
       // Reverted; see `addDestination`.
     }
@@ -281,6 +325,12 @@ export function NodeSettingsBody({
   };
 
   const destinations = stage.nextSlugs;
+  // The edge names, positional to `destinations`, padded by the ONE owner of the
+  // positional read so the panel, the canvas and `advise.rs` cannot disagree about which
+  // edge a name sits on. NOT `stage.nextOutcomes ?? []` — that would read "no cell yet"
+  // as "a cell of zero labels", and on a positional column a wrong length is a name on
+  // the wrong edge.
+  const outcomes = edgeOutcomesOf(stage);
   // The columns this node could point at, decided by the ONE rule rather than by a filter
   // this file invents. `canConnectStages` is the predicate the canvas hands
   // `isValidConnection`, so the panel's picker and the canvas's connection line now refuse
@@ -301,7 +351,9 @@ export function NodeSettingsBody({
   // disappearing from the picker has an explanation on screen rather than being a missing
   // row nobody can account for.
   const candidates = (columns ?? [])
-    .filter((c) => canConnectStages(columns, stage.slug, c.stage.slug))
+    .filter((c) =>
+      canConnectStages(columns, stage.slug, c.stage.slug, pendingOutcome),
+    )
     .map((c) => ({ slug: c.stage.slug, label: c.stage.label }));
   // The relocation targets for the DELETE picker, and they are NOT the list above. Moving
   // cards is a `tasks.stage_slug` UPDATE inside `delete_stage`'s transaction; it has
@@ -446,12 +498,21 @@ export function NodeSettingsBody({
           <NodeDestinations
             stageSlug={stage.slug}
             destinations={destinations}
+            outcomes={outcomes}
             candidates={candidates}
+            onPendingOutcomeChange={setPendingOutcome}
             labelOf={labelOf}
             headResolvable={headResolvable}
             impliedSlug={impliedSlug}
-            onWrite={(next) => void writeDestinations(next)}
-            onAdd={(slug) => void addDestination(slug)}
+            // BOTH arguments forwarded. A `(next) => …` lambda here compiles fine and
+            // silently drops the positional name list on the floor, which paints a graph
+            // whose edges all read unnamed while the person was naming one of them — the
+            // same clearing defect `nextOutcomesAfterConnect` exists to prevent, arriving
+            // one layer up instead of at the write.
+            onWrite={(next, nextOutcomes) =>
+              void writeDestinations(next, nextOutcomes)
+            }
+            onAdd={(slug, outcome) => void addDestination(slug, outcome)}
           />
         </div>
       </div>

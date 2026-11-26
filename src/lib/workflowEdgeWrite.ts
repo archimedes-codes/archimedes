@@ -1,5 +1,5 @@
 import { nextStepSlugs } from "./workflowGraph";
-import type { StageWithTasks } from "./tauri";
+import type { StageDto, StageWithTasks } from "./tauri";
 
 /**
  * The write behind **an edge on the Workflows canvas**, as a pure function: given a
@@ -94,11 +94,17 @@ import type { StageWithTasks } from "./tauri";
 
 /** Can this board hold a hop from `source` to `target`? The answer is the same one the
  *  write below makes, so the connection line a drag paints and the payload the drop
- *  sends cannot disagree. */
+ *  sends cannot disagree.
+ *
+ *  `outcome` is the NAME the new edge would carry, or `null`/absent for "it names
+ *  nothing". It is a LABEL and not a permission: it never unlocks a self-loop or a
+ *  ghost endpoint, because `set_stage_next` refuses those whatever the label says.
+ *  What it does change is the duplicate rule — see `isDuplicateEdge`. */
 export function canConnectStages(
   columns: readonly StageWithTasks[] | undefined,
   source: string,
   target: string,
+  outcome: string | null = null,
 ): boolean {
   if (source === target) return false;
   const from = columns?.find((c) => c.stage.slug === source);
@@ -116,7 +122,15 @@ export function canConnectStages(
   // refusal tracks the one derivation the pill, the modal and the runtime use — and the
   // `[0]` is deliberate: that is the column `nextStepOf` sends a card to, i.e. the one
   // whose wire is on the canvas.
+  //
+  // A NAMED edge is exempt, and it is exempt for a reason rather than by accident: this
+  // refusal rests entirely on "nothing on screen would change", and an edge that arrives
+  // carrying a label DOES change the picture — it gains that label
+  // (`workflowGraphLayout.ts` sets `Edge.label`). The other two reasons the no-op is
+  // refused (it stores a list, it narrows Strict) are the price of configuring a column at
+  // all, and a person naming an edge to their inferred neighbour is paying it on purpose.
   if (
+    outcome === null &&
     from.stage.nextSlugs === null &&
     nextStepSlugs(columns, from.stage)[0] === target
   )
@@ -125,8 +139,127 @@ export function canConnectStages(
   // `?? []` is the join here — NOT the `?? fallback` that `nextStepSlugs` must avoid.
   // This side is asking "is it already in the list", and both empties answer yes-it-isn't
   // identically; only the READ can confuse the two.
-  return !(from.stage.nextSlugs ?? []).includes(target);
+  return !isDuplicateEdge(from.stage, target, outcome);
 }
+
+/** Is the proposed edge one this column ALREADY holds?
+ *
+ *  It used to be `nextSlugs.includes(target)`, and the destination alone was the whole
+ *  question because two edges to one column could not mean two different things. `D6`
+ *  changed that: `advise.rs` picks "the first edge whose LABEL is the outcome the claim
+ *  named", so `["done","done"]` labelled `["failed","success"]` is a review column that
+ *  routes two ways, and it is legal data — `set_stage_next` validates each element names
+ *  a real column and is not the column itself, and it never checks the list for repeats.
+ *  Refusing the pair here would make that whole capability unreachable from both surfaces.
+ *
+ *  What stays refused is the case that is still a duplicate: the same destination with
+ *  the same name, or two unnamed edges to one destination. Two edges whose `edgeIdOf`
+ *  value collides is exactly what makes xyflow render one and warn, and a name that is
+ *  already taken can never fire — `advise.rs` finds the FIRST match, so the second edge
+ *  would look routed and never route. A control that can only produce a dead edge is the
+ *  dead-control shape this repo refuses, which is why the refusal moved from the
+ *  destination to the pair rather than going away. */
+const isDuplicateEdge = (
+  from: StageDto,
+  target: string,
+  outcome: string | null,
+): boolean =>
+  edgeOutcomesOf(from).some(
+    (label, index) =>
+      from.nextSlugs?.[index] === target &&
+      (outcome === null ? label === null : label === outcome),
+  );
+
+/** The nine edge names `mark_done` offers a model, in picker order.
+ *
+ *  **This list is a MIRROR and it is allowed to drift, so read where it comes from before
+ *  changing it:** `src-tauri/src/agent/host_tools/specs.rs`, the `mark_done` `ToolSpec`'s
+ *  `parameters.properties.outcome.enum`. Nothing pins the two together on purpose —
+ *  `src/lib/ipc/events.test.ts` records at length why a `readFileSync("src-tauri/…")`
+ *  source-text grep from a frontend test is a landmine with no detection value, and this
+ *  is a frontend file.
+ *
+ *  Drift here is HARMLESS BY CONSTRUCTION, which is what makes mirroring acceptable:
+ *  these are SUGGESTIONS in a picker, not a validator. `next_outcomes` has no `CHECK` and
+ *  `set_stage_next` does not validate a label against any list, so a name outside this
+ *  array still writes and still routes; and a model that sends a name no edge carries is
+ *  not refused either — `advise.rs` falls back to the head and says so, because an
+ *  unlabelled board is the ordinary case and an invented name must not stall a chain. So
+ *  the worst a stale mirror does is omit a suggestion, never refuse a valid one.
+ *
+ *  `ready` and `review` are NOT here and both absences are measured, not taste: the
+ *  host-tool name ban forbids any name containing `read`, and `review` contains it
+ *  (`r-e-v-i-e-w`). `specs.rs` carries the same note for the same reason. */
+export const EDGE_OUTCOME_SUGGESTIONS = [
+  "done",
+  "failed",
+  "error",
+  "success",
+  "blocked",
+  "partial",
+  "finished",
+  "complete",
+  "handoff",
+] as const;
+
+/** This column's edge labels, POSITIONAL to `nextSlugs`, padded to its length.
+ *
+ *  The ONE owner of the positional read, spelled once for the same reason the rest of
+ *  this module exists: `advise.rs` reads a short cell as "the edges past its end are
+ *  unlabelled", `StageDto.nextOutcomes`'s docblock says the same, and a frontend that
+ *  padded differently would paint a label on the wrong edge — which is a card advancing
+ *  on the wrong claim, the exact failure `EdgeOutcomeCount` refuses at rest.
+ *
+ *  Three inputs, three answers, and none of them is `[]` by accident:
+ *   - `nextSlugs: null` → `[]`. An unconfigured column's only wire is the inferred
+ *     `sortOrder + 1` neighbour, which holds NO INDEX in `next_slugs`, so there is no
+ *     position a label could sit at.
+ *   - `nextOutcomes` null/absent/short → one `null` per edge past the end. `null` is the
+ *     only spelling of "this edge names nothing"; `undefined` is not a JSON value and
+ *     `""` would be a label that renders as nothing.
+ *   - a longer cell than the slug list → TRUNCATED to it. The write refuses that shape,
+ *     so it is only reachable from a stale read, and an extra label has no edge to paint.
+ *
+ *  `?? []` here is the join of two empties, the same legitimate use this module's
+ *  `canConnectStages` makes. It is NOT the `?? []` the panel's negative pin bans: that
+ *  one collapses `nextSlugs: null` (unconfigured) into "no destinations", which is a
+ *  different fact. This function never reads `nextSlugs` as a list of destinations — it
+ *  reads it for its LENGTH, and `null` has already returned `[]` above. */
+export function edgeOutcomesOf(
+  stage: StageDto,
+): (string | null)[] {
+  const slugs = stage.nextSlugs;
+  if (slugs === null) return [];
+  const stored = stage.nextOutcomes ?? [];
+  return slugs.map((_, index) => stored[index] ?? null);
+}
+
+/** The whole positional label list to write for a hop from `source` to `target`, or
+ *  `null` for "refuse — write nothing".
+ *
+ *  THE PRESERVE RULE, and it is the reason this function exists rather than a
+ *  convenience. `setStageNext`'s 4th argument is optional and defaults to
+ *  `slugs.map(() => null)`, so omitting it does not mean "leave the labels alone", it
+ *  means "this write labels nothing" — every existing name on the column goes away. Both
+ *  surfaces below append one edge, so both must send the stored labels plus the new one
+ *  or a person adding a second destination silently un-names the first. That is data loss
+ *  dressed as an add, and it is why the label list is derived HERE, beside the slug list,
+ *  instead of at the two call sites.
+ *
+ *  There is no arm that writes `null` and none that writes a short list, for the same
+ *  reason `nextSlugsAfterConnect` has none: `set_stage_next` refuses
+ *  `outcomes.length !== slugs.length` with `EdgeOutcomeCount` before it writes anything. */
+export function nextOutcomesAfterConnect(
+  columns: readonly StageWithTasks[] | undefined,
+  source: string,
+  target: string,
+  outcome: string | null = null,
+): (string | null)[] | null {
+  if (!canConnectStages(columns, source, target, outcome)) return null;
+  const from = columns!.find((c) => c.stage.slug === source)!;
+  return [...edgeOutcomesOf(from.stage), outcome];
+}
+
 
 /** The whole ordered list to write for a hop from `source` to `target`, or `null` for
  *  "refuse — write nothing".
@@ -134,13 +267,22 @@ export function canConnectStages(
  *  Whole-list and not one edge because that is the shape `set_stage_next` takes: the
  *  destinations are an ordered list and `[0]` is the live edge, so an append is "keep
  *  every destination I already chose, in the order I chose them, and add this one
- *  last". */
+ *  last".
+ *
+ *  `outcome` exists so the VERDICT matches the label write beside it — it does not go
+ *  into the list, because `next_slugs` holds destinations and never names. */
 export function nextSlugsAfterConnect(
   columns: readonly StageWithTasks[] | undefined,
   source: string,
   target: string,
+  outcome: string | null = null,
 ): string[] | null {
-  if (!canConnectStages(columns, source, target)) return null;
+  // The SAME predicate with the SAME arguments as `nextOutcomesAfterConnect`, which is
+  // what makes "one owner" true rather than aspirational: the two derivations ask one
+  // question, so there is no reachable state where the slug list is accepted and the
+  // label list refused (a state that would write a destination with no slot for its
+  // name, i.e. the `EdgeOutcomeCount` refusal and an error line for an offered gesture).
+  if (!canConnectStages(columns, source, target, outcome)) return null;
   const from = columns!.find((c) => c.stage.slug === source)!;
   return [...(from.stage.nextSlugs ?? []), target];
 }

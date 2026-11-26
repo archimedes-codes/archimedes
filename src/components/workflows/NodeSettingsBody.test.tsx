@@ -325,10 +325,17 @@ beforeEach(() => {
     ...stage(slug),
     onEnterSkill: skillName ?? null,
   }));
-  vi.mocked(setStageNext).mockImplementation(async (_space, slug, slugs) => ({
-    ...stage(slug),
-    nextSlugs: slugs,
-  }));
+  // BOTH columns echo, because `set_stage_next` writes and answers BOTH in one
+  // `UPDATE` — they are positional and a mock that dropped `nextOutcomes` would let the
+  // store merge a row whose labels describe the graph that USED to be there, which is the
+  // exact state the real write refuses to leave behind.
+  vi.mocked(setStageNext).mockImplementation(
+    async (_space, slug, slugs, outcomes) => ({
+      ...stage(slug),
+      nextSlugs: slugs,
+      nextOutcomes: outcomes ?? null,
+    }),
+  );
   vi.mocked(reorderStages).mockResolvedValue(undefined);
   vi.mocked(deleteStage).mockResolvedValue(undefined);
   vi.mocked(createStage).mockImplementation(async (_space, label) => ({
@@ -703,9 +710,14 @@ describe("the node panel's extra-prompt field", () => {
 describe("the node panel's destinations", () => {
   it("shows the configured destinations in order, labelled by their column", () => {
     renderNode("backlog");
+    // The LABEL needle, not the chip container: the edge-name `Select` now lives inside
+    // the chip span, so a chip's own `textContent` reads `"Doingno name"` — the trigger's
+    // text rides along. `NodeDestinations.test.tsx`'s `chipText` reads the same needle for
+    // the same reason, and the two files must not disagree about which element answers
+    // "which destinations, in which order".
     expect(
       within(panel())
-        .getAllByTestId(/^destination-(?!state|fanout)/)
+        .getAllByTestId(/^destination-label-/)
         .map((el) => el.textContent),
     ).toEqual(["Doing"]);
   });
@@ -849,6 +861,235 @@ describe("the node panel's destinations", () => {
     // The rule must NOT be re-spelled beside the import. `?? []` is the shape the inline
     // version was built out of; `nextSlugs ?? []` is the one place it would reappear.
     expect(code).not.toMatch(/nextSlugs\s*\?\?\s*\[\]/);
+    // THE SECOND SPELLING OF THE SAME DEFECT, added in the commit that introduced the
+    // risk. `next_outcomes` arrived beside `next_slugs` and it is positional to it, so
+    // `nextOutcomes ?? []` is the identical mistake re-spelled onto the new column: it
+    // reads "no cell yet" as "a cell of zero labels", and a positional list is exactly
+    // the data where a wrong LENGTH is a name sitting on the wrong edge. The pin above
+    // cannot see it — a regex on `nextSlugs` is blind to a different identifier — so a
+    // task that added the second column without widening this line would have shipped a
+    // pin that passes on the broken thing, which is the worst pin shape this repo names.
+    //
+    // Both are checked against the COMMENT-STRIPPED source, as above: this very case's
+    // comment quotes both spellings, and a guard whose prose can satisfy it is the trap
+    // `tauriBoundary.test.ts` records.
+    expect(code).not.toMatch(/nextOutcomes\s*\?\?\s*\[\]/);
+  });
+
+  describe("naming an edge (D6/D13) — the panel writes both columns, positionally", () => {
+    /* `stages.next_outcomes` is positional to `next_slugs` and `set_stage_next` refuses a
+     * length mismatch with `EdgeOutcomeCount` before it writes anything, so every panel
+     * write below asserts BOTH arguments as one pair. The store's own paint/revert of the
+     * pair is pinned in `src/store/tasks.workflows.test.ts`; what belongs here is which
+     * pair the PANEL'S controls ask for, because that is the half where a gesture can
+     * silently mislabel an edge. */
+
+    it("PRESERVES the name already on another edge when a destination is added", async () => {
+      // THE DATA-LOSS PIN, and the decision this task had to make rather than inherit.
+      // `setStageNext`'s 4th argument is optional and defaults to `slugs.map(() => null)`
+      // — omitting it does not leave the labels alone, it writes "this write labels
+      // nothing". So a 3-arg `addDestination` would clear `failed` off the `todo` edge
+      // while the person was adding `done`: a side effect nobody asked for, announced by
+      // no control, and invisible until a card advanced on the wrong claim.
+      renderNode("backlog", [
+        column("backlog", {
+          nextSlugs: ["doing"],
+          nextOutcomes: ["failed"],
+        }),
+        SEED[1]!,
+        SEED[2]!,
+      ]);
+      fireEvent.click(combo("Add a destination for backlog"));
+      await screen.findByRole("option", { name: "Done" });
+      fireEvent.click(screen.getByRole("option", { name: "Done" }));
+      await waitFor(() =>
+        expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing", "done"], [
+          "failed",
+          null,
+        ]),
+      );
+      // And the painted row keeps the name — the slice, not just the wire.
+      expect(stageOf("backlog")?.nextOutcomes).toEqual(["failed", null]);
+    });
+
+    it("writes the name picked on the add control with the new edge", async () => {
+      // The panel is where a routing table is composed, and a drag cannot do this: a
+      // pointer gesture has no keyboard in it, so the canvas writes `null` and the panel
+      // is the ONLY way to reach D6's routing.
+      renderNode("backlog", [
+        column("backlog", { nextSlugs: ["doing"], nextOutcomes: [null] }),
+        SEED[1]!,
+        SEED[2]!,
+      ]);
+      fireEvent.click(combo("Name for a new edge from backlog"));
+      await screen.findByRole("option", { name: "success" });
+      fireEvent.click(screen.getByRole("option", { name: "success" }));
+      fireEvent.click(combo("Add a destination for backlog"));
+      await screen.findByRole("option", { name: "Done" });
+      fireEvent.click(screen.getByRole("option", { name: "Done" }));
+      await waitFor(() =>
+        expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing", "done"], [
+          null,
+          "success",
+        ]),
+      );
+    });
+
+    it("names an existing edge and leaves every other name where it was", async () => {
+      renderNode("backlog", [
+        column("backlog", {
+          nextSlugs: ["doing", "done"],
+          nextOutcomes: ["failed", null],
+        }),
+        SEED[1]!,
+        SEED[2]!,
+      ]);
+      fireEvent.click(combo("Name the edge to Done from backlog"));
+      await screen.findByRole("option", { name: "handoff" });
+      fireEvent.click(screen.getByRole("option", { name: "handoff" }));
+      await waitFor(() =>
+        expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing", "done"], [
+          "failed",
+          "handoff",
+        ]),
+      );
+    });
+
+    it("clears a name to null and not to the empty string", async () => {
+      // `""` would be a label that renders as nothing AND a label no claim can send (the
+      // enum has no `""`) — the `promptPrefix` `""`-vs-`null` defect, one column over.
+      renderNode("backlog", [
+        column("backlog", {
+          nextSlugs: ["doing"],
+          nextOutcomes: ["failed"],
+        }),
+        SEED[1]!,
+        SEED[2]!,
+      ]);
+      fireEvent.click(combo("Name the edge to Doing from backlog"));
+      await screen.findByRole("option", { name: "no name" });
+      fireEvent.click(screen.getByRole("option", { name: "no name" }));
+      await waitFor(() =>
+        expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing"], [null]),
+      );
+    });
+
+    it("pads a short stored cell so the write never trips EdgeOutcomeCount", async () => {
+      // A cell shorter than the slug list is legal data ("the edges past its end are
+      // unlabelled" — `advise.rs`'s own reading), and `stages.rs` is explicit that
+      // padding is the CALLER'S job. Writing `["failed", "success"]` against a 3-edge
+      // list, or forwarding the short cell untouched, is a refusal and an error line for
+      // a gesture the picker offered.
+      renderNode("backlog", [
+        column("backlog", {
+          nextSlugs: ["doing", "done"],
+          nextOutcomes: ["failed"],
+        }),
+        SEED[1]!,
+        SEED[2]!,
+      ]);
+      fireEvent.click(combo("Name the edge to Done from backlog"));
+      await screen.findByRole("option", { name: "success" });
+      fireEvent.click(screen.getByRole("option", { name: "success" }));
+      await waitFor(() =>
+        expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing", "done"], [
+          "failed",
+          "success",
+        ]),
+      );
+    });
+
+    it("does NOT offer a destination the list holds when the new edge would name nothing", async () => {
+      // THE REFUSAL HALF of the option set, and the reason `canConnectStages` is the
+      // caller's rule and not the picker's: an unnamed second edge to `done` has the SAME
+      // `edgeIdOf` as the one already there, which is the one shape that makes xyflow
+      // render one edge and warn. Offering it would be a silent no-op — the dead control
+      // this repo refuses — so it is absent from the list rather than listed and inert.
+      const seed = [
+        column("backlog", { nextSlugs: ["done"], nextOutcomes: [null] }),
+        SEED[1]!,
+        SEED[2]!,
+      ];
+      renderNode("backlog", seed);
+      fireEvent.click(combo("Add a destination for backlog"));
+      await screen.findByRole("option", { name: "Doing" });
+      expect(screen.queryByRole("option", { name: "Done" })).toBeNull();
+      // …and the pure rule answers the same for the same hop, from the one owner.
+      expect(
+        canConnectStages(
+          useTasks.getState().boardsBySpace[SPACE],
+          "backlog",
+          "done",
+          null,
+        ),
+      ).toBe(false);
+    });
+
+    it("OFFERS that same destination once a name is picked, and writes the pair", async () => {
+      // THE ALLOWANCE HALF, and the reason the panel tells `NodeDestinations` about the
+      // pending name instead of computing `candidates` with `outcome = null`. Two edges to
+      // `done`, one unnamed and one named `success`, have different ids and mean different
+      // things — the head for a claim that names nothing, `success` for a claim that names
+      // it — and `set_stage_next` accepts the list. A panel that widened nothing would
+      // leave `Done` out of the picker however the name control read, and D6's two-way
+      // routing would be unreachable from the one surface built to configure it.
+      renderNode("backlog", [
+        column("backlog", { nextSlugs: ["done"], nextOutcomes: [null] }),
+        SEED[1]!,
+        SEED[2]!,
+      ]);
+      fireEvent.click(combo("Name for a new edge from backlog"));
+      await screen.findByRole("option", { name: "success" });
+      fireEvent.click(screen.getByRole("option", { name: "success" }));
+      fireEvent.click(combo("Add a destination for backlog"));
+      await screen.findByRole("option", { name: "Done" });
+      fireEvent.click(screen.getByRole("option", { name: "Done" }));
+      await waitFor(() =>
+        expect(setStageNext).toHaveBeenCalledWith(
+          SPACE,
+          "backlog",
+          ["done", "done"],
+          [null, "success"],
+        ),
+      );
+      // Two chips with two distinct needles — the panel shows both edges rather than
+      // collapsing them into one row, which is the panel-side twin of `edgeIdOf`.
+      expect(within(panel()).getByTestId("destination-done:success")).toBeTruthy();
+      expect(within(panel()).getByTestId("destination-done")).toBeTruthy();
+    });
+
+    it("removes one edge of a labelled pair and keeps the survivor's name", async () => {
+      renderNode("backlog", [
+        column("backlog", {
+          nextSlugs: ["doing", "done"],
+          nextOutcomes: ["failed", "success"],
+        }),
+        SEED[1]!,
+        SEED[2]!,
+      ]);
+      fireEvent.click(button("Remove Doing from backlog"));
+      await waitFor(() =>
+        expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["done"], ["success"]),
+      );
+    });
+
+    it("paints the fan-out sentence that is true once an edge is named", () => {
+      // The prose half, on the surface a person reads. The old caption called `Done`
+      // "not followed" and `advise.rs` now follows it on a claim that names `success`.
+      renderNode("backlog", [
+        column("backlog", {
+          nextSlugs: ["doing", "done"],
+          nextOutcomes: [null, "success"],
+        }),
+        SEED[1]!,
+        SEED[2]!,
+      ]);
+      const fanout =
+        within(panel()).getByTestId("destination-fanout").textContent ?? "";
+      expect(fanout).toMatch(/unless a claim names an edge/);
+      expect(fanout).toMatch(/Done \(success\) fires when a claim names success/);
+      expect(fanout).not.toMatch(/is not followed/);
+    });
   });
 
   it("removing a destination writes the remaining list in its own order", async () => {

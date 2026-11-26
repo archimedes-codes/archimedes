@@ -250,17 +250,37 @@ to relax casually. Two destinations therefore cannot be two parallel Sessions on
 second edge would be a claim about money that the schema cannot keep.
 
 **What ships instead.** `nextStepOf` follows `nextStepSlugs(columns, stage)[0]` and nothing else — the
-same single answer the card's launch pill and the detail modal's buttons take. The rest of the list is
-drawn as an edge and **not followed**. And the panel **says so out loud**, because a canvas that draws
-three lines from a box implies three things happen and the honest statement is that one does:
-`NodeDestinations` renders one element, `destination-fanout`, only when the list holds more than one
-destination, and `fanOutSentence` names the followed head and the unfollowed tail by label —
+same single answer the card's launch pill and the detail modal's buttons take. On a column whose edges
+carry no name, the rest of the list is drawn as an edge and **not followed**. And the panel **says so out
+loud**, because a canvas that draws three lines from a box implies three things happen and the honest
+statement is that one does: `NodeDestinations` renders one element, `destination-fanout`, and
+`fanOutSentence` names the followed head and the unfollowed tail by label —
 `Follows <head> only. <others> are not followed. A card lives in exactly one column, so this is not
 several parallel runs — the other edges only say what a drag may land on while Strict workflow is on.`
 The head's own slug being unresolvable gets its own clause ("no column this read can resolve carries
 that slug, so the chain follows nothing here"), because "follows a ghost" is a third answer and not the
 same as "follows nothing". Pinned by the cases in `NodeDestinations.test.tsx`'s
 `the destination list — the fan-out truth`.
+
+**AMENDED by `stages.next_outcomes` (D6/D13) — the tail clause above is now conditional, and this ADR
+said it was false until it was corrected here.** An edge can now carry a NAME, positionally
+(`next_outcomes[i]` names the edge at `next_slugs[i]`, `null` meaning that edge names nothing), and
+`mark_done` takes an optional outcome: `advise.rs` answers a claim with **the first edge whose label the
+claim named**, falling back to the head only when no edge matches. So a named non-head edge **is**
+followed — on a claim that names it — and "`<others>` are not followed" is true only of a column whose
+edges are all unnamed. That is the ordinary case and every board that predates the column:
+`next_outcomes` has no SQL `DEFAULT` and is never backfilled, so `fanOutSentence` prints the sentence
+above verbatim for an unnamed set and a different one once any edge carries a name.
+
+What did NOT move, and is the reason this is an amendment and not a retraction: **exactly one edge fires
+per claim.** A name selects a door, it does not open two — `tasks.stage_slug` is still one value and
+`idx_workflow_runs_open` still allows one open run per card, so §6's schema argument and the rejection of
+parallel execution below both stand untouched. The panel's named-edge sentence therefore keeps the
+anti-fork clause in its own words (`exactly one edge fires per claim`) rather than dropping it.
+`NodeDestinations` also prints at ONE destination now, when that single edge is named, because the true
+thing to say there is that the name changes nothing: with one edge, a claim that names it and a claim
+that names nothing both take it. Both sentences are pinned in `NodeDestinations.test.tsx`'s
+`the destination list — the fan-out truth` and `naming an edge (D6/D13)`.
 
 **The gap this leaves, and what closing it would take.** True fork/join needs one of two things neither
 of which exists here, and neither of which is a UI change:
@@ -335,7 +355,8 @@ who prefers it loses nothing that this file's §7 does not already state.
   column reuses the verb that exists and re-derives per reply.
 - **Execute fan-out in parallel (rejected).** The schema forbids it: `tasks.stage_slug` is one value and
   `idx_workflow_runs_open` allows one open run per card. Drawing it without saying it is not followed is
-  the dishonest option this ADR's §6 exists to refuse.
+  the dishonest option this ADR's §6 exists to refuse. `next_outcomes` does not change this: an edge name
+  routes one claim to one edge, and §6's amendment says which sentence the panel prints for each case.
 - **Say "parallel branches, execution later" in the UI copy (rejected).** 0116 is the cautionary precedent
   in this repo for a claim sized by the wrong distribution and justified by an upstream band nobody
   verified; the same failure mode in copy is a sentence that reads as shipped. The panel states the

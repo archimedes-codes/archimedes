@@ -352,8 +352,7 @@ describe("layoutWorkflowGraph — the STORE owns a position a person arranged", 
 });
 
 describe("layoutWorkflowGraph — the edges (ADR 0099's three answers)", () => {
-  it("draws the configured edges in the row's OWN order", () => {
-    // `doing` is configured to stop (`[]`) so it contributes no edge of its own
+  it("draws the configured edges in the row's OWN order", () => {    // `doing` is configured to stop (`[]`) so it contributes no edge of its own
     // and the assertion below is about ONE row's list. Left `null` it would fall
     // back to `sortOrder + 1` and add a `doing->done` edge — correct behaviour,
     // but it would make this case's expected list about two rows instead of one.
@@ -527,6 +526,159 @@ describe("layoutWorkflowGraph — an INFERRED edge looks unlike a DRAWN one", ()
     expect(
       inferredToAGhost.edges.find((e) => e.id === edgeIdOf("todo", "doing"))!.className,
     ).toBe("workflow-edge-implicit");
+  });
+});
+
+describe("layoutWorkflowGraph — the edge NAME (D6/D13: two edges, one destination)", () => {
+  /* `next_outcomes` is positional to `next_slugs`, so `["done","done"]` labelled
+   * `["failed","success"]` is legal data — `set_stage_next` validates each element names a
+   * real column, never that the list is a set — and `advise.rs` routes a claim to "the
+   * FIRST edge whose label is the outcome it named". None of that reaches a person until
+   * the canvas can DRAW both edges, which is what this block is about.
+   *
+   * The hazard was structural and it was silent: `edgeIdOf` was `${from}->${to}` and the
+   * hop loop deduped on it, so two edges to one destination collapsed into one wire with
+   * no warning anywhere. A person who labelled both edges was looking at one of them and
+   * had no way to tell which. */
+
+  it("draws TWO edges for two destinations that are the same column with different names", () => {
+    // THE HIGHEST-VALUE CASE IN THIS TASK. Before the outcome joined the id, `seen`
+    // swallowed the second hop and this fixture drew one wire: the `success` route
+    // existed in the database, fired on a claim, and was invisible on the picture the
+    // person uses to reason about their workflow.
+    const { edges } = layoutWorkflowGraph([
+      column("backlog", {
+        nextSlugs: ["done", "done"],
+        nextOutcomes: ["failed", "success"],
+      }),
+      column("done", { nextSlugs: [] }),
+    ]);
+    expect(edges).toHaveLength(2);
+    expect(edges.map((e) => `${e.source}->${e.target}`)).toEqual(["done", "done"].map(() => "backlog->done"));
+    // Two DISTINCT ids, which is the whole point — a duplicate id is what makes xyflow
+    // render one edge and warn.
+    expect(new Set(edges.map((e) => e.id)).size).toBe(2);
+    expect(edges.map((e) => e.id)).toEqual([
+      edgeIdOf("backlog", "done", "failed"),
+      edgeIdOf("backlog", "done", "success"),
+    ]);
+  });
+
+  it("labels the edge with the outcome it carries", () => {
+    // `label` is a first-class `EdgeLabelOptions` field in `@xyflow/react@13.0.3` and the
+    // builtin `default` edge renders it through `BaseEdge` → `EdgeText`, so no custom edge
+    // component is needed — and `WorkflowsCanvas.tsx` passes no `edgeTypes`, which is what
+    // makes that true rather than aspirational.
+    const { edges } = layoutWorkflowGraph([
+      column("backlog", { nextSlugs: ["done"], nextOutcomes: ["handoff"] }),
+      column("done", { nextSlugs: [] }),
+    ]);
+    expect(edges).toHaveLength(1);
+    expect(edges[0]!.label).toBe("handoff");
+  });
+
+  it("leaves `label` UNSET for an unlabelled edge — an unlabelled board is byte-identical", () => {
+    // THE ACCEPTANCE CRITERION, pinned as a SHAPE and not as a claim. `label: undefined`
+    // and no `label` key at all are different objects, and the second is what the canvas
+    // tests below compare against literal DOM attributes. Spreading a `label: undefined`
+    // would put a key on every edge of every existing board, and the assertion that
+    // catches that is `toEqual` on the whole edge object.
+    const { edges } = layoutWorkflowGraph([
+      column("backlog", { nextSlugs: ["done"] }),
+      column("done", { nextSlugs: [] }),
+    ]);
+    expect(edges).toHaveLength(1);
+    expect(Object.keys(edges[0]!).sort()).toEqual(["id", "source", "target"]);
+    expect(edges[0]!.label).toBeUndefined();
+  });
+
+  it("answers the unchanged `${from}->${to}` when no outcome is given", () => {
+    // The THIRD copy of this pin, and the load-bearing one: the canvas tests name edge
+    // ids as literal DOM attributes (`rf__edge-backlog->todo`,
+    // `.react-flow__edge[data-id='backlog->doing']`) across two files. Those pins staying
+    // green IS the proof that an unlabelled board renders identically to today — this
+    // assertion is the unit-level statement of the same fact.
+    expect(edgeIdOf("backlog", "done")).toBe("backlog->done");
+    expect(edgeIdOf("backlog", "done", null)).toBe("backlog->done");
+    // And a name makes it distinct, deterministically, from data that cannot collide
+    // with it: `->` and `:` are not legal in a slug-derived id otherwise.
+    expect(edgeIdOf("backlog", "done", "failed")).toBe("backlog->done:failed");
+    expect(edgeIdOf("backlog", "done", "failed")).not.toBe(edgeIdOf("backlog", "done"));
+  });
+
+  it("still collapses two UNLABELLED edges to one destination (the id really would collide)", () => {
+    // The existing dedupe pin, restated beside the new one so the reader sees the
+    // boundary: the outcome joins the id, it does not abolish the dedupe. Two unnamed
+    // edges to `done` have ONE id, xyflow would render one and warn, and the layout is
+    // where that is caught.
+    const { edges } = layoutWorkflowGraph([
+      column("doing", { nextSlugs: ["done", "done"] }),
+      column("done"),
+    ]);
+    expect(edges.map((e) => e.id)).toEqual([edgeIdOf("doing", "done")]);
+  });
+
+  it("names a partially-labelled pair without shifting either label", () => {
+    // `[null, "blocked"]` is a real configuration (`StageDto.nextOutcomes`'s own docblock
+    // says a partially-labelled graph must not degrade to unlabelled). Position is the
+    // meaning, so the FIRST edge stays unnamed and the SECOND carries `blocked` — a
+    // shifted label is a card that advances on the wrong claim.
+    const { edges } = layoutWorkflowGraph([
+      column("backlog", { nextSlugs: ["todo", "doing"], nextOutcomes: [null, "blocked"] }),
+      column("todo", { nextSlugs: [] }),
+      column("doing", { nextSlugs: [] }),
+    ]);
+    expect(edges.map((e) => e.label)).toEqual([undefined, "blocked"]);
+    expect(edges.map((e) => e.id)).toEqual([
+      edgeIdOf("backlog", "todo"),
+      edgeIdOf("backlog", "doing", "blocked"),
+    ]);
+  });
+
+  it("does not invent a label from a short cell", () => {
+    // A cell shorter than the slug list means "the edges past its end are unlabelled" —
+    // `advise.rs` reads it that way and so must the picture. Padding index 1 with anything
+    // other than "no label" would name an edge its owner never named.
+    const { edges } = layoutWorkflowGraph([
+      column("backlog", { nextSlugs: ["todo", "doing"], nextOutcomes: ["done"] }),
+      column("todo", { nextSlugs: [] }),
+      column("doing", { nextSlugs: [] }),
+    ]);
+    expect(edges.map((e) => e.label)).toEqual(["done", undefined]);
+  });
+
+  it("draws no label for an inferred edge, because a `null` row owns no positions to label", () => {
+    // A `nextSlugs: null` row has no list for `next_outcomes` to be positional TO, so its
+    // one wire — the inferred `sortOrder + 1` neighbour — cannot carry a label. This pins
+    // the two markers stay independent: `implicit` answers "did the row name this edge at
+    // all", the label answers "what must a claim say to take it", and an inferred wire is
+    // unnamed, dashed and byte-identical to today's.
+    const { edges } = layoutWorkflowGraph([
+      column("backlog", { nextSlugs: null }),
+      column("todo", { nextSlugs: [] }),
+    ]);
+    expect(edges).toHaveLength(1);
+    expect(edges[0]!.className).toBe("workflow-edge-implicit");
+    expect(edges[0]!.label).toBeUndefined();
+  });
+
+  it("puts the name in the node's accessible description too", () => {
+    // `nextLabels` becomes the node's `aria-label` (`WorkflowNodes.tsx`: "Leads to …").
+    // Two edges to `Done` reading "Leads to Done, Done" is worse than useless to a
+    // screen-reader user — it is the same invisible-collapse defect with a different
+    // sensor. An unlabelled edge keeps contributing its bare label, so every existing
+    // board reads exactly as it does today.
+    const { nodes } = layoutWorkflowGraph([
+      column("backlog", {
+        nextSlugs: ["done", "done"],
+        nextOutcomes: ["failed", "success"],
+      }),
+      column("done", { nextSlugs: [] }),
+    ]);
+    expect(nodes.find((n) => n.id === "backlog")!.data.nextLabels).toEqual([
+      "Done (failed)",
+      "Done (success)",
+    ]);
   });
 });
 
