@@ -4,14 +4,23 @@ import {
   type TaskLaunchDestination,
 } from "../lib/taskPrompt";
 import {
+  getTask,
+  listAgentDefinitionsForSpace,
+  listSkills,
   sendPrompt,
   startTaskSession,
+  type AcpSessionUpdate,
   type SessionInfo,
 } from "../lib/tauri";
 import { describeIpcError } from "../lib/ipcError";
 import type { AgentDefinitionDto, SkillInfo, TaskRow } from "../lib/tauri";
 import { useSessions } from "./sessions";
 import { useTasks } from "./tasks";
+// The move arm a launch with no board slice needs (D19). The MODE is passed to the
+// store action, which forwards it to `taskMove.moveTaskVerb` — the one owner of the verb.
+import { BOARD_REQUIRED, NO_BOARD } from "./taskMove";
+// The ONE reader of Rust's advance advice, and the claim path's whole first half.
+import { destinationOf, readAdvanceAdvice } from "./advanceAdvice";
 // The auto-advance chain's settle edge, and the money figure it needs from before the
 // turn. TYPE-ONLY cycle by construction: `workflowChain` takes its next launch as an
 // ARGUMENT of the settle rather than importing `launchTaskSession`, so the runtime edge
@@ -206,18 +215,40 @@ export function resetTaskLaunchInFlight(): void {
  *  painting the button and clicking it (a column deleted in another window), which is
  *  the same shape the detail modal's header argues about. The draft-create flow needs
  *  it too: a new card falls back to the board's FIRST column so a draft is never lost
- *  for want of a column. */
+ *  for want of a column.
+ *
+ *  `trusted` is D19's arm, and it keys on ONE of the two refusals below: an absent
+ *  slice (NEVER LOADED) becomes a write rather than a note, because the caller is an
+ *  auto-advance chain whose destination came from a `StageDto` Rust read out of the
+ *  DATABASE, and a board slice is by construction not mounted in the window that
+ *  settles (that is the defect that left `workflow_runs` holding zero rows). The
+ *  SECOND refusal — a loaded slice that does not contain the slug, i.e. STALE — is
+ *  deliberately NOT bypassed. It is the case `TaskDetailDialog` renders as a NOTE
+ *  ("T3 stayed in `doing`") and not an error; collapsing the two would send that move
+ *  to the server, where `Db::move_task` refuses it with `missing_stage` and the dialog
+ *  shows a failure where it showed a note. No pin covers the note, so nothing would
+ *  redden — hence this paragraph rather than one shared `absent` return. */
 function resolveStage(
   spacePath: string,
   task: TaskRow,
   destination: TaskLaunchDestination,
-): { slug: string | null; absent?: true } {
+  trusted = false,
+): { slug: string | null; absent?: true; sliceFree?: true } {
   const wanted = destination.slug;
   const columns = useTasks.getState().boardsBySpace[spacePath];
   // Absent board slice is "NEVER LOADED", not "no columns" — and neither proves a
-  // destination column exists, so both answer "cannot write it". Guessing is a
-  // refused write and an error line under a click that succeeded.
-  if (columns === undefined) return { slug: null, absent: true };
+  // destination column exists, so a caller that holds no row of its own answers
+  // "cannot write it". Guessing is a refused write and an error line under a click that
+  // succeeded. A TRUSTED caller does hold a row: the advice's, read from the database.
+  if (columns === undefined) {
+    // `sliceFree` is the mode the MOVE needs, not just this function's answer: with no
+    // slice, `useTasks.moveTask`'s default arm refuses ("No board loaded for this
+    // Space.") and a refusal here is a throw and a `launch_refused` on a write that
+    // would have succeeded. So the caller is told which arm it is in rather than
+    // re-deriving it from the store a second time.
+    return trusted ? { slug: wanted, sliceFree: true } : { slug: null, absent: true };
+  }
+  // A loaded slice without the slug is STALE, and stale is never trusted (above).
   if (!columns.some((c) => c.stage.slug === wanted)) {
     return { slug: null, absent: true };
   }
@@ -323,44 +354,84 @@ function shouldInlineSkill(
  * A rejection after the Session exists leaves the Session live and listed: that is
  * the honest outcome, and the user can retry from the sidebar row.
  *
- * `toStageSlug` is the DESTINATION column, and it replaced a mode for the reason
+ * ## The destination is a slug OR a row, and the difference is the D19 arm
+ *
+ * `toStageSlug` names the DESTINATION column, and it replaced a mode for the reason
  * ADR 0098 gives: the destination Stage IS the mode. Its row supplies the label the
  * instruction sentence names, the Skill the message loads, and the extra prompt the
- * message opens with, all read from the SAME `boardsBySpace` slice the board is
- * rendering — so the button a person clicked and the prompt that goes out cannot
- * disagree about what that column means.
+ * message opens with — so the button a person clicked and the prompt that goes out
+ * cannot disagree about what that column means.
+ *
+ *  - Pass a **`string`** (every board surface) and the row is read from the
+ *    `boardsBySpace` slice the board renders. No slice → the move is skipped and the
+ *    launch reports the skip in its `note`. That is right for a click: the person is
+ *    standing in front of a board that just changed under them.
+ *  - Pass a **[`TaskLaunchDestination`]** (the auto-advance chain, both of its entry
+ *    points) and the caller is declaring *I hold the row; there is no board here*.
+ *    When the slice is absent the move still happens, through `taskMove`'s slice-free
+ *    arm, because the row came out of the database and the slice is by construction
+ *    unmounted in the window that settles. That is D19, and it is the reason
+ *    `workflow_runs` held zero rows while 456 Sessions ran.
+ *
+ * It is ONE parameter with two shapes rather than a destination plus a `trusted:
+ * boolean`, because two arguments can disagree: a `true` beside a slug the caller has
+ * no row for would be exactly the invented-Skill launch this module refuses. A row
+ * either is held or it is not.
+ *
+ * When a slice IS loaded, the slice's row wins even for a supplied destination — the
+ * existing behaviour, byte for byte, and the right ordering: a mounted board is a
+ * fresher read of `on_enter_skill` than an advice computed before the turn ran, and a
+ * person watching that board should see the column they just edited take effect.
  */
 export async function launchTaskSession(
   spacePath: string,
   task: TaskRow,
-  toStageSlug: string,
+  toStageSlug: string | TaskLaunchDestination,
   catalogs: TaskLaunchCatalogs,
 ): Promise<TaskLaunchOutcome> {
+  // A supplied destination IS the trust claim (see the header), so `trusted` and
+  // `sliceFree` are derived from the argument's shape and cannot contradict it.
+  const supplied = typeof toStageSlug === "string" ? null : toStageSlug;
+  // Narrowed from `toStageSlug` directly rather than from `supplied`, which TS cannot
+  // correlate back to the argument's shape.
+  const wantedSlug = typeof toStageSlug === "string" ? toStageSlug : toStageSlug.slug;
   const stage = useTasks.getState().boardsBySpace[spacePath]?.find(
-    (c) => c.stage.slug === toStageSlug,
+    (c) => c.stage.slug === wantedSlug,
   )?.stage;
-  // A destination the slice does not have resolves to a Skill-less destination
-  // labelled with the slug. That is not a shrug, it is the only honest reading: the
-  // label fallback is the same one the detail modal's stage line uses ("we could not
-  // name it" is a different claim from "it has no column"), and `onEnterSkill: null`
-  // means we never invent a Skill for a row we cannot read. `resolveStage` then
-  // answers `absent` for the same slice, so the caller sees the skipped-column note
-  // rather than a Session launched on an invented Skill. `promptPrefix` follows the
-  // same rule for the same reason: no row, no text — the field is the COLUMN's prose,
-  // and a message cannot be framed by a cell we could not read.
+  // Three readings, in this order, and each is the honest one for its case:
+  //  - the SLICE's row: what the board on screen renders, and what a click meant;
+  //  - else the SUPPLIED row: the `StageDto` Rust read from the database, which is the
+  //    whole reason this launch can happen with nothing mounted;
+  //  - else a Skill-less destination labelled with the slug. That is not a shrug, it is
+  //    the only honest reading: the label fallback is the same one the detail modal's
+  //    stage line uses ("we could not name it" is a different claim from "it has no
+  //    column"), and `onEnterSkill: null` means we never invent a Skill for a row we
+  //    cannot read. `resolveStage` then answers `absent` for the same slice, so the
+  //    caller sees the skipped-column note rather than a Session launched on an invented
+  //    Skill. `promptPrefix` follows the same rule for the same reason: no row, no text
+  //    — the field is the COLUMN's prose, and a message cannot be framed by a cell
+  //    neither the slice nor the caller supplied.
   //
   // This is the read that makes the Stage editor's "extra prompt" field mean
   // something: it is the same `boardsBySpace` slice the board renders, so the text a
   // person typed into a column's row reaches the Session that column starts, with no
   // second owner and no fetch. What it deliberately does NOT do here is decide
-  // anything about auto-advance — that is the next task's runtime, and this one's job
-  // ends at "the prefix reaches the message".
-  const destination: TaskLaunchDestination = {
-    slug: toStageSlug,
-    label: stage?.label ?? toStageSlug,
-    onEnterSkill: stage?.onEnterSkill ?? null,
-    promptPrefix: stage?.promptPrefix ?? null,
-  };
+  // anything about auto-advance — the advice decided it, and this module's job ends at
+  // "the prefix reaches the message".
+  const destination: TaskLaunchDestination =
+    (stage
+      ? {
+          slug: wantedSlug,
+          label: stage.label,
+          onEnterSkill: stage.onEnterSkill,
+          promptPrefix: stage.promptPrefix,
+        }
+      : supplied) ?? {
+      slug: wantedSlug,
+      label: wantedSlug,
+      onEnterSkill: null,
+      promptPrefix: null,
+    };
   const refusal = missingSkill(destination, catalogs);
   if (refusal !== null) throw refusal;
   // Guarded on the CARD id and not per-destination: launching two buttons against one
@@ -381,7 +452,12 @@ export async function launchTaskSession(
     inFlight.delete(task.id);
   };
   try {
-    const { slug, absent } = resolveStage(spacePath, task, destination);
+    const { slug, absent, sliceFree } = resolveStage(
+      spacePath,
+      task,
+      destination,
+      supplied !== null,
+    );
     let note: string | null = null;
     if (slug !== null) {
       // THE MOVE IS CHECKED, not assumed. `useTasks.moveTask` never rejects — a refusal
@@ -396,7 +472,14 @@ export async function launchTaskSession(
       // `workflowChain.finishLink` maps a throw to `launch_refused`, so the chain closes
       // with a sentence instead of launching a lie. For a human click the cost is an error
       // line on a click that would otherwise have started a Session on a stale stage.
-      const landed = await useTasks.getState().moveTask(spacePath, task.id, slug);
+      //
+      // `sliceFree` selects the OTHER arm of the same verb (D19): no slice exists, so the
+      // write goes ahead with no optimistic paint and no revert, and the answer is
+      // `toStageSlug` or `null`. The check below still applies unchanged — a `null` out of
+      // that arm is a REFUSED write, and launching on it would be the same lie.
+      const landed = await useTasks
+        .getState()
+        .moveTask(spacePath, task.id, slug, sliceFree ? NO_BOARD : BOARD_REQUIRED);
       if (landed !== slug) {
         throw new Error(
           `This Space would not move the card into \`${slug}\` — it is in ` +
@@ -438,6 +521,138 @@ export async function launchTaskSession(
     // callback above, and a guard that survived a failure would make the card permanently
     // un-launchable.
     releaseGuard();
+  }
+}
+
+/** The SECOND entry point into the chain: the **claim** path.
+ *
+ * ## What it is
+ *
+ * The model's own `mark_done` call answers with a launch instruction, and that answer
+ * arrives in this window as a `tool_call_update` frame whose `rawOutput.details` carries
+ * `advanceAdvice`. This function is what the app's session-update batcher hands those
+ * frames to. It reads the advice, and if it says "advance", it launches — through
+ * [`launchTaskSession`], the one owner of move-then-start-then-send, which is what makes
+ * the chain's move the human's drag rather than a third meaning of "a move"
+ * (ADR 0119 §6).
+ *
+ * ## Why this is a separate entry point and not part of the settle
+ *
+ * Because the claim is the moment the decision was made, and the settle edge is a
+ * fallback for the case where nobody consumed it (D14's accepted cost). Both ask the
+ * same Rust decider and both hand the same destination to the same executor, so they
+ * cannot disagree; and Rust's dedupe (`alreadyLaunched`) is what stops the pair from
+ * launching the same link twice — the settle that follows a consumed claim gets
+ * `already_advanced`, which is a silent no-op for exactly that reason.
+ *
+ * ## THE SEAM, and why it is `App.tsx`'s batcher callback
+ *
+ * Two earlier drafts put this in `sessions.ts`, and both were wrong for the same class
+ * of reason: the reducer has TWO store call sites, the singular `applySessionUpdate` and
+ * the plural `applySessionUpdates`, and **the plural is the live path** — `App.tsx` builds
+ * `createBatchedSessionUpdate((items) => useSessions.getState().applySessionUpdates(items),
+ * requestAnimationFrame)` and feeds EVERY `session-update` into it. The singular action's
+ * only production caller is `addSystemLine`. A seam in the singular action would never
+ * see a live `tool_call_update`: the headline clause would have no channel while every
+ * mocked test stayed green — the exact "looks configured, does nothing" failure this
+ * feature exists to remove. `App.tsx`'s callback is outside every `set` updater, so the
+ * StrictMode double-invoke objection that closed the in-updater option does not bind it,
+ * and it is already fire-and-forget.
+ *
+ * ## `void`ed, never awaited — the same deadlock, one level deeper
+ *
+ * `sendPrompt` resolves on `agent_settled`; the merged `research` Skill ends its turn on
+ * an `ask` gate; `AskQuestionCard` renders only under `ChatStream`; and `App`'s view
+ * ternary renders the board INSTEAD of `ChatStream`. This function is called from inside
+ * the turn that is still running, so awaiting a launch here would hold the turn on a gate
+ * that has no renderer. The `.catch` is therefore load-bearing and not decoration:
+ * nothing upstream awaits, so a rejection would be reported nowhere.
+ *
+ * ## Why the catalogs are fetched here
+ *
+ * `launchTaskSession` expands `$skill` Mentions against `catalogs.skills`, and
+ * `useSkillCatalog` is a HOOK whose promise cache is module-private — there is no
+ * non-hook accessor, and this path runs with no component mounted at all. So the two
+ * catalog calls are made directly. They are two IPC round trips on a path that already
+ * costs two (`mark_done` itself, and the launch), on a frame that arrives at most once
+ * per turn, for a launch that cannot be built without them. A wrong `skills` list is not
+ * a degraded launch either: `missingSkill` REFUSES it, which is the correct outcome for a
+ * catalog this path cannot read.
+ *
+ * Returns whether it dispatched. `false` covers every silent arm at once — not an advice
+ * frame, an advice that does not advance, an advice already launched by its own claim, a
+ * card that is gone — and the caller does not care which, because all four mean "nothing
+ * for you to do".
+ *
+ * `sessionId` is the Session the FRAME arrived on, which the batch item already carries.
+ * It is not derived from the advice: the advice names the card it decided for, and the
+ * transcript a refusal belongs in is the one the person is watching — the claimant's.
+ *
+ * ## SYNCHRONOUS, and it is not a style choice
+ *
+ * This is called for EVERY item of EVERY frame — ~1000 times a second on a thinking
+ * model. An `async` function allocates a promise per call no matter how early it
+ * returns, so the guard is a plain function that bails on a string compare and only
+ * reaches an `async` helper once a frame has actually carried an instruction. That
+ * happens at most once per turn.
+ */
+export function consumeAdvanceAdvice(
+  sessionId: string,
+  update: AcpSessionUpdate,
+): boolean {
+  const advice = readAdvanceAdvice(update);
+  const destination = advice === null ? null : destinationOf(advice);
+  // A launch needs a card, and the claim path holds only a Session id — which is
+  // precisely why the advice carries `taskId` and `spacePath` (arm 7). Either one absent
+  // and there is nothing to launch against: the `"unlinked"` arm, or a card that was
+  // deleted while the turn ran.
+  const taskId = advice?.taskId;
+  const spacePath = advice?.spacePath;
+  if (destination === null || taskId == null || spacePath == null) return false;
+  void carryOutClaim(sessionId, spacePath, taskId, destination);
+  return true;
+}
+
+/** The claim path's async half: read the card, read the catalogs, dispatch. Split from
+ *  the guard above so the hot path allocates nothing. */
+async function carryOutClaim(
+  sessionId: string,
+  spacePath: string,
+  taskId: string,
+  destination: TaskLaunchDestination,
+): Promise<void> {
+  // The card, read fresh. `launchTaskSession` needs the `TaskRow` (its `<task>` block,
+  // its number, its stored stage), and the claim path has never held one. `null` is a
+  // real answer — the card is gone — and launching on a fabricated row would put a
+  // `<task number>` on the wire that names a card the database does not have.
+  const task = await getTask(taskId);
+  if (task === null) {
+    console.error(
+      `An advance advice named ${taskId}, which this window cannot read — nothing launched.`,
+    );
+    return;
+  }
+  const [skills, agents] = await Promise.all([
+    listSkills(spacePath),
+    listAgentDefinitionsForSpace(spacePath),
+  ]);
+  // DISPATCHED, NOT AWAITED, for the deadlock the header records. The outcome is
+  // observed (a refusal is a fact a person needs, and this frame's transcript is the one
+  // surface guaranteed to be on screen) and the TURN is never waited on.
+  try {
+    await launchTaskSession(spacePath, task, destination, { skills, agents });
+  } catch (err) {
+    console.error(`The advance advice could not be carried out for ${taskId}:`, err);
+    useSessions
+      .getState()
+      .addSystemLine(
+        // The Session the CLAIM was made in — the turn this frame belongs to, and the
+        // transcript the person is actually watching. Not the Session the advice
+        // launched: a refusal to move is news about the turn that just asked.
+        sessionId,
+        `The card was not moved to \`${destination.label}\` — ` +
+          `${describeIpcError(err)} (\`launch_refused\`).`,
+      );
   }
 }
 
@@ -637,9 +852,15 @@ async function sendLaunchMessage(
       costBeforeTurnUsd: costBeforeTurn,
       // The FULL verb, so the chain's move is the human's drag: `launchTaskSession`
       // moves through `useTasks.moveTask` (optimistic paint, whole-slice re-derivation,
-      // revert-into-`error`) before it starts anything, and it is the thing that reads the
-      // NEXT column's Skill and extra prompt out of the same slice.
-      launch: (next) => launchTaskSession(task.spacePath, task, next.slug, catalogs),
+      // revert-into-`error`) before it starts anything.
+      //
+      // And the WHOLE destination, not `next.slug` — which is the other half of D19. The
+      // old wiring dropped `label`, `onEnterSkill` and `promptPrefix` on the floor and
+      // forced `launchTaskSession` to re-read them from a slice that is not mounted in
+      // this window, so it resolved a Skill-less destination, skipped the move and set a
+      // note nobody renders. Passing the row the advice carried is what lets the Skill
+      // actually reach the message with no board anywhere.
+      launch: (next) => launchTaskSession(task.spacePath, task, next, catalogs),
     }).catch((err: unknown) => {
       console.error(`Auto-advance chain failed for task ${task.id}:`, err);
       useSessions

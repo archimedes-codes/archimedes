@@ -4,7 +4,6 @@ import {
   editTask as editTaskCommand,
   getBoard as getBoardCommand,
   linkSession as linkSessionCommand,
-  moveTask as moveTaskCommand,
   reorderTasks as reorderTasksCommand,
   // T3's ten (issue #179 §8.1 + issue #180 D1) plus the FIVE the workflow graph and
   // the canvas add (`setStageAuto`, `setStagePromptPrefix`, `setStagePosition`,
@@ -44,6 +43,11 @@ import { describeIpcError } from "../lib/ipcError";
 // not. The call goes through the ACTION — `tasks.ts` never writes the other store's
 // map — which is what `boardReadyMarks.test.ts` pins against this file's source.
 import { readyTicket, useInteractive } from "./interactive";
+// THE MOVE VERB, extracted because this file is ratcheted at 710 code lines and the
+// verb's SECOND arm (the slice-free one an advice-driven chain needs, D19) would not
+// fit beside it. One-WAY edge: `taskMove.ts` imports the barrel and `ipcError` only,
+// never this file, so there is no cycle and no initialisation order to get wrong.
+import { moveTaskVerb, type BoardSlice, type MoveTaskMode } from "./taskMove";
 
 /**
  * The per-Space **Task board** store (spec §2/§3, ADR 0090).
@@ -117,23 +121,15 @@ import { readyTicket, useInteractive } from "./interactive";
  * round trips for a surface most launches never visit.
  */
 
-/** The board plus the two things a board render needs that are NOT board rows. */
-interface BoardState {
-  /** Space path → that Space's columns, each carrying its own cards (NESTED:
-   *  `{ stage, tasks }` — the wire shape `get_board` returns). Absent = never
-   *  loaded, which is NOT the same answer as "loaded and empty". */
-  boardsBySpace: Record<string, StageWithTasks[]>;
-  /** Space path → the last `moveTask` warning that has not been dismissed.
-   *
-   *  KEYED BY SPACE and stored SEPARATELY from the board because it is not a row
-   *  and not a failure: `MoveTaskOutcome.boostNote` says the card moved into a
-   *  `compact` column whose boost did not fire (spec §5's caveat 2 — a stored
-   *  Session makes the compaction a silent no-op). Holding it here is what lets
-   *  the board say so instead of rendering a successful-looking drag that quietly
-   *  did half its job. */
-  boostNotes: Record<string, string>;
+/** The board plus the two things a board render needs that are NOT board rows.
+ *
+ *  EXTENDS [`BoardSlice`] — the slice the move verb in `taskMove.ts` is allowed to
+ *  write — rather than re-declaring those three fields. The type relationship is what
+ *  keeps the extracted verb honest: it can paint `boardsBySpace`, clear a `boostNotes`
+ *  entry and set `error`, and it cannot reach anything else on the store, because the
+ *  `set`/`get` it is handed are typed to the slice and not to this interface. */
+interface BoardState extends BoardSlice {
   loading: boolean;
-  error: string | null;
 
   /** Read one Space's board. Resolves either way — a rejection lands in `error`. */
   load: (spacePath: string) => Promise<void>;
@@ -171,29 +167,21 @@ interface BoardState {
    * never-rejects contract. One body, two volumes — see `readBoard`.
    */
   refresh: (spacePath: string) => Promise<void>;
-  /** The cross-column drop: writes `stage_slug` and runs the destination's
-   *  `onEnter`. Optimistic, reverted on rejection.
+  /** The cross-column drop, forwarded to the ONE owner of the move verb
+   *  (`taskMove.moveTaskVerb` — the write lives there because this file is ratcheted
+   *  at 710 code lines and the verb's SECOND arm, the slice-free one an advice-driven
+   *  chain needs, would not fit beside it).
    *
-   *  Resolves with **the column the card is in when it settles** — the stage slug, or
-   *  `null` for "there is no board here, so this action cannot say where anything is".
-   *  It NEVER rejects (a drop handler must not throw out of a drop), and the
-   *  swallow-and-revert is exactly what a drag handler needs, so the paint a person sees
-   *  is unchanged either way.
-   *
-   *  THE RETURN IS THE FACT THE SWALLOW USED TO LOSE, and a second surface now depends
-   *  on it: `store/taskLaunch.launchTaskSession` compares this against the column it
-   *  meant to move into, because a backend refusal (`StrictMoveRefused` under
-   *  `board_strict`, or a card that is not in this Space) reverts the paint and lands in
-   *  `error` — which renders only if a board or a canvas happens to be mounted, and an
-   *  unattended auto-advance chain has neither. Without the return value a refused move
-   *  read as a successful launch, and the Session that started carried a `<task stage>`
-   *  naming a column the card is not in. THE REPO LESSON: a swallow that a second surface
-   *  depends on must RETURN the fact it swallowed; an `error` field is not a channel when
-   *  the surface that reads it may not exist. */
+   *  `mode` selects the contract on a MISSING board slice and nothing else: the
+   *  default refuses (a drag whose endpoints cannot be seen is a stale gesture), and
+   *  `NO_BOARD` writes anyway with no paint and no revert, which is the arm a chain
+   *  that has no board mounted has to use. See that file's header for the whole
+   *  argument, and for why the return value is the fact a swallow must not lose. */
   moveTask: (
     spacePath: string,
     taskId: string,
     toStageSlug: string,
+    mode?: MoveTaskMode,
   ) => Promise<string | null>;
   /** A new card. `stageSlug` omitted lands it in the Space's FIRST stage. */
   createTask: (
@@ -831,102 +819,8 @@ export const useTasks = create<BoardState>((set, get) => ({
     await readBoard(set, spacePath, "refresh");
   },
 
-  moveTask: async (spacePath, taskId, toStageSlug) => {
-    const columns = get().boardsBySpace[spacePath];
-    if (!columns) {
-      // `null` is "this action cannot say where the card is", and it is the only answer
-      // that is true here — there is no slice to read the position out of.
-      set({ error: "No board loaded for this Space." });
-      return null;
-    }
-    // A board element is a `TaskCardView` (issue #174): the card's own fields live
-    // under `.task`, so every read of a card here reaches through it. The WRAPPER is
-    // carried along untouched by the spread below, which is what keeps the optimistic
-    // slice's `sessions`/`costUsd` standing instead of quietly dropping them — and
-    // that sentence is now PINNED, not prose: `carries the card's sessions and cost
-    // across the drop (the chip survives a drag)` in this file's test moves a card
-    // with TWO links and a non-null cost. Every other `moveTask` case moves a card
-    // built with `sessions: []`/`costUsd: null`, which a mutation dropping both would
-    // have satisfied.
-    const from = columns.find((c) => c.tasks.some((t) => t.task.id === taskId));
-    const to = columns.find((c) => c.stage.slug === toStageSlug);
-    // A drag whose endpoints are not both in the loaded board is a STALE gesture
-    // (the board reloaded mid-drag). Refusing beats inventing a column.
-    //
-    // The refused arms still ANSWER, and with the card's real column rather than the one
-    // that was asked for: a caller that meant to move it must be able to see that it did
-    // not. `null` only when the source column cannot be found at all — no slice position
-    // is knowable then, and an invented one is worse.
-    if (!from || !to || from.stage.slug === toStageSlug) {
-      return from ? from.stage.slug : null;
-    }
-
-    // THE OPTIMISTIC SLICE, and the value the revert restores. The card moves to
-    // the END of the destination column: within-column position is the OTHER verb
-    // (`reorderTasks`), so a cross-column drop appends and leaves ordering alone.
-    const moved = from.tasks.find((t) => t.task.id === taskId)!;
-    const previous = columns;
-    const next: StageWithTasks[] = columns.map((c) => {
-      if (c.stage.slug === from.stage.slug) {
-        return { ...c, tasks: c.tasks.filter((t) => t.task.id !== taskId) };
-      }
-      if (c.stage.slug === toStageSlug) {
-        // `stageSlug` travels with the card. Leaving it pointing at the column it
-        // left would make the NEXT drag read a stage the card is no longer in.
-        return {
-          ...c,
-          tasks: [
-            ...c.tasks,
-            { ...moved, task: { ...moved.task, stageSlug: toStageSlug } },
-          ],
-        };
-      }
-      return c;
-    });
-    set((state) => ({
-      boardsBySpace: { ...state.boardsBySpace, [spacePath]: next },
-      // A fresh move clears the previous warning: it described a DIFFERENT drop,
-      // and leaving it up would attribute an old note to a new drag.
-      boostNotes: (() => {
-        if (!(spacePath in state.boostNotes)) return state.boostNotes;
-        const rest = { ...state.boostNotes };
-        delete rest[spacePath];
-        return rest;
-      })(),
-    }));
-
-    try {
-      const outcome = await moveTaskCommand(spacePath, taskId, toStageSlug);
-      // `boostNote` is a WARNING, not a failure — the card moved. Rendering it is
-      // spec §5's caveat 2 made visible: a `compact` column with no live Session
-      // compacts NOTHING, and a drag that looked perfect while quietly skipping
-      // its side effect is this repo's documented silent-green shape.
-      if (outcome.boostNote) {
-        set((state) => ({
-          boostNotes: { ...state.boostNotes, [spacePath]: outcome.boostNote! },
-        }));
-      }
-      return toStageSlug;
-    } catch (err) {
-      // Restore the slice this action replaced — do NOT refetch. `get_board` seeds
-      // stage rows on read, so a refetch is a WIDER mutation than the one being
-      // undone, and the rejected command wrote nothing (one transaction).
-      set((state) => ({
-        boardsBySpace: { ...state.boardsBySpace, [spacePath]: previous },
-        error: describeIpcError(err),
-      }));
-      console.error(`Failed to move task ${taskId} to ${toStageSlug}:`, err);
-      // THE SWALLOWED REFUSAL, RETURNED. The paint is back to `previous`, so the honest
-      // answer is the column the card is in AFTER the revert — read from the restored
-      // slice rather than asserted from `from.stage.slug`, so the answer and the state a
-      // caller can observe cannot diverge.
-      const reverted = get().boardsBySpace[spacePath];
-      const landedIn = reverted?.find((c) =>
-        c.tasks.some((t) => t.task.id === taskId),
-      );
-      return landedIn?.stage.slug ?? null;
-    }
-  },
+  moveTask: (spacePath, taskId, toStageSlug, mode) =>
+    moveTaskVerb(set, get, spacePath, taskId, toStageSlug, mode),
 
   createTask: async (spacePath, title, body, stageSlug) => {
     const row = await createTaskCommand(spacePath, title, body, stageSlug);

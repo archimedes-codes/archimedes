@@ -13,13 +13,14 @@ import { useTasks } from "./tasks";
 import { resetStores } from "../test/resetStores";
 import {
   createTask,
+  getTask,
   moveTask,
   sendPrompt,
   startTaskSession,
   taskNumbers,
+  workflowAdvanceAdvice,
   workflowRunClose,
-  workflowRunStep,
-  type AdvanceVerdict,
+  type AdvanceAdvice,
   type SessionInfo,
   type SkillInfo,
   type StageWithTasks,
@@ -72,13 +73,18 @@ vi.mock("../lib/tauri", async () => {
     getTask: vi.fn(),
     editTask: vi.fn(),
     loadHistory: vi.fn(),
-    // The auto-advance chain's RUN RECORD. Mocked for the same boot-mock reason as
-    // every name in this factory, and the DEFAULTS below are what keep the 39 cases
-    // above untouched: no fixture in this file sets `auto: true`, so the runtime
-    // returns at its "not automatic" gate and never reaches either. That is the
-    // compatibility story of `stages.auto` (the stored default is OFF) observed at the
-    // seam that would otherwise change every launch's behaviour.
-    workflowRunStep: vi.fn(),
+    // The auto-advance chain's DECIDER and RUN RECORD. Mocked for the same boot-mock
+    // reason as every name in this factory, and the DEFAULT below is what keeps the 39
+    // cases above untouched: the decider answers `unclaimed`, which is what Rust answers
+    // for a Session that never called `mark_done`, so nothing launches and no run closes.
+    // That is the compatibility story of D4 (an un-claimed settle never moves a card)
+    // observed at the seam that would otherwise change every launch's behaviour.
+    // (`workflowRunStep` is GONE from this list: the runtime no longer calls it — the
+    // advice counts the step inside Rust.)
+    workflowAdvanceAdvice: vi.fn(),
+    getTask: vi.fn().mockResolvedValue(null),
+    listSkills: vi.fn().mockResolvedValue([]),
+    listAgentDefinitionsForSpace: vi.fn().mockResolvedValue([]),
     workflowRunClose: vi.fn().mockResolvedValue(undefined),
     // The **Task badge** map's boot fetch, which `startAndSendLinked` re-calls after
     // a launch (D10). It MUST be mocked here for the reason this file's header
@@ -224,26 +230,65 @@ function destination(
   };
 }
 
-/** The step verb's "advance" verdict, with the EFFECTIVE bounds spelled the way the
- *  wire spells them. `workflowChain.test.ts` owns what the runtime does with each arm;
- *  this file only needs the advancing one, because what it pins is that the settle edge
- *  CALLS the runtime at all. */
-const ADVANCING: AdvanceVerdict = {
-  run: {
-    id: "wfr_1",
-    spacePath: SPACE,
+/** A refusal, spelled through the nine wire keys `shape.rs` pins.
+ *
+ *  The default for EVERY case in this file: an ordinary launch's Session never called
+ *  `mark_done`, so Rust answers `unclaimed` and the chain does nothing. That is D4, and
+ *  it is what keeps the 39 cases above untouched — the settle edge fires, asks, and is
+ *  told to stay out of the way.
+ *
+ *  `workflowChain.test.ts` owns what the runtime does with each arm; this file needs only
+ *  the refusal (the default) and the advancing one (the chain describe below). */
+function refusal(reason: string, over: Partial<AdvanceAdvice> = {}): AdvanceAdvice {
+  return {
+    advance: false,
+    stop: null,
+    destination: null,
+    reason,
+    maxSteps: 20,
+    ceilingUsd: 10,
     taskId: "tsk_1",
-    startedAt: 1,
-    finishedAt: null,
-    steps: 1,
-    costUsd: null,
-    stopReason: null,
-  },
-  advance: true,
-  stop: null,
-  maxSteps: 20,
-  ceilingUsd: 10,
-};
+    spacePath: SPACE,
+    alreadyLaunched: false,
+    ...over,
+  };
+}
+
+const UNCLAIMED: AdvanceAdvice = refusal("unclaimed");
+
+/** The "advance into `implement`" advice, the destination row carried WHOLE so the launch
+ *  needs no board slice for the Skill or the prose (D19). */
+function advancing(over: Partial<AdvanceAdvice> = {}): AdvanceAdvice {
+  return refusal("advanced", {
+    advance: true,
+    destination: {
+      spacePath: SPACE,
+      slug: "implement",
+      label: "Implement",
+      sortOrder: 2,
+      onEnter: "none",
+      onEnterSkill: "implement",
+      nextSlugs: null,
+      auto: false,
+      promptPrefix: null,
+    },
+    ...over,
+  });
+}
+
+/** Make the decider answer `next` for the FIRST Session that asks and `UNCLAIMED`
+ *  afterwards. Same shape as `workflowChain.test.ts`'s mock: a real chain ASKS AGAIN once
+ *  its own launched turn settles, and Rust's `task_sessions` dedupe answers that second ask
+ *  `already_advanced`. A constant here would model a decider with no dedupe and send every
+ *  real-launch case into an unbounded chain. */
+function answerOnce(next: AdvanceAdvice): void {
+  let asked = false;
+  vi.mocked(workflowAdvanceAdvice).mockImplementation(async () => {
+    if (asked) return UNCLAIMED;
+    asked = true;
+    return next;
+  });
+}
 
 const CATALOGS = (): TaskLaunchCatalogs => ({
   skills: [skill("discuss"), skill("research")],
@@ -270,10 +315,10 @@ beforeEach(() => {
   // restated in `SessionsSection.test.tsx`: a case that installed a one-shot
   // rejection below must not be able to decide what THIS case's refetch answers.
   vi.mocked(taskNumbers).mockResolvedValue([]);
-  // The chain's step verb answers "keep going" against the shipped fallbacks, spelled
-  // out because this side of the wire holds NO copy of those numbers (T6a's whole
-  // point). Restated after `clearAllMocks` like the two above it.
-  vi.mocked(workflowRunStep).mockResolvedValue(ADVANCING);
+  // Restated after `clearAllMocks` for the same reason as the three above it: a case
+  // that installed a one-shot below must not decide what THIS case's decider answers.
+  vi.mocked(workflowAdvanceAdvice).mockResolvedValue(UNCLAIMED);
+  vi.mocked(getTask).mockResolvedValue(taskRow());
 });
 
 describe("taskLaunch — the discuss launch", () => {
@@ -937,6 +982,8 @@ describe("taskLaunch — re-entrancy", () => {
       settle?: (reason: StopReason) => void;
       badges?: (rows: TaskNumberRow[]) => void;
     } = {};
+    // The chain only moves if the decider says advance.
+    answerOnce(advancing());
     vi.mocked(sendPrompt).mockImplementation(
       () => new Promise<StopReason>((resolve) => (slots.settle = resolve)),
     );
@@ -1016,6 +1063,7 @@ describe("taskLaunch — re-entrancy", () => {
     );
     const slots: { settle?: (reason: StopReason) => void; badges?: () => void } = {};
     let starts = 0;
+    answerOnce(advancing());
     vi.mocked(sendPrompt).mockImplementation(
       () => new Promise<StopReason>((resolve) => (slots.settle = resolve)),
     );
@@ -1266,6 +1314,9 @@ describe("the auto-advance chain — the settle edge is wired", () => {
     // synchronously manufactures exactly that impossible ordering — so this case defers
     // the settle by hand, which is also the only way to observe the edge at all.
     let settleTurn!: (reason: StopReason) => void;
+    // THE DECIDER'S ANSWER. The runtime no longer derives "is this column auto?" from the
+    // slice — it asks, and this is the case that pins the ask leads to a move and a launch.
+    answerOnce(advancing());
     vi.mocked(sendPrompt).mockImplementation(
       () => new Promise<StopReason>((resolve) => (settleTurn = resolve)),
     );
@@ -1283,7 +1334,7 @@ describe("the auto-advance chain — the settle edge is wired", () => {
     await vi.waitFor(() =>
       expect(moveTask).toHaveBeenCalledWith(SPACE, "tsk_1", "implement"),
     );
-    expect(workflowRunStep).toHaveBeenCalledWith(SPACE, "tsk_1", null);
+    expect(workflowAdvanceAdvice).toHaveBeenCalledWith("sess_new", null);
     await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(2));
     expect(vi.mocked(sendPrompt).mock.calls[1]![1]).toContain("$implement");
     // The chain's OWN turn is still open — the card moved while the next Session was
@@ -1291,11 +1342,14 @@ describe("the auto-advance chain — the settle edge is wired", () => {
     expect(useSessions.getState().inTurn["sess_new"]).toBe(true);
   });
 
-  it("does not touch the chain for a column that is not auto", async () => {
-    // THE compatibility case, and the reason the 39 cases above still pass untouched:
-    // `stages.auto` defaults to OFF, so a launch on an ordinary column must not reach
-    // the record at all. A chain that started on every launch would silently bound
-    // every card against a step limit nobody configured.
+  it("asks once per settle and moves nothing when the answer is not to advance", async () => {
+    // THE compatibility case, and the reason the 39 cases above still pass untouched. It
+    // used to read "does not touch the chain for a column that is not auto" and passed for
+    // the wrong reason: the runtime never ASKED, because it read `stages.auto` from a slice
+    // and answered "not automatic" from absence. It now asks on every settling turn — that
+    // is the design — and what keeps an ordinary launch inert is Rust's answer: `unclaimed`
+    // for a Session that never called `mark_done` (D4), `not_automatic` for a column nobody
+    // marked. One ask per settle, and nothing moves, closes or launches on either answer.
     seedBoard(
       column("backlog", [taskRow()]),
       column("research", [], {
@@ -1306,8 +1360,15 @@ describe("the auto-advance chain — the settle edge is wired", () => {
     );
     await launchTaskSession(SPACE, taskRow(), "research", CHAIN_CATALOGS());
     await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
-    expect(workflowRunStep).not.toHaveBeenCalled();
-    expect(workflowRunClose).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(workflowAdvanceAdvice).toHaveBeenCalledTimes(1));
+    // The refusal is recorded and said — `unclaimed` has no surface but the transcript and
+    // the `stop_reason` column, and `workflowRunClose` is a silent no-op when there is no
+    // open run to close (this launch never opened one: the step write happens only on an
+    // advancing advice). The card does not move and no Session starts.
+    expect(workflowRunClose).toHaveBeenCalledWith("tsk_1", "unclaimed");
+    expect(moveTask).toHaveBeenCalledTimes(1);
+    expect(moveTask).toHaveBeenLastCalledWith(SPACE, "tsk_1", "research");
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
   });
 
   it("settles the chain's own failure into the Session, never as a rejected launch", async () => {
@@ -1317,7 +1378,7 @@ describe("the auto-advance chain — the settle edge is wired", () => {
     // a verdict it must not guess at.
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      vi.mocked(workflowRunStep).mockRejectedValue(new Error("db is busy"));
+      vi.mocked(workflowAdvanceAdvice).mockRejectedValue(new Error("db is busy"));
       const launched = await launchTaskSession(
         SPACE,
         taskRow(),
