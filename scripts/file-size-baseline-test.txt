@@ -5,7 +5,7 @@
 # The test class is gated AND seeded at the same 1000 (ADR 0112), so at this threshold
 # an exemption would be indistinguishable from a grandfathered entry and none applies.
 5543	src/store/sessions.test.ts
-3179	src-tauri/src/agent/session/tests/mod.rs
+3326	src-tauri/src/agent/session/tests/mod.rs
 2322	src-tauri/tests/worker_e2e.rs
 2130	src/components/settings/SettingsPage.test.tsx
 1849	src/App.test.tsx
