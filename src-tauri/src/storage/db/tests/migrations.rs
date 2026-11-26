@@ -1089,3 +1089,119 @@ fn the_ready_backfill_does_not_rerun_on_a_second_open() {
          row stays cleared"
     );
 }
+
+/// (the `stages.next_outcomes` gate) a pre-existing database whose `stages` table
+/// predates the edge-label column must open CLEANLY (the gate adds it), and every
+/// pre-existing row must read `next_outcomes IS NULL`.
+///
+/// `NULL` is the whole upgrade story and it is load-bearing, not incidental — the
+/// same argument `stages.auto`'s `DEFAULT 0` and `sessions.ready`'s missing
+/// `DEFAULT` each make from opposite directions. `NULL` means "no edge out of this
+/// column carries a label", so edge selection falls back to the head of
+/// `next_slugs` and an upgraded board routes exactly the card it routes today. Any
+/// non-NULL arrival would be an ANSWER about a graph nobody labelled, and the first
+/// `mark_done` after an upgrade would pick a branch on a name the owner never
+/// typed. A backfill could not produce anything else: there is no honest label for
+/// an edge that predates the idea of a label — which is the same reason
+/// `seed_default_stages` leaves `next_slugs` NULL rather than spelling the obvious
+/// `backlog → ready` chain (ADR 0099).
+///
+/// The `dflt_value` arm pins the absence of a `DEFAULT` DIRECTLY rather than
+/// inferring it from the `NULL` reads, for the `ready` and `cost_usd` pins' shared
+/// reason: those reads would ALSO pass under a `DEFAULT` plus an
+/// `UPDATE … = NULL` backfill someone later "improved", so a `DEFAULT` added to the
+/// `ALTER` here fails a pin instead of passing quietly.
+///
+/// The fixture is `SCHEMA_WITHOUT_STAGES_NEXT_OUTCOMES`: every OTHER gated column
+/// is present (including `next_slugs` — the two are a positional pair and a fixture
+/// omitting both would exercise two gates at once), so the sibling gates stay
+/// silent and this test observes its own gate.
+///
+/// WHY THIS SITE PANICS ON A POISONED MUTEX (AGENTS.md's poisoned-mutex rule): the
+/// lock guards `Db`'s ONE shared `rusqlite::Connection` — a single, shared resource
+/// a panic mid-transaction can leave genuinely unusable — so this `.expect` panics
+/// rather than recovering, matching every other site in this tree.
+#[test]
+fn the_next_outcomes_gate_arrives_null_for_every_pre_existing_stage() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-outcome-gate-", "scratch");
+    let path = preexisting_db(
+        &dir,
+        SCHEMA_WITHOUT_STAGES_NEXT_OUTCOMES,
+        "INSERT INTO stages (space_path, slug, label, sort_order) \
+         VALUES ('/s/gate', 'backlog', 'Backlog', 0);\n\
+         INSERT INTO stages (space_path, slug, label, sort_order) \
+         VALUES ('/s/gate', 'doing', 'Doing', 1);\n",
+    );
+
+    {
+        let db = Db::open(&path).expect("the next_outcomes gate runs on open");
+        let has: i64 = db
+            .conn
+            .lock()
+            .expect("db mutex poisoned")
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('stages') WHERE name = 'next_outcomes'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("pragma_table_info should read");
+        assert_eq!(
+            has, 1,
+            "the `next_outcomes` column is in place after the gate"
+        );
+
+        // The DDL's DEFAULT, pinned directly rather than inferred from the reads.
+        let default_value: Option<String> = db
+            .conn
+            .lock()
+            .expect("db mutex poisoned")
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('stages') WHERE name = 'next_outcomes'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("pragma_table_info should read");
+        assert_eq!(
+            default_value, None,
+            "`next_outcomes` has NO column DEFAULT — NULL means 'no edge is \
+             labelled', any arrival value would label edges nobody labelled"
+        );
+
+        // Neither pre-existing row gained a label: the gate carries NO data step.
+        assert_eq!(
+            raw_scalar(
+                &db,
+                "SELECT COUNT(*) FROM stages WHERE next_outcomes IS NULL"
+            ),
+            2,
+            "both pre-existing rows read NULL — nothing was backfilled"
+        );
+        assert_eq!(
+            raw_scalar(
+                &db,
+                "SELECT COUNT(*) FROM stages WHERE next_outcomes IS NOT NULL"
+            ),
+            0,
+            "NOT ONE row was migrated into a labelled edge"
+        );
+        // The pair's other half is untouched by this gate: the fixture carried
+        // `next_slugs`, and it still reads NULL (the seed never wrote it).
+        assert_eq!(
+            raw_scalar(&db, "SELECT COUNT(*) FROM stages WHERE next_slugs IS NULL"),
+            2,
+            "the gate added a column and changed nothing about `next_slugs`"
+        );
+    }
+
+    // A SECOND open of the already-migrated file is a clean no-op (the
+    // `pragma_table_info` probe skips the `ALTER`).
+    let db = Db::open(&path).expect("a re-open of the migrated db must succeed");
+    assert_eq!(
+        raw_scalar(
+            &db,
+            "SELECT COUNT(*) FROM stages WHERE next_outcomes IS NULL"
+        ),
+        2,
+        "the gate ran once, not twice, and the rows still read NULL"
+    );
+}

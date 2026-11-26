@@ -752,7 +752,7 @@ fn move_task_with_no_spaces_row_is_not_strict() {
     let db = Db::open(&dir.join("t.db")).expect("db should open");
     let space = board_space("strict-absent");
     db.get_board(&space).expect("seed");
-    db.set_stage_next(&space, "backlog", &["done".to_string()])
+    db.set_stage_next(&space, "backlog", &["done".to_string()], &[None])
         .expect("backlog → done only");
     let card = db
         .create_task(&space, "free card", None, None)
@@ -781,7 +781,7 @@ fn move_task_with_board_strict_zero_accepts_a_non_edge_move() {
     db.upsert_space(&space, false).expect("upsert_space");
     db.set_board_strict(&space, false).expect("explicitly off");
     db.get_board(&space).expect("seed");
-    db.set_stage_next(&space, "backlog", &["done".to_string()])
+    db.set_stage_next(&space, "backlog", &["done".to_string()], &[None])
         .expect("backlog → done only");
     let card = db
         .create_task(&space, "unconstrained", None, None)
@@ -802,7 +802,7 @@ fn move_task_with_board_strict_one_refuses_a_non_edge_move_naming_the_legal_dest
     db.upsert_space(&space, false).expect("upsert_space");
     db.set_board_strict(&space, true).expect("strict ON");
     db.get_board(&space).expect("seed");
-    db.set_stage_next(&space, "backlog", &["done".to_string()])
+    db.set_stage_next(&space, "backlog", &["done".to_string()], &[None])
         .expect("backlog → done, and nothing else");
     let card = db
         .create_task(&space, "governed card", None, None)
@@ -873,7 +873,7 @@ fn move_task_with_board_strict_one_and_an_empty_graph_refuses_everything() {
     db.upsert_space(&space, false).expect("upsert_space");
     db.set_board_strict(&space, true).expect("strict ON");
     db.get_board(&space).expect("seed");
-    db.set_stage_next(&space, "backlog", &[])
+    db.set_stage_next(&space, "backlog", &[], &[])
         .expect("an explicit no-edge graph");
     let card = db
         .create_task(&space, "boxed in", None, None)

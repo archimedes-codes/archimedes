@@ -1342,7 +1342,7 @@ fn the_board_strict_read_and_the_move_gate_agree_on_a_non_canonical_path() {
     // The enforcement agrees: the board rows are keyed RAW (that is what the
     // caller addressed), so the gate must still find the CANONICAL `spaces` row.
     db.get_board(&raw).expect("seed the raw-keyed board");
-    db.set_stage_next(&raw, "backlog", &["done".to_string()])
+    db.set_stage_next(&raw, "backlog", &["done".to_string()], &[None])
         .expect("backlog → done only");
     let card = db
         .create_task(&raw, "governed through a symlink", None, None)

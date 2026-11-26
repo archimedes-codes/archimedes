@@ -963,7 +963,7 @@ fn gated_columns_in_open_source() -> Vec<(&'static str, &'static str)> {
 /// for why a bare count could not do this job.
 ///
 /// WHAT THIS TEST DOES **NOT** CLAIM, and that narrowing is deliberate. It walks
-/// the seventeen `SCHEMA_WITHOUT_*` fixtures and asserts each omits exactly one
+/// the eighteen `SCHEMA_WITHOUT_*` fixtures and asserts each omits exactly one
 /// gated column; it does NOT assert that every gated column has a fixture here.
 /// THREE columns in `GATED` have no `SCHEMA_WITHOUT_*` string, and each was
 /// checked by measurement rather than assumed — all three are covered by a
@@ -1024,7 +1024,7 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
     // IS DOCUMENTATION ONLY — the assertion below sorts both sides, so a reordered
     // `gate` call in `db/mod.rs` does not redden this test and a renamed or added
     // column does.
-    const GATED: [(&str, &str); 20] = [
+    const GATED: [(&str, &str); 21] = [
         ("spaces", "trusted"),
         ("sessions", "archived"),
         ("sessions", "context_usage_json"),
@@ -1045,8 +1045,9 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
         ("spaces", "auto_ceiling_usd"),
         ("stages", "position_x"),
         ("stages", "position_y"),
+        ("stages", "next_outcomes"),
     ];
-    let fixtures: [(&str, &str); 17] = [
+    let fixtures: [(&str, &str); 18] = [
         ("SCHEMA_WITHOUT_ARCHIVED", SCHEMA_WITHOUT_ARCHIVED),
         ("SCHEMA_WITHOUT_CONTEXT_USAGE", SCHEMA_WITHOUT_CONTEXT_USAGE),
         ("SCHEMA_WITHOUT_IS_SUBAGENT", SCHEMA_WITHOUT_IS_SUBAGENT),
@@ -1071,6 +1072,10 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
         (
             "SCHEMA_WITHOUT_STAGES_NEXT_SLUGS",
             SCHEMA_WITHOUT_STAGES_NEXT_SLUGS,
+        ),
+        (
+            "SCHEMA_WITHOUT_STAGES_NEXT_OUTCOMES",
+            SCHEMA_WITHOUT_STAGES_NEXT_OUTCOMES,
         ),
         ("SCHEMA_WITHOUT_STAGES_AUTO", SCHEMA_WITHOUT_STAGES_AUTO),
         (
@@ -1211,8 +1216,8 @@ fn the_three_task_tables_are_in_schema_and_have_no_gate_entry() {
     // table of some other shape, which it never did — and it would make
     // `each_cluster_schema_omits_exactly_one_gated_column`'s fixtures lie, so
     // this is the guard that keeps that test honest.
-    // Re-pointed at the PARENT's own text by the ADR 0113 split: all twenty
-    // `gate(&mut conn, …)` calls live inside `Db::open`, and `open` is what
+    // Re-pointed at the PARENT's own text by the ADR 0113 split: every
+    // `gate(&mut conn, …)` call lives inside `Db::open`, and `open` is what
     // `db/mod.rs` kept, so the parent is still the file whose gate surface this
     // counts. `migrations.rs` holds the four gate DATA STEPS and calls no gate.
     let source = include_str!("../mod.rs");

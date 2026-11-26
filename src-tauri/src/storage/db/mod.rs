@@ -14,7 +14,7 @@
 //!
 //! This parent holds what every subject shares and what the pins read: the three
 //! error types and their `From` maps, the `Db` struct, [`Db::open`] **whole**
-//! (its twenty `gate` calls ARE the migration surface, and
+//! (its `gate` calls ARE the migration surface, and
 //! `the_three_task_tables_are_in_schema_and_have_no_gate_entry` counts them from
 //! this file's text), `gate`, `set_journal_pragmas`, `LAST_ACTIVITY` and `SCHEMA`.
 //! Every subject lives in the sibling that names it — [`sessions`], [`messages`],
@@ -235,8 +235,9 @@ impl<'a> FieldPatch<'a> {
 ///
 /// Stays a plain enum with no serde derive: the wire route is
 /// `TasksError` in `agent/errors.rs` (ADR 0063 — the WIRE owns the envelope, and
-/// `agent/errors.rs` is where every IPC family lives). This type is the
-/// storage→command boundary, one step below the wire.
+/// `agent/errors.rs` is where every IPC family lives), reached through the
+/// `From<BoardError> for TasksError` table in `agent/board_error_map.rs`. This type
+/// is the storage→command boundary, one step below the wire.
 #[derive(Debug, thiserror::Error)]
 pub enum BoardError {
     #[error("sqlite error: {0}")]
@@ -327,6 +328,38 @@ pub enum BoardError {
     #[error("stage {slug} cannot lead to itself")]
     SelfLoop { slug: String },
 
+    /// `set_stage_next` refuses an outcome list whose LENGTH differs from the slug
+    /// list it is meant to label. The two columns are POSITIONAL — index `i` of
+    /// `next_outcomes` names the edge at index `i` of `next_slugs` — so a
+    /// length mismatch is not a cosmetic off-by-one, it is a graph whose labels
+    /// point at the wrong edges, and the shift is invisible from the board: the
+    /// card still moves, it just moves on the wrong claim.
+    ///
+    /// Refused rather than truncated or padded, and that is the standing rule for a
+    /// half-set, not a preference. Padding with `null` would accept "3 edges, 2
+    /// labels" and silently unlabel the last one — a workflow that shrank, which is
+    /// the failure ADR 0099 refuses twice over. Truncating would DROP a destination
+    /// nobody asked to drop. Both are the invented-state move
+    /// `require_position_pair`'s half-coordinate and `stages.prompt_prefix`'s
+    /// invented empty string each refuse, and the refusal is total: nothing is
+    /// written, so a rejected call cannot leave the two columns disagreeing.
+    ///
+    /// Both counts ride the variant because the caller's question is "which of my
+    /// two lists did I get wrong", and a sentence naming one number cannot answer
+    /// that. `available`-style slug lists are deliberately NOT carried: the slugs
+    /// are already valid here (each was checked above), so echoing them would add
+    /// noise to the one number that is the actual answer.
+    #[error(
+        "stage {slug} got {outcomes} edge label(s) for {slugs} edge(s) — \
+         next_outcomes must have EXACTLY one entry per next_slugs entry, \
+         using null for an edge that carries no label"
+    )]
+    EdgeOutcomeCount {
+        slug: String,
+        slugs: usize,
+        outcomes: usize,
+    },
+
     /// `write_artifact` refuses a key outside `[a-z0-9][a-z0-9-]{0,39}`.
     ///
     /// The payload is the offending key VERBATIM (never cleaned), because a
@@ -396,12 +429,12 @@ pub enum BoardError {
 /// The catch-all exists because `move_task` is not the only verb-shaped method on
 /// this type and the match has to be exhaustive over an enum the command layer
 /// grows. `StageNotEmpty`, `StageReferenced`, `LastStage`, `StageSlugTaken`,
-/// `EmptyStageSlug` and `SelfLoop` are all STAGE-management refusals, and there is no
-/// stage HOST tool at all — the seven verbs are board and artifact, never stage.
-/// Folding them into `Invalid` rather than panicking is deliberate: a future verb
-/// that starts raising one gets a correct-if-generic sentence, where a `unreachable!`
-/// would panic inside a `spawn_blocking` and turn a storage refusal into the
-/// `JoinError` the router reports as `Io`.
+/// `EmptyStageSlug`, `SelfLoop` and `EdgeOutcomeCount` are all STAGE-management
+/// refusals, and there is no stage HOST tool at all — the seven verbs are board and
+/// artifact, never stage. Folding them into `Invalid` rather than panicking is
+/// deliberate: a future verb that starts raising one gets a correct-if-generic
+/// sentence, where a `unreachable!` would panic inside a `spawn_blocking` and turn a
+/// storage refusal into the `JoinError` the router reports as `Io`.
 ///
 /// `BadArtifactKey` and `ArtifactTooLarge` sit in the SAME arm but for the opposite
 /// reason: they ARE reachable, because `write_artifact` is a host tool and storage
@@ -445,7 +478,8 @@ impl From<BoardError> for HostToolError {
             | BoardError::LastStage { .. }
             | BoardError::StageSlugTaken { .. }
             | BoardError::EmptyStageSlug
-            | BoardError::SelfLoop { .. } => HostToolError::Invalid { message: sentence },
+            | BoardError::SelfLoop { .. }
+            | BoardError::EdgeOutcomeCount { .. } => HostToolError::Invalid { message: sentence },
         }
     }
 }
@@ -1044,9 +1078,11 @@ impl Db {
         // The two hand-arranged canvas coordinates (the Workflows canvas's
         // n8n-style "drag it where you want it and it stays"). TWO gates because
         // `gate` probes ONE column, and one gate naming two columns cannot answer
-        // "is this one absent". They are the LAST two probes, which is the order
-        // `each_cluster_schema_omits_exactly_one_gated_column`'s `GATED` list
-        // spells — that pin walks the list in probe order against the fixtures.
+        // "is this one absent". They were the LAST two probes until
+        // `stages.next_outcomes` arrived; `GATED` in
+        // `each_cluster_schema_omits_exactly_one_gated_column` spells probe order
+        // as DOCUMENTATION ONLY — that pin sorts both sides, so a gate added here
+        // needs its `GATED` entry and its fixture but not a matching position.
         //
         // NO `DEFAULT` and NO backfill on either, and that is the whole upgrade
         // story: `NULL` means "this column was NEVER hand-arranged, so the canvas
@@ -1081,6 +1117,35 @@ impl Db {
         })?;
         gate(&mut conn, "stages", "position_y", |tx| {
             tx.execute("ALTER TABLE stages ADD COLUMN position_y REAL", [])?;
+            Ok(())
+        })?;
+        // The edge LABEL positional to `next_slugs` (D6/D13 of the
+        // `mark_done`-as-the-node-completion-signal work). A new COLUMN on the
+        // pre-existing `stages` table, so gate territory (AGENTS.md).
+        //
+        // NO `DEFAULT` and NO backfill, and the argument is `next_slugs`'s own two
+        // rows up, worn as a label instead of as an edge list: `NULL` means "no
+        // edge out of this column carries an outcome", so selection falls back to
+        // the HEAD of `next_slugs` and every existing board routes the card it
+        // routes today. Backfilling a label would be worse than backfilling an edge
+        // list — a label is the thing `mark_done` selects a branch ON, so a value
+        // invented here would make the first claim after an upgrade take a branch
+        // its owner never named. That is the same fail-open-by-invention
+        // `stages.auto`'s `DEFAULT 0` and `position_x`'s missing `DEFAULT` each
+        // refuse, from their own direction.
+        //
+        // The column is deliberately SEPARATE from `next_slugs` rather than a
+        // widening of it. `lenient_next_slugs`'s documented failure mode is `None`,
+        // and ADR 0099 defines that `None` as "unconfigured, unconstrained" — so an
+        // object array parked inside `next_slugs` would parse as NO GRAPH AT ALL and
+        // the Strict move gate would skip entirely on every existing board. Two
+        // columns, two decoders, two meanings of `None` that cannot merge.
+        //
+        // `dflt_value` is pinned to NULL by
+        // `the_next_outcomes_gate_arrives_null_for_every_pre_existing_stage`, so a
+        // `DEFAULT` added here fails a pin rather than passing quietly.
+        gate(&mut conn, "stages", "next_outcomes", |tx| {
+            tx.execute("ALTER TABLE stages ADD COLUMN next_outcomes TEXT", [])?;
             Ok(())
         })?;
         // One-time migration for pre-existing databases: give
@@ -1262,6 +1327,14 @@ CREATE TABLE IF NOT EXISTS stages (
     prompt_prefix TEXT,
     position_x REAL,
     position_y REAL,
+    -- The edge LABEL positional to `next_slugs` (index-for-index, not a map).
+    -- Appended LAST for the same reason `rows.rs` appends to `STAGE_COLUMNS`: no
+    -- existing positional index moves. NO `DEFAULT` and NO backfill — NULL means
+    -- "no edge is labelled", so selection falls back to the head of `next_slugs`
+    -- and an upgrade changes nothing. See the `gate` call in `open` for the full
+    -- argument and for why this is a SECOND column rather than a wider
+    -- `next_slugs`.
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 CREATE TABLE IF NOT EXISTS tasks (

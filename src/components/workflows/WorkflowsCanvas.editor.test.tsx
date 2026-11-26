@@ -425,7 +425,10 @@ describe("WorkflowsCanvas — drag to connect", () => {
     await settled();
 
     expect(setStageNext).toHaveBeenCalledTimes(1);
-    expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing"]);
+    // The FOURTH argument is the edge LABEL, positional to the list beside it: a
+    // drag-to-connect gesture names nothing, so it writes one `null` PER EDGE rather
+    // than a short list (which is the mismatch `EdgeOutcomeCount` refuses).
+    expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing"], [null]);
     // And the edge the store now reports is on the canvas: the write landed in the
     // picture through the slice, not through a local array.
     expect(
@@ -483,7 +486,10 @@ describe("WorkflowsCanvas — drag to connect", () => {
     await settled();
 
     expect(setStageNext).toHaveBeenCalledTimes(1);
-    expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["todo", "doing"]);
+    expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["todo", "doing"], [
+      null,
+      null,
+    ]);
   });
 
   it("writes nothing for a self-loop, and the line it is down reads as refused", async () => {

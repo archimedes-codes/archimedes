@@ -30,24 +30,25 @@
 //! THREE groups of single-reader items stay here anyway, for two different reasons,
 //! and both reasons are the rule's own wording rather than an exception to it:
 //!
-//!   * NINE of the seventeen `SCHEMA_WITHOUT_*` consts (`…_ARCHIVED`,
+//!   * NINE of the eighteen `SCHEMA_WITHOUT_*` consts (`…_ARCHIVED`,
 //!     `…_CONTEXT_USAGE`, `…_COST_USD`, `…_PARENT_SESSION_ID`,
 //!     `…_STAGES_ON_ENTER_SKILL`,
 //!     `…_STAGES_NEXT_SLUGS`, `…_SPACES_BOARD_STRICT`,
 //!     `…_STAGES_POSITION_X`, `…_STAGES_POSITION_Y`) are read ONLY by
 //!     `tests/open.rs`, and they stay.
 //!     That child consumes them as a COMPLETE SET —
-//!     `each_cluster_schema_omits_exactly_one_gated_column` walks all seventeen by name
+//!     `each_cluster_schema_omits_exactly_one_gated_column` walks all eighteen by name
 //!     and asserts each omits exactly one gated column, so the property lives in the
 //!     SET and not in any one string. One consumer of a set is still the reason the
 //!     set exists: the rule counts CONSUMERS, not call sites, and scattering the
 //!     names into their individual children would split a pin that is only assertable
-//!     over all of them. (The other EIGHT have a genuine second reader and need no
+//!     over all of them. (The other NINE have a genuine second reader and need no
 //!     defence: `…_SPACE_SORT_ORDER` and `…_SESSION_SORT_ORDER` are read by
 //!     `tests/migrations.rs`, `…_STAGES_AUTO` and `…_STAGES_PROMPT_PREFIX` by
 //!     `tests/stage_lifecycle.rs`, `…_SPACES_AUTO_MAX_STEPS` and
 //!     `…_SPACES_AUTO_CEILING_USD` by `tests/auto_guards.rs`,
-//!     `…_IS_SUBAGENT` by `tests/migrations.rs`, and
+//!     `…_IS_SUBAGENT` by `tests/migrations.rs`,
+//!     `…_STAGES_NEXT_OUTCOMES` by `tests/migrations.rs`, and
 //!     `…_READY` — the newest, added with its gate's own pin — by
 //!     `tests/migrations.rs`.)
 //!
@@ -247,10 +248,10 @@ CREATE TABLE sessions (
 }
 
 /// The `stages` table as a post-#179, post-workflow-columns, post-canvas database
-/// has it — ALL SIX gated columns present, so no `stages` gate fires. EVERY
-/// cluster fixture carries this spelling except the six whose gate owns this
+/// has it — ALL SEVEN gated columns present, so no `stages` gate fires. EVERY
+/// cluster fixture carries this spelling except the seven whose gate owns this
 /// table: `Db::open` probes `stages` too now, so a fixture with NO `stages` table
-/// at all would count as omitting all six columns and break the isolation assert
+/// at all would count as omitting all seven columns and break the isolation assert
 /// on every fixture at once.
 macro_rules! legacy_stages_complete {
     () => {
@@ -267,6 +268,7 @@ CREATE TABLE stages (
     prompt_prefix TEXT,
     position_x REAL,
     position_y REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
@@ -298,6 +300,7 @@ CREATE TABLE stages (
     auto INTEGER NOT NULL DEFAULT 0,
     prompt_prefix TEXT,
     position_y REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
@@ -321,6 +324,7 @@ CREATE TABLE stages (
     auto INTEGER NOT NULL DEFAULT 0,
     prompt_prefix TEXT,
     position_x REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
@@ -344,6 +348,7 @@ CREATE TABLE stages (
     prompt_prefix TEXT,
     position_x REAL,
     position_y REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
@@ -366,6 +371,7 @@ CREATE TABLE stages (
     auto INTEGER NOT NULL DEFAULT 0,
     position_x REAL,
     position_y REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
@@ -388,6 +394,7 @@ CREATE TABLE stages (
     prompt_prefix TEXT,
     position_x REAL,
     position_y REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
@@ -410,15 +417,45 @@ CREATE TABLE stages (
     prompt_prefix TEXT,
     position_x REAL,
     position_y REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
     };
 }
 
-/// The `stages` table as pre-#179 code wrote it — NONE of the six gated columns.
-/// For the migration tests ONLY (a cluster fixture must never use it: it omits SIX
-/// gated columns at once, which is the isolation collapse the cluster pin
+/// The `stages` table WITHOUT `next_outcomes` (every OTHER `stages` column
+/// present, including `next_slugs` and BOTH position columns) — only the edge-label
+/// gate can fire on it.
+///
+/// `next_slugs` is deliberately PRESENT here: the two columns are a positional
+/// pair, and a fixture that omitted both would exercise two gates at once and tell
+/// the cluster pin nothing about either. The pair's "same length or refused" rule
+/// is a WRITE rule, owned by `Db::set_stage_next`, and it is pinned there.
+macro_rules! legacy_stages_without_next_outcomes {
+    () => {
+        "
+CREATE TABLE stages (
+    space_path TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    label TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    on_enter TEXT NOT NULL DEFAULT 'none',
+    on_enter_skill TEXT,
+    next_slugs TEXT,
+    auto INTEGER NOT NULL DEFAULT 0,
+    prompt_prefix TEXT,
+    position_x REAL,
+    position_y REAL,
+    PRIMARY KEY (space_path, slug)
+);
+"
+    };
+}
+
+/// The `stages` table as pre-#179 code wrote it — NONE of the gated columns.
+/// For the migration tests ONLY (a cluster fixture must never use it: it omits ALL
+/// SEVEN gated columns at once, which is the isolation collapse the cluster pin
 /// forbids).
 macro_rules! legacy_stages_pre_task_board_config {
     () => {
@@ -475,9 +512,10 @@ CREATE TABLE native_messages (
 /// spellings plus the tail living here once each so no fixture can invent its own.
 ///
 /// `stages` defaults to [`legacy_stages_complete!`]: `Db::open` probes `stages`
-/// for SIX gated columns now (`on_enter_skill`, `next_slugs`, `auto`,
-/// `prompt_prefix`, `position_x`, `position_y`), so a fixture that omitted the
-/// table entirely would count as omitting ALL SIX and run six gates — the
+/// for SEVEN gated columns now (`on_enter_skill`, `next_slugs`, `auto`,
+/// `prompt_prefix`, `position_x`, `position_y`, `next_outcomes`), so a fixture
+/// that omitted the table entirely would count as omitting ALL SEVEN and run
+/// seven gates — the
 /// isolation collapse the cluster pin below exists to catch. A fixture whose gate
 /// owns `stages` (or `spaces`) picks that arm instead.
 macro_rules! legacy_batch {
@@ -509,6 +547,14 @@ macro_rules! legacy_batch {
         concat!(
             legacy_sessions_complete!(),
             legacy_stages_without_next_slugs!(),
+            legacy_spaces_with_sort_order!(),
+            legacy_tail!()
+        )
+    };
+    (complete_sessions, stages_without_next_outcomes) => {
+        concat!(
+            legacy_sessions_complete!(),
+            legacy_stages_without_next_outcomes!(),
             legacy_spaces_with_sort_order!(),
             legacy_tail!()
         )
@@ -794,6 +840,14 @@ pub(super) const SCHEMA_WITHOUT_STAGES_ON_ENTER_SKILL: &str =
 /// single-ALTER gate (deliberately NO data step, ADR 0099: NULL = unconfigured).
 pub(super) const SCHEMA_WITHOUT_STAGES_NEXT_SLUGS: &str =
     legacy_batch!(complete_sessions, stages_without_next_slugs);
+
+/// The full 5-table batch with ONLY `stages.next_outcomes` missing — the plain
+/// single-ALTER gate (deliberately NO data step, and the same argument
+/// `SCHEMA_WITHOUT_STAGES_NEXT_SLUGS` carries: NULL = "no edge carries a label",
+/// so selection falls back to the head and an upgrade behaves exactly as it does
+/// today. Backfilling it would label edges nobody labelled).
+pub(super) const SCHEMA_WITHOUT_STAGES_NEXT_OUTCOMES: &str =
+    legacy_batch!(complete_sessions, stages_without_next_outcomes);
 
 /// The full 5-table batch with ONLY `stages.auto` missing — the plain
 /// single-ALTER gate for the per-column auto-advance flag. The `DEFAULT 0` rides

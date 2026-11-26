@@ -13,8 +13,9 @@
 //! [`super`] so every existing spelling resolves unchanged.
 //!
 //! ONE upward edge, so "everything is built on this" is not the whole picture:
-//! `task_row_from` below calls [`super::stages::lenient_next_slugs`] to decode a Stage's
-//! `next_slugs` JSON, and `stages.rs` imports this module for its row types — a
+//! `stage_row_from` below calls [`super::stages::lenient_next_slugs`] and
+//! [`super::stages::lenient_next_outcomes`] to decode a Stage's two JSON columns,
+//! and `stages.rs` imports this module for its row types — a
 //! two-way edge. It is PRE-EXISTING (both calls lived in the single `db.rs` and were
 //! merely made cross-file by the split), so it is named here rather than restructured
 //! away: moving the decoder would put a row mapper's dependency in front of the row
@@ -25,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use fulcrum_harness::store_rows::{MessageRow, SessionRow};
 
-use super::stages::lenient_next_slugs;
+use super::stages::{lenient_next_outcomes, lenient_next_slugs};
 
 /// The ONE `sessions` SELECT list every `SessionRow` read uses, as a const
 /// array of column names.
@@ -255,6 +256,34 @@ pub struct StageRow {
     /// The Y of this column's node on the Workflows canvas — see
     /// [`Self::position_x`] for the pair's semantics, which are identical.
     pub position_y: Option<f64>,
+    /// The LABEL of each edge out of this column, **positional to
+    /// [`Self::next_slugs`]** — index `i` of this list names the edge at index `i`
+    /// of `next_slugs`, so `["research","approved"]` + `["ok","fail"]` means
+    /// "goes to research on `ok`, to approved on `fail`".
+    ///
+    /// A SECOND column and not a widening of `next_slugs`, and that is the whole
+    /// safety argument. `lenient_next_slugs`'s documented failure mode is `None`,
+    /// and ADR 0099 defines that `None` as "unconfigured, unconstrained" — so an
+    /// object array stored inside `next_slugs` would parse as NO GRAPH AT ALL and
+    /// the Strict move gate would skip entirely on every existing board. Widening
+    /// the writer without widening the reader is a fail-open; a parallel column with
+    /// its OWN decoder means the two `None`s ("unconstrained" vs "unlabelled") can
+    /// never merge into one.
+    ///
+    /// `None` means NO edge out of here carries a label, so selection falls back to
+    /// the head of `next_slugs` — exactly today's behaviour. The inner `Option` is
+    /// the positional half of the same honesty: `[null,"ok"]` labels the SECOND
+    /// edge only, and a `Vec<String>` could not spell that (the `null` would either
+    /// fail the parse and lose `"ok"` too, or force a sentinel string nobody
+    /// typed). So a `None` ELEMENT is "this edge is unlabelled" and a `None` FIELD
+    /// is "no edge is labelled" — the same `null` ≠ absence discipline
+    /// [`Self::position_x`] and `sessions.cost_usd` each stand on.
+    ///
+    /// Length is validated against `next_slugs` at the write
+    /// ([`Db::set_stage_next`](super::Db::set_stage_next)); a cell a foreign writer
+    /// left mismatched is the reader's problem to survive, not to repair, and
+    /// selection treats a short list as "the edges past its end are unlabelled".
+    pub next_outcomes: Option<Vec<Option<String>>>,
 }
 
 /// The ONE `stages` SELECT list every read uses, as a const array of column
@@ -269,8 +298,11 @@ pub struct StageRow {
 /// The two #179 columns and the two workflow columns go at the END, not in the
 /// middle: [`stage_row_from`] reads by POSITION, so appending keeps every
 /// existing index stable and a reorder cannot silently swap two fields' meanings.
-/// The two canvas coordinates append the same way, for the same reason.
-pub(super) const STAGE_COLUMNS: [&str; 11] = [
+/// The two canvas coordinates append the same way, for the same reason, and
+/// `next_outcomes` appends LAST for exactly the same reason again — a column added
+/// in the middle would move every index after it and read the wrong value into the
+/// wrong field, silently.
+pub(super) const STAGE_COLUMNS: [&str; 12] = [
     "space_path",
     "slug",
     "label",
@@ -282,9 +314,10 @@ pub(super) const STAGE_COLUMNS: [&str; 11] = [
     "prompt_prefix",
     "position_x",
     "position_y",
+    "next_outcomes",
 ];
 
-pub(super) const STAGE_ROW_FIELDS: usize = 11;
+pub(super) const STAGE_ROW_FIELDS: usize = 12;
 // Compile-time arity tie ONLY — see SESSION_ROW_FIELDS for the honest scope;
 // the drift-guard TEST is the guard.
 const _: [(); STAGE_COLUMNS.len()] = [(); STAGE_ROW_FIELDS];
@@ -312,6 +345,12 @@ pub(super) fn stage_row_from(row: &Row<'_>) -> rusqlite::Result<StageRow> {
         // `InvalidColumnType` here, exactly as every other rung of this ladder is.
         position_x: row.get::<_, Option<f64>>(9)?,
         position_y: row.get::<_, Option<f64>>(10)?,
+        // The edge labels, positional to `next_slugs` at index 6. Its OWN lenient
+        // decoder, deliberately NOT `lenient_next_slugs`: a `None` there means
+        // "unconstrained" (ADR 0099) and a `None` here means "unlabelled", and one
+        // function answering both is how those two meanings merge into a
+        // fail-open. See [`lenient_next_outcomes`].
+        next_outcomes: lenient_next_outcomes(row.get::<_, Option<String>>(11)?),
     })
 }
 

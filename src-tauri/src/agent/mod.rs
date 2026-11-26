@@ -17,6 +17,10 @@
 // `SettingsProviderSource`) that lets `budget.rs` move without taking
 // `load_settings` with it. `headers.rs` was the S3 exception — it moved early,
 // as the crate's `provider_headers`. See `provider_auth/mod.rs`.)
+/// The `BoardError → TasksError` wire map, extracted from [`errors`] so the
+/// ratchet on that file's code-line count does not block a new storage refusal.
+/// See the module header for why ADR 0063 permits the move.
+pub mod board_error_map;
 pub mod crashlog;
 pub mod errors;
 pub mod harness;

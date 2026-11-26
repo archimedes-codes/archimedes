@@ -339,7 +339,9 @@ fn stage_slug_from_label(label: &str) -> String {
 /// its three cases are ABSENCES that must not be flattened into a database error
 /// (`not_found` is what tells the frontend to drop a card and tells a model its
 /// slug was wrong — ADR 0090). Hence the `From<BoardError> for TasksError` in
-/// `agent/errors.rs`, applied here once instead of once per command.
+/// `agent/board_error_map.rs` (the map was extracted from `agent/errors.rs`, whose
+/// code-line count the size ratchet will not let grow by one), applied here once
+/// instead of once per command.
 ///
 /// The `JoinError` arm is UNTESTABLE for the reason `spaces.rs` states: the
 /// closure is pure against an `Arc<Db>` and owned arguments, so it panics only
@@ -880,24 +882,42 @@ pub async fn set_stage_skill(
     )
 }
 
-/// Set one column's outgoing transitions (ADR 0099). `slugs` is the button-render
-/// order and arrives verbatim — this layer does not sort, dedupe or filter it,
-/// because a dropped destination is a workflow that shrank; `Db::set_stage_next`
-/// refuses an unknown slug or a self-loop by name.
+/// Set one column's outgoing transitions (ADR 0099) AND their edge labels.
+/// `slugs` is the button-render order and arrives verbatim — this layer does not
+/// sort, dedupe or filter it, because a dropped destination is a workflow that
+/// shrank; `Db::set_stage_next` refuses an unknown slug or a self-loop by name.
 ///
 /// An EMPTY `slugs` is a meaningful write, not a no-op: it stores `[]`, which means
 /// "this column leads nowhere" — distinct from NULL's "unconfigured, unconstrained".
+///
+/// `outcomes` is POSITIONAL to `slugs` — `outcomes[i]` is the NAME of the edge
+/// `slugs[i]`, and a `null` element means that edge carries no label — and it must
+/// be the SAME LENGTH, which `Db::set_stage_next` refuses as
+/// `BoardError::EdgeOutcomeCount` before it writes either column. The two lists are
+/// written in ONE statement precisely so they cannot be observed disagreeing.
+///
+/// The argument is REQUIRED at this layer (no `#[serde(default)]`, no `Option`) even
+/// though every caller today passes all-`null`: a Tauri argument that is absent
+/// because a caller forgot it is indistinguishable from one that was deliberately
+/// left out, and the difference is "the labels are cleared" versus "the labels are
+/// unchanged" — a half-set, which is the state this feature refuses everywhere
+/// (see [`require_position_pair`]). The OPTIONALITY lives one layer up, in
+/// `store/tasks.ts`'s `outcomes = []` default, where a caller that has no labels to
+/// write is a caller that can say so.
 #[tauri::command]
 pub async fn set_stage_next(
     state: State<'_, Arc<Db>>,
     space_path: String,
     slug: String,
     slugs: Vec<String>,
+    outcomes: Vec<Option<String>>,
 ) -> Result<StageRow, TasksError> {
     let db = state.inner().clone();
     board_call(
-        tauri::async_runtime::spawn_blocking(move || db.set_stage_next(&space_path, &slug, &slugs))
-            .await,
+        tauri::async_runtime::spawn_blocking(move || {
+            db.set_stage_next(&space_path, &slug, &slugs, &outcomes)
+        })
+        .await,
     )
 }
 

@@ -229,6 +229,38 @@ export interface StageDto {
   /** This column's node Y on the Workflows canvas — see `positionX` for the pair's
    *  semantics, which are identical, and for why both are optional. */
   positionY?: number | null;
+  /**
+   * The **label of each edge** out of this column, **POSITIONAL to `nextSlugs`**:
+   * index `i` of this array names the edge at index `i` of `nextSlugs`, so
+   * `nextSlugs: ["research","approved"]` with `nextOutcomes: ["ok","fail"]` means
+   * "goes to research on `ok`, to approved on `fail`". A `null` ELEMENT means that
+   * one edge carries no label — the position is the meaning, which is why the
+   * element type is `(string | null)` and not `string`: a partially-labelled graph
+   * is a real configuration and `[null,"ok"]` must not degrade to "unlabelled".
+   *
+   * A SECOND column beside `nextSlugs` and not a wider `nextSlugs`, and that is the
+   * safety argument rather than a style choice. `nextSlugs`'s decoder is lenient and
+   * its documented failure mode is `null`, which ADR 0099 defines as
+   * **unconfigured, unconstrained** — so an object array parked inside `nextSlugs`
+   * would parse as NO GRAPH AT ALL and the Strict move gate would skip on every
+   * existing board. Two columns, two decoders, and the two `null`s ("unconstrained"
+   * versus "unlabelled") can never merge into one.
+   *
+   * `null` means no edge out of here carries a label, so selection falls back to the
+   * HEAD of `nextSlugs` — exactly the behaviour before this field existed. The column
+   * has no SQL `DEFAULT` and is never backfilled, so an upgrade adds the capability
+   * and does not use it.
+   *
+   * **OPTIONAL, on `positionX`'s precedent two fields up and for the same measured
+   * reason.** Absence and `null` mean the SAME thing to the only reader — "no edge is
+   * labelled, take the head" — so a fixture that omits the field degrades to the
+   * correct behaviour instead of a confident wrong one, which is the test `positionX`
+   * passes and `auto` fails. And the cost of required-ness here is LARGER than the
+   * eighteen files `positionX` measured: **31 files** in `src/` hold a `nextSlugs:`
+   * literal that constructs a stage row, so a required `nextOutcomes` is a 31-file
+   * `tsc` failure buying nothing this change can use. Tightening it is a follow-up's,
+   * in one commit that can update all thirty-one. */
+  nextOutcomes?: (string | null)[] | null;
 }
 
 

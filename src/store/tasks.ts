@@ -284,11 +284,23 @@ interface BoardState {
   ) => Promise<StageDto>;
   /** Set one column's outgoing transitions (ADR 0099) in button-render order.
    *  `[]` means "configured, and nothing may follow this column" and is NOT the
-   *  same answer as the `null` that means "unconfigured, therefore unconstrained". */
+   *  same answer as the `null` that means "unconfigured, therefore unconstrained".
+   *
+   *  `outcomes` labels those edges POSITIONALLY — `outcomes[i]` is the name of the
+   *  edge `slugs[i]`, and a `null` element means that one edge carries no label —
+   *  and it must be the SAME LENGTH as `slugs` or the write refuses naming both
+   *  counts, because a shifted label is a card that advances on the wrong claim.
+   *
+   *  OPTIONAL, and its absence is NOT "leave the labels alone": it paints and writes
+   *  one `null` per edge, i.e. "this write labels nothing". That is the only default
+   *  that is both arity-legal and honest — `[]` beside a non-empty `slugs` is the
+   *  mismatch the storage layer refuses, and "unchanged" is a half-set the caller
+   *  never asked for. A caller that means to label an edge says so. */
   setStageNext: (
     spacePath: string,
     slug: string,
     slugs: string[],
+    outcomes?: (string | null)[],
   ) => Promise<StageDto>;
   /** Turn one column's **auto-advance** flag on or off (the workflow graph): a card
    *  launched here advances itself when its Session settles.
@@ -1161,22 +1173,24 @@ export const useTasks = create<BoardState>((set, get) => ({
     }
   },
 
-  setStageNext: async (spacePath, slug, slugs) => {
+  setStageNext: async (spacePath, slug, slugs, outcomes = slugs.map(() => null)) => {
     const previous = get().boardsBySpace[spacePath];
     // The list goes in verbatim — order is the render order AND the card's primary
     // next step (spec §7.1), so sorting or deduplicating it here is a different
     // workflow painted as the one the user asked for. `[]` stays `[]`: configured,
     // leading nowhere, which is NOT the `null` that means unconstrained.
-    if (previous)
-      paint(set, spacePath, withStage(previous, slug, { nextSlugs: slugs }));
+    //
+    // BOTH columns paint together and BOTH go to the command, from ONE object. They
+    // are positional, so a paint that moved `nextSlugs` while leaving the stored
+    // `nextOutcomes` on screen would show a graph whose labels point at edges that
+    // are no longer there — the exact wrong-claim advance the length check at storage
+    // refuses, reproduced client-side for the length of a round trip.
+    const patch = { nextSlugs: slugs, nextOutcomes: outcomes };
+    if (previous) paint(set, spacePath, withStage(previous, slug, patch));
     try {
-      const row = await setStageNextCommand(spacePath, slug, slugs);
-      if (previous)
-        paint(
-          set,
-          spacePath,
-          withStage(get().boardsBySpace[spacePath]!, slug, row),
-        );
+      const row = await setStageNextCommand(spacePath, slug, slugs, outcomes);
+      const painted = withStage(get().boardsBySpace[spacePath]!, slug, row);
+      if (previous) paint(set, spacePath, painted);
       return row;
     } catch (err) {
       // An unknown slug or a self-loop REFUSES rather than dropping the entry

@@ -5,7 +5,7 @@
 //! ⚠️ These four free functions are called from inside `Db::open`'s `gate`
 //! closures, which STAY in [`super`] — `gate` is the transaction factory that
 //! makes an `ALTER` and its data step one atomic unit. Moving the data steps here
-//! moves no gate: all twenty `gate(&mut conn, …)` calls are inside `open`, and
+//! moves no gate: every `gate(&mut conn, …)` call is inside `open`, and
 //! `backfill_predicate_names_both_literals_and_renames_nothing` pins that this
 //! file's own body carries the dual literal match it names.
 

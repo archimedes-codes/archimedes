@@ -737,7 +737,10 @@ describe("the node panel's destinations", () => {
     expect(screen.queryByRole("option", { name: "Backlog" })).toBeNull();
     fireEvent.click(screen.getByRole("option", { name: "Done" }));
     await waitFor(() =>
-      expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing", "done"]),
+      expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing", "done"], [
+        null,
+        null,
+      ]),
     );
     expect(stageOf("backlog")?.nextSlugs).toEqual(["doing", "done"]);
   });
@@ -800,7 +803,7 @@ describe("the node panel's destinations", () => {
 
     fireEvent.click(screen.getByRole("option", { name: "Backlog" }));
     await waitFor(() =>
-      expect(setStageNext).toHaveBeenCalledWith(SPACE, "doing", ["backlog"]),
+      expect(setStageNext).toHaveBeenCalledWith(SPACE, "doing", ["backlog"], [null]),
     );
     // And the pure rule answers the same for the same hop — the shared owner, stated as a
     // fact and not as prose. Read from the slice as it was BEFORE the write, because after
@@ -856,7 +859,7 @@ describe("the node panel's destinations", () => {
     ]);
     fireEvent.click(button("Remove Doing from backlog"));
     await waitFor(() =>
-      expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["done"]),
+      expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["done"], [null]),
     );
   });
 
@@ -868,7 +871,10 @@ describe("the node panel's destinations", () => {
     ]);
     fireEvent.click(button("Move Done earlier in backlog"));
     await waitFor(() =>
-      expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["done", "doing"]),
+      expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["done", "doing"], [
+        null,
+        null,
+      ]),
     );
   });
 

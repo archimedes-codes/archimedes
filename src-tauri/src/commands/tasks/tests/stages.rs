@@ -137,7 +137,7 @@ fn delete_stage_refusals_reach_the_wire_naming_what_was_refused() {
     );
 
     // Refusal 2: the pointing Stage.
-    db.set_stage_next(space, "backlog", &["done".to_string()])
+    db.set_stage_next(space, "backlog", &["done".to_string()], &[None])
         .expect("backlog → done");
     let err = board_call(Ok::<_, String>(db.delete_stage(space, "done", None)))
         .expect_err("a referenced Stage is not deletable");
@@ -179,7 +179,7 @@ fn strict_move_refusals_reach_the_wire_naming_the_legal_destinations() {
     db.upsert_space(space, false).expect("upsert_space");
     db.set_board_strict(space, true).expect("strict ON");
     db.get_board(space).expect("seed");
-    db.set_stage_next(space, "backlog", &["research".to_string()])
+    db.set_stage_next(space, "backlog", &["research".to_string()], &[None])
         .expect("backlog → research only");
     let card = db
         .create_task(space, "governed", None, None)
@@ -203,10 +203,50 @@ fn strict_move_refusals_reach_the_wire_naming_the_legal_destinations() {
         space,
         "doing",
         &["doing".to_string()],
+        &[None],
     )))
     .expect_err("a stage cannot lead to itself");
     assert_eq!(err.kind(), "not_found");
     assert!(err.to_string().contains("doing"), "got `{err}`");
+}
+
+/// (the edge-label arity refusal, the wire half) `BoardError::EdgeOutcomeCount`
+/// rides `NotFound` with the other Stage refusals and its sentence names BOTH
+/// counts, because the caller's question is "which of my two lists is the wrong
+/// length" and one number cannot answer that. The `kind` is NOT new — nothing
+/// branches on a distinct one here, and `store/tasks.ts` reverts on ANY rejection.
+#[test]
+fn an_outcome_count_mismatch_refuses_as_not_found_naming_both_counts() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("cmd-outcome-arity-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = "/cmd-outcome-arity";
+    db.get_board(space).expect("seed the five");
+
+    let err = board_call(Ok::<_, String>(db.set_stage_next(
+        space,
+        "backlog",
+        &["research".to_string(), "approved".to_string()],
+        &[Some("ok".to_string())],
+    )))
+    .expect_err("two edges and one label is refused, not padded");
+    assert_eq!(
+        err.kind(),
+        "not_found",
+        "the arity refusal rides the Stage refusals' kind — nothing branches on \
+         a distinct one"
+    );
+    let message = err.to_string();
+    assert!(
+        message.contains("backlog")
+            && message.contains("2 edge")
+            && message.contains("1 edge label"),
+        "the sentence names the slug and BOTH counts, got `{message}`"
+    );
+    assert_eq!(
+        db.get_board(space).expect("get_board")[0].stage.next_slugs,
+        None,
+        "and the refusal wrote nothing — the two columns can never be seen disagreeing"
+    );
 }
 
 /// (Decision 6, the wire guarantee T3's Switch seed relies on) `get_board_strict`
@@ -445,6 +485,7 @@ fn the_stage_row_serialises_with_the_camel_case_keys_the_ts_mirror_declares() {
         [
             "auto",
             "label",
+            "nextOutcomes",
             "nextSlugs",
             "onEnter",
             "onEnterSkill",
@@ -455,16 +496,27 @@ fn the_stage_row_serialises_with_the_camel_case_keys_the_ts_mirror_declares() {
             "sortOrder",
             "spacePath",
         ],
-        "EXACTLY the eleven camelCase keys the mirror declares — `auto` and \
+        "EXACTLY the twelve camelCase keys the mirror declares — `auto` and \
          `promptPrefix` are the two the workflow-graph work added, `positionX` and \
-         `positionY` the two the canvas adds, and a dropped `rename_all` would \
-         deliver `prompt_prefix` / `position_x`, both of which the reader sees as \
+         `positionY` the two the canvas adds, `nextOutcomes` the edge label the \
+         completion signal adds, and a dropped `rename_all` would deliver \
+         `prompt_prefix` / `position_x`, both of which the reader sees as \
          `undefined` and drops"
     );
     assert_eq!(
         object.len(),
-        11,
-        "exactly the eleven — a twelfth is a field nothing reads"
+        12,
+        "exactly the twelve — a thirteenth is a field nothing reads"
+    );
+    // `nextOutcomes` on an unlabelled column serialises as JSON `null` and NOT as
+    // an absent key: there is no `skip_serializing_if` on the field, so the reader
+    // can tell "the backend predates the column" (absent — only reachable through a
+    // build skew) from "this column's edges carry no labels" (`null`).
+    assert_eq!(
+        object["nextOutcomes"],
+        serde_json::Value::Null,
+        "an unlabelled column delivers `null`, and the key is PRESENT — the wire \
+         never has to guess between an absent field and an unlabelled graph"
     );
     assert_eq!(
         object["auto"],
