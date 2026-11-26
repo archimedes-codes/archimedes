@@ -79,6 +79,54 @@ model move runs the destination's launch the way a pill click does, then the cla
 the move consequential rather than a formality preceding an inert write. See the finding below —
 this makes the model the **fourth** launcher and the first one that is not a person.
 
+**D7 — `mark_done` is the ONLY forward door; `move_task` is backward-only.** The model's
+`move_task` host verb REFUSES a forward move and its refusal sentence teaches the replacement
+("call `mark_done`"). Backward and sideways moves stay allowed and stay inert. This replaces the
+`ready`-flag gate on `move_task` that D2 originally implied, and it is better: the test becomes a
+graph question rather than an identity question, so it needs no frame identity threaded into a
+board verb (which `exec/mod.rs` deliberately withholds from every board verb, per ADR 0117), and
+the model/human split comes free because the two doors are already separate code paths. It also
+makes the live path and the budgeted path the SAME path — the claim is the only thing that launches,
+and the claim is where Rust already holds the card, the column, the edge and the run row.
+
+**D8 — "Forward" means graph-reachable, not higher `sort_order`.** A move is forward when the
+target is reachable from the card's current column by BFS over the edge set, with a visited set so
+the legal cycles (only a self-loop is refused today) terminate. `sort_order` is not consulted:
+ADR 0099 exists precisely because a real branch points backwards against render order. A
+single-declared-edge test was rejected because `board_strict = 0` on all nine live Spaces, so a
+model could dodge it by moving to a non-edge column further right.
+
+**D9 — The refusal sentence teaches the replacement; the installed Skills are a SEPARATE task.**
+Three installed Skills instruct `move_task` and their normal use is forward, so they will hit the
+refusal. The refusal message must say what to do instead. Updating `~/.agents/kit` is tracked as
+its own task in its own repo, not folded into this one.
+
+**D10 — A backward move needs no claim and stays inert.** It advances no chain, launches nothing
+and consumes no budget, so it owes no claim. Corrections like "this belongs in backlog" stay free.
+
+**D11 — Humans are unrestricted.** Only the model's door gains the rule. A person can drag
+anywhere, and `board_strict` keeps governing drags exactly as it does today.
+
+**D12 — The gate lives in `Db::move_task` behind a caller-kind argument.** D11 and the repo's own
+rule that "the bypass is only free when the gate sits where the write is" (`Db::move_task`'s doc)
+cannot both hold if the gate is unconditional, because the human drag command and the model's host
+verb converge on that one method. So `Db::move_task` takes an author argument and the gate fires
+only for the model's author. This keeps refuse-before-write atomic inside the one lock.
+
+**D13 — An edge's outcome name lives in a NEW gated parallel column `stages.next_outcomes`.** The
+alternative — widening `next_slugs` to hold objects — was rejected on a measured hazard:
+`lenient_next_slugs` decodes `Vec<String>` and NOTHING else, and its failure mode is `None`, which
+means **unconstrained**. Widen the writer without widening the decoder and every configured board
+on every user's disk silently becomes unconstrained. The gated column keeps `next_slugs` and its
+three-state ADR 0099 semantics byte-identical, and one writer owns both columns so they cannot
+desync.
+
+**D14 — The launch instruction rides `details` on the `mark_done` result.** Chosen over a new
+Tauri event, which would need an `EventSink` that `exec::run` does not hold and would grow
+`router.rs` — baselined at 1309 code lines with zero headroom. The accepted cost, stated plainly:
+**a model that ignores its own tool result gets no launch.** The mark still lands and the bell
+still shows; the card just does not advance.
+
 **D6 — The graph shape is outcome-routed single successor.** `mark_done` gains an outcome value,
 edges gain a name, exactly one edge fires per claim. **Fork and join are explicitly out of scope**
 and stay blocked by `tasks.stage_slug` holding one value and `idx_workflow_runs_open` being
