@@ -655,6 +655,167 @@ fn deleting_a_linked_session_drops_its_link_row_and_its_share_of_the_cost() {
     );
 }
 
+// ── the board read carries `sessions.ready` (the restart boundary) ─────────
+//
+// `docs/features/session-ready-marker.md` claims a host verb "swaps the *writer*
+// only". That sentence is false as written: the board's payload is a FROZEN wire
+// and the ONLY channel by which it learns a per-session SQLite fact about a
+// Session it has never opened is this link statement's JOIN on `sessions` — the
+// same channel `cost_usd` rides. These three tests put `ready` on that channel.
+//
+// The third one is the acceptance criterion for the whole change: a card whose
+// linked Session has NEVER been opened after a restart still reports
+// `ready: true`. `list_sessions` cannot serve that need (`SessionRow`/
+// `SessionInfo` are crates.io-pinned types), and a frontend that reads the mark
+// only from an opened transcript loses it on restart.
+
+/// (the happy path) ONE linked Session at `ready = 1` makes the CARD ready.
+///
+/// The fold is an `OR` over the card's links, so a single claiming Session is
+/// enough — a card whose other Session never claimed is still ready, because the
+/// question the bell answers is "does any Session on this card assert readiness",
+/// not "do all of them".
+#[test]
+fn the_board_reports_ready_true_when_any_linked_session_claims_it() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-board-ready-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("ready");
+    db.get_board(&space).expect("seed");
+    let card = db
+        .create_task(&space, "claimed", None, None)
+        .expect("create");
+
+    // The claiming Session is linked SECOND, so an implementation that read only
+    // the newest link, or only the first, would still be caught by the sibling
+    // tests below rather than passing by accident here.
+    record_linkable_session(&db, "sess-quiet", "/tmp/proj", None);
+    record_linkable_session(&db, "sess-ready", "/tmp/proj", None);
+    mark_session_ready(&db, "sess-ready", Some(true));
+    db.link_session(&card.id, "sess-quiet", None).expect("link");
+    db.link_session(&card.id, "sess-ready", None).expect("link");
+
+    let cards = board_cards(&db, &space);
+    assert_eq!(cards.len(), 1, "one card on this board");
+    assert!(
+        cards[0].ready,
+        "ONE linked Session at `ready = 1` makes the card ready — the fold is an \
+         OR over the card's links, and `sess-quiet` (NULL) does not veto it"
+    );
+    assert_eq!(
+        cards[0].sessions.len(),
+        2,
+        "both links are still there — `ready` is per-CARD, the link rows are \
+         unchanged (`FROZEN_LINK_KEYS` stays THREE)"
+    );
+}
+
+/// (the collapse that must be honest) every link `ready IS NULL` ⇒ `false`.
+///
+/// The card's field is a `bool`, NOT an `Option<bool>`, and this is the test that
+/// says why: `NULL` ("never claimed") and `0` ("explicitly not ready") collapse
+/// into the same `false`, because a bell that renders NOTHING when the answer is
+/// no renders nothing for both. That is a DIFFERENT null rule from ADR 0082's
+/// `cost_usd`, which renders a FIGURE and therefore must keep "never reported"
+/// distinguishable from "a real zero" — see the comment on
+/// [`TaskCardView::ready`].
+#[test]
+fn the_board_reports_ready_false_when_no_linked_session_ever_claimed_it() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-board-unready-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("not-ready");
+    db.get_board(&space).expect("seed");
+    let card = db
+        .create_task(&space, "unclaimed", None, None)
+        .expect("create");
+
+    // Two flavours of "no claim", one per storage state the column can hold:
+    // never written (NULL) and written an EXPLICIT false (0). Both answer `false`.
+    record_linkable_session(&db, "sess-null", "/tmp/proj", None);
+    record_linkable_session(&db, "sess-zero", "/tmp/proj", None);
+    mark_session_ready(&db, "sess-null", None);
+    mark_session_ready(&db, "sess-zero", Some(false));
+    db.link_session(&card.id, "sess-null", None)
+        .expect("link the NULL");
+    db.link_session(&card.id, "sess-zero", None)
+        .expect("link the explicit 0");
+
+    let cards = board_cards(&db, &space);
+    assert_eq!(
+        cards[0].sessions.len(),
+        2,
+        "both links are present — the falsity is about the column, not the link"
+    );
+    assert!(
+        !cards[0].ready,
+        "NULL and an explicit 0 both fold to `false` — the card has no claim and \
+         the bell renders nothing for it"
+    );
+
+    // A card with NO links at all answers the same way (it is not `null`, and it
+    // is not an error — an empty OR is `false`).
+    let lone = db
+        .create_task(&space, "no links", None, None)
+        .expect("create");
+    let cards = board_cards(&db, &space);
+    let lone = cards
+        .iter()
+        .find(|c| c.task.id == lone.id)
+        .expect("the unlinked card is on the board");
+    assert!(
+        !lone.ready,
+        "a card with no links is `ready: false` — never absent, never null"
+    );
+}
+
+/// (THE RESTART BOUNDARY — this task's acceptance criterion)
+///
+/// A `ready = 1` column value survives into a board read taken by a `Db` that
+/// has NEVER opened the Session behind it. That is the whole reason this field
+/// rides the link JOIN: the frontend's other source for the mark is the
+/// transcript of an OPENED Session, and after a restart no Session is open. If
+/// the board read did not carry the column, a mark a user set before quitting
+/// would be invisible when they came back — the mark would not survive a restart.
+///
+/// The fixture writes the claim, DROPS the `Db`, and re-`open`s the same file.
+/// The re-opened handle has read nothing; its only path to the fact is the SQL.
+#[test]
+fn the_board_reports_ready_for_a_session_the_reopened_db_has_never_opened() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-board-ready-boot-", "scratch");
+    let file = dir.join("t.db");
+    let space = board_space("restart");
+
+    {
+        let db = Db::open(&file).expect("db should open");
+        db.get_board(&space).expect("seed");
+        let card = db
+            .create_task(&space, "marked before the restart", None, None)
+            .expect("create");
+        record_linkable_session(&db, "sess-marked", "/tmp/proj", None);
+        mark_session_ready(&db, "sess-marked", Some(true));
+        db.link_session(&card.id, "sess-marked", None)
+            .expect("link the claiming Session");
+        // Prove the claim is a COLUMN and not anything this handle holds in memory.
+        assert!(
+            board_cards(&db, &space)[0].ready,
+            "the mark reads back BEFORE the restart (so the assertion below \
+             cannot be passing on a seed that never happened)"
+        );
+    }
+    // The handle is DROPPED — this is a process boundary in miniature.
+
+    let db = Db::open(&file).expect("re-open the same file");
+    // Nothing here opened the Session: no `session()`, no `list_sessions()`, no
+    // transcript read. `get_board` is the FIRST and ONLY read this handle makes.
+    let cards = board_cards(&db, &space);
+    assert_eq!(cards.len(), 1, "the card survived the restart");
+    assert!(
+        cards[0].ready,
+        "the mark survived the restart THROUGH THE BOARD READ — a card whose \
+         Session was never opened after boot still reports `ready: true`, which is \
+         the only reason the field rides the link JOIN instead of a session read"
+    );
+}
+
 /// The DRIFT PIN for the board's card payload (issue #174).
 ///
 /// `types.ts`'s `TaskCardView` is a HAND-WRITTEN mirror — no Rust↔TS shape pin
@@ -667,11 +828,16 @@ fn deleting_a_linked_session_drops_its_link_row_and_its_share_of_the_cost() {
 fn the_task_card_view_wire_keys_are_frozen() {
     // The TS mirror is `src/lib/tauri/types.ts`'s
     // `export interface TaskCardView { task: TaskRow; sessions: TaskSessionRow[];
-    // costUsd: number | null; artifactKeys: string[]; }` — these FOUR keys, in
-    // this order, no more. `artifactKeys` joined in #180 and is REQUIRED, never
-    // optional: an optional field compiles against every fixture and renders
-    // nothing when real data arrives.
-    const FROZEN_CARD_KEYS: [&str; 4] = ["task", "sessions", "costUsd", "artifactKeys"];
+    // costUsd: number | null; artifactKeys: string[]; ready: boolean; }` — these
+    // FIVE keys, in this order, no more. `artifactKeys` joined in #180 and
+    // `ready` in the restart-boundary change; both are REQUIRED, never optional:
+    // an optional field compiles against every fixture and renders nothing when
+    // real data arrives.
+    //
+    // The comparison below SORTS, so the literal order here is documentation of
+    // the declaration order (which the TS-side mirror pins UNSORTED), not the
+    // mechanism of the check.
+    const FROZEN_CARD_KEYS: [&str; 5] = ["task", "sessions", "costUsd", "artifactKeys", "ready"];
     // The TS mirror of these TEN is `export interface TaskRow` in the same file.
     const FROZEN_TASK_KEYS: [&str; 10] = [
         "id",
@@ -712,6 +878,7 @@ fn the_task_card_view_wire_keys_are_frozen() {
         }],
         cost_usd: Some(1.75),
         artifact_keys: vec!["spec".to_string()],
+        ready: true,
     };
     let value = serde_json::to_value(&view).expect("TaskCardView serializes");
 
@@ -726,7 +893,7 @@ fn the_task_card_view_wire_keys_are_frozen() {
     expected_card_keys.sort_unstable();
     assert_eq!(
         card_keys, expected_card_keys,
-        "the card payload is exactly `{{task, sessions, costUsd, artifactKeys}}` — \
+        "the card payload is exactly `{{task, sessions, costUsd, artifactKeys, ready}}` — \
          `#[serde(flatten)]` is deliberately NOT used, so the nested `task` key is \
          part of the wire shape, and `artifactKeys` is REQUIRED (never \
          `skip_serializing_if`), so a card with no artifacts sends `[]`"
@@ -781,6 +948,7 @@ fn the_task_card_view_wire_keys_are_frozen() {
         sessions: vec![],
         cost_usd: None,
         artifact_keys: vec![],
+        ready: false,
     };
     let absent = serde_json::to_value(&unmeasured).expect("the null-cost card serializes");
     assert!(
@@ -804,6 +972,26 @@ fn the_task_card_view_wire_keys_are_frozen() {
         Some(&Vec::<serde_json::Value>::new()),
         "`artifactKeys` must be PRESENT and `[]` on a card with no artifacts — a \
          required wire key, not an optional one"
+    );
+    // `ready` obeys the SAME presence rule as the two above, and for the same
+    // reason — but note WHAT is being pinned is different. `costUsd` had to stay
+    // present to keep ADR 0082's `null`-vs-`0` distinction readable; there is no
+    // such distinction here (`false` is the whole answer). What this pin guards is
+    // the cheaper failure: a `skip_serializing_if = "std::ops::Not::not"` would
+    // make the key vanish on every card that is NOT ready, and the TS mirror's
+    // required `ready: boolean` would then be a field the frontend reads as
+    // `undefined` — falsy today by luck, and a lie the moment anything tests
+    // `card.ready !== false`.
+    assert!(
+        absent.get("ready").is_some(),
+        "`ready` must be PRESENT when the card is NOT ready — a `skip_serializing_if` \
+         would delete the key exactly for the cards that need it"
+    );
+    assert_eq!(
+        absent.get("ready").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "…and it is JSON `false`, not `null` — the card's question is binary, so \
+         there is no third state on the wire"
     );
 }
 
@@ -1294,4 +1482,14 @@ fn record_linkable_session(db: &Db, id: &str, cwd: &str, cost: Option<f64>) {
         db.record_session_cost(id, total)
             .expect("record_session_cost (a snapshot write)");
     }
+}
+
+/// Write the readiness column on an already-recorded Session, in all THREE
+/// storage states: `Some(true)` → `1` (a claim), `Some(false)` → `0` (an
+/// explicit "no"), `None` → `NULL` (never claimed). A separate helper rather
+/// than a fifth parameter on [`record_linkable_session`], so the fifteen
+/// cost-era call sites above stay byte-identical.
+fn mark_session_ready(db: &Db, id: &str, ready: Option<bool>) {
+    db.set_session_ready(id, ready)
+        .expect("set_session_ready (the card's bell reads this column)");
 }

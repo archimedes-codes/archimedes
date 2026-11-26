@@ -119,6 +119,12 @@ const cardWith = (
   })),
   costUsd: null,
   artifactKeys: [],
+  // `ready` here is the STORAGE-side claim the board read carries, and it is a
+  // different thing from the frontend mark this file is about: the board computes
+  // it as an OR over `sessions.ready`, and nothing in these fixtures has claimed
+  // readiness. Task 5 swaps the consumer; until then the field is unused, so
+  // `false` is the honest value for a card the board never read.
+  ready: false,
 });
 
 const boardOf = (...cards: TaskCardView[]): StageWithTasks[] => [

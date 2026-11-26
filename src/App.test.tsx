@@ -2537,8 +2537,13 @@ describe("App (the Task board view)", () => {
             // REQUIRED wire field (issue #180): the board carries artifact KEYS,
             // never content. This card has none, and `[]` is the honest value —
             // omitting it would not typecheck, which is exactly why the field is
-            // not optional.
-            artifactKeys: [],
+            // not optional. `ready: false` shares the line for the same reason the
+            // Stage above shares one: this file is BASELINED at its exact code-line
+            // count and the ratchet refuses a baselined file growing by one code
+            // line. `false` is the honest value here too — the board computes
+            // `ready` as an OR over `sessions.ready`, and nothing in this fixture
+            // has claimed readiness.
+            artifactKeys: [], ready: false,
           },
         ],
       },

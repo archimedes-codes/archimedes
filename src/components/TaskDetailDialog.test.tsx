@@ -146,12 +146,15 @@ function column(
     },
     // `artifactKeys: []` is the "card has no artifacts" answer, and it is REQUIRED
     // on the wire type (issue #180) — an optional field would compile against every
-    // fixture here and render nothing when real data arrives.
+    // fixture here and render nothing when real data arrives. `ready: false` joins it
+    // for the same reason: the board computes `ready` as an OR over `sessions.ready`,
+    // and a card with no links here has no claim.
     tasks: tasks.map((task) => ({
       task,
       sessions: [],
       costUsd: null,
       artifactKeys: [],
+      ready: false,
     })),
   };
 }

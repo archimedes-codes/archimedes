@@ -64,8 +64,11 @@ impl Db {
                 .collect::<Result<Vec<_>, _>>()?;
             rows
         };
-        // Each card's linked Sessions plus the one figure the chip renders
-        // (issue #174). THREE deliberate choices:
+        // Each card's linked Sessions plus the TWO per-Session facts the card
+        // renders (issue #174, plus `ready`). This JOIN is not a convenience —
+        // it is the ONLY channel by which the board learns a SQLite fact held on
+        // `sessions` for a Session the board has never opened, which is what makes
+        // a readiness mark survive a restart. THREE deliberate choices:
         //
         //   - `task_id IN (SELECT id FROM tasks WHERE space_path = ?1)`, NOT a
         //     `cwd` filter. A linked Session is not STRUCTURALLY in the card's
@@ -92,9 +95,15 @@ impl Db {
         // of links and never creates a subagent Session, so no linked Session is
         // one today — filtering for a case that cannot occur would be a lie about
         // the writer set.
+        //
+        // `s.ready` is the FIFTH term and it sits AFTER `s.cost_usd` on purpose:
+        // the row closure below reads the cost at position 3 and `ready` at
+        // position 4, and `the_board_link_statement_selects_the_columns_the_const_owns`
+        // pins position 3 as the literal `s.cost_usd`. Putting `ready` earlier
+        // would silently make it the card's cost figure.
         let links = {
             let mut stmt = guard.prepare(
-                "SELECT ts.task_id, ts.session_id, ts.stage_slug, s.cost_usd \
+                "SELECT ts.task_id, ts.session_id, ts.stage_slug, s.cost_usd, s.ready \
                  FROM task_sessions ts \
                  JOIN sessions s ON s.id = ts.session_id \
                  WHERE ts.task_id IN (SELECT id FROM tasks WHERE space_path = ?1) \
@@ -102,7 +111,11 @@ impl Db {
             )?;
             let rows = stmt
                 .query_map(params![space_path], |row| {
-                    Ok((task_session_row_from(row)?, row.get::<_, Option<f64>>(3)?))
+                    Ok((
+                        task_session_row_from(row)?,
+                        row.get::<_, Option<f64>>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                    ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
             rows
@@ -142,9 +155,9 @@ impl Db {
                     .map(|task| {
                         // The links are already oldest-first from the statement,
                         // so a stable filter keeps that order — no second sort.
-                        let mine: Vec<&(TaskSessionRow, Option<f64>)> = links
+                        let mine: Vec<&(TaskSessionRow, Option<f64>, Option<i64>)> = links
                             .iter()
-                            .filter(|(link, _)| link.task_id == task.id)
+                            .filter(|(link, _, _)| link.task_id == task.id)
                             .collect();
                         // ADR 0082: `None` means "never reported", `Some(0.0)`
                         // means "a real zero". This fold IS SQL's SUM over
@@ -152,11 +165,23 @@ impl Db {
                         // here rather than in SQL because the rule must stay
                         // visible and pinned to the type that carries it.
                         let mut cost: Option<f64> = None;
-                        for (_, reported) in mine.iter() {
+                        for (_, reported, _) in mine.iter() {
                             if let Some(value) = reported {
                                 cost = Some(cost.unwrap_or(0.0) + value);
                             }
                         }
+                        // The readiness fold, and it is deliberately NOT the fold
+                        // above. `sessions.ready` is a tri-state COLUMN (NULL =
+                        // never claimed, 0 = explicitly not, 1 = claimed) and the
+                        // card answers a BINARY question, so `Some(1)` is the only
+                        // truthy value and NULL and 0 both fold to `false`. ADR
+                        // 0082's NULL/zero distinction does NOT carry over: it
+                        // exists because `cost_usd` renders a FIGURE and must tell
+                        // "never reported" from "a real zero"; a bell renders
+                        // NOTHING when the answer is no, so collapsing the two is
+                        // honest here. An `OR`, so ONE claiming Session is enough
+                        // and a card with no links is `false` (an empty OR).
+                        let ready = mine.iter().any(|(_, _, claimed)| *claimed == Some(1));
                         // Same trick as `mine` above: the artifact rows arrived
                         // `(task_id, key)` ordered by `rowid ASC`, so a stable
                         // filter keeps each card's keys oldest-write-first with no
@@ -168,9 +193,10 @@ impl Db {
                             .collect();
                         TaskCardView {
                             task: task.clone(),
-                            sessions: mine.into_iter().map(|(link, _)| link.clone()).collect(),
+                            sessions: mine.into_iter().map(|(link, _, _)| link.clone()).collect(),
                             cost_usd: cost,
                             artifact_keys: mine_keys,
+                            ready,
                         }
                     })
                     .collect(),

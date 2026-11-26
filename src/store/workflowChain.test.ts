@@ -161,9 +161,11 @@ function chainBoard(): StageWithTasks[] {
 
 /** The board's card wrapper. `moveTask`'s optimistic paint reads `card.task.id`, so a
  *  column meant to HOLD the card carries the real `TaskCardView`, and an empty
- *  `sessions` / `null` cost / `[]` artifacts are the truth for a card that has none. */
+ *  `sessions` / `null` cost / `[]` artifacts / `false` readiness are the truth for a
+ *  card that has none — `ready` is an OR over the linked Sessions' `sessions.ready`
+ *  column and this card has no links to contribute to it. */
 function card(task: TaskRow): TaskCardView {
-  return { task, sessions: [], costUsd: null, artifactKeys: [] };
+  return { task, sessions: [], costUsd: null, artifactKeys: [], ready: false };
 }
 
 /** Paint a board AND put the card in the column its `stageSlug` names.

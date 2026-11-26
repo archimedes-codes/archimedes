@@ -868,11 +868,18 @@ export const useTasks = create<BoardState>((set, get) => ({
       // came into the world has no artifacts. It is a REQUIRED field, so this
       // literal must carry it — and an empty list is the honest value, not a
       // placeholder: nothing has been written against a card that is one tick old.
+      //
+      // `ready: false` is that same honesty one level down: `ready` is a fact the
+      // BOARD computes (an OR over the linked Sessions' `sessions.ready` column),
+      // and this card has no links at all — an empty OR is `false`. It is also the
+      // value the board itself gives a link-free card, so the optimistic element
+      // and the next server read agree.
       const card: TaskCardView = {
         task: row,
         sessions: [],
         costUsd: null,
         artifactKeys: [],
+        ready: false,
       };
       const next =
         at === -1

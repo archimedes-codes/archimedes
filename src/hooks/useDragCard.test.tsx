@@ -122,6 +122,7 @@ const card = (id: string, stageSlug: string): TaskCardView => ({
   sessions: [],
   costUsd: null,
   artifactKeys: [],
+  ready: false,
 });
 
 /** Three columns, the third EMPTY — because the seeded default board is mostly

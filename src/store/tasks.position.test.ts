@@ -102,6 +102,7 @@ const card = (id: string, number: number, stageSlug: string): TaskCardView => ({
   sessions: [],
   costUsd: null,
   artifactKeys: [],
+  ready: false,
 });
 
 /** A three-column board, NOTHING hand-arranged — the state every existing database

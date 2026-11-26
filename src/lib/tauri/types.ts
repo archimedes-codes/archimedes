@@ -544,9 +544,9 @@ export interface ArtifactMeta {
 /** One board card plus what the board read knows about its Sessions (issue #174).
  *
  * The TS mirror of Rust's `TaskCardView` (`src-tauri/src/storage/db.rs`), which is
- * what `get_board` puts in `StageWithTasks.tasks`. The four keys
- * (`task`/`sessions`/`costUsd`/`artifactKeys`) and the ten inside `task` are frozen
- * TWICE: by `the_task_card_view_wire_keys_are_frozen` in
+ * what `get_board` puts in `StageWithTasks.tasks`. The five keys
+ * (`task`/`sessions`/`costUsd`/`artifactKeys`/`ready`) and the ten inside `task` are
+ * frozen TWICE: by `the_task_card_view_wire_keys_are_frozen` in
  * `src-tauri/src/storage/db/tests/mod.rs`, and by its mirror
  * `the task card view wire keys are frozen (mirror of the Rust pin)` in
  * `src/store/tasks.test.ts`. Both spell the same list, so a rename in either
@@ -591,6 +591,27 @@ export interface TaskCardView {
    *  never absent (`Vec<String>` has no `None`, and no `skip_serializing_if` runs,
    *  which `the_task_card_view_wire_keys_are_frozen` pins). */
   artifactKeys: string[];
+  /** Whether ANY linked Session claims readiness — the board's bell, and the ONLY
+   *  way a mark reaches a card whose Session has never been opened.
+   *
+   *  Computed in RUST as an `OR` over the card's linked Sessions, so a card with
+   *  NO links is `false` (an empty OR), never `null` and never absent.
+   *
+   *  A `boolean` and NOT `boolean | null`, so its null rule DIFFERS from the
+   *  `costUsd` field above — and that is deliberate, not an inconsistency.
+   *  `costUsd` renders a FIGURE, so ADR 0082's "never reported" (`null`, renders
+   *  nothing) must stay distinguishable from "a real zero" (`0`, renders
+   *  `$0.00`). A bell renders NOTHING when the answer is no, so the column's
+   *  `NULL` ("never claimed") and `0` ("explicitly not ready") are the SAME answer
+   *  to the question this field answers. The tri-state is a storage fact; the
+   *  card's question is binary.
+   *
+   *  REQUIRED, never optional, for the same reason every sibling is: an optional
+   *  field compiles against every fixture in the repo and then renders nothing
+   *  when real data arrives. It is present-and-`false` for a card that is not
+   *  ready (`the_task_card_view_wire_keys_are_frozen` pins that against
+   *  `serde_json`), so a consumer may test `card.ready === false` honestly. */
+  ready: boolean;
 }
 
 
