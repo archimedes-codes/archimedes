@@ -54,12 +54,14 @@ These are the owner's calls, recorded as decisions and not re-litigated.
 **D1 — The trigger is "claim OR settle, whichever fires first."** The settle edge is not removed
 and not gated away; `mark_done` becomes an additional, earlier path.
 
-**D2 — The model's `move_task` must check the ready flag first and error if it is missing.** In
-the owner's words: *"the only way that a session would settle in an auto col, would be if someone
-manually did it.. it cannot automatically move there, the only other way would be if it called
-move_task, which should check for the mark_done flag first, if thats missing THEN error
-move_task."* The intent is that an un-claimed settle is not a hole in the automation — the
-model's alternative route out of a column is closed unless it has claimed.
+**D2 — ~~The model's `move_task` must check the ready flag first and error if it is missing.~~
+SUPERSEDED BY D7.** In the owner's words: *"the only way that a session would settle in an auto col,
+would be if someone manually did it.. it cannot automatically move there, the only other way would be
+if it called move_task, which should check for the mark_done flag first, if thats missing THEN error
+move_task."* The intent is that an un-claimed settle is not a hole in the automation — the model's
+alternative route out of a column is closed unless it has claimed. **D7 keeps that intent and
+changes the mechanism**: the flag check is replaced by a graph test, which closes the whole forward
+route rather than the un-claimed part of it, and needs no frame identity threaded into a board verb.
 
 **D3 — The trust inversion is deliberate.** `mark_done` is a model-authored claim and the owner
 has chosen to act on it. Recorded as the decision. §5 states what the surveyed industry does
@@ -73,11 +75,13 @@ claim has not yet been acted on, by the settle that follows it. **The un-claimed
 has a stated, pinned behaviour: close the run, say so in the transcript, do not move.** No new
 timeout and no new state; the existing `stopChain` already does exactly that shape.
 
-**D5 — The model's `move_task` is gated on the flag AND a claimed move becomes LIVE.** Chosen over
-"gating only" precisely so the gate does not collapse the claimer into the mover for nothing: if a
-model move runs the destination's launch the way a pill click does, then the claim is what makes
-the move consequential rather than a formality preceding an inert write. See the finding below —
-this makes the model the **fourth** launcher and the first one that is not a person.
+**D5 — ~~The model's `move_task` is gated on the flag AND a claimed move becomes LIVE.~~ SUPERSEDED
+BY D7.** Chosen over "gating only" so the gate would not collapse the claimer into the mover for
+nothing: if a model move runs the destination's launch the way a pill click does, the claim is what
+makes the move consequential rather than a formality preceding an inert write. **D7 delivers the same
+benefit for free**: under D7 the model's only live forward path *is* the claim path, so the launch is
+budgeted by construction and **there is no fourth launcher**. The model never launches anything except
+through the automation.
 
 **D7 — `mark_done` is the ONLY forward door; `move_task` is backward-only.** The model's
 `move_task` host verb REFUSES a forward move and its refusal sentence teaches the replacement
@@ -126,6 +130,59 @@ Tauri event, which would need an `EventSink` that `exec::run` does not hold and 
 `router.rs` — baselined at 1309 code lines with zero headroom. The accepted cost, stated plainly:
 **a model that ignores its own tool result gets no launch.** The mark still lands and the bell
 still shows; the card just does not advance.
+
+**D15 — Rust implements the `sort_order + 1` fallback.** Grounding found the fallback exists in
+TypeScript (`workflowGraph.ts:88-94`) and **nowhere in Rust** (one `sort_order + 1` hit in the whole
+crate, and it is a comment), and that `next_slugs` is `NULL` on **every seeded Space** —
+`seed_default_stages` deliberately omits it (`stages.rs:516-523`), pinned by
+`stage_lifecycle.rs:134-136`. So if Rust treats `NULL` as "no edges, nothing reachable", two things
+break at once: the forward gate is **inert on every Space the app itself creates** — a model could
+move a card `backlog → done` on a fresh board, the exact dodge D8 was written to close — and a claim
+in an `auto` column resolves **no destination**, so the feature is dead on arrival on a fresh install.
+Rust therefore ports the fallback. It is not a new opinion: it is the semantics `nextStepSlugs`
+already implements and `nextStepOf` already launches with, which makes the two sides answer the same
+claim identically while the decision is live in both. Note the two gates give deliberately different
+answers to a `NULL` origin and must not be collapsed: Strict asks *"is this a declared edge"* (NULL →
+unconstrained, do not refuse) and the new gate asks *"is this forward"* (NULL → the chain still has a
+shape, so refuse).
+
+**D16 — The decider's input is the Session id alone, because that is all `mark_done` has.**
+`mark_done`'s executor is `mark_done(db, origin, is_subagent)` (`exec/session.rs:65-68`): no
+`space_path`, no `task_id`, no `launched_slug`, no cost figure. So the decider resolves card, Space and
+frozen launching column itself. **No such read exists** — `Db::task_numbers()` (`board.rs:454`) is the
+only session-keyed read and its row is `{session_id, task_number, stage_slug}`, **deliberately without
+`task_id`** (`rows.rs:429-441`). The multi-link ambiguity is resolved by copying `task_numbers`'
+`MAX(rowid)` newest-link-wins rule verbatim so the two reads cannot disagree: 31 of 104 cards hold more
+than one linked Session, and "the most recent card this Session was launched against" is the only
+question a Session can answer about a card it does not own — the words that column's own doc uses.
+
+**D17 — The dedupe comes from `task_sessions`, not `workflow_runs`.** `workflow_runs` is
+`(id, space_path, task_id, started_at, finished_at, steps, cost_usd, stop_reason)`
+(`db/mod.rs:1336-1344`) — **no per-step record and no column naming a slug**, `steps` being a scalar —
+so "has this run already stepped from this slug" is unanswerable. Worse: if the claim reuses
+`workflow_run_step` it *increments* `steps` before the frontend has acted, so any dedupe keyed on the
+run row answers "already advanced" at the settle **in exactly the case the fallback exists for** — a
+model that ignored its tool result would get no launch *and* no fallback, killing the fallback by
+construction. `task_sessions` is the launch record and its `stage_slug` is the frozen launching
+column, so the test is: a link row whose `stage_slug` equals the resolved destination with `rowid`
+**greater** than the claimer's own link row. One query, no new column, no 22nd gate.
+
+**D18 — The ceiling is evaluated at settle, not at the claim.** `cost_delta_usd` comes from a
+before-turn snapshot (`workflowChain.ts:230-238`, `taskLaunch.ts:604`+`:637`) because `sessions.cost_usd`
+is a running total. At `mark_done` the turn is still running, so no delta for *that* turn exists:
+passing `None` makes the ceiling never trip — the fail-open `auto_guards` was written to prevent — and
+passing a partial figure trips it on a meaningless number. The claim counts the **step** (which is
+what actually stops an unbilled chain, `workflow_runs.rs:204-213`); the **ceiling** is evaluated where
+a real delta exists.
+
+**D19 — The act side needs a slice-free path.** Deciding in Rust escaped the unloaded-slice no-op for
+the *decision*; the *act* is still slice-bound in three places grounding verified: `resolveStage`
+(`taskLaunch.ts:210-226`) returns `{slug: null, absent: true}` with no slice, so the move is skipped
+and the advice's `onEnterSkill`/`promptPrefix` never reach it; `useTasks.moveTask` (`tasks.ts:822-829`)
+refuses with `"No board loaded for this Space."` and the caller turns that into `launch_refused`; and
+the chain's wiring drops every field but the slug (`taskLaunch.ts:642`). So the frontend gains a
+destination-trusting launch arm and an explicit-endpoint `moveTask` arm, or the plan's own headline
+criterion — "with no board and no canvas mounted" — cannot pass.
 
 **D6 — The graph shape is outcome-routed single successor.** `mark_done` gains an outcome value,
 edges gain a name, exactly one edge fires per claim. **Fork and join are explicitly out of scope**
