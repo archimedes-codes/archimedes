@@ -174,15 +174,18 @@ construction. `task_sessions` is the launch record and its `stage_slug` is the f
 column, so the test is: a link row whose `stage_slug` equals the resolved destination with `rowid`
 **greater** than the claimer's own link row. One query, no new column, no 22nd gate.
 
-**D18 — The ceiling is evaluated at settle, not at the claim.** `cost_delta_usd` comes from a
-before-turn snapshot (`workflowChain.ts:230-238`, `taskLaunch.ts:604`+`:637`) because `sessions.cost_usd`
-is a running total. At `mark_done` the turn is still running, so no delta for *that* turn exists:
-passing `None` makes the ceiling never trip — the fail-open `auto_guards` was written to prevent — and
-passing a partial figure trips it on a meaningless number. The claim counts the **step** (which is
-what actually stops an unbilled chain, `workflow_runs.rs:204-213`); the **ceiling** is evaluated where
-a real delta exists.
-
-
+**D18 — The ceiling lags by at most one turn's delta; the step bound is the primary guard.** (Corrected
+in review round 3 — the first two phrasings, "at settle, not at the claim" and "at every settle", were
+both wrong in opposite directions.) `cost_delta_usd` comes from a before-turn snapshot
+(`workflowChain.ts:230-238`, `taskLaunch.ts:604`+`:637`) because `sessions.cost_usd` is a running total,
+so at `mark_done` the spend for *the currently running turn* does not exist yet. But that is the only
+lag: passing `None` means the **fold** adds nothing, and the comparison still runs against `run.cost_usd`
+banked by earlier settles — so a claim at link 3 with $12 banked against a $10 ceiling **does** trip,
+before that link launches. And it is *not* evaluated on an un-claimed settle, because the `unclaimed`
+arm (D4) returns first. So: evaluated on any path where a claim exists, never more than one turn behind,
+and **the step bound is the primary guard** — it is evaluated at the claim before any launch, and
+`cost_usd IS NULL` never trips a ceiling (`workflow_runs.rs:204-213`), so on an unbilled chain the step
+bound is the only thing that stops it.
 **D19 — The act side needs a slice-free path.** Deciding in Rust escaped the unloaded-slice no-op for
 the *decision*; the *act* is still slice-bound in three places grounding verified: `resolveStage`
 (`taskLaunch.ts:210-226`) returns `{slug: null, absent: true}` with no slice, so the move is skipped
