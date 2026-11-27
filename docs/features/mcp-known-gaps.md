@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-11-27
-verified-by: read against this tree at `2b6bd26` (`agent/mcp/tool.rs`, `agent/harness/tool_specs.rs`) — every gap below re-confirmed still open, not copied from the plan — DATED PATH NOTE 2026-11-25, and it is about a PATH and not about any gap below. The second path this line cites, `agent/harness/tool_specs.rs`, no longer exists in this tree. `agent/harness/` is now an ALIAS module with only `{mod,store,trust}.rs` (the harness moved to the crates.io-pinned `fulcrum-harness`), and since ADR 0102 / issue #183 `tool_specs()` is the ENGINE's 19-name table while the board verbs are this repo's own Host-tool specs in `agent/host_tools/specs.rs`. CORRECTION 2026-11-27, of a figure THIS line had WRONG: it said "the seven board verbs", and `mark_done` (shipped in `ec5f4f37`) made that stale — the count measured at this tree is EIGHT, not seven, and it is re-run rather than carried (`grep -c "ToolSpec {" src-tauri/src/agent/host_tools/specs.rs` gives 8, `src-tauri/src/agent/host_tools/tests/surface.rs` declares `const HOST_TOOL_NAMES: [&str; 8]` and pins `the_eight_host_specs_are_disjoint_from_the_engine_advertised_set`, and the composed advertised set that file asserts is 27). No `mcp` gap is closed or opened by that move. `mcp` stays a loop-internal arm, its `action: "auth"` needs to prompt so no name-level `ScriptAccess` field can express its reach, and the `mcp` spec text itself is unchanged among the crate's 19. NEW SECTION 2026-11-27 — `## MCP as the way to add a tool, and what an MCP tool is invisible to (#47)` — seven registration-consequence claims, each re-measured in that sitting against the registry extract of the PINNED `fulcrum-harness` 0.8.0 (`src-tauri/Cargo.toml` declares it, so the crate line numbers below cannot drift) plus this tree. The three-layer `mcpServers` merge with the project layer last, `mcp` outside `POLICIED_TOOLS` with `mcp: deny` a no-op at BOTH the gate and the child's advertised set, `enabled_tools` unable to name a server or one of its tools, `push_config_update` excluding `mcp_servers` while `apply_config_update` has no parameter to receive it, `collect_tools` awaiting every server serially under a 60 s per-request bound, the `#`-mention picker dropping a `disabled` server with no note, and `annotations` discarded by both `list_tools` parsers (0 hits crate-wide). ONE claim that section was expected to carry is FALSE at this tree and is written as false INSIDE it rather than omitted — there is NO Settings off-switch for an MCP server here, `draftToEntry` never sets `disabled` and the section lists every entry unfiltered, so `disabled: true` is reachable only by hand-editing `settings.json`. Rust read, not executed — no test reads this file, so the citations ARE the instrument. `docs/decisions/0123-*.md` (user-supplied tool code is declined) is deliberately NOT cited anywhere in this file; if it lands, that is where the security half of the registration story belongs, and nothing here depends on it.
+verified-by: read against this tree at `2b6bd26` (`agent/mcp/tool.rs`, `agent/harness/tool_specs.rs`) — every gap below re-confirmed still open, not copied from the plan — DATED PATH NOTE 2026-11-25, and it is about a PATH and not about any gap below. The second path this line cites, `agent/harness/tool_specs.rs`, no longer exists in this tree. `agent/harness/` is now an ALIAS module with only `{mod,store,trust}.rs` (the harness moved to the crates.io-pinned `fulcrum-harness`), and since ADR 0102 / issue #183 `tool_specs()` is the ENGINE's 19-name table while the board verbs are this repo's own Host-tool specs in `agent/host_tools/specs.rs`. CORRECTION 2026-11-27, of a figure THIS line had WRONG: it said "the seven board verbs", and `mark_done` (shipped in `ec5f4f37`) made that stale — the count measured at this tree is EIGHT, not seven, and it is re-run rather than carried (`grep -c "ToolSpec {" src-tauri/src/agent/host_tools/specs.rs` gives 8, `src-tauri/src/agent/host_tools/tests/surface.rs` declares `const HOST_TOOL_NAMES: [&str; 8]` and pins `the_eight_host_specs_are_disjoint_from_the_engine_advertised_set`, and the composed advertised set that file asserts is 27). No `mcp` gap is closed or opened by that move. `mcp` stays a loop-internal arm, its `action: "auth"` needs to prompt so no name-level `ScriptAccess` field can express its reach, and the `mcp` spec text itself is unchanged among the crate's 19. NEW SECTION 2026-11-27 — `## MCP as the way to add a tool, and what an MCP tool is invisible to (#47)` — seven registration-consequence claims, each re-measured in that sitting against the registry extract of the PINNED `fulcrum-harness` 0.8.0 (`src-tauri/Cargo.toml` declares it, so the crate line numbers below cannot drift) plus this tree. The three-layer `mcpServers` merge with the project layer last, `mcp` outside `POLICIED_TOOLS` with `mcp: deny` a no-op at BOTH the gate and the child's advertised set, `enabled_tools` unable to name a server or one of its tools, `push_config_update` excluding `mcp_servers` while `apply_config_update` has no parameter to receive it, `collect_tools` awaiting every server serially under a 60 s per-request bound, the `#`-mention picker dropping a `disabled` server with no note, and `annotations` discarded by both `list_tools` parsers (0 hits crate-wide). CORRECTION 2026-11-27, of one claim that section carried as false-in-the-tree: it said there was NO Settings off-switch for an MCP server, that `draftToEntry` never set `disabled` and that the section listed every entry unfiltered, so `disabled: true` was reachable only by hand-editing `settings.json`. Both halves of it have SINCE SHIPPED in this same run (#47): `93d4be46` added the per-server off-switch (`McpDraft.disabled`, the `Switch server off` control, the `Off` badge, `draftToEntry`'s conditional write that omits the key when false) and `0cb795ff` gave the off state its own honest sentence in `test_mcp_server` / `auth_mcp_server` (`disabled_mcp_server_error`, ahead of `classify_server`). The two items that carried it now say that instead, and every `McpSection.tsx` and `commands/settings.rs` line number near those edits was RE-MEASURED at the merged tree — the siblings inserted code above them. Rust read, not executed — no test reads this file, so the citations ARE the instrument. `docs/decisions/0123-user-supplied-tool-code-is-declined-the-registered-tool-surface-is-mcp-and-data.md` (`status: accepted`) HAS LANDED since this file was first written; it records that a user-supplied tool SCRIPT executed in-process is DECLINED and that the registered-tool surface is MCP and data — the security half of the registration story — and it is still deliberately NOT cited in any item above, so nothing here depends on it.
 ---
 
 # MCP — known gaps
@@ -141,14 +141,22 @@ version is immutable, so those line numbers cannot drift.
   is a name the one `mcp` arm forwards at call time (`mcp/types.rs:99-103`,
   `harness/loop/tools.rs:259-271`). `disabled: true` is therefore the ONLY
   per-server switch, and it works by making `classify_server` answer `None`
-  (`mcp/types.rs:280-282`). **What is NOT true, and was expected here:** there is
-  no Settings off-switch for it. The field exists on the wire type
-  (`src/lib/tauri/types.ts:1341`) and no Settings surface writes it —
-  `draftToEntry` builds an entry from the URL / command fields and never sets
-  `disabled` (`src/components/settings/McpSection.tsx:248-266`), and the section
-  lists every entry unfiltered (`McpSection.tsx:440`). Switching a server off is
-  a hand-edit of `settings.json`, and the entry it leaves is clean because
-  nothing writes the key at all.
+  (`mcp/types.rs:280-282`). **The Settings off-switch for it exists** (it
+  landed in the same run as this section, `93d4be46`, after this item was
+  written). The dialog draft carries the flag (`McpDraft.disabled`,
+  `src/components/settings/McpSection.tsx:223`) and the `Switch server off`
+  control binds it for BOTH kinds, because that row sits AFTER the kind
+  ternary (`:430-438`). `draftToEntry` (`:260-283`) writes the wire field
+  (`src/lib/tauri/types.ts:1341`) OUTSIDE the `kind` branch, as
+  `if (d.disabled) entry.disabled = true;` (`:281`) — OMITTED when false, so a
+  clean entry stays clean and the key still means only "off". The row badges
+  it `Off` (`:127-131`) and disables Test / Authenticate (`:155`, `:166`)
+  while Edit and Remove stay live, and `entryToDraft` reads the key back as
+  `entry.disabled === true` (`:244`) — mirroring `classify_server`'s
+  `as_bool() == Some(true)`, so a malformed `"disabled": "yes"` still edits as
+  ON. The list is still unfiltered (`:476`): an off entry is listed and
+  badged, not hidden. Switching a server off is a Settings click, not a
+  hand-edit of `settings.json`.
 - **A new or edited server takes effect for the NEXT session, not the running
   one.** `push_config_update` deliberately excludes `providers` and
   `mcp_servers` — "the recorded residual hole (both stay session-construction
@@ -161,7 +169,7 @@ version is immutable, so those line numbers cannot drift.
   server has connected), so a push after connect would drop a live child. Nothing
   in the UI says the change waits — the one sentence the section offers about
   sessions reads "Existing sessions are unaffected"
-  (`src/components/settings/McpSection.tsx:190`), which is true of the running
+  (`src/components/settings/McpSection.tsx:196`), which is true of the running
   Worker and reads as a reassurance instead.
 - **One `mcp({search})` is not cheap on a multi-server config.** `collect_tools`
   calls `list_tools` on **every** server before it answers, in a plain `for` loop
@@ -181,14 +189,21 @@ version is immutable, so those line numbers cannot drift.
   `load_servers` keeps only what
   `classify_server` accepts (`mcp/config.rs:50-56`), and `classify_server`
   answers `None` for `disabled: true` (`mcp/types.rs:278-282`) — so the switch
-  removes the row with no note anywhere. Related, and reachable from a
-  hand-edited file: `test_mcp_server` and `auth_mcp_server` both answer
-  "need a `url` or a `command`" for a deliberately-off entry
-  (`src-tauri/src/commands/settings.rs:204-207`, `:217-220`), because
-  `classify_server` returns `None` for THREE distinct causes — off
-  (`mcp/types.rs:280-282`), legacy `sse` (`:283-285`), and neither a usable `url`
-  nor a usable `command` (`:327`) — and both commands collapse the three into one
-  message. (The `#` trigger is itself off by default — `mcpMentionsEnabled`,
+  removes the row with no note anywhere. Related, and since `0cb795ff` no
+  longer mis-reported: `test_mcp_server` and `auth_mcp_server` answer a
+  `disabled: true` entry with the off-state's OWN sentence — "this server is
+  switched off — turn it on to test it" — from a `disabled_mcp_server_error`
+  pre-check that runs BEFORE `classify_server`
+  (`src-tauri/src/commands/settings.rs:213-222`, called at `:231-233`,
+  `:247-249`); it is a `SettingsError::Other`, which renders `{0}` bare
+  (`src-tauri/src/agent/errors.rs:609-610`), so the sentence stands alone
+  instead of inside "invalid MCP server entry (…)". `classify_server`'s `None`
+  still covers THREE causes — off (`mcp/types.rs:280-282`), legacy `sse`
+  (`:283-285`), neither a usable `url` nor a usable `command` (`:327`) — and
+  the collapsed "need a `url` or a `command`" (`settings.rs:234-236`,
+  `:250-252`) still covers the OTHER two: the legacy-`sse` entry and the
+  genuinely-malformed one. The off cause is the one the pre-check took over.
+  (The `#` trigger is itself off by default — `mcpMentionsEnabled`,
   `src/components/settings/GeneralSection.tsx:61-67`.)
 - **`annotations` are discarded at the transport boundary.** `ToolInfo` is
   `name` / `description` / `input_schema` and nothing else
