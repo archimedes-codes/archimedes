@@ -60,7 +60,7 @@ import {
  * THE CLAIM PATH IS NOT HERE. `consumeAdvanceAdvice` / `carryOutClaim` — the
  * `App.tsx`-batcher entry point, a SECOND subject than the click-driven launch — live
  * in the ADR 0113 mirror sibling `taskLaunch.claim.test.ts`. They moved there when this
- * file reached 1,040 code lines against ADR 0112's 1,000-line test gate; the move was
+ * file reached 998 code lines against ADR 0112's 1,000-line test gate; the move was
  * verbatim (leaf-name diff, loss = 0), so nothing was added to it and nothing was taken
  * from it.
  */

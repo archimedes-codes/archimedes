@@ -1135,7 +1135,7 @@ describe("the scanner actually reads the tree", () => {
     // wrapper and no wire type is added or removed by this commit, so both pinned API
     // lists below are untouched.
     // 73 -> 74 for the claim path's own test sibling: `src/store/taskLaunch.claim.test.ts`,
-    // the ADR 0113 mirror file `taskLaunch.test.ts` needed once the parent reached 1,040
+    // the ADR 0113 mirror file `taskLaunch.test.ts` needed once the parent reached 998
     // code lines against ADR 0112's 1,000-line test gate. It is a SPLIT, not an addition of
     // coverage: `consumeAdvanceAdvice — the claim path` moved out of the parent verbatim
     // (6 tests out, 6 tests in, leaf-name diff reports loss = 0), so the tree gained a FILE
