@@ -1739,11 +1739,12 @@ mod tests {
         // THE SECOND CALL SITE, PINNED. `disabled_mcp_server_error` is called by
         // BOTH MCP commands, and a shared helper invites exactly this regression:
         // pushing the pre-check BELOW `classify_server` in `auth_mcp_server` (or
-        // dropping it there) leaves every `test_mcp_server` test green. The entry
-        // carries a VALID `url` on purpose — it classifies successfully, so the
-        // ONLY thing that can answer it here is the off-check; without the
-        // pre-check this falls through to `classify_server`'s `None` and the
-        // `url`/`command` sentence (the mutation this test must catch).
+        // dropping it there) leaves every `test_mcp_server` test green. The valid
+        // `url` is here for PLAUSIBILITY, not classification: a well-formed entry
+        // cannot be waved off as a pass earned by a broken fixture. The pin bites
+        // on ORDER — `disabled` short-circuits `classify_server` at mcp/types.rs:280
+        // BEFORE the `url` arm at :286 — so only the off-check can answer it; without
+        // it a `disabled` entry with a good `url` gets the `url`/`command` sentence.
         // The pre-check returns BEFORE `authenticate_server`, so no OAuth stack,
         // no browser and no socket is involved — the timing assertion below is
         // the proof of that, and `kind()` is `other`, never `mcp_auth_failed`.
