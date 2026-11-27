@@ -263,20 +263,29 @@ Two rules apply to every entry here:
   `worker_e2e` entries above, this one does NOT co-occur with the temp-dir census
   guard: on that run the census step passed and only `cargo test` failed, so a red
   here is one incident and nothing else needs explaining.
+
 - **`src/lib/paletteTestKit.test.ts`'s four discovery tests fail TOGETHER, all with the identical
   `src/styles/guardprobe.css cannot be read — a Palette spec must name a CSS file it owns` — a LOCAL
   cross-worker plant/delete race, and it needs an owner, not a drive-by fix.** **It bit LOCALLY, on a
   desktop `pnpm test`, not on a CI leg** — so there is no run ID to cite and `gh run view` is the wrong
-  tool; check your own terminal first. It is one of only two local entries here (the
-  `provider_gcloud_adc` bullet above is the other, and unlike this one CI *cannot* hit it — see its
-  "CI is safe" paragraph). It is also the **only entry here whose mechanism is a test writing into this
-  repo's own tracked working tree**: every other local or load entry churns `/tmp`, a scratch `HOME`, or
-  a process-global env, never a path `git ls-files` can see.
+  tool; check your own terminal first. It is a LOCAL entry in the sense that rule #1 above cannot serve
+  it: there is no run to view. The `check-temp-dir-census` case-13 bullet and the `provider_gcloud_adc`
+  bullet above are local on their own text too — case-13 churns a `/tmp` CI does not have, and
+  `provider_gcloud_adc` is local-only by construction because CI *cannot* hit it (see its "CI is safe"
+  paragraph) — but unlike both, this one needs no load at all. It is also the **only entry here whose
+  mechanism is a test writing into this repo's own working tree**: every other local or load entry
+  churns `/tmp`, a scratch `HOME`, a process-global env, or a local port, whereas this plant is a
+  TRANSIENT UNTRACKED file inside tracked directories — visible to a filesystem walk (`grep -rln`) and
+  invisible to `git ls-files`, which cannot see an untracked path even while it exists.
   The four tests, named in file order because you must match on the NAME:
   `every row's modes match its blocks, and every registry mode is graded`,
   `every row declares its own id and its own CSS file`,
   `grades every shipped Palette clean, so the harness is not simply broken`, and
   `grades every graded text token in every Palette — a Palette cannot shrink the set`.
+  **Every `path:NNN` below is dated provenance, not a match key** — measured at `61c2e19d`, where every
+  one of them resolves (and still resolving at the tree this entry was written in). Rule #2 above is the
+  one that governs: the four NAMES are how you match this flake, and the line numbers are the part that
+  moves.
   **THE TELL, which is cheap and recognisable: all four fail with the SAME message, and it names
   `guardprobe`.** It is thrown by `readCssFile` (`src/lib/paletteTestKit.ts:72`; the message literal
   is at `:73`) from the palette-discovery walk and from `gradePalette`
@@ -309,11 +318,16 @@ Two rules apply to every entry here:
   looks: `grep -rln guardprobe src/ scripts/` measures **ten files** today
   (`paletteCompleteness.test.ts`, `paletteTestKit.ts`, `paletteTestKit.test.ts`, `sourceSweep.ts`,
   `sourceSweep.test.ts`, `layerBoundary.test.ts`, `classNameConvention.test.ts`,
-  `themeTokens.test.ts`, `tauriBarrel.test.ts`, `tauriBoundary.test.ts`), and six of them carry
-  tolerances written specifically for this probe (`layerBoundary.test.ts:139`/`:343`/`:389`,
-  `classNameConvention.test.ts:113`/`:330`, `sourceSweep.ts:17`, and
-  `themeTokens.test.ts:836`/`:1365`/`:1408`). **The hazard is therefore already documented in-repo and
-  only TOLERATED, never closed** —
+  `themeTokens.test.ts`, `tauriBarrel.test.ts`, `tauriBoundary.test.ts`), and seven of them carry a
+  vanished-path tolerance written for this probe (`layerBoundary.test.ts:139`/`:343`/`:389`,
+  `classNameConvention.test.ts:113`/`:330`, `themeTokens.test.ts:836`/`:1365`/`:1408`,
+  `tauriBarrel.test.ts:61`, `tauriBoundary.test.ts:86`, `paletteTestKit.ts:323`/`:382`, and
+  `sourceSweep.ts:17`, which is the tolerance's definition rather than a second copy of it). The other
+  three do not carry one: `paletteTestKit.test.ts` deliberately reads with `named()`, not `listed()`
+  (`:22-23`), so its pin goes red rather than skipping, `sourceSweep.test.ts` drives the mechanism on
+  `.tmp` probes it plants itself, and `paletteCompleteness.test.ts` routes its `.tsx` sweep through the
+  reader for uniformity, not for its own probe — its header at `:101-108` says so out loud. **The hazard
+  is therefore already documented in-repo and only TOLERATED, never closed** —
   `paletteTestKit.test.ts:668` and `paletteTestKit.ts:316` both name the other-worker plant/delete
   explicitly, and `sourceSweep.ts:8-23` exists precisely because seven gates list-then-read a tree
   another worker is churning. What that machinery catches is a path that VANISHED before it was
