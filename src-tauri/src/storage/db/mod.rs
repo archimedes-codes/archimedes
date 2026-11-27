@@ -1201,6 +1201,43 @@ impl Db {
             tx.execute("ALTER TABLE stages ADD COLUMN next_outcomes TEXT", [])?;
             Ok(())
         })?;
+        // The edge NAME a `mark_done` chose (the `mark_done`-as-the-node-completion-
+        // signal work). A new COLUMN on the pre-existing `sessions` table, so gate
+        // territory (AGENTS.md), and `SessionRow` gains NO field: `SESSION_COLUMNS` is
+        // a 10-column projection whose drift-guard arity tie this column must not
+        // touch, and `ready` is not in it either — the same reason the readiness flag
+        // itself crosses no wire type. The value is read and written by SQL alone.
+        //
+        // WHY A COLUMN ON `sessions` AND NOT ON `workflow_runs`, which is the
+        // alternative this considered and rejected. The run looks like the natural
+        // home — it IS the chain record, it is created at claim time, and the advice
+        // already reads it for cost. But it is NOT always there: `workflow_run_step_on`
+        // is reached at arm 6, so a claim in a non-auto column, or one whose column
+        // leads nowhere, never opens a run at all — and the door that writes this value
+        // runs BEFORE the advice decides anything, so it could not know whether the row
+        // it is writing to exists. It also gets CLOSED and re-opened mid-card: a chain
+        // that stops and restarts is a new run, and a name the previous chain wrote
+        // would then govern the next one. And a card can carry several Sessions while it
+        // carries one open run, so a run-scoped name could not say WHICH Session chose
+        // it — which is the whole question, because the settle asks it about one
+        // Session id. The claim is a fact about the Session that made it, exactly as
+        // `ready` is, so it lives beside `ready` and is written by the same statement.
+        //
+        // NO `DEFAULT` and NO backfill, and the argument is `ready`'s own one column
+        // up, worn as a name instead of a flag: NULL means "this Session never named an
+        // edge", which is the ordinary case and resolves to the HEAD edge — so an
+        // upgrade routes exactly the cards it routes today. A `DEFAULT` or a backfill
+        // would name an edge for a claim nobody named and move a card down a transition
+        // its owner never chose, the fail-open-by-invention `stages.next_outcomes` and
+        // `stages.auto` each refuse from their own direction.
+        //
+        // `dflt_value` is pinned to NULL by
+        // `the_advance_outcome_gate_arrives_null_for_every_pre_existing_session`, so a
+        // `DEFAULT` added here fails a pin rather than passing quietly.
+        gate(&mut conn, "sessions", "advance_outcome", |tx| {
+            tx.execute("ALTER TABLE sessions ADD COLUMN advance_outcome TEXT", [])?;
+            Ok(())
+        })?;
         // One-time migration for pre-existing databases: give
         // `native_messages` its `ON DELETE CASCADE` foreign key (a
         // pre-existing table cannot GAIN an FK in place — recreate it,
@@ -1332,7 +1369,19 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- the phantom-`$0.00` collapse `cost_usd`'s gate documents and pins, so this
     -- column arrives DEFAULT-less and the gate below backfills only the rows that
     -- genuinely carry the old stored marker.
-    ready INTEGER
+    ready INTEGER,
+    -- The edge NAME this Session's `mark_done` chose, and NOTHING else. Written in the
+    -- SAME statement as `ready` by `set_session_ready`, because the two are one fact —
+    -- "this Session claims it is done, and this is the transition it claims" — and two
+    -- statements would leave a claim naming an edge it did not name. NULL means "it
+    -- claimed and named nothing", which is the ordinary case (every seeded board is
+    -- unlabelled) and resolves to the HEAD edge; the absence of a `DEFAULT` is what
+    -- keeps "never claimed" and "claimed, unnamed" from collapsing into one another,
+    -- the same discipline `ready`'s three states above and `next_outcomes`' NULL each
+    -- hold. NO backfill: a pre-existing row never named an edge, and inventing a name
+    -- for a claim nobody made would route a card down an edge its owner never chose.
+    -- See the `advance_outcome` gate in `Db::open`.
+    advance_outcome TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY,

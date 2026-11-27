@@ -14,6 +14,16 @@
 //! (`stages`) and two unmatched test names — plus `open`, which mirrors the
 //! `mod.rs` parent and is the documented shape above, not a deviation.
 //!
+//! A SECOND PRODUCTION SIBLING IS NOW MIRRORED BY A TRIO, on the same subject-split
+//! rule and for the same reason `stages` was: `db/advise.rs` is ONE file, its test child
+//! passed ADR 0112's 1,000-code-line gate at 1,042, and the sanctioned answer to that red
+//! is a subject split. [`advise`] keeps the arms and their order, [`advise_cost`] the
+//! settled-cost bank, [`advise_outcome`] the edge the model chose. So the name-set diff
+//! unmatched production name, and now shows FOUR unmatched test names beyond `open`
+//! (`stage_lifecycle`, `stage_setters`, `advise_cost`, `advise_outcome`) against the one
+//! unmatched production name, and the nine fixtures the advise trio shares live in
+//! [`support`] because more than one child reads them.
+//!
 //! `db/stages.rs` is ONE production file, and ADR 0113 governs exactly that case —
 //! "Where production is **one** file, the test children are named by subject and
 //! there is nothing to mirror file-for-file", with `commands/tasks/tests/` (one
@@ -54,8 +64,15 @@ mod support;
 
 mod artifacts;
 // The single decider's arm order is this file's central subject, so it mirrors its
-// own production sibling.
+// own production sibling. TWO siblings join it by SUBJECT, not by file: ADR 0112's
+// 1,000-code-line test gate reddened `advise.rs` at 1,042, and `advise.rs` split the
+// way `stages.rs` once did into `stage_lifecycle` + `stage_setters` — `advise_cost`
+// owns the settled-cost bank and the ceiling's accumulation, `advise_outcome` owns the
+// edge the model chose and the two doors' agreement on it. Each header states its own
+// boundary and which tests straddle it.
 mod advise;
+mod advise_cost;
+mod advise_outcome;
 mod auto_guards;
 mod board;
 // The forward-reachability BFS (D8/D15) has its own child because its production

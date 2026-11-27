@@ -138,7 +138,21 @@ pub(super) async fn mark_done(
     // `BoardError` half converts through the `From` impl this helper is generic over,
     // which is exactly the reason that genericity exists.
     let (claimed, advice) = spawn_host_call::<_, HostToolError, _>("mark_done", move || {
-        let claimed = Db::set_session_ready(&db, &origin_session_id, Some(true))?;
+        // THE CLAIM AND ITS EDGE NAME, in ONE write. `set_session_ready` updates both
+        // columns in one statement precisely because they are one fact — a claim, and
+        // the transition it claims — and a name persisted in a second statement could
+        // be left behind by a turn-start clear that lands between the two, or could
+        // survive a claim that was never written. This closure already holds the one
+        // lock the claim takes, so persisting here costs no second acquisition; the
+        // alternative (a separate verb) would put a lock between a claim and its name,
+        // which is the same window this closure exists to close.
+        //
+        // The settle door reads this column back inside `decide`, and that is the whole
+        // reason it is stored rather than passed: the settle has no name to report, so
+        // without a persisted name it resolves the head edge and the model's choice is
+        // silently discarded at the second door.
+        let claimed =
+            Db::set_session_ready(&db, &origin_session_id, Some(true), outcome.as_deref())?;
         // `None` for the cost delta, always, on this door. The turn is still running
         // and `sessions.cost_usd` is a RUNNING TOTAL, so the delta for THIS turn does not
         // exist yet — the frontend computes it from a before-turn snapshot at settle.
@@ -146,6 +160,12 @@ pub(super) async fn mark_done(
         // comparison still runs against whatever earlier settles banked on the open run,
         // so a chain that has already blown its ceiling stops here rather than launching
         // one more link. The settle fallback is where a real figure arrives.
+        //
+        // `outcome` is passed explicitly AND read back from the row a moment later, and
+        // the two are the same value by construction — the statement above just wrote
+        // it. Passing it keeps this door honest about what the model typed even if the
+        // row write matched nothing (`claimed == false`), and `decide` prefers a name it
+        // was handed over one it read.
         let advice = db.workflow_advance_advice(&advice_session_id, outcome.as_deref(), None)?;
         Ok((claimed, advice))
     })

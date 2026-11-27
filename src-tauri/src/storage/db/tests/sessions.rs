@@ -1518,7 +1518,7 @@ fn set_session_ready_roundtrips_all_three_states() {
 
     // 1 — the claim.
     assert!(
-        db.set_session_ready("sess-1", Some(true))
+        db.set_session_ready("sess-1", Some(true), None)
             .expect("set_session_ready should succeed"),
         "a matching row returns true"
     );
@@ -1526,7 +1526,7 @@ fn set_session_ready_roundtrips_all_three_states() {
 
     // 0 — the explicit answer, and NOT the same value as NULL.
     assert!(
-        db.set_session_ready("sess-1", Some(false))
+        db.set_session_ready("sess-1", Some(false), None)
             .expect("set_session_ready should succeed"),
         "a matching row returns true"
     );
@@ -1538,7 +1538,7 @@ fn set_session_ready_roundtrips_all_three_states() {
 
     // NULL — the clear (the turn-start state).
     assert!(
-        db.set_session_ready("sess-1", None)
+        db.set_session_ready("sess-1", None, None)
             .expect("set_session_ready should succeed"),
         "a matching row returns true"
     );
@@ -1557,7 +1557,7 @@ fn set_session_ready_roundtrips_all_three_states() {
 
     // A missing id is a no-op returning false (mirrors `set_session_archived`).
     assert!(
-        !db.set_session_ready("no-such-session", Some(true))
+        !db.set_session_ready("no-such-session", Some(true), None)
             .expect("should not error"),
         "a missing row is a no-op returning false"
     );

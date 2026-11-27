@@ -1205,3 +1205,121 @@ fn the_next_outcomes_gate_arrives_null_for_every_pre_existing_stage() {
         "the gate ran once, not twice, and the rows still read NULL"
     );
 }
+
+/// (the `sessions.advance_outcome` gate) a pre-existing database whose `sessions`
+/// table predates the edge-name column must open CLEANLY (the gate adds it), and every
+/// pre-existing row must read `advance_outcome IS NULL`.
+///
+/// `NULL` is the whole upgrade story and it is load-bearing. `NULL` means "this Session
+/// never NAMED an edge", so edge selection falls back to the head of `next_slugs` and an
+/// upgraded board routes exactly the card it routes today. Any non-NULL arrival would be
+/// an ANSWER about a transition nobody chose, and the first `mark_done` after an upgrade
+/// would move a card down an edge its owner never named. A backfill could not produce
+/// anything honest here: there is no name for a claim that predates the idea of naming
+/// one — the same reason `stages.next_outcomes` and `sessions.ready` each arrive
+/// DEFAULT-less and un-backfilled, one column at a time.
+///
+/// The `dflt_value` arm pins the absence of a `DEFAULT` DIRECTLY rather than inferring it
+/// from the `NULL` reads, for the `ready` / `cost_usd` / `parent_session_id` pins' shared
+/// reason: those reads would ALSO pass under a `DEFAULT` plus an `UPDATE … = NULL`
+/// backfill someone later "improved", so a `DEFAULT` added to the `ALTER` here fails a
+/// pin instead of passing quietly.
+///
+/// The fixture is `SCHEMA_WITHOUT_ADVANCE_OUTCOME`: every OTHER gated column is present
+/// (`ready` included — the two are written by ONE `UPDATE`, so a fixture dropping both
+/// would exercise two gates at once), so the sibling gates stay silent and this test
+/// observes its own gate.
+///
+/// WHY THIS SITE PANICS ON A POISONED MUTEX (AGENTS.md's poisoned-mutex rule): the lock
+/// guards `Db`'s ONE shared `rusqlite::Connection` — a single, shared resource a panic
+/// mid-transaction can leave genuinely unusable — so this `.expect` panics rather than
+/// recovering, matching every other site in this tree.
+#[test]
+fn the_advance_outcome_gate_arrives_null_for_every_pre_existing_session() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-advance-outcome-gate-", "scratch");
+    let path = preexisting_db(
+        &dir,
+        SCHEMA_WITHOUT_ADVANCE_OUTCOME,
+        "INSERT INTO sessions (id, cwd, created_at, capabilities_json, ready) \
+         VALUES ('s-never-named', '/tmp', 1, '{}', 1);\n\
+         INSERT INTO sessions (id, cwd, created_at, capabilities_json, ready) \
+         VALUES ('s-cleared', '/tmp', 2, '{}', 0);\n",
+    );
+
+    {
+        let db = Db::open(&path).expect("the advance_outcome gate runs on open");
+        let has: i64 = db
+            .conn
+            .lock()
+            .expect("db mutex poisoned")
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') \
+                 WHERE name = 'advance_outcome'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("pragma_table_info should read");
+        assert_eq!(
+            has, 1,
+            "the `advance_outcome` column is in place after the gate"
+        );
+
+        // The DDL's DEFAULT, pinned directly rather than inferred from the reads.
+        let default_value: Option<String> = db
+            .conn
+            .lock()
+            .expect("db mutex poisoned")
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('sessions') \
+                 WHERE name = 'advance_outcome'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("pragma_table_info should read");
+        assert_eq!(
+            default_value, None,
+            "`advance_outcome` has NO column DEFAULT — NULL means 'this claim named no \
+             edge', and any arrival value would name an edge nobody named"
+        );
+
+        // Neither pre-existing row gained a name: the gate carries NO data step. The
+        // first row is a pre-existing CLAIM (`ready = 1`), and that is the case worth
+        // pinning — a gate that backfilled a name would route this Session's chain
+        // down an edge its model never typed.
+        assert_eq!(
+            raw_scalar(
+                &db,
+                "SELECT COUNT(*) FROM sessions WHERE advance_outcome IS NULL"
+            ),
+            2,
+            "both pre-existing rows read NULL — nothing was backfilled"
+        );
+        assert_eq!(
+            raw_scalar(
+                &db,
+                "SELECT COUNT(*) FROM sessions WHERE advance_outcome IS NOT NULL"
+            ),
+            0,
+            "NOT ONE row was migrated into a named edge"
+        );
+        // The pair's other half is untouched by this gate: the fixture carried `ready`,
+        // and the claim it stores is exactly as it was — 1 and 0, neither rewritten.
+        assert_eq!(
+            raw_scalar(&db, "SELECT COUNT(*) FROM sessions WHERE ready = 1"),
+            1,
+            "the gate added a column and changed nothing about `ready`"
+        );
+    }
+
+    // A SECOND open of the already-migrated file is a clean no-op (the
+    // `pragma_table_info` probe skips the `ALTER`).
+    let db = Db::open(&path).expect("a re-open of the migrated db must succeed");
+    assert_eq!(
+        raw_scalar(
+            &db,
+            "SELECT COUNT(*) FROM sessions WHERE advance_outcome IS NULL"
+        ),
+        2,
+        "the gate ran once, not twice, and the rows still read NULL"
+    );
+}

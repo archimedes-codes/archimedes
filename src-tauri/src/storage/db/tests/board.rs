@@ -1386,6 +1386,6 @@ fn record_linkable_session(db: &Db, id: &str, cwd: &str, cost: Option<f64>) {
 /// than a fifth parameter on [`record_linkable_session`], so the fifteen
 /// cost-era call sites above stay byte-identical.
 fn mark_session_ready(db: &Db, id: &str, ready: Option<bool>) {
-    db.set_session_ready(id, ready)
+    db.set_session_ready(id, ready, None)
         .expect("set_session_ready (the card's bell reads this column)");
 }

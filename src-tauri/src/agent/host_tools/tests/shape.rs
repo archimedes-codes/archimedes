@@ -235,7 +235,7 @@ async fn every_details_payload_key_set_matches_the_frozen_frontend_fixtures() {
         .expect("record_session (the link's FK target)");
         db.link_session(&task_id, id, Some("backlog"))
             .expect("link_session (the claim needs a card)");
-        db.set_session_ready(id, Some(true)).expect("claim");
+        db.set_session_ready(id, Some(true), None).expect("claim");
         ((), id)
     };
     let advised = run(&db, Some(session_id), false, "mark_done", json!({}))

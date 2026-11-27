@@ -87,7 +87,26 @@
 //!
 //! It never launches, never emits an event, never writes `sessions.ready`, and never
 //! reads a `session_id` or a `task_id` out of the caller's `params` — the identity it
-//! acts on arrives on the frame. It writes exactly one thing: the step, at arm 6.
+//! acts on arrives on the frame.
+//!
+//! # It writes TWO things, and only one of them is a step
+//!
+//! **The step, at arm 6** — the write that buys the next launch, still the last one,
+//! still behind the dedupe. **And the settled cost, at arms 3, 4 and 5** — a cost-only
+//! `UPDATE` that records money already spent and never touches `steps`. Those two are
+//! different kinds of fact and the arms treat them differently on purpose: refusing to
+//! spend a step saves the bound from a double-charge, whereas refusing to record a cost
+//! saves nothing and blinds the ceiling.
+//!
+//! The cost bank exists because arm 6 is the LAST arm and the normal settle path never
+//! reaches it. On a fully-claimed chain the claim's launch took the link, so the settle
+//! returns at arm 3 — and arm 3 used to return ahead of the only writer of
+//! `cost_usd`, so `workflow_runs.cost_usd` stayed `NULL` for the whole life of a
+//! healthy chain, `banked` was always `None`, and the ceiling compared each link's own
+//! spend and never the chain's. A ceiling that is evaluated but never accumulates is as
+//! inert as one that is never evaluated, and this is the same fail-open D18 was written
+//! to close, reintroduced by an early return instead of by a `None`. `bank_settled_cost`
+//! states which arms call it and why arm 1 is excluded.
 
 use rusqlite::{params, Connection};
 
@@ -242,7 +261,27 @@ fn decide(
     // dedupe (D20) and the dedupe needs the destination, so a strictly arm-by-arm
     // reading cannot produce both. Hoisting the READS is what keeps the ORDER of the
     // DECISIONS exactly as the table in the module header states it while the writes
-    // stay where they belong — one, at arm 6.
+    // stay where they belong — the STEP at arm 6, and the cost-only bank on the three
+    // early-return arms that carry a real delta (see `bank_settled_cost`).
+
+    // The claim, and the edge name it carried — ONE read of ONE row, hoisted because
+    // the DESTINATION depends on the name and the destination feeds the dedupe, so the
+    // name has to be in hand before arm 1 asks whether a claim exists at all.
+    //
+    // THE CALLER'S NAME WINS WHEN IT HAS ONE, and the stored name fills the gap. That
+    // is not a precedence trick, it is the two doors: the claim door passes the name the
+    // model just typed (and just persisted, in the same statement), so for it `or`
+    // selects the value it already holds; the settle door passes `None` because a settle
+    // has no name of its own to report, and it gets the name the claim left behind.
+    // Before that gap was filled the settle resolved the HEAD edge unconditionally, so a
+    // `mark_done` naming the second edge launched the second column, the settle resolved
+    // the FIRST, found no newer link at the first, fell through arm 3, spent a second
+    // step and launched the first column TOO — two Sessions for one claim, and the card
+    // ending on an edge the model did not choose. `or` is the whole fix; the dedupe and
+    // the step need no change because both were correct about a destination they had been
+    // given, and it was the destination that was wrong.
+    let claim = claim_of(conn, session_id)?;
+    let outcome: Option<&str> = outcome.or(claim.outcome.as_deref());
 
     // The Space's columns, in board order, in ONE read. This is the destination-stage
     // read the plan offers two ways to do; it is done INLINE here with `STAGE_COLUMNS`
@@ -293,7 +332,7 @@ fn decide(
     // `Some(1)` ONLY. `0` is what the turn-start write puts on every Session that has
     // ever run a turn, and `None` is what every Session that was never marked holds;
     // neither is evidence anybody claimed anything.
-    if !claimed(conn, session_id)? {
+    if !claim.made {
         return Ok(AdvanceAdvice {
             advance: false,
             stop: None,
@@ -342,7 +381,22 @@ fn decide(
     // A `task_sessions` question and not a `workflow_runs` one — that table has no
     // per-step record and no column naming a slug — and not keyed on `steps`, which
     // would kill the fallback in the exact case it exists for.
+    //
+    // THE COST IS BANKED HERE AND THE STEP IS NOT. This is the normal path — the
+    // claim's launch took the link, so the settle dedupes — and until now it returned
+    // ahead of arm 6, the only writer of `cost_usd`, so every settle on a healthy
+    // chain threw its figure away and the ceiling never accumulated. The step stays
+    // unspent: a step buys the next launch and this launch was already bought, so
+    // charging one here would double-bill `max_steps`, the guard that works even when
+    // the ceiling cannot see the money.
+    //
+    // STORED == COMPARED IS DELIBERATE. Arm 2 decided against `banked + delta`, and
+    // this write stores exactly `COALESCE(cost_usd, 0.0) + delta` — the same fold, in
+    // SQL, on the same row, under the same lock. A reader who checks "did the ceiling
+    // judge the number it then recorded" can answer yes without reading two files, and
+    // the next link's arm 2 reads back the figure this link was judged on.
     if already_launched {
+        bank_settled_cost(conn, &task_id, cost_delta_usd)?;
         return Ok(AdvanceAdvice {
             advance: false,
             // NOT a chain stop: nothing stopped, this link was already taken. And the
@@ -364,10 +418,21 @@ fn decide(
     // `stages.auto` FROM THE DATABASE and not from a slice — that substitution is the
     // point of the whole design. This is the non-auto half of the done-when: the card
     // stays where it is and the amber bell stays lit for a person.
+    //
+    // The bank fires on both shapes of this arm (no launched column, and a column that
+    // is not `auto`) because both answer the same policy question and neither buys a
+    // launch. A non-auto column is where a chain ENDS, and it is the column a person
+    // watches least often — so the last link's money was, until now, precisely the
+    // money the closed run never showed. `cost_usd` is the audited fact of this table
+    // (the reason `workflow_run_step_on` reports the ceiling ahead of the step bound);
+    // a chain that stopped in a human column while reporting `NULL` cannot have its
+    // spend reconstructed afterwards.
     let Some(from) = launched else {
+        bank_settled_cost(conn, &task_id, cost_delta_usd)?;
         return Ok(not_automatic(&task_id, &space_path, max_steps, ceiling_usd));
     };
     if !from.auto {
+        bank_settled_cost(conn, &task_id, cost_delta_usd)?;
         return Ok(not_automatic(&task_id, &space_path, max_steps, ceiling_usd));
     }
 
@@ -377,7 +442,11 @@ fn decide(
     // configured `[]`, or it is unconfigured and a deleted column left a HOLE at
     // `sort_order + 1`. The gone-column shape is NOT here — `launched` is `None` by
     // then, so arm 4 has already answered `not_automatic`.
+    //
+    // Banked for the same reason as arm 4: this is a chain end, an `auto` column with
+    // nowhere to go, and the money this turn spent is true whatever the graph says.
     let Some(dest) = destination else {
+        bank_settled_cost(conn, &task_id, cost_delta_usd)?;
         return Ok(AdvanceAdvice {
             advance: false,
             stop: Some(ChainStop::NoNextStage),
@@ -465,6 +534,43 @@ fn decide(
         space_path: Some(space_path),
         already_launched,
     })
+}
+
+/// Bank this settle's cost on the open run, from an arm that returns BEFORE the step.
+///
+/// THE ONE CALL SITE SHAPES FOR THE FOUR ARMS, so the rule "these arms may record
+/// money and may not buy a launch" lives in one place instead of four, and so a fifth
+/// arm added later has a named thing to call rather than a `workflow_run_step_on` within
+/// reach that would silently double-charge `max_steps`.
+///
+/// WHICH ARMS CALL IT, and which deliberately does not. **Arm 3** (`already_launched`)
+/// is the whole reason this exists — the normal path, every settle of a fully-claimed
+/// chain. **Arms 4 and 5** (`not_automatic`, `no_next_stage`) bank for the same reason
+/// with less drama: both are chain ENDS carrying a real delta, and a chain's last
+/// link's money is the money its closed record could not otherwise show. **Arm 1**
+/// (`unclaimed`) is EXCLUDED, and that is a decision rather than an oversight: it is
+/// the one arm a Session reaches without having claimed to be done, so it is not yet a
+/// link of this chain by its own account, and charging a bystander's spend to a ceiling
+/// it never joined fails the ceiling SHUT on a chain that was within budget — the one
+/// direction `costDeltaOf` refuses on the frontend and `AdvanceVerdict::ceiling_usd`
+/// refuses in Rust. **Arm 2** (the ceiling) and **arm 0** (`unlinked`) need no bank:
+/// arm 2 is a read of money already spent and must write nothing to stay that way, and
+/// arm 0 resolved no card, so there is no run to bank onto and no Space whose ceiling
+/// could care.
+///
+/// The `is_some()` guard is NOT here — it is inside
+/// [`Db::bank_run_cost_on`](super::Db::bank_run_cost_on), which returns having written
+/// nothing for a `None`. A guard at the call site is a guard one new call site forgets.
+///
+/// `_on`, always, and for the hazard the module header states: the connection mutex is
+/// not reentrant, so this takes the guard's `&Connection` and hands it straight down.
+/// It never touches `self`.
+fn bank_settled_cost(
+    conn: &Connection,
+    task_id: &str,
+    cost_delta_usd: Option<f64>,
+) -> Result<(), BoardError> {
+    Db::bank_run_cost_on(conn, task_id, cost_delta_usd).map_err(advice_error)
 }
 
 /// The `auto` refusal: the card stays and the bell stays lit.
@@ -617,27 +723,49 @@ fn launched_link_ahead(
     Ok(n > 0)
 }
 
-/// Was the claim made? `sessions.ready` is `Some(1)` and nothing else.
+/// Was the claim made, and what edge did it name? `sessions.ready` is `Some(1)` and
+/// nothing else, and `sessions.advance_outcome` is the name the claim chose.
 ///
-/// Three meanings live in that one nullable column and the absence of a `DEFAULT` is
-/// what keeps them three (the column's own DDL comment states it): `NULL` = never
-/// claimed, `0` = checked and not claiming, `1` = claimed. Only the third is a claim.
+/// ONE statement for BOTH columns, and that is the whole point of the shape. The two
+/// are one fact — a claim, and the transition it claims — and the settle door and the
+/// claim door must resolve the edge from the SAME row at the SAME instant. Read apart,
+/// they could be read apart: a `ready` from one moment and a name from another is
+/// precisely the two-sources-of-truth defect this read removes.
 ///
-/// `QueryReturnedNoRows` — a Session id with no row — is `false` and not an error: the
-/// advice is asked about a Session, and "there is no such Session, so nobody claimed"
-/// is the answer to the question that was asked. `mark_done`'s own answer is the place
-/// that reports a row it failed to write.
-fn claimed(conn: &Connection, session_id: &str) -> Result<bool, BoardError> {
-    let ready: Option<i64> = match conn.query_row(
-        "SELECT ready FROM sessions WHERE id = ?1",
+/// THREE meanings live in `ready` and the absence of a `DEFAULT` is what keeps them
+/// three (the column's own DDL comment states it): `NULL` = never claimed, `0` = checked
+/// and not claiming, `1` = claimed. Only the third is a claim.
+///
+/// `QueryReturnedNoRows` — a Session id with no row — is `(false, None)` and not an
+/// error: the advice is asked about a Session, and "there is no such Session, so nobody
+/// claimed" is the answer to the question that was asked. `mark_done`'s own answer is
+/// the place that reports a row it failed to write.
+fn claim_of(conn: &Connection, session_id: &str) -> Result<Claim, BoardError> {
+    let row = conn.query_row(
+        "SELECT ready, advance_outcome FROM sessions WHERE id = ?1",
         params![session_id],
-        |row| row.get::<_, Option<i64>>(0),
-    ) {
-        Ok(ready) => ready,
-        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        },
+    );
+    Ok(match row {
+        Ok((ready, outcome)) => Claim {
+            made: ready == Some(1),
+            outcome,
+        },
+        Err(rusqlite::Error::QueryReturnedNoRows) => Claim::default(),
         Err(e) => return Err(e.into()),
-    };
-    Ok(ready == Some(1))
+    })
+}
+
+/// What one Session's `mark_done` claimed: that it is done, and the edge it named.
+#[derive(Debug, Default)]
+struct Claim {
+    made: bool,
+    outcome: Option<String>,
 }
 
 /// The open run's banked figure, for the ceiling's read-only comparison.

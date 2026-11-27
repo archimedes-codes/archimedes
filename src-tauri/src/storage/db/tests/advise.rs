@@ -10,6 +10,28 @@
 //! (`the_ceiling_answers_before_the_dedupe_does`) builds a fixture where BOTH would
 //! fire and asserts which one did.
 //!
+//! # THREE CHILDREN FOR ONE PRODUCTION FILE, and where the line falls
+//!
+//! ADR 0112's 1,000-code-line test gate reddened this child at 1,042, and the sanctioned
+//! answer was a subject split and never a threshold edit — the `stages` →
+//! `stage_lifecycle` + `stage_setters` pair is the precedent for splitting ONE
+//! production file's tests by subject. This child keeps the ARMS and their ORDER;
+//! [`super::advise_cost`] took the settled-cost bank and the ceiling's accumulation, and
+//! [`super::advise_outcome`] took the edge the model chose and the two doors' agreement
+//! on it. Three subjects, three ways to fail: a wrong arm order still answers
+//! `advance: false`; a missing bank leaves every arm answering correctly about a number
+//! that never moved; a discarded outcome launches the right shape of thing down the wrong
+//! edge.
+//!
+//! TWO TESTS STRADDLE THE LINE and stay here on purpose, because both ask arm 5 "which
+//! edge fires" for a SINGLE door, which is this child's subject: `arm 5: which edge
+//! fires` owns `a_named_outcome_fires_the_edge_labelled_with_it` and
+//! `an_unmatched_outcome_falls_back_to_the_head_and_says_so`. What moved to
+//! `advise_outcome` is the question only the PAIR of doors can ask — does the settle
+//! resolve the edge the claim resolved — plus the dedupe-scope measurement that rejects
+//! the card-scoped backstop. The fixtures all three children read live in
+//! [`super::support`].
+//!
 //! # What is deliberately NOT mocked
 //!
 //! Every assertion drives a real `Db` through real SQL. There is no board slice to
@@ -29,69 +51,10 @@
 
 use rusqlite::params;
 
-use crate::storage::db::{AdvanceAdvice, ChainStop, Db, StageRow};
+use crate::storage::db::{ChainStop, Db, StageRow};
 use crate::storage::{DEFAULT_AUTO_CEILING_USD, DEFAULT_AUTO_MAX_STEPS};
 
 use super::support::*;
-
-/// A `Db`, a Space with the five seeded columns, and ONE card sitting in `backlog` —
-/// the fixture every case below starts from.
-///
-/// `upsert_space` IS called, because most cases configure a guard and
-/// `set_auto_guards` is an `UPDATE` on `spaces`; a fixture that omitted the row would
-/// make "the Space configured nothing" indistinguishable from "this Space has no row".
-///
-/// NO `get_board` call, and that is not an oversight to correct: the seeded columns
-/// arrive from `create_task`'s own `seed_default_stages`, so the whole family runs
-/// against a `Db` that has never opened a board.
-fn fixture(tag: &str) -> (crate::test_support::ScratchDir, Db, String, String) {
-    let (dir, db, space) = seeded(tag);
-    db.upsert_space(&space, false).expect("upsert_space");
-    let card = db
-        .create_task(&space, "a card under test", None, None)
-        .expect("create_task");
-    (dir, db, space, card.id)
-}
-
-/// A recorded Session. The FK target every link needs — `link_session` does not check
-/// it, the `ON DELETE CASCADE` foreign key rejects a dangling link at the statement.
-fn record(db: &Db, id: &str) {
-    db.record_session(&title_session(id))
-        .expect("record_session");
-}
-
-/// A recorded Session linked to `task_id` at `launched_slug`, WITHOUT claiming.
-///
-/// Split out from `claim` so a test can control the ORDER of the link and the claim:
-/// the dedupe compares `rowid`s, and a link written after the launch's own link is
-/// newer than it — which is the difference between "this claim already launched" and
-/// "this claim is the one doing the launching".
-fn linked(db: &Db, session_id: &str, task_id: &str, launched_slug: &str) {
-    record(db, session_id);
-    db.link_session(task_id, session_id, Some(launched_slug))
-        .expect("link_session");
-}
-
-/// …and then it claims. The shape one turn in, before anything has launched.
-fn claim(db: &Db, session_id: &str, task_id: &str, launched_slug: &str) {
-    linked(db, session_id, task_id, launched_slug);
-    db.set_session_ready(session_id, Some(true))
-        .expect("set_session_ready");
-}
-
-/// Flag one column `auto` / not-auto.
-fn set_auto(db: &Db, space: &str, slug: &str, auto: bool) {
-    db.set_stage_auto(space, slug, auto)
-        .expect("set_stage_auto");
-}
-
-/// Declare one column's edges and their labels in one call.
-fn set_edges(db: &Db, space: &str, slug: &str, slugs: &[&str], outcomes: &[Option<&str>]) {
-    let slugs: Vec<String> = slugs.iter().map(|s| s.to_string()).collect();
-    let outcomes: Vec<Option<String>> = outcomes.iter().map(|o| o.map(str::to_string)).collect();
-    db.set_stage_next(space, slug, &slugs, &outcomes)
-        .expect("set_stage_next");
-}
 
 /// Re-point one link row's FROZEN lane.
 ///
@@ -111,28 +74,6 @@ fn relink(db: &Db, task_id: &str, session_id: &str, slug: &str) {
         .expect("re-point the frozen lane");
 }
 
-/// The destination column's slug, or `None`.
-fn dest_slug(advice: &AdvanceAdvice) -> Option<String> {
-    advice.destination.as_ref().map(|s| s.slug.clone())
-}
-
-/// The advice call, named — the interesting part of each call is which arguments are
-/// `None`, and the three-argument shape would otherwise bury it.
-fn advice(
-    db: &Db,
-    session_id: &str,
-    outcome: Option<&str>,
-    cost_delta_usd: Option<f64>,
-) -> AdvanceAdvice {
-    db.workflow_advance_advice(session_id, outcome, cost_delta_usd)
-        .expect("the advice never fails on a well-formed fixture")
-}
-
-/// The open run's `(steps, cost_usd)`, or `None` when no run is open.
-fn run_row(db: &Db, task_id: &str) -> Option<(i64, Option<f64>)> {
-    open_run_row(db, task_id).map(|(_id, steps, cost)| (steps, cost))
-}
-
 // ── arm 0: no card ───────────────────────────────────────────────────────────
 
 /// A Session that owns no card is told so, and EVERY number is absent rather than
@@ -141,7 +82,7 @@ fn run_row(db: &Db, task_id: &str) -> Option<(i64, Option<f64>)> {
 fn a_session_that_owns_no_card_is_unlinked_and_carries_no_invented_bound() {
     let (_dir, db, _space, _task_id) = fixture("adv-unlinked");
     record(&db, "s-loose");
-    db.set_session_ready("s-loose", Some(true))
+    db.set_session_ready("s-loose", Some(true), None)
         .expect("a claim from a cardless Session still writes its own flag");
 
     let a = advice(&db, "s-loose", None, Some(99.0));
@@ -188,7 +129,7 @@ fn a_settle_with_no_prior_claim_is_unclaimed_and_both_null_and_zero_are_not_clai
 
     // `ready` 0: checked, and the answer is no. THE DISTINGUISHING CASE.
     linked(&db, "s-cleared", &task_id, "backlog");
-    db.set_session_ready("s-cleared", Some(false))
+    db.set_session_ready("s-cleared", Some(false), None)
         .expect("the turn-start clear writes 0");
     let b = advice(&db, "s-cleared", None, None);
     assert!(!b.advance, "a stored `0` is an answer of NO, not a claim");
@@ -529,7 +470,7 @@ fn a_newer_link_at_the_destination_from_another_session_dedupes() {
     let (_dir, db, space, task_id) = fixture("adv-dedupe-hit");
     set_auto(&db, &space, "backlog", true);
     linked(&db, "s-claimer", &task_id, "backlog");
-    db.set_session_ready("s-claimer", Some(true))
+    db.set_session_ready("s-claimer", Some(true), None)
         .expect("claim");
 
     // The claim, first — with no launch row yet it advances, and spends the step.
@@ -596,7 +537,8 @@ fn two_link_rows_on_the_claimer_alone_do_not_dedupe() {
     // newest-link rule makes it the card that wins.
     db.link_session(&task_id, "s-handed", Some("backlog"))
         .expect("the newer link");
-    db.set_session_ready("s-handed", Some(true)).expect("claim");
+    db.set_session_ready("s-handed", Some(true), None)
+        .expect("claim");
 
     let a = advice(&db, "s-handed", None, None);
     assert!(
@@ -628,7 +570,7 @@ fn an_older_link_at_the_destination_does_not_dedupe() {
     // The card came back to `backlog`; the frozen lane follows the relaunch. Raw SQL
     // because `link_session` is INSERT-OR-IGNORE on the (task_id, session_id) key.
     relink(&db, &task_id, "s-revisit", "backlog");
-    db.set_session_ready("s-revisit", Some(true))
+    db.set_session_ready("s-revisit", Some(true), None)
         .expect("claim");
     // A NEWER row belonging to someone else, at a DIFFERENT slug — so the destination
     // match has to be what decides, and not the rowid alone.
@@ -666,7 +608,8 @@ fn the_ceiling_answers_before_the_dedupe_does() {
         .expect("a $10 ceiling");
     set_auto(&db, &space, "backlog", true);
     linked(&db, "s-both", &task_id, "backlog");
-    db.set_session_ready("s-both", Some(true)).expect("claim");
+    db.set_session_ready("s-both", Some(true), None)
+        .expect("claim");
 
     // Condition one: the dedupe WOULD fire.
     record(&db, "s-launched");
@@ -866,11 +809,16 @@ fn the_step_bound_refuses_at_a_claim_and_reports_the_effective_bound() {
     assert!(second.destination.is_none());
 }
 
-/// **One step per SUCCESSFUL link.** Claim → the launch links a new Session → settle
-/// finds the dedupe and spends NOTHING more.
+/// **One STEP per SUCCESSFUL link, and the settle's COST still lands.** Claim → the
+/// launch links a new Session → settle finds the dedupe, spends no further STEP, and
+/// banks its delta.
 ///
 /// The acceptance criterion in one fixture: `steps` is 1 after both calls, and the
-/// settle's `already_advanced` came from `task_sessions`.
+/// settle's `already_advanced` came from `task_sessions`. The two halves of this arm
+/// must not be collapsed into one — the STEP stays behind the dedupe (a step buys a
+/// launch, and this launch was already bought) while the COST lands (money spent is a
+/// fact about money already spent). The two tests below own the `None` half and the
+/// accumulate half.
 #[test]
 fn a_successful_link_costs_one_step_across_claim_and_settle() {
     let (_dir, db, space, task_id) = fixture("adv-one-step");
@@ -878,7 +826,8 @@ fn a_successful_link_costs_one_step_across_claim_and_settle() {
     // The claimer is linked FIRST — the order a launch leaves behind, and the order
     // that makes the launch's own row NEWER, which is what arm 3 searches for.
     linked(&db, "s-claim", &task_id, "backlog");
-    db.set_session_ready("s-claim", Some(true)).expect("claim");
+    db.set_session_ready("s-claim", Some(true), None)
+        .expect("claim");
 
     assert!(advice(&db, "s-claim", None, None).advance);
     assert_eq!(
@@ -897,9 +846,13 @@ fn a_successful_link_costs_one_step_across_claim_and_settle() {
     assert_eq!(settle.reason, "already_advanced");
     assert_eq!(
         run_row(&db, &task_id),
-        Some((1, None)),
-        "and `steps` is STILL 1 — the dedupe sits in front of the step write, so a \
-         dedupe stop writes nothing at all, cost included"
+        Some((1, Some(0.5))),
+        "`steps` is STILL 1 — the dedupe sits in front of the STEP write, so a dedupe \
+         stop never buys a launch it will not make — but `cost_usd` is 0.5. Cost is not \
+         a step: the money this turn spent is a fact about money already spent, and an \
+         arm that returns before the only cost write DISCARDS it. That was the defect — \
+         `cost_usd` stayed NULL on every fully-claimed chain, `banked` was always `None`, \
+         and the ceiling compared one link's own spend and never the chain's"
     );
     assert!(settle.already_launched);
 }
@@ -917,7 +870,8 @@ fn a_refused_launch_spends_a_second_step_and_that_is_the_decision() {
     let (_dir, db, space, task_id) = fixture("adv-refused-double");
     set_auto(&db, &space, "backlog", true);
     linked(&db, "s-claim", &task_id, "backlog");
-    db.set_session_ready("s-claim", Some(true)).expect("claim");
+    db.set_session_ready("s-claim", Some(true), None)
+        .expect("claim");
 
     assert!(advice(&db, "s-claim", None, None).advance);
     assert_eq!(run_row(&db, &task_id), Some((1, None)));

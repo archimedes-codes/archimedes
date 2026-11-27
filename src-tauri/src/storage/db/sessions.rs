@@ -332,11 +332,21 @@ impl Db {
         Ok(n > 0)
     }
 
-    /// Set, answer, or CLEAR a Session's readiness flag — the ONE write verb for
-    /// `sessions.ready`, the column the readiness claim lives in now.
+    /// Set, answer, or CLEAR a Session's readiness claim, and the EDGE NAME that
+    /// claim chose — the ONE write verb for `sessions.ready` and
+    /// `sessions.advance_outcome`, the two columns a `mark_done` claim lives in.
     ///
-    /// THREE states, which is why the parameter is `Option<bool>` and the bind is
-    /// `Option<i64>` (`None` → `NULL`), and why a `bool` would have been wrong:
+    /// ONE STATEMENT FOR BOTH COLUMNS, and that is the shape rather than a tidiness
+    /// preference. The two are ONE fact — "this Session claims it is done, and this is
+    /// the transition it claims" — and two statements would let a crash, or a
+    /// concurrent turn-start clear, land between them and leave a claim naming an edge
+    /// it never named, or an edge name on a claim that was withdrawn. `set_stage_next`
+    /// writes `next_slugs` and `next_outcomes` the same way for the same reason:
+    /// paired data in two statements is paired data that can disagree, permanently.
+    /// The caller passes both because the caller is the one door that holds both.
+    ///
+    /// THREE states for the flag, which is why the parameter is `Option<bool>` and the
+    /// bind is `Option<i64>` (`None` → `NULL`), and why a `bool` would have been wrong:
     /// `Some(true)` writes `1` ("this Session is done, come look"), `Some(false)`
     /// writes `0` ("it was checked and it is NOT ready"), and `None` writes `NULL`
     /// ("this row's column has NEVER been written"). Collapsing `NULL` into `0`
@@ -344,6 +354,14 @@ impl Db {
     /// phantom-`$0.00` discipline with a flag in place of a cost; the gate's
     /// `the_ready_gate_arrives_null_for_every_pre_existing_session` pin and the
     /// column's missing `DEFAULT` are what keep the third state real.
+    ///
+    /// `outcome` has NO three-state discipline of its own and takes the flag's: it is
+    /// written on the SAME row as the flag and by the SAME statement, so `NULL` means
+    /// "this claim named no edge" — the ordinary case on an unlabelled board, resolving
+    /// to the head edge — and it is never read except beside a `ready` that says a claim
+    /// exists. A turn-start clear therefore passes `None` and wipes a previous turn's
+    /// name along with its `0`: a name is this turn's answer, and a second turn that
+    /// marks done without naming an edge must take the head edge and not inherit one.
     ///
     /// WHAT A TURN START WRITES, because the obvious story about `NULL` is false. A
     /// new turn does NOT reset a claim to `NULL` — `send_prompt_with_images` writes
@@ -363,7 +381,7 @@ impl Db {
     ///
     /// THREE things this verb does not do, and a caller of the flag needs all three:
     ///
-    ///   * it does not refresh anything. It writes one column on one row; pushing
+    ///   * it does not refresh anything. It writes two columns on one row; pushing
     ///     the new state to a client, re-listing, or recomputing a badge is the
     ///     CALLER's step, exactly as `set_session_archived` leaves the transcript
     ///     trim to `commands/history.rs`;
@@ -375,10 +393,19 @@ impl Db {
     ///     whether a Session is live — and therefore whether it MAY claim
     ///     readiness — belongs to the caller, which can see it while this layer
     ///     cannot.
-    pub fn set_session_ready(&self, id: &str, ready: Option<bool>) -> Result<bool, DbError> {
+    pub fn set_session_ready(
+        &self,
+        id: &str,
+        ready: Option<bool>,
+        outcome: Option<&str>,
+    ) -> Result<bool, DbError> {
         let n = self.conn.lock().expect("db mutex poisoned").execute(
-            "UPDATE sessions SET ready = ?2 WHERE id = ?1",
-            params![id, ready.map(|is_ready| if is_ready { 1_i64 } else { 0 })],
+            "UPDATE sessions SET ready = ?2, advance_outcome = ?3 WHERE id = ?1",
+            params![
+                id,
+                ready.map(|is_ready| if is_ready { 1_i64 } else { 0 }),
+                outcome
+            ],
         )?;
         Ok(n > 0)
     }

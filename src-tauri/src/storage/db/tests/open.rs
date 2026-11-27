@@ -969,7 +969,7 @@ fn gated_columns_in_open_source() -> Vec<(&'static str, &'static str)> {
 /// for why a bare count could not do this job.
 ///
 /// WHAT THIS TEST DOES **NOT** CLAIM, and that narrowing is deliberate. It walks
-/// the eighteen `SCHEMA_WITHOUT_*` fixtures and asserts each omits exactly one
+/// the nineteen `SCHEMA_WITHOUT_*` fixtures and asserts each omits exactly one
 /// gated column; it does NOT assert that every gated column has a fixture here.
 /// THREE columns in `GATED` have no `SCHEMA_WITHOUT_*` string, and each was
 /// checked by measurement rather than assumed — all three are covered by a
@@ -1030,7 +1030,7 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
     // IS DOCUMENTATION ONLY — the assertion below sorts both sides, so a reordered
     // `gate` call in `db/mod.rs` does not redden this test and a renamed or added
     // column does.
-    const GATED: [(&str, &str); 21] = [
+    const GATED: [(&str, &str); 22] = [
         ("spaces", "trusted"),
         ("sessions", "archived"),
         ("sessions", "context_usage_json"),
@@ -1052,8 +1052,9 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
         ("stages", "position_x"),
         ("stages", "position_y"),
         ("stages", "next_outcomes"),
+        ("sessions", "advance_outcome"),
     ];
-    let fixtures: [(&str, &str); 18] = [
+    let fixtures: [(&str, &str); 19] = [
         ("SCHEMA_WITHOUT_ARCHIVED", SCHEMA_WITHOUT_ARCHIVED),
         ("SCHEMA_WITHOUT_CONTEXT_USAGE", SCHEMA_WITHOUT_CONTEXT_USAGE),
         ("SCHEMA_WITHOUT_IS_SUBAGENT", SCHEMA_WITHOUT_IS_SUBAGENT),
@@ -1063,6 +1064,10 @@ fn each_cluster_schema_omits_exactly_one_gated_column() {
             SCHEMA_WITHOUT_PARENT_SESSION_ID,
         ),
         ("SCHEMA_WITHOUT_READY", SCHEMA_WITHOUT_READY),
+        (
+            "SCHEMA_WITHOUT_ADVANCE_OUTCOME",
+            SCHEMA_WITHOUT_ADVANCE_OUTCOME,
+        ),
         (
             "SCHEMA_WITHOUT_SPACE_SORT_ORDER",
             SCHEMA_WITHOUT_SPACE_SORT_ORDER,
