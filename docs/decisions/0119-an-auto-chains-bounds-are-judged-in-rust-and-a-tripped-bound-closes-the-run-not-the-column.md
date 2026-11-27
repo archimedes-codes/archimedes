@@ -28,9 +28,32 @@ column stops being missing. It therefore has **no use** for a table: `SCHEMA` is
 `execute_batch` of `CREATE TABLE IF NOT EXISTS`, already idempotent on re-open. This branch moved the
 gate count **13 → 15 → 17** and added a **table** with no gate, and both halves are pinned by
 `the_three_task_tables_are_in_schema_and_have_no_gate_entry` — which lists the five board tables that
-must appear in `SCHEMA` exactly once, asserts **no** `gate(&mut conn, "…")` names `tasks`,
-`task_sessions`, `task_artifacts` or `workflow_runs`, and asserts the source-text count of
-`gate(&mut conn, ` is **17**.
+must appear in `SCHEMA` exactly once and asserts **no** `gate(&mut conn, "…")` names `tasks`,
+`task_sessions`, `task_artifacts` or `workflow_runs`.
+
+**No current gate count is quoted here, on purpose, and the sentence that used to quote one is now
+false.** This ADR was written when the tree held 17, and it asserted that the pin above *"asserts the
+source-text count of `gate(&mut conn, ` is **17**."* Both halves rotted, in opposite directions: the
+tree is no longer 17, **and the pin no longer asserts a number at all** — that literal was removed
+deliberately in favour of a derivation, so the sentence was pointing at an assertion that has since
+been taken out of the file. `each_cluster_schema_omits_exactly_one_gated_column` is now the one place
+the number lives: it parses every `(table, column)` pair out of `db/mod.rs` with
+`gated_columns_in_open_source`, asserts that parse is **set-equal** to its `GATED` list, and cross-
+checks the parsed count against the plain `gate(&mut conn, ` call-prefix count so a gate spelled in a
+shape the parser cannot read reddens instead of being skipped. `the_three_task_tables_…` keeps only
+the **qualitative** ban. Measure it when you need it:
+
+```sh
+# call sites in Db::open's own file (measured 2026-11-27: 21)
+grep -c 'gate(&mut conn' src-tauri/src/storage/db/mod.rs
+```
+
+The `13 → 15 → 17` above stays as the **dated history of this branch** — it is what this branch did,
+and it cannot rot because it is closed. What must not be carried forward is a bare present-tense
+count: `position_x` and `position_y` landed the day after this file shipped and `ready` and
+`stages.next_outcomes` — the gate this branch's own feature added — the day after that, taking the
+tree 17 → 21. Four gates inside two days off a doc that was current the day it shipped, which is the
+drift this paragraph now refuses to re-state.
 
 **The temptation this exists to block is the reverse edit.** A reader who sees `stages.auto` gated and
 `workflow_runs` not will "restore symmetry" by adding a gate for the new table. That is not tidiness,
@@ -63,15 +86,24 @@ on."* That is the mechanism this section generalises. The storage rulings themse
 (`space_path`, no FK, lazy seeding) and ADR 0099 (the graph and its three states).
 
 **Adding a gated column forces every pre-existing fixture of that table to gain it, and that is the
-point.** `each_cluster_schema_omits_exactly_one_gated_column` walks thirteen `SCHEMA_WITHOUT_*`
-fixtures and asserts each omits **EXACTLY ONE** gated column out of the seventeen, so a fixture that
-quietly loses a second one stops being a test of its own gate — its sibling gate fires inside it and
-the test measures something nobody intended. The fixture set therefore grew in lockstep with the
+point.** `each_cluster_schema_omits_exactly_one_gated_column` walks the `SCHEMA_WITHOUT_*` fixtures
+and asserts each omits **EXACTLY ONE** gated column across the whole `GATED` surface, so a
+fixture that quietly loses a second one stops being a test of its own gate — its sibling gate fires
+inside it and the test measures something nobody intended. Neither array's length is quoted here as a
+bare figure, for the reason §1 gives; both live in one file and both are one grep away:
+
+```sh
+# the two arrays, in src-tauri/src/storage/db/tests/open.rs (measured 2026-11-27: GATED 21, fixtures 18)
+grep -n 'const GATED: \[(&str, &str); \|let fixtures: \[(&str, &str); ' \
+  src-tauri/src/storage/db/tests/open.rs
+```
+
+The fixture set therefore grew in lockstep with the
 gates, 9 → 11 → 13, and both new children hit the rule live: `stages`' two existing fixtures had to
 gain **both** `auto` and `prompt_prefix` or each would have omitted two, and the first draft of
 `legacy_spaces_without_auto_ceiling_usd` dropped `board_strict` alongside its own column and reddened
-the isolation assert naming both — before any production code existed. If you add an 18th gate, the
-count arm and the fixture array move together, in one commit.
+the isolation assert naming both — before any production code existed. If you add a gate, the `GATED`
+list and the fixture array move together, in one commit.
 
 ## 2. The guard decision lives in **Rust**, inside the step verb, and crosses the wire as a **verdict**
 
@@ -434,10 +466,15 @@ was**, and `pnpm-lock.yaml` carries no n8n package. The only place the tree name
   `sendLaunchMessage` snapshots the figure before the turn — it is the only place standing at the front
   of one — and `costDeltaOf` subtracts, floors at 0, and returns `null` (never `0`) when nothing was
   reported, so an unbilled chain cannot trip its ceiling from this side either.
-- **The gate count and the fixture array move together, in one commit**, and so do the counts inside
-  `the_three_task_tables_are_in_schema_and_have_no_gate_entry`'s own doc. This branch moved the gate
-  count 13 → 17 and the `SCHEMA_WITHOUT_*` fixtures 9 → 13; an 18th gate that updates only one of the
-  three reddens a pin, which is the intended outcome, not a pin to widen.
+- **The gate count and the fixture array move together, in one commit.** This branch moved the gate
+  count 13 → 17 and the `SCHEMA_WITHOUT_*` fixtures 9 → 13 — dated history, both closed. What the
+  branch did NOT foresee is that the third of the three figures would be deleted rather than
+  incremented: `the_three_task_tables_are_in_schema_and_have_no_gate_entry` no longer carries a count
+  at all (§1), so a gate that updates only the `GATED` list or only the fixture array now reddens
+  `each_cluster_schema_omits_exactly_one_gated_column` — its derivation arm if `GATED` was left
+  behind, its exactly-one-isolation arm if the `SCHEMA_WITHOUT_*` fixture was (a new column is absent
+  from every fixture in the cluster array, so all of them suddenly omit two). Same
+  intended outcome, one fewer place to remember.
 - **Reverting this branch is safe, and none of that safety was written down until now.** Four things
   make it so, each verified against the tree rather than assumed: the four gated columns
   (`stages.auto`, `stages.prompt_prefix`, `spaces.auto_max_steps`, `spaces.auto_ceiling_usd`) arrive

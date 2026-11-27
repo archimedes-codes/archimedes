@@ -577,11 +577,26 @@ Consequences the design must carry:
 5. **ADR 0098's front-matter says `superseded-by: 0107`** while ADR 0119 §1 and ADR 0120 §7 both
    still treat `on_enter_skill` as live. ADR 0120 itself flags this as "the one ambiguity in the
    house pattern". Unresolved on disk; it touches this work because `on_enter_skill` is what the
-   next link launches.
-6. **Gate counts in the docs disagree with the tree.** ADR 0119 §1 says 17 gates, the research doc
-   `workflows-as-the-boards-configuration.md` says 12; the tree has **20** (`GATED` in
-   `storage/db/tests/open.rs:1027-1048`). Neither doc was updated when `ready`, `position_x` and
-   `position_y` landed.
+   next link launches. **CLOSED 2026-11-27.** 0107's own body already says *"Supersedes ADR 0098
+   PARTIALLY"* and names what fell (the `discuss` seed entry, the two-Skill backfill) — the core
+   decision and `on_enter_skill` stand. 0098's pointer now carries that scope and the ADR carries a
+   dated amendment saying so. `on_enter_skill` is live in the launch path:
+   `taskLaunch.ts` reads `destination.onEnterSkill` in `missingSkill` and `shouldInlineSkill`, and the
+   value comes off the Stage row via `STAGE_COLUMNS` / `stage_row_from` in
+   `src-tauri/src/storage/db/rows.rs`. This feature's chain link rests on it, and it rests on solid
+   ground.
+6. **Gate counts in the docs disagree with the tree.** **This item was TRUE when written and rotted
+   within its own day** — it carried 20, which is what the tree measured on 2026-11-26 when the item
+   landed, and `stages.next_outcomes` arrived later the same day to make it 21. That is the argument
+   for not fixing it with a new number: do not carry a gate count, measure it.
+   `grep -c 'gate(&mut conn' src-tauri/src/storage/db/mod.rs` is the whole instrument, and ADR 0119 §1
+   now points at that command instead of at a figure. What each doc said, kept as dated readings
+   rather than as current truth: ADR 0119 §1 carried 17 (true of the tree on 2026-11-24, and its
+   claim that a test *asserts* 17 has since been overtaken — that literal was deleted in favour of a
+   derivation), and `workflows-as-the-boards-configuration.md` carried 12 (true at `f1102039`, where
+   the same command prints 12). Neither was updated when `ready`, `position_x`, `position_y` or
+   `stages.next_outcomes` landed. The `GATED` array in `storage/db/tests/open.rs` is named without a
+   line range on purpose — a `file:line` into a moving file is false the day it is written.
 
 ## Gaps
 

@@ -334,8 +334,11 @@ representation at all** in the data model.
   `rename_stage:83`, `set_stage_skill:103`, `set_stage_next:135`, `reorder_stages:181`, `delete_stage:212`).
 - The migration mechanism. **No `user_version`, no migrations table.** A new **table** is one
   `CREATE TABLE IF NOT EXISTS` in the single `SCHEMA` batch and **zero** `gate()` calls; a new **column** is one
-  `gate(&mut conn, table, column, closure)` call probing `pragma_table_info` — 12 exist today, all inside
-  `Db::open`, pinned by a test that counts them. Data-only migrations have **no mechanism** (ADR 0107).
+  `gate(&mut conn, table, column, closure)` call probing `pragma_table_info` — measure them with
+  `grep -c 'gate(&mut conn' src-tauri/src/storage/db/mod.rs` (12 at `f1102039`, where this line was
+  written; 21 on 2026-11-27), all inside
+  `Db::open`, pinned by a test that DERIVES them (`each_cluster_schema_omits_exactly_one_gated_column`,
+  which replaced a hard-coded count literal). Data-only migrations have **no mechanism** (ADR 0107).
 - Supervisor-side non-LLM capabilities already IPC-exposed: **19** `#[tauri::command]` in
   `commands/tasks.rs`; `write_artifact:1156` / `get_artifact:1186` (256 KiB cap, refused never truncated);
   `external_open` (`commands/open.rs:37`, IPC-only, no model tool — the cleanest precedent for a

@@ -325,7 +325,11 @@ carry partial notes in their Consequences while their `superseded-by:` stays emp
 precedent this file copies directly**, because it is the same case: it opens *"**Supersedes ADR 0098
 PARTIALLY.**"* and then names, one by one, what falls and what stands. Note that **0098's own front
 matter is nonetheless filled** with `superseded-by: 0107-…`, which is the one ambiguity in the house
-pattern: two readings are available and the tree contains an instance of each.
+pattern: two readings are available and the tree contains an instance of each. **(Amended
+2026-11-27:** 0098's pointer now carries its scope inline — `(PARTIAL — …)` — and 0098 gained a dated
+amendment naming what 0107 superseded and what it left standing, so the ambiguity this paragraph
+records is closed in the direction this section already argued for: the line is filled, the inline
+note governs. Read the sentence above as the history of the ambiguity, not as its current state.**)**
 
 **This file therefore does both, and says which half is authoritative.** 0119's front matter is filled
 with `superseded-by: 0120-…` so that a tool reading only front matter does not read §7 as live policy,
