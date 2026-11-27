@@ -229,6 +229,38 @@ export interface StageDto {
   /** This column's node Y on the Workflows canvas — see `positionX` for the pair's
    *  semantics, which are identical, and for why both are optional. */
   positionY?: number | null;
+  /**
+   * The **label of each edge** out of this column, **POSITIONAL to `nextSlugs`**:
+   * index `i` of this array names the edge at index `i` of `nextSlugs`, so
+   * `nextSlugs: ["research","approved"]` with `nextOutcomes: ["ok","fail"]` means
+   * "goes to research on `ok`, to approved on `fail`". A `null` ELEMENT means that
+   * one edge carries no label — the position is the meaning, which is why the
+   * element type is `(string | null)` and not `string`: a partially-labelled graph
+   * is a real configuration and `[null,"ok"]` must not degrade to "unlabelled".
+   *
+   * A SECOND column beside `nextSlugs` and not a wider `nextSlugs`, and that is the
+   * safety argument rather than a style choice. `nextSlugs`'s decoder is lenient and
+   * its documented failure mode is `null`, which ADR 0099 defines as
+   * **unconfigured, unconstrained** — so an object array parked inside `nextSlugs`
+   * would parse as NO GRAPH AT ALL and the Strict move gate would skip on every
+   * existing board. Two columns, two decoders, and the two `null`s ("unconstrained"
+   * versus "unlabelled") can never merge into one.
+   *
+   * `null` means no edge out of here carries a label, so selection falls back to the
+   * HEAD of `nextSlugs` — exactly the behaviour before this field existed. The column
+   * has no SQL `DEFAULT` and is never backfilled, so an upgrade adds the capability
+   * and does not use it.
+   *
+   * **OPTIONAL, on `positionX`'s precedent two fields up and for the same measured
+   * reason.** Absence and `null` mean the SAME thing to the only reader — "no edge is
+   * labelled, take the head" — so a fixture that omits the field degrades to the
+   * correct behaviour instead of a confident wrong one, which is the test `positionX`
+   * passes and `auto` fails. And the cost of required-ness here is LARGER than the
+   * eighteen files `positionX` measured: **31 files** in `src/` hold a `nextSlugs:`
+   * literal that constructs a stage row, so a required `nextOutcomes` is a 31-file
+   * `tsc` failure buying nothing this change can use. Tightening it is a follow-up's,
+   * in one commit that can update all thirty-one. */
+  nextOutcomes?: (string | null)[] | null;
 }
 
 
@@ -433,6 +465,92 @@ export interface AdvanceVerdict {
   ceilingUsd: number | null;
 }
 
+
+/**
+ * What one Session's `markDone` claim ANSWERS with: whether its card advances, where
+ * to, and the numbers the decision was measured against. The mirror of the Rust
+ * `AdvanceAdvice` (`src-tauri/src/storage/db/advise.rs`), which serialises EXACTLY
+ * these nine keys — pinned by
+ * `agent::host_tools::tests::shape::every_details_payload_key_set_matches_the_frozen_frontend_fixtures`.
+ *
+ * TWO DOORS, ONE ANSWER. The same Rust function answers the model's `mark_done` tool
+ * call (where the payload rides `rawOutput.details.advanceAdvice`) and the settle
+ * fallback's `workflowAdvanceAdvice` call. That is the point: a claim and a fallback
+ * that derived the answer separately would eventually disagree about the same card.
+ *
+ * WHY THE DECISION IS IN RATHER THAN DERIVED HERE, stated once because the whole
+ * architecture follows from it: at settle time the renderer CANNOT answer "did this
+ * Session claim?". `beginTurn` withdraws the claimant, the ready-mark feed drops
+ * anything older than the last clear (so a `markDone` that lands MID-turn is not
+ * painted until the turn settles), there is no board slice at all in the chain's
+ * primary case, and `ready` is not in `SESSION_COLUMNS` with `SessionRow`
+ * crates.io-pinned. Rust answers it because `sessions.ready` is its own column — and it
+ * answers it from the DATABASE rather than the slice, which is the defect that left
+ * `workflow_runs` holding zero rows against 456 Sessions in a week.
+ *
+ * `advance` is the only field a caller must obey. `reason` is what it writes its
+ * sentence from. `alreadyLaunched` is the discriminator for the close/no-close rule —
+ * "close the run only when the chain ends here" — and it CANNOT be folded into
+ * `reason`, because `cost_ceiling` and `already_advanced` are mutually exclusive
+ * answers from one call and a ceiling stop on a link that already launched must NOT
+ * close the run (closing resets `costUsd` to `null` on the next run, and a null cost
+ * can never trip a ceiling, so the close would hand the chain a fresh allowance).
+ *
+ * `maxSteps` and `ceilingUsd` are the EFFECTIVE values, for the same reason
+ * {@link AdvanceVerdict} carries them: the fallback bounds are Rust-only on purpose and
+ * must not be copied here. They are `null` on exactly ONE arm — `"unlinked"`, where the
+ * Session owns no card, so no Space was resolved and there is no bound to quote. A
+ * `null` there is NOT a zero and NOT "unlimited": it is "no figure exists to say".
+ */
+export interface AdvanceAdvice {
+  /** May the card advance to {@link AdvanceAdvice.destination}? `false` is not a
+   *  failure — it says nothing moved, and `reason` says why. */
+  advance: boolean;
+  /** The bound that stopped the chain, when one did. Shares {@link ChainStop}'s
+   *  vocabulary with `workflowRunClose`'s `stopReason`.
+   *
+   *  PRESENT and `null` on every other arm — and unlike `AdvanceVerdict`, a `null`
+   *  HERE does NOT mean `advance: true`: the Session-shaped refusals (`unlinked`,
+   *  `unclaimed`, `not_automatic`, `already_advanced`) have no spelling in the chain-stop
+   *  vocabulary and are told by `reason` alone. Branch on `reason`, not on this. */
+  stop: ChainStop | null;
+  /** The destination column, WHOLE — `slug`, `label`, `onEnterSkill` and
+   *  `promptPrefix` all from this ONE row, which is ADR 0098's rule that the Skill a
+   *  Session loads, the label a sentence names and the prompt it prepends cannot
+   *  disagree about which column was meant. `null` exactly when `advance` is `false`.
+   *
+   *  This is what lets the launch work with NO board mounted: the row carries everything
+   *  `launchTaskSession` needs, so the advice-driven arm never has to resolve a slug
+   *  against `boardsBySpace`. */
+  destination: StageDto | null;
+  /** What happened. One of: `"advanced"`, `"advanced_unnamed_edge"` (the caller named
+   *  an edge this board does not have, so the head fired instead), `"not_automatic"`,
+   *  `"already_advanced"`, `"unclaimed"`, `"unlinked"`, `"no_next_stage"`,
+   *  `"max_steps"`, `"cost_ceiling"`.
+   *
+   *  FROZEN, and Task 4 branches on it: `"already_advanced"` is a SILENT no-op (no
+   *  `stopChain`, no close, no transcript line) while every other refusal closes and
+   *  speaks. A spelling that drifts is a spend bound failing open. */
+  reason: string;
+  /** The EFFECTIVE step bound. `null` ONLY on `"unlinked"` — see the header. */
+  maxSteps: number | null;
+  /** The EFFECTIVE ceiling in USD. `null` means "no ceiling figure exists to quote":
+   *  either none is configured, or `"unlinked"` resolved no Space. Do NOT render it as
+   *  `$0.00` and do NOT treat it as unlimited. */
+  ceilingUsd: number | null;
+  /** The card this Session owns — an input to the launch, which the claim path cannot
+   *  derive because it holds only a `sessionId`. `null` on `"unlinked"`. */
+  taskId: string | null;
+  /** The Space that card lives in, for the same reason. `null` on `"unlinked"`. */
+  spacePath: string | null;
+  /** Has a link row already been written for this card at the destination this claim
+   *  resolves to? Read-only, and computed BEFORE the ceiling comparison, so a
+   *  ceiling-tripped answer still carries it.
+   *
+   *  The mechanical test for "close the run only when the chain ends here": a `true`
+   *  here means the link is owned by someone else's launch and the run must stay OPEN. */
+  alreadyLaunched: boolean;
+}
 
 /**
  * One board card (camelCase over IPC).

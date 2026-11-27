@@ -35,7 +35,7 @@
 //!
 //! Parts one, two and five are here, and part five's payloads are a contract:
 //! `src/lib/toolDetailsRegistry.test.ts` pins `details.board`, `details.task`,
-//! `details.moveOutcome` and `details.artifactMeta` in a frozen 39-key tuple, so the
+//! `details.moveOutcome` and `details.artifactMeta` in a frozen 40-key tuple, so the
 //! `json!` keys below must stay byte-identical in SHAPE even though the producing
 //! file changed. `super::tests::shape` asserts that on decoded VALUES.
 //!
@@ -128,9 +128,10 @@ async fn exec(
         "write_artifact" => board::write_artifact(db, params).await,
         // The ONE verb whose subject is the calling Session, so the ONE verb the
         // frame identity is threaded into. The board verbs above take a card id from
-        // `params` because a card is not the caller; this one takes no `params` at all
-        // because its subject already arrived on the frame.
-        "mark_done" => session::mark_done(db, origin, is_subagent).await,
+        // `params` because a card is not the caller; this one takes the SUBJECT from the
+        // frame and reads exactly one non-subject thing out of `params` — the optional
+        // `outcome` that names which edge to follow. Identity never comes from `params`.
+        "mark_done" => session::mark_done(db, origin, is_subagent, params).await,
         other => Err(HostToolError::Invalid {
             message: format!("`{other}` is not a host tool this Supervisor implements"),
         }),
@@ -152,10 +153,16 @@ pub(super) fn row_result(verb: &str, row: TaskRow) -> Result<ToolResult, HostToo
 
 /// Wrap one payload in the `details` envelope under its pinned key.
 ///
-/// The KEY is the contract: `board` / `task` / `moveOutcome` / `artifactMeta` are
-/// four of the 39 names in `toolDetailsRegistry.test.ts`'s frozen producer tuple, and
-/// renaming one reddens `pnpm build` (the `AssertEqual` seal) and that file's vacuity
-/// guard 4. A `json!` literal at each call site would work equally well; this exists
+/// The KEY is the contract: `board` / `task` / `moveOutcome` / `artifactMeta` /
+/// `advanceAdvice` are five of the 40 names in
+/// `toolDetailsRegistry.test.ts`'s frozen producer tuple. Name the file that reddens
+/// on a rename accurately, because the obvious candidate does not: that file's seal
+/// and its vacuity guard 4 both cross-pin its OWN two hand-written lists (the tuple
+/// against the const, the const against the Part-3 fixtures), so neither one can see
+/// this source file at all — a key renamed HERE leaves the TS side green. What
+/// reddens on a rename is the Rust side, `super::tests::shape`'s exact-key-set
+/// assertion, and what reddens on a key added or dropped WITHIN these payloads is the
+/// same test. A `json!` literal at each call site would work equally well; this exists
 /// so the serialization failure has one sentence and one owner.
 pub(super) fn to_details<T: serde::Serialize>(
     key: &str,

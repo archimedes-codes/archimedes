@@ -2242,7 +2242,7 @@ impl SessionManager {
             // await at `:328`, and `sessions.beginTurn(...)` at
             // `src/store/taskLaunch.ts:598` against `:606` — so the renderer's
             // copy and this row agree by construction, whichever lands first.
-            let _ = db.set_session_ready(session_id, Some(false));
+            let _ = db.set_session_ready(session_id, Some(false), None);
         }
 
         // Queue the text + the image attachments on the WORKER's prompt queue

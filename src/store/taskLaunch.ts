@@ -4,14 +4,23 @@ import {
   type TaskLaunchDestination,
 } from "../lib/taskPrompt";
 import {
+  getTask,
+  listAgentDefinitionsForSpace,
+  listSkills,
   sendPrompt,
   startTaskSession,
+  type AcpSessionUpdate,
   type SessionInfo,
 } from "../lib/tauri";
 import { describeIpcError } from "../lib/ipcError";
 import type { AgentDefinitionDto, SkillInfo, TaskRow } from "../lib/tauri";
 import { useSessions } from "./sessions";
 import { useTasks } from "./tasks";
+// The move arm a launch with no board slice needs (D19). The MODE is passed to the
+// store action, which forwards it to `taskMove.moveTaskVerb` — the one owner of the verb.
+import { BOARD_REQUIRED, NO_BOARD } from "./taskMove";
+// The ONE reader of Rust's advance advice, and the claim path's whole first half.
+import { destinationOf, readAdvanceAdvice } from "./advanceAdvice";
 // The auto-advance chain's settle edge, and the money figure it needs from before the
 // turn. TYPE-ONLY cycle by construction: `workflowChain` takes its next launch as an
 // ARGUMENT of the settle rather than importing `launchTaskSession`, so the runtime edge
@@ -118,6 +127,12 @@ export interface TaskLaunchCatalogs {
  *  can tell "opened" from "refused"; the sidebar row and the visible transcript are
  *  already handled by `addSession`, which selects.
  *
+ *  A `null` therefore means "THIS call started nothing", which is not always "nothing
+ *  was started": when the guard trips on the OTHER chain door's reservation the answer is
+ *  that door's outcome instead — see [`pendingClaims`] and the trip arm of
+ *  [`launchTaskSession`], because a caller that reads `null` as a refusal will close a run
+ *  another launch is standing on.
+ *
  *  `note` is a WARNING and never a failure — the Session started, the card exists.
  *  It is the "your Research column is gone" case, which is this repo's documented
  *  silent-green shape made visible: a configured effect that did not fire. */
@@ -179,9 +194,64 @@ export const SAVE_ONLY: TaskLaunchDestination = {
  *  the test seam, because `src/test/resetStores.ts` cannot reach a module `let`. */
 const inFlight = new Set<string>();
 
-/** Test-only: clear the in-flight guard (a module `Set` is not store state). */
+/** A card whose launch a CLAIM owns: the reservation `consumeAdvanceAdvice` took, plus
+ *  what that claim ends up doing.
+ *
+ *  The `settle` half is held by nobody but the claim, and it is resolved exactly once, in
+ *  `carryOutClaim`'s `finally` — the same statement that releases the key. */
+interface PendingClaim {
+  /** What the claim did. `NOTHING` on every arm that launched nothing (a card read that
+   *  failed, a card that is gone, a catalog read that fails, a launch that throws), and the
+   *  real outcome on the arm that launched. A promise, never a turn — see the trip arm of
+   *  [`launchTaskSession`] for why that distinction is the whole safety argument. */
+  readonly outcome: Promise<TaskLaunchOutcome>;
+  readonly settle: (outcome: TaskLaunchOutcome) => void;
+}
+
+/** The claims currently holding a card's key, keyed by the card.
+ *
+ *  WHY A MAP BESIDES THE `Set`. `inFlight` answers "is this card being launched?"; it cannot
+ *  answer "and what did the launch that is holding it end up doing?", and that second
+ *  question is the one the OTHER chain door has to ask before it decides whether a guard trip
+ *  is news or a refusal. The two doors — `consumeAdvanceAdvice` (the model's own `mark_done`,
+ *  rAF-deferred by `App.tsx`'s batcher) and the settle edge (`advanceWorkflowChainOnSettle`,
+ *  deferred by NOTHING) — launch the same card for the same link, and since the claim began
+ *  taking its reservation synchronously the claim can be the HOLDER across three IPC round
+ *  trips while the settle trips the guard inside that window. Answering that trip with
+ *  `NOTHING` said "nothing was started", which `finishLink` recorded as `launch_refused` and
+ *  answered by CLOSING THE LIVE RUN: `workflow_runs`' no-open-run branch re-INSERTs the next
+ *  link at `steps = 1` with `cost_usd` NULL, so `max_steps` and the cost ceiling restart per
+ *  link — the spend bound failing open — beside a false "could not start a Session in X" in
+ *  the transcript. With the holder registered, the two doors are one operation: the trip
+ *  awaits the outcome and continues on the Session the other door started.
+ *
+ *  A module `Map` for the reason [`inFlight`] is one: it has to survive a component unmount,
+ *  and `src/test/resetStores.ts` cannot reach module scope — hence
+ *  [`resetTaskLaunchInFlight`]. */
+const pendingClaims = new Map<string, PendingClaim>();
+
+/** A claim's registry entry: a promise plus the resolver only the claim holds. */
+function newPendingClaim(): PendingClaim {
+  let settle!: (outcome: TaskLaunchOutcome) => void;
+  const outcome = new Promise<TaskLaunchOutcome>((resolve) => {
+    settle = resolve;
+  });
+  return { outcome, settle };
+}
+
+/** Is a CLAIM holding this card's key right now? Test-only, for the same reason
+ *  [`resetTaskLaunchInFlight`] exists: a module `Map` is not store state, and the property
+ *  that matters — the entry exists BEFORE the claim's first `await` returns, and is gone on
+ *  every arm after — cannot be observed from the outcome of a launch. */
+export function hasPendingClaim(taskId: string): boolean {
+  return pendingClaims.has(taskId);
+}
+
+/** Test-only: clear the in-flight guard and the pending-claim registry (a module `Set` and
+ *  `Map` are not store state). */
 export function resetTaskLaunchInFlight(): void {
   inFlight.clear();
+  pendingClaims.clear();
 }
 
 /** The destination column this Space actually has, and what to write.
@@ -206,18 +276,68 @@ export function resetTaskLaunchInFlight(): void {
  *  painting the button and clicking it (a column deleted in another window), which is
  *  the same shape the detail modal's header argues about. The draft-create flow needs
  *  it too: a new card falls back to the board's FIRST column so a draft is never lost
- *  for want of a column. */
+ *  for want of a column.
+ *
+ *  `trusted` is D19's arm, and it keys on ONE of the two refusals below: an absent
+ *  slice (NEVER LOADED) becomes a write rather than a note, because the caller is an
+ *  auto-advance chain whose destination came from a `StageDto` Rust read out of the
+ *  DATABASE, and a board slice is by construction not mounted in the window that
+ *  settles (that is the defect that left `workflow_runs` holding zero rows). The
+ *  SECOND refusal — a loaded slice that does not contain the slug, i.e. STALE — is
+ *  deliberately NOT bypassed. It is the case `TaskDetailDialog` renders as a NOTE
+ *  ("T3 stayed in `doing`") and not an error; collapsing the two would send that move
+ *  to the server, where `Db::move_task` refuses it with `missing_stage` and the dialog
+ *  shows a failure where it showed a note. No pin covers the note, so nothing would
+ *  redden — hence this paragraph rather than one shared `absent` return. */
 function resolveStage(
   spacePath: string,
   task: TaskRow,
   destination: TaskLaunchDestination,
-): { slug: string | null; absent?: true } {
+  trusted = false,
+): { slug: string | null; absent?: true; sliceFree?: true } {
   const wanted = destination.slug;
   const columns = useTasks.getState().boardsBySpace[spacePath];
   // Absent board slice is "NEVER LOADED", not "no columns" — and neither proves a
-  // destination column exists, so both answer "cannot write it". Guessing is a
-  // refused write and an error line under a click that succeeded.
-  if (columns === undefined) return { slug: null, absent: true };
+  // destination column exists, so a caller that holds no row of its own answers
+  // "cannot write it". Guessing is a refused write and an error line under a click that
+  // succeeded. A TRUSTED caller does hold a row: the advice's, read from the database.
+  if (columns === undefined) {
+    // F5: A card ALREADY in the destination needs no move, and the same-slug guard used to
+    // sit BELOW this early return, so the slice-free arm asked for a move it could not
+    // need. That is not merely a wasted round trip: `Db::move_task` never lists a column's
+    // own slug in its own `next_slugs`, so under `board_strict = 1` the write is REFUSED,
+    // a refusal out of the slice-free arm answers `null`, and `launchTaskSession` turns a
+    // `null` into a throw and the chain into `launch_refused` — on a card sitting exactly
+    // where the chain wanted it.
+    //
+    // `{ slug: null }` with NEITHER `absent` NOR `sliceFree` is the shape that makes a
+    // no-op a no-op rather than a refusal: `slug === null` skips the move, so there is no
+    // `landed !== slug` comparison to throw on, and the absence of `absent` means no
+    // `missingColumnNote` — a column the card is already in is not a column this Space
+    // lacks. The Session then starts on the `TaskRow` as held, which is the stage the card
+    // is really in — exactly what the `<task stage>` block has to carry.
+    //
+    // Gated on `trusted`, and the loaded arm's identical guard below is deliberately NOT
+    // lifted up here: a LOADED slice that lacks the column is the STALE case, and that one
+    // must keep its note even when the stored slug matches — `TaskDetailDialog` renders the
+    // note, and `workflowChain.finishLink` records it as `launch_refused`, both of which
+    // are the honest reading of a slice this window can positively see is out of date. Only
+    // the arm with NO slice to contradict changes.
+    if (trusted && task.stageSlug === wanted) return { slug: null };
+    // `sliceFree` is the mode the MOVE needs, not just this function's answer: with no
+    // slice, `useTasks.moveTask`'s default arm refuses ("No board loaded for this
+    // Space.") and a refusal here is a throw and a `launch_refused` on a write that
+    // would have succeeded. So the caller is told which arm it is in rather than
+    // re-deriving it from the store a second time.
+    return trusted ? { slug: wanted, sliceFree: true } : { slug: null, absent: true };
+  }
+  // A loaded slice without the slug is STALE, and stale is never trusted (above). THE
+  // ORDER OF THIS CHECK AND THE ONE BELOW IS NOW PINNED, not prose: `keeps the note for a
+  // loaded slice that lacks the column, even when the stored slug already matches` in
+  // `taskLaunch.test.ts` seeds a LOADED slice with no `research`, a card whose stored slug
+  // IS `research`, and a supplied destination, and requires the note. Swapping the two
+  // checks keeps that case red — the same-slug guard would answer the no-`absent` shape
+  // above and the note would vanish for a slice the window can see is out of date.
   if (!columns.some((c) => c.stage.slug === wanted)) {
     return { slug: null, absent: true };
   }
@@ -323,49 +443,122 @@ function shouldInlineSkill(
  * A rejection after the Session exists leaves the Session live and listed: that is
  * the honest outcome, and the user can retry from the sidebar row.
  *
- * `toStageSlug` is the DESTINATION column, and it replaced a mode for the reason
+ * ## The destination is a slug OR a row, and the difference is the D19 arm
+ *
+ * `toStageSlug` names the DESTINATION column, and it replaced a mode for the reason
  * ADR 0098 gives: the destination Stage IS the mode. Its row supplies the label the
  * instruction sentence names, the Skill the message loads, and the extra prompt the
- * message opens with, all read from the SAME `boardsBySpace` slice the board is
- * rendering — so the button a person clicked and the prompt that goes out cannot
- * disagree about what that column means.
+ * message opens with — so the button a person clicked and the prompt that goes out
+ * cannot disagree about what that column means.
+ *
+ *  - Pass a **`string`** (every board surface) and the row is read from the
+ *    `boardsBySpace` slice the board renders. No slice → the move is skipped and the
+ *    launch reports the skip in its `note`. That is right for a click: the person is
+ *    standing in front of a board that just changed under them.
+ *  - Pass a **[`TaskLaunchDestination`]** (the auto-advance chain, both of its entry
+ *    points) and the caller is declaring *I hold the row; there is no board here*.
+ *    When the slice is absent the move still happens, through `taskMove`'s slice-free
+ *    arm, because the row came out of the database and the slice is by construction
+ *    unmounted in the window that settles. That is D19, and it is the reason
+ *    `workflow_runs` held zero rows while 456 Sessions ran.
+ *
+ * It is ONE parameter with two shapes rather than a destination plus a `trusted:
+ * boolean`, because two arguments can disagree: a `true` beside a slug the caller has
+ * no row for would be exactly the invented-Skill launch this module refuses. A row
+ * either is held or it is not.
+ *
+ * When a slice IS loaded, the slice's row wins even for a supplied destination — the
+ * existing behaviour, byte for byte, and the right ordering: a mounted board is a
+ * fresher read of `on_enter_skill` than an advice computed before the turn ran, and a
+ * person watching that board should see the column they just edited take effect.
  */
 export async function launchTaskSession(
   spacePath: string,
   task: TaskRow,
-  toStageSlug: string,
+  toStageSlug: string | TaskLaunchDestination,
   catalogs: TaskLaunchCatalogs,
 ): Promise<TaskLaunchOutcome> {
+  // A supplied destination IS the trust claim (see the header), so `trusted` and
+  // `sliceFree` are derived from the argument's shape and cannot contradict it.
+  const supplied = typeof toStageSlug === "string" ? null : toStageSlug;
+  // Narrowed from `toStageSlug` directly rather than from `supplied`, which TS cannot
+  // correlate back to the argument's shape.
+  const wantedSlug = typeof toStageSlug === "string" ? toStageSlug : toStageSlug.slug;
   const stage = useTasks.getState().boardsBySpace[spacePath]?.find(
-    (c) => c.stage.slug === toStageSlug,
+    (c) => c.stage.slug === wantedSlug,
   )?.stage;
-  // A destination the slice does not have resolves to a Skill-less destination
-  // labelled with the slug. That is not a shrug, it is the only honest reading: the
-  // label fallback is the same one the detail modal's stage line uses ("we could not
-  // name it" is a different claim from "it has no column"), and `onEnterSkill: null`
-  // means we never invent a Skill for a row we cannot read. `resolveStage` then
-  // answers `absent` for the same slice, so the caller sees the skipped-column note
-  // rather than a Session launched on an invented Skill. `promptPrefix` follows the
-  // same rule for the same reason: no row, no text — the field is the COLUMN's prose,
-  // and a message cannot be framed by a cell we could not read.
+  // Three readings, in this order, and each is the honest one for its case:
+  //  - the SLICE's row: what the board on screen renders, and what a click meant;
+  //  - else the SUPPLIED row: the `StageDto` Rust read from the database, which is the
+  //    whole reason this launch can happen with nothing mounted;
+  //  - else a Skill-less destination labelled with the slug. That is not a shrug, it is
+  //    the only honest reading: the label fallback is the same one the detail modal's
+  //    stage line uses ("we could not name it" is a different claim from "it has no
+  //    column"), and `onEnterSkill: null` means we never invent a Skill for a row we
+  //    cannot read. `resolveStage` then answers `absent` for the same slice, so the
+  //    caller sees the skipped-column note rather than a Session launched on an invented
+  //    Skill. `promptPrefix` follows the same rule for the same reason: no row, no text
+  //    — the field is the COLUMN's prose, and a message cannot be framed by a cell
+  //    neither the slice nor the caller supplied.
   //
   // This is the read that makes the Stage editor's "extra prompt" field mean
   // something: it is the same `boardsBySpace` slice the board renders, so the text a
   // person typed into a column's row reaches the Session that column starts, with no
   // second owner and no fetch. What it deliberately does NOT do here is decide
-  // anything about auto-advance — that is the next task's runtime, and this one's job
-  // ends at "the prefix reaches the message".
-  const destination: TaskLaunchDestination = {
-    slug: toStageSlug,
-    label: stage?.label ?? toStageSlug,
-    onEnterSkill: stage?.onEnterSkill ?? null,
-    promptPrefix: stage?.promptPrefix ?? null,
-  };
+  // anything about auto-advance — the advice decided it, and this module's job ends at
+  // "the prefix reaches the message".
+  const destination: TaskLaunchDestination =
+    (stage
+      ? {
+          slug: wantedSlug,
+          label: stage.label,
+          onEnterSkill: stage.onEnterSkill,
+          promptPrefix: stage.promptPrefix,
+        }
+      : supplied) ?? {
+      slug: wantedSlug,
+      label: wantedSlug,
+      onEnterSkill: null,
+      promptPrefix: null,
+    };
   const refusal = missingSkill(destination, catalogs);
   if (refusal !== null) throw refusal;
   // Guarded on the CARD id and not per-destination: launching two buttons against one
   // card at once is the same double-Session outcome the guard exists for.
-  if (inFlight.has(task.id)) return NOTHING;
+  //
+  // ── THE GUARD TRIP IS NOT ALWAYS A REFUSAL, and telling the two apart is what this arm
+  // does. THE INVARIANT: a guard trip caused by the OTHER CHAIN DOOR is not a refusal, and
+  // must never close the run.
+  //
+  // Two doors launch the same card for the same link — the model's own `mark_done` claim,
+  // and the settle edge — and the claim holds this key across three IPC reads. When the
+  // settle trips on that key, `NOTHING` used to be the answer, and `NOTHING` asserts
+  // "nothing was started". `finishLink` reads `{ sessionId: null }` as `launch_refused` and
+  // CLOSES the run, which hands the next link a fresh `steps = 1` and a NULL `cost_usd` —
+  // `max_steps` and the cost ceiling restarting per link, the spend bound failing open —
+  // plus a transcript line saying a Session could not be started in a column where one had
+  // just started. So the arm now asks who holds the key: a registered claim answers with
+  // its own outcome, and the chain continues on the Session the claim started.
+  //
+  // THE AWAIT IS SAFE, and the safety is specific. It waits on the claim's OUTCOME, which
+  // `carryOutClaim` settles in its `finally` — after its reads and its launch, never after
+  // its TURN (`startAndSendLinked` dispatches the first message with a `void` of its own and
+  // releases the launch there). That is the same boundary `finishLink` itself respects: the
+  // `ask`-gate deadlock both headers record is a TURN that never settles under a view with
+  // no renderer for its gate, and three IPC reads plus a dispatch cannot produce one.
+  //
+  // A trip with NO claim behind it keeps the old answer, because there the old answer is
+  // true: nothing else is launching this card and nothing was started. That is a genuine
+  // refusal — a double click, or a claim that already finished — and `finishLink` still
+  // refuses it and still closes, so the run does not leak into the next chain.
+  if (inFlight.has(task.id)) {
+    const holder = pendingClaims.get(task.id);
+    if (holder === undefined) return NOTHING;
+    // The other door owns this card. Hand back what it does — including its `null`, because
+    // a claim whose reads failed genuinely launched nothing and that IS a refusal this side
+    // must still record.
+    return await holder.outcome;
+  }
   inFlight.add(task.id);
   // ONE-SHOT, and the one-shot is the point. The guard is released at the dispatch (the
   // callback below) and this `finally` is the safety net for every arm that returns before
@@ -381,7 +574,12 @@ export async function launchTaskSession(
     inFlight.delete(task.id);
   };
   try {
-    const { slug, absent } = resolveStage(spacePath, task, destination);
+    const { slug, absent, sliceFree } = resolveStage(
+      spacePath,
+      task,
+      destination,
+      supplied !== null,
+    );
     let note: string | null = null;
     if (slug !== null) {
       // THE MOVE IS CHECKED, not assumed. `useTasks.moveTask` never rejects — a refusal
@@ -396,7 +594,14 @@ export async function launchTaskSession(
       // `workflowChain.finishLink` maps a throw to `launch_refused`, so the chain closes
       // with a sentence instead of launching a lie. For a human click the cost is an error
       // line on a click that would otherwise have started a Session on a stale stage.
-      const landed = await useTasks.getState().moveTask(spacePath, task.id, slug);
+      //
+      // `sliceFree` selects the OTHER arm of the same verb (D19): no slice exists, so the
+      // write goes ahead with no optimistic paint and no revert, and the answer is
+      // `toStageSlug` or `null`. The check below still applies unchanged — a `null` out of
+      // that arm is a REFUSED write, and launching on it would be the same lie.
+      const landed = await useTasks
+        .getState()
+        .moveTask(spacePath, task.id, slug, sliceFree ? NO_BOARD : BOARD_REQUIRED);
       if (landed !== slug) {
         throw new Error(
           `This Space would not move the card into \`${slug}\` — it is in ` +
@@ -438,6 +643,345 @@ export async function launchTaskSession(
     // callback above, and a guard that survived a failure would make the card permanently
     // un-launchable.
     releaseGuard();
+  }
+}
+
+/** The SECOND entry point into the chain: the **claim** path.
+ *
+ * ## What it is
+ *
+ * The model's own `mark_done` call answers with a launch instruction, and that answer
+ * arrives in this window as a `tool_call_update` frame whose `rawOutput.details` carries
+ * `advanceAdvice`. This function is what the app's session-update batcher hands those
+ * frames to. It reads the advice, and if it says "advance", it launches — through
+ * [`launchTaskSession`], the one owner of move-then-start-then-send, which is what makes
+ * the chain's move the human's drag rather than a third meaning of "a move"
+ * (ADR 0119 §6).
+ *
+ * ## Why this is a separate entry point and not part of the settle
+ *
+ * Because the claim is the moment the decision was made, and the settle edge is a
+ * fallback for the case where nobody consumed it (D14's accepted cost). Both ask the
+ * same Rust decider and both hand the same destination to the same executor, so they
+ * cannot disagree about WHERE to go.
+ *
+ * WHAT RUST'S DEDUPE DOES NOT DO — and this header used to claim that it did. It does
+ * not make the pair safe. `alreadyLaunched` is a DATABASE read, so it can only ever
+ * stop the launch that runs after the other one has already STARTED and been recorded.
+ * That covers the ordering this function was written for — claim first, settle second,
+ * where the settle asks and is answered `already_advanced`, which is why a consumed
+ * claim makes the settle a silent no-op. It does NOT cover the other ordering, which is
+ * the one this tree produces: the advice is consumed from inside `App.tsx`'s
+ * `requestAnimationFrame` callback (`batchSessionUpdates.ts` invokes `onAdvice` inside
+ * the scheduled function), while the settle edge fires the instant `await
+ * sendPrompt(...)` resolves and is deferred by NOTHING. A settle that wins that race has
+ * launched AND RELEASED before the queued frame runs — `launchTaskSession` releases at
+ * the dispatch — so the claim arrives at a free guard and at a `task_sessions` table
+ * nobody has read since. Rust cannot refuse a launch that has not happened yet. The
+ * safety in THAT direction is the reservation below: the claim takes the card's key
+ * synchronously, on the same key `launchTaskSession` guards on, which makes the two
+ * paths mutually exclusive in either order and costs no extra IPC to ask.
+ *
+ * ## THE SEAM, and why it is `App.tsx`'s batcher callback
+ *
+ * Two earlier drafts put this in `sessions.ts`, and both were wrong for the same class
+ * of reason: the reducer has TWO store call sites, the singular `applySessionUpdate` and
+ * the plural `applySessionUpdates`, and **the plural is the live path** — `App.tsx` builds
+ * `createBatchedSessionUpdate((items) => useSessions.getState().applySessionUpdates(items),
+ * requestAnimationFrame)` and feeds EVERY `session-update` into it. The singular action's
+ * only production caller is `addSystemLine`. A seam in the singular action would never
+ * see a live `tool_call_update`: the headline clause would have no channel while every
+ * mocked test stayed green — the exact "looks configured, does nothing" failure this
+ * feature exists to remove. `App.tsx`'s callback is outside every `set` updater, so the
+ * StrictMode double-invoke objection that closed the in-updater option does not bind it,
+ * and it is already fire-and-forget.
+ *
+ * ## `void`ed, never awaited — the same deadlock, one level deeper
+ *
+ * `sendPrompt` resolves on `agent_settled`; the merged `research` Skill ends its turn on
+ * an `ask` gate; `AskQuestionCard` renders only under `ChatStream`; and `App`'s view
+ * ternary renders the board INSTEAD of `ChatStream`. This function is called from inside
+ * the turn that is still running, so awaiting a launch here would hold the turn on a gate
+ * that has no renderer. Nothing upstream awaits, so **a rejection would be reported
+ * nowhere** — and that is not a hypothetical, it is what this path used to do: the only
+ * `try` in `carryOutClaim` wrapped the launch, while `getTask` and the two catalog reads
+ * sat outside it, so an IPC failure on a read vanished. The reporting is therefore in
+ * TWO layers, and both are load-bearing rather than decoration: the body's own `try`
+ * covers every `await` it makes (a read that fails is recorded, not lost), and the
+ * `.catch` on the dispatch below is the belt for the one failure the body cannot report
+ * — a throw from the reporter itself.
+ *
+ * ## Why the catalogs are fetched here
+ *
+ * `launchTaskSession` expands `$skill` Mentions against `catalogs.skills`, and
+ * `useSkillCatalog` is a HOOK whose promise cache is module-private — there is no
+ * non-hook accessor, and this path runs with no component mounted at all. So the two
+ * catalog calls are made directly. They are two IPC round trips on a path that already
+ * costs two (`mark_done` itself, and the launch), on a frame that arrives at most once
+ * per turn, for a launch that cannot be built without them. A wrong `skills` list is not
+ * a degraded launch either: `missingSkill` REFUSES it, which is the correct outcome for a
+ * catalog this path cannot read.
+ *
+ * Returns whether it dispatched. `false` covers every silent arm at once — not an advice
+ * frame, an advice that does not advance, an advice already launched by its own claim, a
+ * card that is gone, a card whose launch is ALREADY in flight (the reservation above, held
+ * by the settle path or by a click) — and the caller does not care which, because all five
+ * mean "nothing for you to do". A held reservation is the one arm that is not merely silent
+ * but informative, and it is still not the caller's to report: the launch that holds the key
+ * owns the outcome. THE MIRROR OF THAT SENTENCE IS THE LOAD-BEARING HALF — when THIS path is
+ * the holder, the key it holds is read by the settle's launch, and what the settle gets must
+ * be that outcome rather than a refusal, or the chain closes a run its own claim is standing
+ * on. That is what [`pendingClaims`] carries; see the trip arm of [`launchTaskSession`].
+ *
+ * `sessionId` is the Session the FRAME arrived on, which the batch item already carries.
+ * It is not derived from the advice: the advice names the card it decided for, and the
+ * transcript a refusal belongs in is the one the person is watching — the claimant's.
+ *
+ * ## SYNCHRONOUS, and it is not a style choice
+ *
+ * This is called for EVERY item of EVERY frame — ~1000 times a second on a thinking
+ * model. An `async` function allocates a promise per call no matter how early it
+ * returns, so the guard is a plain function that bails on a string compare and only
+ * reaches an `async` helper once a frame has actually carried an instruction. That
+ * happens at most once per turn.
+ */
+export function consumeAdvanceAdvice(
+  sessionId: string,
+  update: AcpSessionUpdate,
+): boolean {
+  const advice = readAdvanceAdvice(update);
+  const destination = advice === null ? null : destinationOf(advice);
+  // A launch needs a card, and the claim path holds only a Session id — which is
+  // precisely why the advice carries `taskId` and `spacePath` (arm 7). Either one absent
+  // and there is nothing to launch against: the `"unlinked"` arm, or a card that was
+  // deleted while the turn ran.
+  const taskId = advice?.taskId;
+  const spacePath = advice?.spacePath;
+  if (destination === null || taskId == null || spacePath == null) return false;
+  // THE RESERVATION, taken HERE and not inside `carryOutClaim`, and taken SYNCHRONOUSLY —
+  // no `await` may sit between the decision above and the `add` below (pinned by a source
+  // scan in `taskLaunch.claim.test.ts`, because a doc-comment cannot hold a timing rule).
+  // It is the SAME key `launchTaskSession` guards on, and it is what makes the claim and
+  // the settle mutually exclusive: the settle path funnels through that executor too, so
+  // whichever of the two gets here first holds the card's key across its own launch, and
+  // the other does not launch. Deferred by one microtask this would be worthless, because
+  // the asymmetry it defends against is between a rAF-deferred claim and an UNDEFERRED
+  // settle — see the header. And it cannot be replaced by a check of
+  // `advice.alreadyLaunched`: the claim's own advice carries `alreadyLaunched: false` by
+  // construction (the dedupe matches a `task_sessions` row, and this launch has not written
+  // one yet), so a gate there would be a gate that never closes.
+  //
+  // A trip is a RETURN of `false` and not an error: an in-flight launch of this card IS the
+  // launch this advice wanted. WHAT HOLDING THE KEY COSTS, and it is the reason the registry
+  // below exists at all: this reservation made the claim the HOLDER across three IPC reads,
+  // and the party turned away inside that window is the settle — whose refusal is not a
+  // transcript line but a CLOSED RUN. So being the holder obliges the claim to answer for
+  // what it did.
+  if (inFlight.has(taskId)) return false;
+  inFlight.add(taskId);
+  // THE REGISTRY, in this same synchronous block and on the same tick as the `add` above —
+  // pinned positionally by a source scan in `taskLaunch.claim.test.ts`, because the entry is
+  // only worth having if the other chain door can find it while the key is held. An entry
+  // written a microtask later would be invisible to a settle that trips the guard inside the
+  // window, and the window is exactly what this is for. The entry is what lets
+  // `launchTaskSession`'s trip arm answer "here is what the holder did" instead of `NOTHING`,
+  // which is what stops the settle from refusing a launch that succeeded and closing a live
+  // run — see [`pendingClaims`].
+  const claim = newPendingClaim();
+  pendingClaims.set(taskId, claim);
+  // OWNERSHIP TRANSFERS TO `carryOutClaim` HERE, and that function's `finally` is its
+  // one-shot net for every arm it can exit through — a `getTask` rejection, a card that is
+  // gone, a catalog read that fails, a launch that refuses, and a launch that fails with
+  // its own reporter. A key dropped on any of those arms makes the card un-launchable by a
+  // chain for the life of the app, which is a worse failure than the double launch this
+  // closes, so the arms are pinned one by one in `taskLaunch.claim.test.ts`.
+  //
+  // THE BELT. `carryOutClaim` reports its OWN failures — every `await` it makes sits in
+  // a `try` that records the failure in the claimant's transcript — so reaching this
+  // `catch` means the reporter itself threw (a store action that rejects while it is
+  // appending the line). It is `console.error` and nothing more, and that is deliberate:
+  // reporting through the same mechanism that just failed would be a rejection raised
+  // from inside the handler for it, which is an unhandled rejection wearing a `.catch`.
+  // The belt's job is that the failure is LOUD somewhere rather than nowhere.
+  void carryOutClaim(sessionId, spacePath, taskId, destination, claim).catch((err: unknown) => {
+    console.error(
+      `The advance advice for ${taskId} failed, and the failure could not be recorded ` +
+        `in the Session it was claimed in:`,
+      err,
+    );
+  });
+  return true;
+}
+
+/** The claim path's async half: read the card, read the catalogs, dispatch. Split from
+ *  the guard above so the hot path allocates nothing.
+ *
+ *  EVERY `await` here is inside the `try`, and that is the fix rather than a style.
+ *  `getTask` and the two catalog reads are raw `invoke` wrappers, and the version of
+ *  this function that wrapped only the launch lost their rejections entirely: nothing
+ *  upstream awaits this promise, so the launch was gone with no console line and no
+ *  transcript line. A read this path cannot make is a launch it cannot make, and the
+ *  claimant's Session is where that fact belongs — the board may not be mounted.
+ *
+ *  It also OWNS THE REGISTRY ENTRY the guard above registered: the `finally` below settles
+ *  it with whatever this claim did and removes it on every arm — REMOVES IT, THAT IS, IF THE
+ *  MAP STILL HOLDS THIS CLAIM under the card's key, which a later claim for the same card
+ *  can have displaced. See the identity guard at the removal itself. */
+async function carryOutClaim(
+  sessionId: string,
+  spacePath: string,
+  taskId: string,
+  destination: TaskLaunchDestination,
+  claim: PendingClaim,
+): Promise<void> {
+  // What the other chain door is waiting on. Every arm that did not launch leaves this at
+  // `NOTHING` — an honest `null`, because nothing WAS started and a step that started
+  // nothing is a refusal `finishLink` must still record — and the launch arm replaces it.
+  let outcome: TaskLaunchOutcome = NOTHING;
+  // THE ONE-SHOT NET for the reservation `consumeAdvanceAdvice` handed to this function,
+  // and the one-shot is the point (the same shape `launchTaskSession` uses for its own
+  // guard, for the same reason). Every arm that exits this function passes through the
+  // `finally` below: a `getTask` rejection, a card the database does not have, a catalog
+  // read that fails, a launch that refuses, and a launch that fails with its own reporter
+  // thrown. A key leaked on any of them makes the card un-launchable by any chain for the
+  // rest of the app's life — strictly worse than the double launch the reservation exists
+  // to prevent — and the flag is what keeps the net from deleting a key this function no
+  // longer owns once the launch has taken it (see the hand-off at the call below).
+  let claimGuardHeld = true;
+  const releaseClaimGuard = (): void => {
+    if (!claimGuardHeld) return;
+    claimGuardHeld = false;
+    inFlight.delete(taskId);
+  };
+  try {
+    // The card, read fresh. `launchTaskSession` needs the `TaskRow` (its `<task>` block,
+    // its number, its stored stage), and the claim path has never held one. `null` is a
+    // real answer — the card is gone — and launching on a fabricated row would put a
+    // `<task number>` on the wire that names a card the database does not have.
+    const task = await getTask(taskId);
+    if (task === null) {
+      console.error(
+        `An advance advice named ${taskId}, which this window cannot read — nothing launched.`,
+      );
+      return;
+    }
+    const [skills, agents] = await Promise.all([
+      listSkills(spacePath),
+      listAgentDefinitionsForSpace(spacePath),
+    ]);
+    // DISPATCHED, NOT AWAITED, for the deadlock the header records. The outcome is
+    // observed (a refusal is a fact a person needs, and this frame's transcript is the one
+    // surface guaranteed to be on screen) and the TURN is never waited on.
+    //
+    // THE RESERVATION IS HANDED OVER HERE, one statement before the call, and the hand-off
+    // is atomic in the only sense that matters: `releaseClaimGuard()` and the `launchTaskSession`
+    // call sit in the same synchronous turn, and `launchTaskSession` takes the card's key
+    // at the top of its own body (`inFlight.add(task.id)`), so no other launch can slip
+    // between the release and the re-take. It has to be a hand-off rather than a hold
+    // because the executor guards on the SAME key the claim reserved.
+    //
+    // SINCE THE REGISTRY LANDED, THIS RELEASE IS WHAT KEEPS THE PATH LIVE RATHER THAN MERELY
+    // CORRECT. Walking into `launchTaskSession` while still holding the key would no longer
+    // be a self-refusal — the trip arm would find THIS claim in `pendingClaims` and await
+    // `claim.outcome`, which is settled in the `finally` below, which that await would be
+    // standing in front of. A permanent deadlock, on the hot path, for every card that ever
+    // claimed. Do not "simplify" the hand-off into a hold.
+    //
+    // Releasing first is also leak-proof in the arm where the executor never reaches its
+    // `add` (a `missingSkill` refusal throws above it): a released key is free for the next
+    // launch, never stranded, and the one-shot below makes this function's `finally` a no-op
+    // for a key it no longer owns — the exact mistake `launchTaskSession`'s own one-shot
+    // exists to prevent.
+    releaseClaimGuard();
+    try {
+      // THE OUTCOME IS CAPTURED, and it is what the other chain door gets. Awaiting the
+      // launch (not its turn — `startAndSendLinked` resolves at the dispatch) is what makes
+      // the hand-back a fact rather than a guess.
+      outcome = await launchTaskSession(spacePath, task, destination, { skills, agents });
+    } catch (err) {
+      console.error(`The advance advice could not be carried out for ${taskId}:`, err);
+      // THE REPORTER IS GUARDED, and the guard is what keeps the diagnosis truthful
+      // rather than merely loud. This `addSystemLine` used to sit unguarded INSIDE the
+      // outer `try`, so a transcript write that threw fell into the OUTER catch — which
+      // prints "could not be read (the card, the skills or the agents)" and appends
+      // "nothing launched; the card stayed where it was". Both halves are false on this
+      // path: every read succeeded, and the card may have moved before the start failed.
+      // Re-wording the outer sentence instead would have made it vaguer for the READ
+      // case, which is where it is exactly right, so the guard goes here: the launch
+      // failure keeps its own sentence, the read failure keeps its own, and a failed
+      // report is reported by the same belt as any other unreportable failure.
+      try {
+        useSessions
+          .getState()
+          .addSystemLine(
+            // The Session the CLAIM was made in — the turn this frame belongs to, and the
+            // transcript the person is actually watching. Not the Session the advice
+            // launched: a refusal to move is news about the turn that just asked.
+            sessionId,
+            `The card was not moved to \`${destination.label}\` — ` +
+              `${describeIpcError(err)} (\`launch_refused\`).`,
+          );
+      } catch (reportErr) {
+        // Same shape as the dispatch's `.catch` below, and for the same reason: a
+        // rejection raised inside the handler for a rejection is an unhandled rejection
+        // wearing a `.catch`, and it must not reach the outer arm and be re-diagnosed as
+        // a failed read.
+        console.error(
+          `The advance advice for ${taskId} failed, and the failure could not be recorded ` +
+            `in the Session it was claimed in:`,
+          reportErr,
+        );
+      }
+    }
+  } catch (err) {
+    // A READ failed, so there was no launch to refuse. Reached ONLY by the reads now
+    // that the inner report is guarded: a launch failure whose transcript write threw is
+    // reported by the inner `catch`'s own belt and never falls through to this sentence,
+    // which would call a failed launch a failed read. Recorded the way this file
+    // records everything it cannot rethrow — a line in the Session it failed in — and
+    // the sentence says the operative half: nothing was launched, so the card is where
+    // it was and the person can move it themselves.
+    console.error(
+      `The advance advice for ${taskId} could not be read (the card, the skills or the ` +
+        `agents):`,
+      err,
+    );
+    useSessions.getState().addSystemLine(
+      sessionId,
+      `The auto-advance chain could not launch \`${destination.label}\` — ` +
+        `${describeIpcError(err)} (nothing launched; the card stayed where it was).`,
+    );
+  } finally {
+    // THE NET, and the last statement of the last arm. Every exit above passes here, and
+    // the one-shot makes it a no-op once the reservation has been handed to
+    // `launchTaskSession` — so this line releases the key on the four arms that never reach
+    // the hand-off (a `getTask` rejection, a card that is gone, a catalog read that fails,
+    // and a throw from the reporter) and does nothing on the arms that did. A guard that
+    // survived any of them would make the card un-launchable for the life of the app, and
+    // the belt's own throw is no exception: a `finally` runs on the throwing path too, which
+    // is why the release is here and not at the end of the `try`.
+    releaseClaimGuard();
+    // THE REGISTRY'S OWN NET, and it is a SEPARATE piece of state, so it needs its own
+    // statement: `inFlight.delete` does not touch it, and a stale entry outlives a released
+    // key. Settle first, then remove — a door already waiting on this claim must be woken
+    // with the answer rather than left parked, and the removal is what stops a LATER trip
+    // from reading a dead claim as "the other door owns this card" and answering its stale
+    // outcome for a launch that has nothing to do with it.
+    //
+    // The removal is GUARDED BY IDENTITY, and the guard is the whole statement: this entry
+    // has no hand-off of its OWN key, but it does have a hand-off of the WINDOW. The launch
+    // this claim dispatches takes the `inFlight` key, releases it at its own dispatch, and
+    // this claim then still awaits the badge refetch — so for the length of that refetch the
+    // key is FREE and a second claim for the same card can pass the guard and REPLACE this
+    // entry in the map. An unconditional delete would then drop the LATER claim's entry, and
+    // a settle racing inside that later claim's window would find the key held with no
+    // registry entry behind it and be answered `NOTHING` — the exact closed-run budget hole
+    // this registry was written to close, arriving back through the map. So: delete only what
+    // you still hold, which is the same discipline `releaseClaimGuard` above and the one-shot
+    // in `launchTaskSession` already keep for the key. Deleting a key you do not hold is how
+    // a guard becomes a hole.
+    claim.settle(outcome);
+    if (pendingClaims.get(taskId) === claim) pendingClaims.delete(taskId);
   }
 }
 
@@ -637,9 +1181,15 @@ async function sendLaunchMessage(
       costBeforeTurnUsd: costBeforeTurn,
       // The FULL verb, so the chain's move is the human's drag: `launchTaskSession`
       // moves through `useTasks.moveTask` (optimistic paint, whole-slice re-derivation,
-      // revert-into-`error`) before it starts anything, and it is the thing that reads the
-      // NEXT column's Skill and extra prompt out of the same slice.
-      launch: (next) => launchTaskSession(task.spacePath, task, next.slug, catalogs),
+      // revert-into-`error`) before it starts anything.
+      //
+      // And the WHOLE destination, not `next.slug` — which is the other half of D19. The
+      // old wiring dropped `label`, `onEnterSkill` and `promptPrefix` on the floor and
+      // forced `launchTaskSession` to re-read them from a slice that is not mounted in
+      // this window, so it resolved a Skill-less destination, skipped the move and set a
+      // note nobody renders. Passing the row the advice carried is what lets the Skill
+      // actually reach the message with no board anywhere.
+      launch: (next) => launchTaskSession(task.spacePath, task, next, catalogs),
     }).catch((err: unknown) => {
       console.error(`Auto-advance chain failed for task ${task.id}:`, err);
       useSessions

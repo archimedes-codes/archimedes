@@ -25,6 +25,40 @@ use super::stages::{
 };
 use super::{BoardError, Db, FieldPatch, MoveOutcome};
 
+/// WHO is asking for a move, named for the **door** and not for a trust level.
+///
+/// D12's argument in one sentence: `Db::move_task` is where both doors converge
+/// (`commands/tasks.rs` for a person's drag, `agent/host_tools/exec/board.rs` for a
+/// model's call), and the file's own doc argues a gate belongs there for a
+/// structural reason — *"the bypass is only free when the gate sits where the write
+/// is."* An unconditional forward gate there refuses human drags too, which D11
+/// forbids; a gate in `exec/board.rs` keeps humans free but reads the graph on a
+/// SECOND lock, breaking the refuse-before-write atomicity every other check in this
+/// method follows. The caller-kind argument is what keeps both, and it is the reason
+/// this parameter exists rather than a boolean: a name that says which door rang is
+/// not re-derivable from anything else the method is given.
+///
+/// WHY "door" AND NOT "trust". `Person` is not more trusted than `Model` in any
+/// sense this gate reasons about — the model is the intended author of most moves
+/// and its `mark_done` is the door this design WANTS it to use. The distinction is
+/// which verb a caller reached, because the two verbs have different affordances: a
+/// person drags a card with their own hand and is not the party a teaching sentence
+/// is written for, while a model's `move_task` is the bypass D7 closes. Naming the
+/// variants `Trusted`/`Untrusted` would invite a reader to widen the gate to
+/// whichever one looks suspicious, and the answer for a human drag is not "more
+/// checks later", it is "not this check, ever".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveAuthor {
+    /// A person's drag, through the `move_task` IPC command. Unrestricted by the
+    /// forward gate (D11) — a human may move a card anywhere the columns allow, and
+    /// the Strict gate keeps refusing undeclared drags exactly as it does today.
+    Person,
+    /// A model's `move_task` Host tool. Refused before the write when the
+    /// destination is forward-reachable ([`super::edges::forward_reachable`]), with
+    /// the sentence that teaches it to call `mark_done` instead (D7/D9).
+    Model,
+}
+
 impl Db {
     /// One card by its GLOBAL key (`tsk_<uuid>`); `Ok(None)` when absent — the
     /// `find_space` shape: a read of a deleted card is an answer, not an error.
@@ -304,11 +338,21 @@ impl Db {
     /// reason: `delete_stage`'s bulk relocation must bypass it, `delete_stage` is a
     /// storage method, and a gate in the command layer would be out of its reach —
     /// the bypass is only free when the gate sits where the write is.
+    ///
+    /// `author` is the second gate's discriminator and the reason this verb's
+    /// signature is not what it was: a MODEL's forward move (one the graph says is
+    /// REACHABLE, not merely one it declares) is refused with the sentence that
+    /// sends it to `mark_done` ([`BoardError::ForwardMoveRefused`], D7/D9), while a
+    /// PERSON's drag is unrestricted by it (D11). Both gates run before the `UPDATE`
+    /// and under the one guard, so a refusal writes nothing from either door. See
+    /// [`MoveAuthor`] for why the discriminator is the door and not a trust level,
+    /// and [`super::edges`] for the walk and its `NULL` fallback.
     pub fn move_task(
         &self,
         space_path: &str,
         task_id: &str,
         to_stage: &str,
+        author: MoveAuthor,
     ) -> Result<MoveOutcome, BoardError> {
         let guard = self.conn.lock().expect("db mutex poisoned");
         let exists: i64 = guard.query_row(
@@ -381,6 +425,57 @@ impl Db {
                         } else {
                             edges.join(", ")
                         },
+                    });
+                }
+            }
+        }
+        // D7: the forward gate, checked AFTER the Strict gate and BEFORE the write
+        // — the same refuse-before-write rule every other check in this method
+        // follows, under the SAME guard, which is the whole reason it lives here and
+        // not in `exec/board.rs` (see [`MoveAuthor`]'s doc for the two-door
+        // argument, and `agent/host_tools/exec/board.rs` for the door that passes
+        // `Model`).
+        //
+        // `MoveAuthor::Person` skips it entirely (D11): the sentence this refusal
+        // carries is a teaching text for a model, and a person who drags a card to
+        // the next column is not the party it is written for. Nothing about a
+        // person's drag becomes stricter on any path here — `board_strict` above is
+        // untouched and still the only gate that binds a human.
+        //
+        // TWO GATES, TWO ANSWERS, and the order is not arbitrary. Strict asks "is
+        // this a DECLARED edge" and a `NULL` origin is unconstrained, so it steps
+        // aside; this asks "is the destination REACHABLE" and a `NULL` origin still
+        // has the shape the column order implies (D15's fallback), so it fires on a
+        // default board. Strict therefore passes and this refuses on exactly the
+        // board a fresh install has, and `db/tests/tasks.rs` pins the two side by
+        // side rather than leaving the reader to infer it from two doc comments.
+        //
+        // The FROM stage is read here rather than hoisted out of the Strict block
+        // above, and that duplication of one `query_row` is deliberate: sharing it
+        // would put this gate's read inside a `strict == 1` condition it does not
+        // depend on, and the two gates' independence is the property the tests name.
+        // A `query_row` on a primary key is not the cost worth bending that for.
+        // An exhaustive `match` and NOT `matches!(author, Model)`, so a THIRD door
+        // added later has to be classified here rather than defaulting silently into
+        // whichever arm a wildcard would drop it in. Which door is gated is the
+        // policy; a policy that a new variant bypasses by omission is the silent-green
+        // shape this repo keeps documenting.
+        match author {
+            MoveAuthor::Person => {}
+            MoveAuthor::Model => {
+                let from_stage: String = guard.query_row(
+                    "SELECT stage_slug FROM tasks WHERE id = ?1",
+                    params![task_id],
+                    |row| row.get(0),
+                )?;
+                // Borrows the guard it is handed — the connection mutex is NOT
+                // reentrant (ADR 0119 §2), so a `Db::list_stages` call from in here
+                // would hang rather than answer. See `db/edges.rs`.
+                if super::edges::forward_reachable(&guard, space_path, &from_stage, to_stage)? {
+                    return Err(BoardError::ForwardMoveRefused {
+                        task_id: task_id.to_string(),
+                        from: from_stage,
+                        to: to_stage.to_string(),
                     });
                 }
             }

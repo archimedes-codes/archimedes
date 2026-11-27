@@ -21,7 +21,7 @@
 //!
 //! ```text
 //! // BROKEN — compiles, and every move_task answer loses `toStage`
-//! let out = spawn_host_call("move_task", move || Db::move_task(&db, &space_path, &task_id, &to_stage)).await?;
+//! let out = spawn_host_call("move_task", move || Db::move_task(&db, &space_path, &task_id, &to_stage, MoveAuthor::Model)).await?;
 //! return Ok(ToolResult::ok_text(text, Some(to_details("moveOutcome", &out)?)));
 //! ```
 //!
@@ -93,11 +93,11 @@ fn details_of(result: &crate::agent::tools::ToolResult, verb: &str) -> Value {
 
 /// THE FRONTEND CONTRACT, PINNED AS AN EXACT KEY SET.
 ///
-/// `src/lib/toolDetailsRegistry.test.ts` freezes 39 producer keys and four fixture
+/// `src/lib/toolDetailsRegistry.test.ts` freezes 40 producer keys and five fixture
 /// payloads whose keys are spelled out in TypeScript. Presence assertions (every
 /// other test in this file) cannot see an EXTRA key: a producer that added
-/// `artifactCount` would keep all four fixture groups green while silently changing
-/// the wire the frozen tuple describes. So this asserts set EQUALITY against the four
+/// `artifactCount` would keep all five fixture groups green while silently changing
+/// the wire the frozen tuple describes. So this asserts set EQUALITY against the five
 /// fixture payloads' key lists, copied from that file.
 ///
 /// The mutation this exists for: add one field to `storage::BoardRow`, or rename one.
@@ -134,7 +134,7 @@ async fn every_details_payload_key_set_matches_the_frozen_frontend_fixtures() {
             "updatedAt",
             "artifactKeys",
         ]),
-        "`details.board`'s row keys must be EXACTLY the fixture's — the frozen 39-key \
+        "`details.board`'s row keys must be EXACTLY the fixture's — the frozen 40-key \
          tuple in toolDetailsRegistry.test.ts describes this payload"
     );
 
@@ -167,10 +167,24 @@ async fn every_details_payload_key_set_matches_the_frozen_frontend_fixtures() {
     );
 
     // `details.moveOutcome` — all three, in the fixture's spelling.
+    //
+    // THE CARD IS POSITIONED BY THE HUMAN DOOR for the same reason
+    // [`a_move_task_answer_carries_to_stage_on_enter_and_note_all_three`] now does:
+    // this asserts a SUCCESSFUL answer's key set, and on the default board's
+    // fallback chain every column is forward-reachable from `backlog`, so the
+    // model's `backlog → done` call is a refusal with no `details` to grade. A
+    // person positions it (D11) and the model moves BACKWARD, which is allowed.
+    db.move_task(
+        "/host-tools/shape",
+        &task_id,
+        "done",
+        crate::storage::MoveAuthor::Person,
+    )
+    .expect("the human door positions the card");
     let moved = run(
         &db, None, false,
         "move_task",
-        json!({ "space_path": "/host-tools/shape", "task_id": task_id.clone(), "to_stage": "done" }),
+        json!({ "space_path": "/host-tools/shape", "task_id": task_id.clone(), "to_stage": "doing" }),
     )
     .await
     .expect("move_task");
@@ -194,6 +208,84 @@ async fn every_details_payload_key_set_matches_the_frozen_frontend_fixtures() {
         keys_of(&details_of(&written, "write_artifact")["artifactMeta"]),
         expected(&["key", "updatedAt", "bytes"]),
         "`details.artifactMeta` is EXACTLY {{key,updatedAt,bytes}}"
+    );
+
+    // `details.advanceAdvice` — `mark_done`'s launch instruction.
+    //
+    // THE FIXTURE NEEDS AN AUTO COLUMN, and that is not scenery: the default seeded
+    // board flags nothing `auto`, so a claim there answers `not_automatic` and the
+    // payload's `destination` is `null` — which `keys_of` would still grade (serde emits
+    // the key), but a NULL destination is a shape the frontend's reader has to reach for
+    // a `?.` on. Asserting against a REAL row is the shape Task 4 codes against.
+    db.set_stage_auto("/host-tools/shape", "backlog", true)
+        .expect("flag the launched column auto");
+    let (_d, session_id) = {
+        let id = "sess-shape-advice";
+        db.record_session(&crate::agent::SessionInfo {
+            session_id: id.into(),
+            cwd: std::path::PathBuf::from("/tmp/proj"),
+            capabilities: json!({ "piSessionId": id, "loadSession": true }),
+            config_options: None,
+            archived: false,
+            title: None,
+            context_usage: None,
+            cost_usd: None,
+            is_subagent: false,
+        })
+        .expect("record_session (the link's FK target)");
+        db.link_session(&task_id, id, Some("backlog"))
+            .expect("link_session (the claim needs a card)");
+        db.set_session_ready(id, Some(true), None).expect("claim");
+        ((), id)
+    };
+    let advised = run(&db, Some(session_id), false, "mark_done", json!({}))
+        .await
+        .expect("mark_done");
+    assert_eq!(
+        keys_of(&details_of(&advised, "mark_done")["advanceAdvice"]),
+        expected(&[
+            "advance",
+            "stop",
+            "destination",
+            "reason",
+            "maxSteps",
+            "ceilingUsd",
+            "taskId",
+            "spacePath",
+            "alreadyLaunched",
+        ]),
+        "`details.advanceAdvice` is EXACTLY the nine keys Task 4's `advanceAdvice.ts` \
+         guard is written against — the frozen 40-key producer tuple in \
+         toolDetailsRegistry.test.ts describes this payload, and its field names are the \
+         wire contract with the TypeScript wave"
+    );
+    // The nested row is a `StageRow` and its OWN key set is the 12 the `StageDto`
+    // mirror declares — a ninth key on the advice is caught above, a drift inside the
+    // row is caught here, and Task 4 reads `slug`/`label`/`onEnterSkill`/`promptPrefix`
+    // off it, so a rename in either direction is a silent `undefined` without this.
+    let dest = &details_of(&advised, "mark_done")["advanceAdvice"]["destination"];
+    assert_eq!(
+        keys_of(dest),
+        expected(&[
+            "spacePath",
+            "slug",
+            "label",
+            "sortOrder",
+            "onEnter",
+            "onEnterSkill",
+            "nextSlugs",
+            "auto",
+            "promptPrefix",
+            "positionX",
+            "positionY",
+            "nextOutcomes",
+        ]),
+        "the destination is a whole `StageRow`, and these are the twelve keys \
+         `types.ts`'s `StageDto` declares"
+    );
+    assert_eq!(
+        dest["onEnterSkill"], "research",
+        "the field Task 4 launches with"
     );
 
     // The write verbs' `details.task` is that SAME key list MINUS `artifactKeys` —
@@ -257,6 +349,22 @@ fn expected(keys: &[&str]) -> Vec<String> {
 #[tokio::test]
 async fn a_move_task_answer_carries_to_stage_on_enter_and_note_all_three() {
     let (_dir, db, task_id) = seeded("ht-shape-move-", false).await;
+    // THE CARD IS POSITIONED BY THE HUMAN DOOR, and it is a consequence of the
+    // forward gate rather than a workaround for it. This pin asserts the SHAPE of a
+    // SUCCESSFUL move, and `details_of` refuses to grade a failure — so the model's
+    // call has to be admissible. On the default board the `sort_order + 1` fallback
+    // makes every column reachable from `backlog`, so a `backlog → doing` call is
+    // now a refusal and there is no shape to read. `MoveAuthor::Person` moves it to
+    // `done` (a person is unrestricted, D11) and the model then moves it BACKWARD,
+    // which is allowed and inert (D10). The keys under test are identical either
+    // way; only the direction changed.
+    db.move_task(
+        "/host-tools/shape",
+        &task_id,
+        "done",
+        crate::storage::MoveAuthor::Person,
+    )
+    .expect("the human door positions the card");
 
     let result = run(
         &db,
@@ -275,7 +383,7 @@ async fn a_move_task_answer_carries_to_stage_on_enter_and_note_all_three() {
     let details = details_of(&result, "move_task");
     let outcome = details.get("moveOutcome").expect(
         "the move answer rides `details.moveOutcome` — that key is one of the \
-                 39 in toolDetailsRegistry.test.ts's frozen producer tuple",
+                 40 in toolDetailsRegistry.test.ts's frozen producer tuple",
     );
 
     // THE THREE KEYS. `to_stage` and `note` are the two the inherent

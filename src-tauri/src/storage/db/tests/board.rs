@@ -320,7 +320,8 @@ fn get_board_groups_tasks_under_their_stage_in_stage_order() {
     let one = db.create_task(&space, "one", None, None).expect("create");
     db.create_task(&space, "two", None, Some("done"))
         .expect("create");
-    db.move_task(&space, &one.id, "done").expect("move");
+    db.move_task(&space, &one.id, "done", MoveAuthor::Person)
+        .expect("move");
 
     let board = db.get_board(&space).expect("get_board");
     let shaped: Vec<(&str, Vec<&str>)> = board
@@ -1342,14 +1343,14 @@ fn the_board_strict_read_and_the_move_gate_agree_on_a_non_canonical_path() {
     // The enforcement agrees: the board rows are keyed RAW (that is what the
     // caller addressed), so the gate must still find the CANONICAL `spaces` row.
     db.get_board(&raw).expect("seed the raw-keyed board");
-    db.set_stage_next(&raw, "backlog", &["done".to_string()])
+    db.set_stage_next(&raw, "backlog", &["done".to_string()], &[None])
         .expect("backlog → done only");
     let card = db
         .create_task(&raw, "governed through a symlink", None, None)
         .expect("create_task");
 
     let err = db
-        .move_task(&raw, &card.id, "approved")
+        .move_task(&raw, &card.id, "approved", MoveAuthor::Person)
         .expect_err("the Switch is ON, so the gate must be ON too");
     assert!(
         matches!(err, BoardError::StrictMoveRefused { .. }),
@@ -1385,6 +1386,6 @@ fn record_linkable_session(db: &Db, id: &str, cwd: &str, cost: Option<f64>) {
 /// than a fifth parameter on [`record_linkable_session`], so the fifteen
 /// cost-era call sites above stay byte-identical.
 fn mark_session_ready(db: &Db, id: &str, ready: Option<bool>) {
-    db.set_session_ready(id, ready)
+    db.set_session_ready(id, ready, None)
         .expect("set_session_ready (the card's bell reads this column)");
 }

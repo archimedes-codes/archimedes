@@ -3628,7 +3628,7 @@ async fn a_turn_start_clears_the_stored_ready_claim() {
 
     // The claim `mark_done` writes (Task 3), seeded as the state a restart
     // would hand the next launch.
-    db.set_session_ready(&id, Some(true))
+    db.set_session_ready(&id, Some(true), None)
         .expect("the claim writes");
     assert_eq!(
         stored_ready(&path, &id),

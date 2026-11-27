@@ -203,6 +203,7 @@ export type {
   // judges against them), and the settle-handler obeys it. `maxSteps` / `ceilingUsd`
   // ride along because the handler must be able to NAME the bound it hit, and it
   // cannot derive either one.
+  AdvanceAdvice,
   AdvanceVerdict,
   ChainStop,
 } from "./tauri/types";
@@ -328,6 +329,7 @@ export {
   // counted as its consumer.
   workflowRunStep,
   workflowRunClose,
+  workflowAdvanceAdvice,
   // (issue #180 D1, spec §1) The two artifact commands — a HUMAN surface today,
   // and the verbs the crate seam's D2 step will build on. Both enter
   // `TAURI_RUNTIME_API` and `TAURI_PUBLIC_API` in this commit. Neither is a model

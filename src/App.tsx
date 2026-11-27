@@ -17,6 +17,9 @@ import {
 import { createBatchedSessionUpdate } from "./lib/batchSessionUpdates";
 import { INTERACTIVE_EVENTS } from "./lib/ipc/events";
 import { onSessionClosed } from "./store/sessionLifecycle";
+// The auto-advance chain's CLAIM seam — see the `createBatchedSessionUpdate` call below
+// for why it hangs off the batcher and not off a store action.
+import { consumeAdvanceAdvice } from "./store/taskLaunch";
 import { discardSessionMessages, useSessions } from "./store/sessions";
 import { useModelCatalog } from "./store/modelCatalog";
 import { usePermissions } from "./store/permissions";
@@ -86,9 +89,24 @@ function App() {
     // a local agent at a high thinking level emits ~1000 chunks/sec, and one
     // React render per event would saturate the webview main thread (the UI
     // renders at ~1fps while the GPU sits idle — see `batchSessionUpdates.ts`).
+    //
+    // The callback is ALSO the auto-advance chain's claim seam, and it is HERE rather
+    // than in a store action because this is the one place every live `session-update`
+    // actually passes through: `applySessionUpdates` (plural) is the live reducer and
+    // its singular sibling is only ever called by `addSystemLine`. A `mark_done` claim's
+    // launch instruction rides `rawOutput.details.advanceAdvice` on a
+    // `tool_call_update`, so a seam anywhere else would never see one — the feature
+    // would look configured and do nothing, which is the failure this whole line of work
+    // exists to remove. The launch is `void`ed inside `consumeAdvanceAdvice` (the
+    // `ask`-gate deadlock that file records), so this stays fire-and-forget.
     const batchedSessionUpdate = createBatchedSessionUpdate(
       (items) => useSessions.getState().applySessionUpdates(items),
       (fn) => requestAnimationFrame(fn),
+      (items) => {
+        for (const item of items) {
+          consumeAdvanceAdvice(item.sessionId, item.update);
+        }
+      },
     );
     unlistenPromises.push(
       listenSessionUpdate((payload) =>

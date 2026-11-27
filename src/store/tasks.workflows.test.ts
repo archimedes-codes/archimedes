@@ -6,6 +6,7 @@ import {
   getBoard,
   setAutoGuards,
   setStageAuto,
+  setStageNext,
   setStagePromptPrefix,
   type AutoGuards,
   type StageDto,
@@ -49,6 +50,7 @@ vi.mock("../lib/tauri", async () => {
     // list resolves to the REAL wrapper, which calls `invoke` and rejects in jsdom —
     // the noisy-green case the header above is about.
     setStageAuto: vi.fn(),
+    setStageNext: vi.fn(),
     setStagePromptPrefix: vi.fn(),
     getAutoGuards: vi.fn(),
     setAutoGuards: vi.fn(),
@@ -62,7 +64,11 @@ vi.mock("../lib/tauri", async () => {
 
 const SPACE = "/w/alpha";
 
-/* All NINE wire fields are defaulted, because all nine are REQUIRED on `StageDto`:
+/* All NINE wire fields are defaulted, because all nine are REQUIRED on `StageDto`
+ * (`nextOutcomes` is the TENTH and is deliberately NOT defaulted or even spelled
+ * here — it is OPTIONAL, so a fixture that omits it degrades to the correct reader
+ * behaviour, "no edge is labelled", exactly as `positionX` does. Adding it to the
+ * defaults would make thirty-one existing fixtures' omission untested):
  * the Rust side emits `auto` on every row (`NOT NULL DEFAULT 0`) and answers
  * `promptPrefix` whether or not anyone configured it. The defaults are what every
  * pre-workflow column holds — OFF and NULL — so a case that says nothing about the
@@ -128,6 +134,7 @@ beforeEach(async () => {
   for (const fn of [
     getBoard,
     setStageAuto,
+    setStageNext,
     setStagePromptPrefix,
     getAutoGuards,
     setAutoGuards,
@@ -148,6 +155,13 @@ beforeEach(async () => {
     async (_space, slug, promptPrefix) => ({
       ...stage(slug),
       promptPrefix,
+    }),
+  );
+  vi.mocked(setStageNext).mockImplementation(
+    async (_space, slug, slugs, nextOutcomes) => ({
+      ...stage(slug),
+      nextSlugs: slugs,
+      nextOutcomes,
     }),
   );
   // A Space that never opened the guard editor. A case wanting a configured pair
@@ -324,6 +338,66 @@ describe("useTasks.setStagePromptPrefix", () => {
     expect(useTasks.getState().boardsBySpace[SPACE]).toBe(previous);
     expect(stageOf("doing")?.promptPrefix).toBeNull();
     expect(useTasks.getState().error).toBe("could not write the stage row");
+  });
+});
+
+describe("useTasks.setStageNext — the edge LABEL is positional", () => {
+  it("forwards labels beside the edges and paints BOTH columns", async () => {
+    await expect(
+      useTasks.getState().setStageNext(SPACE, "backlog", ["doing", "done"], ["ok", "fail"]),
+    ).resolves.toBeTruthy();
+    expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing", "done"], ["ok", "fail"]);
+    expect(stageOf("backlog")?.nextSlugs).toEqual(["doing", "done"]);
+    expect(stageOf("backlog")?.nextOutcomes).toEqual(["ok", "fail"]);
+  });
+
+  it("keeps a `null` ELEMENT as \"this edge is unlabelled\", not as a shorter list", async () => {
+    // `[null, "fail"]` is the shape only a positional array can carry: the FIRST
+    // edge is bare and the SECOND is named. A `string[]` would have had to drop the
+    // `null` (losing the position) or invent a sentinel label nobody typed.
+    await useTasks.getState().setStageNext(SPACE, "backlog", ["doing", "done"], [null, "fail"]);
+    expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing", "done"], [null, "fail"]);
+    expect(stageOf("backlog")?.nextOutcomes).toEqual([null, "fail"]);
+  });
+
+  it("sends one `null` PER EDGE when the caller supplies no labels", async () => {
+    // The default is NOT "send nothing": the two columns are positional, so a short
+    // list is the mismatch `BoardError::EdgeOutcomeCount` refuses, and every caller
+    // that predates labels (the canvas's `onConnect`, the node panel's two writes)
+    // would otherwise fail on a gesture that has always worked.
+    await useTasks.getState().setStageNext(SPACE, "backlog", ["doing", "done"]);
+    expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing", "done"], [null, null]);
+    expect(stageOf("backlog")?.nextOutcomes).toEqual([null, null]);
+  });
+
+  it("keeps `[]` edges + `[]` labels as \"configured, leading nowhere\" on BOTH columns", async () => {
+    // ADR 0099's NULL-vs-empty rule extended to the label column: `[]` on both is a
+    // CONFIGURED answer, and `null` on either is the unconfigured one. Collapsing
+    // them is the silent-green shape that ADR rejects by name.
+    await useTasks.getState().setStageNext(SPACE, "done", [], []);
+    expect(setStageNext).toHaveBeenCalledWith(SPACE, "done", [], []);
+    expect(stageOf("done")?.nextSlugs).toEqual([]);
+    expect(stageOf("done")?.nextOutcomes).toEqual([]);
+    expect(stageOf("done")?.nextOutcomes).not.toBeNull();
+  });
+
+  it("reverts BOTH columns when the write refuses, so the slice never shows a half-set", async () => {
+    // The paint moved `nextSlugs` AND `nextOutcomes` together, so the revert has to
+    // undo both. A revert that restored only the edges would leave labels pointing at
+    // edges the board no longer has — the wrong-claim advance, painted.
+    await useTasks.getState().setStageNext(SPACE, "backlog", ["doing"], ["ok"]);
+    const before = useTasks.getState().boardsBySpace[SPACE];
+    vi.mocked(setStageNext).mockRejectedValueOnce({
+      kind: "not_found",
+      message: "stage backlog got 1 edge label(s) for 2 edge(s)",
+    });
+    await expect(
+      useTasks.getState().setStageNext(SPACE, "backlog", ["doing", "done"], ["ok", null]),
+    ).rejects.toBeTruthy();
+    expect(useTasks.getState().boardsBySpace[SPACE]).toBe(before);
+    expect(stageOf("backlog")?.nextSlugs).toEqual(["doing"]);
+    expect(stageOf("backlog")?.nextOutcomes).toEqual(["ok"]);
+    expect(useTasks.getState().error).toContain("edge label");
   });
 });
 

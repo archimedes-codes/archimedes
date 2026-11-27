@@ -31,6 +31,13 @@
  *     unconfigured-and-unconstrained versus configured-and-leading-nowhere. And a
  *     drag is only refused when `getBoardStrict` says the Space opted in — with the
  *     flag off, every wrapper here behaves exactly as it did before #179.
+ *   - `setStageNext`'s FOURTH argument, `outcomes`, is POSITIONAL to `slugs` and is
+ *     the one place in this file where a `null` is a VALUE rather than a clear:
+ *     `outcomes[i]` names the edge `slugs[i]`, so `["ok", null]` labels the first
+ *     edge and leaves the second bare. Same length as `slugs` or the write refuses
+ *     naming both counts — a shifted label is a card that advances on the wrong
+ *     claim, invisible on the board. `nextOutcomes: null` is a THIRD answer beside
+ *     `nextSlugs`'s two: a graph that exists and carries no labels.
  *
  * Issue #180 D1 added TWO more wrappers — `writeArtifact` and `getArtifact` — and
  * one more wire fact:
@@ -61,6 +68,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AdvanceAdvice,
   AdvanceVerdict,
   Artifact,
   ArtifactMeta,
@@ -311,9 +319,9 @@ export async function setStageSkill(
 
 /**
  * Set one column's outgoing transitions (ADR 0099) — the destinations a Task in
- * this column may go to, in button-render order.
+ * this column may go to, in button-render order — and their edge LABELS.
  *
- * Two distinctions the renderer has to keep:
+ * Three distinctions the renderer has to keep:
  *   - `[]` means "configured, and nothing may follow this column". A `null`
  *     `nextSlugs` on the way back means UNCONFIGURED, which is unconstrained, and
  *     the fallback is the column at `sort_order + 1`. The two are not the same
@@ -321,6 +329,17 @@ export async function setStageSkill(
  *   - An unknown slug or the column's own slug (a self-loop) REJECTS with
  *     `kind: "not_found"` naming the valid slugs. Nothing is silently dropped — a
  *     dropped destination is a workflow that shrank.
+ *   - `outcomes` is POSITIONAL to `slugs`: `outcomes[i]` is the NAME of the edge
+ *     `slugs[i]`, and a `null` element means that one edge carries no label (the
+ *     position is the meaning, so `null` is a value here and not a clear — the same
+ *     `null` ≠ absence rule `setStagePosition`'s coordinates and
+ *     `workflowRunStep`'s cost each stand on). It must be the SAME LENGTH as
+ *     `slugs`, including both being empty; a mismatch REJECTS with
+ *     `kind: "not_found"` naming BOTH counts and writes NEITHER column, because a
+ *     shifted label is a card that advances on the wrong claim and nothing on the
+ *     board would show it. `nextSlugs: null` and `nextOutcomes: null` are likewise
+ *     two different absences on two different columns: the first is an unconfigured
+ *     graph, the second is a graph nobody labelled.
  *
  * `sortOrder` is a separate question and a separate verb (`reorderStages`): ADR
  * 0099 splits "where does this render" from "what may a Task go to next", and
@@ -330,8 +349,14 @@ export async function setStageNext(
   spacePath: string,
   slug: string,
   slugs: string[],
+  outcomes: (string | null)[],
 ): Promise<StageDto> {
-  return invoke<StageDto>("set_stage_next", { spacePath, slug, slugs });
+  return invoke<StageDto>("set_stage_next", {
+    spacePath,
+    slug,
+    slugs,
+    outcomes,
+  });
 }
 
 /**
@@ -646,6 +671,43 @@ export async function workflowRunStep(
   return invoke<AdvanceVerdict>("workflow_run_step", {
     spacePath,
     taskId,
+    costDeltaUsd,
+  });
+}
+
+/**
+ * Ask Rust what ONE Session's `markDone` claim does to its card — the settle fallback's
+ * door, and the same decider the model's own `mark_done` tool call runs through.
+ *
+ * `AdvanceAdvice`'s header carries the whole argument for why this question is answered
+ * in Rust and cannot be answered here; the short form is that at settle time the renderer
+ * cannot tell whether the Session claimed, cannot see a board slice in the case an
+ * unattended chain actually settles in, and must not re-derive the next column — two
+ * authorities for one decision is the shape ADR 0098 exists to prevent.
+ *
+ * ONE argument plus an optional cost figure, and that shape IS the security property:
+ * `sessionId` is the only subject, and the card, the Space, the launched column, the edge
+ * and both budgets are all resolved from it in the database. There is no `taskId` to
+ * forge and no `spacePath` to shop for a cheaper Space's budget.
+ *
+ * `costDeltaUsd` follows `workflowRunStep`'s rule byte for byte and for the same reason:
+ * `null` means "this settle reported no figure", the fold then adds nothing, and the
+ * ceiling still runs against whatever earlier settles banked. Sending `0` for "unknown"
+ * would arm a ceiling permanently that was written to stay unarmed until money appears —
+ * ADR 0082's phantom zero. This IS the arm where a real delta exists, and once this
+ * wrapper replaces `workflowRunStep` on the settle path it is the only ceiling
+ * evaluation left in the tree.
+ *
+ * Rejects only on a database failure. A refusal to advance is a SUCCESSFUL answer with
+ * `advance: false` and a `reason` — the ceiling and the step bound are fields, not
+ * errors, because a settle-handler must never fail a Session over bookkeeping.
+ */
+export async function workflowAdvanceAdvice(
+  sessionId: string,
+  costDeltaUsd: number | null,
+): Promise<AdvanceAdvice> {
+  return invoke<AdvanceAdvice>("workflow_advance_advice", {
+    sessionId,
     costDeltaUsd,
   });
 }

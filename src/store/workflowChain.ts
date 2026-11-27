@@ -1,13 +1,16 @@
 import { costUsdOf } from "../lib/sessionCost";
 import type { SessionLookupSource } from "../lib/sessionLookup";
-import { workflowRunClose, workflowRunStep } from "../lib/tauri";
-import type { ChainStop, StageDto, StopReason, TaskRow } from "../lib/tauri";
+import { workflowAdvanceAdvice, workflowRunClose } from "../lib/tauri";
+import type { AdvanceAdvice, StopReason, TaskRow } from "../lib/tauri";
 import type { TaskLaunchDestination } from "../lib/taskPrompt";
-import { nextStepOf, nextStepSlugs } from "../lib/workflowGraph";
+import {
+  destinationOf,
+  REASON_ALREADY_ADVANCED,
+  sentenceFor,
+} from "./advanceAdvice";
 import type { CostUpdatePayload } from "./interactive";
 import { useInteractive } from "./interactive";
 import { useSessions } from "./sessions";
-import { useTasks } from "./tasks";
 import type { TaskLaunchOutcome } from "./taskLaunch";
 
 /**
@@ -16,19 +19,33 @@ import type { TaskLaunchOutcome } from "./taskLaunch";
  * ## What it does
  *
  * A column with `auto: true` means: when the **Session launched on entering this
- * column settles**, move the card to the column this one points at and launch that
+ * column settles**, move the card to the column its edge names and launch that
  * column's Skill. A board therefore becomes a chain — Skill A → Skill B → Skill C —
- * and each link carries its own column's Skill (`stages.on_enter_skill`, ADR 0098) and
- * its own extra prompt (`stages.prompt_prefix`), because both are read from the row of
- * the column being ENTERED, never from the one being left.
+ * and each link carries its own column's Skill (`stages.on_enter_skill`, ADR 0098)
+ * and its own extra prompt (`stages.prompt_prefix`), because both are read from the row
+ * of the column being ENTERED, never from the one being left.
  *
- * The step is recorded in `workflow_runs` and measured against the Space's two guards
- * (the per-Space step bound and the USD ceiling) by `workflowRunStep`, which answers an
- * [`AdvanceVerdict`](../lib/tauri/types). **`verdict.advance` is the only field this
- * module obeys and it never overrules it.** The bounds and their shipped fallbacks live
- * in Rust deliberately, so re-deriving "is this chain over budget?" here would copy a
- * policy number across the wire — one refactor from disagreeing with the first copy, and
- * the disagreement is a chain that runs past a bound a person set.
+ * ## It ASKS. It no longer derives.
+ *
+ * One `workflowAdvanceAdvice(sessionId, …)` call answers the whole question — does the
+ * card advance, where, with what Skill and prose, is the chain over budget, has this
+ * link already been taken — and this module obeys it. `verdict.advance` used to be the
+ * only field obeyed and that rule is unchanged; what changed is that the derivation
+ * beside it is gone. The old body read `stages.auto` out of the board **slice**, walked
+ * `nextStepOf` over the same slice, and only then stepped the run. The slice is
+ * populated while a board or a canvas is mounted, and `App`'s view ternary makes both
+ * of those mutually exclusive with `ChatStream` — i.e. exactly the case an unattended
+ * chain settles in. So the automation silently did nothing, and `workflow_runs` held
+ * **zero rows** against 456 Sessions created in a week.
+ *
+ * Rust answers from the **database**, which is always there, and it answers the same
+ * question the model's own `mark_done` tool call was answered with — one decider, so a
+ * claim and a fallback cannot disagree about the same card. Re-deriving the next column
+ * here anyway would put a second authority beside it, which is the shape ADR 0098
+ * exists to prevent, and the bounds and their shipped fallbacks are Rust-only on
+ * purpose: re-deriving "is this chain over budget?" would copy a policy number across
+ * the wire, one refactor from disagreeing with the first copy, and the disagreement is a
+ * chain that runs past a bound a person set.
  *
  * ## Where it is called from, and why there is no watcher
  *
@@ -38,18 +55,9 @@ import type { TaskLaunchOutcome } from "./taskLaunch";
  * sessions store that fired when `inTurn` fell and then read the card's stage from the
  * board slice cannot work: `store/tasks.ts`'s `load` has one call site per **board-shaped
  * surface** — the board's own mount and `WorkflowsCanvas`'s — and neither of those is
- * mounted while the chat column is, which is precisely the case an unattended chain
- * settles in. The slice is therefore populated only while a person is looking at a board
- * or a canvas, and a slice-reading watcher would silently no-op in the one situation the
- * automation exists for. That is the worst failure an automation can have: it looks
- * configured and does nothing.
- *
- * (The claim used to read "exactly ONE call site — the board itself", stated in the
- * present tense, and this branch made it false by adding the canvas. ADR 0119 §5 dates
- * the claim instead; the durable form is above, because the count of call sites is a
- * fact about the tree that a later surface can change while the CASE it argues for —
- * nobody has a board mounted when the chain settles — is a fact about the view ternary
- * and does not move.)
+ * mounted while the chat column is. That is the worst failure an automation can have:
+ * it looks configured and does nothing. The fix was never a watcher on the slice; it is
+ * that the question no longer needs the slice.
  *
  * ## Why the caller must NOT await this, and why this must not await the next turn
  *
@@ -94,27 +102,66 @@ import type { TaskLaunchOutcome } from "./taskLaunch";
  * exactly this narrative, and `addSystemLine` is the house answer for "a thing the user
  * must see that has no other surface" — which is why `sendLaunchMessage`'s own `catch`
  * uses it. Configuration stays as configured.
+ *
+ * ## THE CLOSE RULE, and the field that makes it mechanical (D20)
+ *
+ * **Close the run only when the chain ends here.** A run left open is not a small thing
+ * in either direction, and both directions are load-bearing:
+ *
+ *  - leaving one open hands this chain's step count and running cost to the NEXT chain
+ *    this card ever starts (`workflowRunStep` UPSERTS onto an OPEN run), so a person who
+ *    set a 20-step bound silently gets a shorter one;
+ *  - closing one that is not finished hands the next link a FRESH run, because the step
+ *    verb's `None` branch INSERTs `steps = 1` — and a fresh run resets `cost_usd` to
+ *    NULL, which can never trip a ceiling. That turns a 20-step bound into 20 steps
+ *    **per link** and a ceiling into a per-link allowance: the spend bound failing open.
+ *
+ * The mechanical test is the advice's `alreadyLaunched` field, not its `reason`, because
+ * `already_advanced` and `cost_ceiling` are mutually exclusive answers from one call and
+ * a ceiling stop on a link that ALREADY launched must not close for the same reason the
+ * silent arm must not. So every close below is gated on `alreadyLaunched === false`,
+ * including the `max_tokens` / `cancelled` whitelist arm, which used to close
+ * unconditionally — a model that claimed (launching its next link) and then got cut off
+ * would have reset the very budget D20 exists to protect, with no `stop_reason` changing.
+ *
+ * THE GATE IS ON EVERY CLOSE PATH, AND THAT IS A CODE FACT AND NOT A BORROWED ONE.
+ * `finishLink`'s three closes (the guard trip, the skipped-move note, and the success
+ * arm's `manual`) sit behind the same test, which is where they used NOT to be: they were
+ * safe only because Rust's arm 3 returns `already_advanced` before its arms 6/7, so an
+ * `advance: true` payload always happens to carry `alreadyLaunched: false`. Resting a
+ * spend bound on the ORDER of `if`s in another language, asserted by nothing on this side,
+ * is the failure this repo keeps cataloguing — an arm reorder would have opened the bound
+ * with every TypeScript test green. The pins for the gated behaviour are in
+ * `workflowChain.test.ts`'s D20 block, and they are DEFENSIVE: none of them claims Rust
+ * emits an `advance: true` + `alreadyLaunched: true` payload today (it cannot), only that
+ * this side does not close a run on one.
  */
 
 /** The settle this runtime was called on: everything the edge already knows, so this
  *  module has to look nothing up that the caller was holding.
  *
- *  `spacePath` travels with it because the guard read is keyed on the card's real Space
- *  — `workflowRunStep` looks the Space's bounds up by it, so a Space other than the
- *  card's own measures the chain against the wrong budget. */
+ *  NOTE what this no longer decides anything about. The advice is keyed on
+ *  `sessionId` ALONE, and Rust resolves the card, the Space, the launching column, the
+ *  edge and both budgets from the database — so `spacePath` and `launchedSlug` are
+ *  context, not inputs. `launchedSlug` in particular used to be the key this module
+ *  looked its `auto` flag up by; the database's frozen `task_sessions.stage_slug` is a
+ *  better answer for the same question (it is the column the launch actually happened
+ *  in, not what this window believed when it painted), so nothing here reads the slice
+ *  at all any more. */
 export interface WorkflowSettle {
   spacePath: string;
-  /** The card, as the launch surface holds it. */
+  /** The card, as the launch surface holds it. The fallback for the run's owner: the
+   *  advice carries the card IT resolved its decision for, and the step write and the
+   *  close must name the SAME row or the run stays open forever. */
   task: TaskRow;
-  /** The Session that just settled — the transcript a stop sentence goes into. */
+  /** The Session that just settled — the transcript a stop sentence goes into, and the
+   *  ONLY thing the advice is keyed on. */
   sessionId: string;
   /** WHY the turn ended. Only `"end_turn"` advances; see the whitelist in
    *  [`advanceWorkflowChainOnSettle`]. */
   reason: StopReason;
-  /** The column that was LAUNCHED (its `slug`) — the column whose `auto` flag and
-   *  outgoing edge decide what happens next. NOT the card's stored stage: a launch
-   *  moves the card first, and the settle belongs to the column the person, or the
-   *  previous link, aimed at. */
+  /** The column that was LAUNCHED (its `slug`). Kept for the record and for the
+   *  caller's own wiring, NOT consulted for the decision — see the header. */
   launchedSlug: string;
   /** The Session's money figure as it stood BEFORE this turn ran, or `null` for "no
    *  figure then". The settle handler is the only place that can see the figure on both
@@ -136,68 +183,34 @@ export interface WorkflowSettle {
    *  hard-wired import, every mock resolves immediately and the deadlock is invisible —
    *  the exact trap `sendLaunchMessage`'s header describes.
    *
-   *  `taskLaunch` wires it to `launchTaskSession`, i.e. to the FULL move verb: that
-   *  function moves the card through `useTasks.getState().moveTask` (optimistic paint,
-   *  whole-slice re-derivation, revert-into-`error`) before it starts anything, so a
-   *  chain's move IS the human's drag and not a third meaning of "a move". It also
-   *  refuses THREE different ways — it THROWS for a Skill the catalog lacks, it THROWS
-   *  when `moveTask` reports the card ended in a column other than the one it was aimed
-   *  at (a stale-slice `StrictMoveRefused` or a destination that vanished from the
-   *  slice), and it answers `{ sessionId: null }` when its in-flight guard trips — and
-   *  all three are handled below, which is why this returns an outcome and not `void`.
-   *  [`finishLink`] names them again at the arm that reads them. */
+   *  `taskLaunch` wires it to `launchTaskSession`, i.e. to the FULL move verb, AND to
+   *  the destination the advice carried rather than a bare slug — so the move, the Skill
+   *  and the extra prompt all arrive from the one `StageDto` Rust read, and none of them
+   *  needs a board slice to exist. It refuses THREE different ways — it THROWS for a
+   *  Skill the catalog lacks, it THROWS when `moveTask` reports the card ended in a
+   *  column other than the one it was aimed at, and it answers `{ sessionId: null }`
+   *  when its in-flight guard trips with NOBODY behind the guard — and all three are
+   *  handled in [`finishLink`]. The guard's fourth answer is the one that is NOT a
+   *  refusal: when the trip is caused by the chain's OWN pending claim, the executor
+   *  awaits that claim and returns its outcome, so this runtime never sees the case. See
+   *  [`finishLink`]'s invariant. */
   launch: (next: TaskLaunchDestination) => Promise<TaskLaunchOutcome>;
-}
-
-/** A money figure for a sentence about a BOUND.
- *
- *  Neither existing formatter fits, and both arguments are short. `moneyOf`
- *  (`components/SessionCostLine.tsx`) is the right rule but lives under `components/`,
- *  and `src/store/` holds ZERO runtime edges into `src/components/` — this would be the
- *  first, for a string. `formatCost` (`lib/toolOutput.ts`) is reachable but renders a
- *  real `0` as the EMPTY string, which is right for a cost chip that means "nothing to
- *  show" and wrong for a ceiling: `$0` is a bound a person can legitimately configure
- *  ("no budget at all"), and a sentence that prints no number for it describes a guard
- *  nobody can read. So: `toFixed(2)`, no cleverness. A ceiling is a round number a
- *  person typed. */
-function usdOf(amount: number): string {
-  return `$${amount.toFixed(2)}`;
-}
-
-/** This Session's money figure now, or `null` for "no figure" — read through
- *  [`costUsdOf`], the file that owns the `NULL` ≠ `0` rule (ADR 0082) and the
- *  live-map-first / stored-row-fallback precedence.
- *
- *  EXPORTED because the settle edge needs it on BOTH sides of the turn: the delta a
- *  chain step is charged needs the figure as it stood before `sendPrompt` was awaited,
- *  and only `sendLaunchMessage` is standing there. A raw
- *  `useInteractive.getState().cost[id]` would not do — that map is in-memory only,
- *  `dismissSession` deletes the entry on close and boot hydrates none of it, so a
- *  resumed Session's figure lives on its ROW and nowhere else, and a raw map read would
- *  answer `null` for money that was genuinely spent. */
-export function sessionCostFigure(sessionId: string): number | null {
-  const sessions = useSessions.getState();
-  return costUsdOf(
-    useInteractive.getState().cost[sessionId] as CostUpdatePayload | undefined,
-    {
-      sessions: sessions.sessions,
-      historySessions: sessions.historySessions,
-      archivedSessions: sessions.archivedSessions,
-    } satisfies SessionLookupSource,
-    sessionId,
-  );
 }
 
 /** What ONE turn spent, from the figure on each side of it.
  *
- *  `workflowRunStep` ADDS its argument (`cost_usd = COALESCE(cost_usd, 0.0) + ?`), so
- *  what it is handed has to be a delta. The figure `costUsdOf` answers is a running
- *  TOTAL, and feeding a total into an additive column sums the totals: a three-link
- *  chain whose Sessions cost $1, $2 and $3 in total would record $6 against a ceiling
- *  the person set for $3, and the guard would fire early while every Rust test stayed
- *  green. That is a fabricated number, so this returns one only when it can compute it.
+ *  The advice ADDS its argument to the run's banked figure (`COALESCE(cost_usd, 0.0) +
+ *  ?`), so what it is handed has to be a delta. The figure `costUsdOf` answers is a
+ *  running TOTAL, and feeding a total into an additive column sums the totals: a
+ *  three-link chain whose Sessions cost $1, $2 and $3 in total would record $6 against
+ *  a ceiling the person set for $3, and the guard would fire early while every Rust test
+ *  stayed green. That is a fabricated number, so this returns one only when it can
+ *  compute it.
  *
- *  The `null` half is ADR 0082 verbatim:
+ *  THIS IS THE CALL WHERE THE CEILING IS EVALUATED (D18). It is the only place in the
+ *  tree that holds a real cost figure, so it is the only place a ceiling can trip: at
+ *  the claim the turn is still running and no delta for it exists. Which makes the
+ *  `null` half ADR 0082 verbatim, and load-bearing rather than tidy:
  *   - `after === null` → `null`. Nothing was ever reported, and `0` would write
  *     `COALESCE(cost_usd, 0.0) + 0`, turning "unbilled" into "billed zero" and
  *     permanently arming the ceiling against a chain that has never reported money. T6a
@@ -238,6 +251,30 @@ export function costDeltaOf(
   return delta;
 }
 
+/** This Session's money figure now, or `null` for "no figure" — read through
+ *  [`costUsdOf`], the file that owns the `NULL` ≠ `0` rule (ADR 0082) and the
+ *  live-map-first / stored-row-fallback precedence.
+ *
+ *  EXPORTED because the settle edge needs it on BOTH sides of the turn: the delta a
+ *  chain step is charged needs the figure as it stood before `sendPrompt` was awaited,
+ *  and only `sendLaunchMessage` is standing there. A raw
+ *  `useInteractive.getState().cost[id]` would not do — that map is in-memory only,
+ *  `dismissSession` deletes the entry on close and boot hydrates none of it, so a
+ *  resumed Session's figure lives on its ROW and nowhere else, and a raw map read would
+ *  answer `null` for money that was genuinely spent. */
+export function sessionCostFigure(sessionId: string): number | null {
+  const sessions = useSessions.getState();
+  return costUsdOf(
+    useInteractive.getState().cost[sessionId] as CostUpdatePayload | undefined,
+    {
+      sessions: sessions.sessions,
+      historySessions: sessions.historySessions,
+      archivedSessions: sessions.archivedSessions,
+    } satisfies SessionLookupSource,
+    sessionId,
+  );
+}
+
 /** Append the stop sentence to the transcript that just ended.
  *
  *  `addSystemLine` is the house answer for a thing the user must see that has no other
@@ -248,15 +285,6 @@ export function costDeltaOf(
  *  the surface actually in front of them. */
 function tellWhyStopped(sessionId: string, sentence: string): void {
   useSessions.getState().addSystemLine(sessionId, sentence);
-}
-
-/** The column a slug names in the loaded slice, or `undefined` for "not there / not
- *  read". Both answers mean the same thing to this module and are treated identically:
- *  see the note in [`advanceWorkflowChainOnSettle`] about the unloaded slice. */
-function stageOf(spacePath: string, slug: string): StageDto | undefined {
-  return useTasks
-    .getState()
-    .boardsBySpace[spacePath]?.find((c) => c.stage.slug === slug)?.stage;
 }
 
 /** `workflowRunClose`, failure-proofed. It must never be able to fail a chain that
@@ -274,56 +302,45 @@ async function closeRun(taskId: string, reason: string): Promise<void> {
   }
 }
 
+/** The card whose run this settle is allowed to close.
+ *
+ *  The advice's, when it has one: Rust stepped the run of the card IT resolved from the
+ *  newest link, and a step write and its close must name the same row or the run sits
+ *  open forever. `settle.task` is the fallback for the arms that never got an answer. */
+function runOwner(settle: WorkflowSettle, advice: AdvanceAdvice | null): string {
+  return advice?.taskId ?? settle.task.id;
+}
+
 /** Record the stop, then say so — one call per stop, so the record and the sentence
- *  cannot disagree about why a chain ended. */
+ *  cannot disagree about why a chain ended.
+ *
+ *  Reached only when the chain ENDS here. A refusal on a link that already launched goes
+ *  to `tellWhyStopped` alone: say it, do not close it (the module header's close rule). */
 async function stopChain(
   settle: WorkflowSettle,
+  advice: AdvanceAdvice | null,
   reason: string,
   sentence: string,
 ): Promise<void> {
-  await closeRun(settle.task.id, reason);
+  await closeRun(runOwner(settle, advice), reason);
   tellWhyStopped(settle.sessionId, sentence);
 }
 
-/** The sentence for a bound that tripped, built from the verdict's OWN effective
- *  numbers.
+/** The sentence for a reason this build does not know.
  *
- *  This is what `maxSteps` and `ceilingUsd` are on the verdict for: TypeScript does not
- *  know the shipped fallbacks, so a sentence that says "20" or "$10" is a policy number
- *  this side of the wire invented, and it is a lie for every Space that configured
- *  something else. `ceilingUsd: null` means NO bound — under the shipped fallback no
- *  current Space means that, but the type allows it, and the money clause is dropped
- *  rather than rendered as `$0` or `null`, both of which describe a guard that did not
- *  run. */
-function boundSentence(
-  stop: ChainStop,
-  maxSteps: number,
-  ceilingUsd: number | null,
-): string {
-  if (stop === "max_steps") {
-    return (
-      "The auto-advance chain stopped: it reached this Space's " +
-      `${maxSteps}-step bound (\`max_steps\`). The card stays where it is.`
-    );
-  }
-  if (stop === "cost_ceiling") {
-    if (ceilingUsd === null) {
-      return "The auto-advance chain stopped: it reached its cost ceiling (`cost_ceiling`).";
-    }
-    return (
-      `The auto-advance chain stopped: it reached this Space's ${usdOf(ceilingUsd)} ` +
-      "per-chain ceiling (`cost_ceiling`). The card stays where it is."
-    );
-  }
-  // The two `ChainStop` values the database cannot produce and this handler can. They
-  // live in the shared vocabulary (`lib/tauri/types.ts`) precisely so a caller does not
-  // hand-type a fifth spelling of "it stopped" — a `"no_next"` in one file and a
-  // `"no_next_stage"` in another is two reasons for one event, and the chain history
-  // would read as though chains stopped for more reasons than they did.
-  return `The auto-advance chain stopped (\`${stop}\`). The card stays where it is.`;
-}
+ *  `advance: false` with a `reason` `advanceAdvice.ts` has no case for is a payload from
+ *  a newer Rust than this renderer. The old arm fell back to `"no_next_stage"`, which
+ *  INVENTS a graph reason for what might be a bound failure — a specific falsehood on a
+ *  path only a broken or newer payload can reach, and one indistinguishable in the
+ *  record from a column that genuinely has no edge. `unknown` says the only true thing
+ *  available, and the log line is what makes it a report rather than a shrug (the
+ *  transcript sentence a person sees cannot carry the diagnostics, and `stop_reason` must
+ *  not be a guess). */
+const UNKNOWN_SENTENCE =
+  "The auto-advance chain stopped: the advance verb refused to advance the card and " +
+  "gave a reason this build does not recognise (`unknown`). The card stays where it is.";
 
-/** The chain step: settle in, verdict obeyed, next link dispatched or run closed.
+/** The chain step: settle in, advice obeyed, next link dispatched or run closed.
  *
  *  Every early return is a DIFFERENT reason and each is recorded with its own, so the
  *  chain's history reads as the truth. Nothing here writes `stages.auto` — see the
@@ -331,6 +348,15 @@ function boundSentence(
 export async function advanceWorkflowChainOnSettle(
   settle: WorkflowSettle,
 ): Promise<void> {
+  // The delta is computed once, before any branch, because BOTH arms hand it over: the
+  // whitelist arm needs it to keep the ceiling reachable on a cut-off turn, and the
+  // ordinary arm is where the ceiling is actually evaluated (D18). No `?? 0` and no
+  // `|| null` anywhere on the way — see [`costDeltaOf`].
+  const costDeltaUsd = costDeltaOf(
+    settle.costBeforeTurnUsd,
+    sessionCostFigure(settle.sessionId),
+  );
+
   // ── 1. Only a turn that FINISHED settles a chain. A WHITELIST, never
   // `reason !== "cancelled"`: `max_tokens` is the provider cutting a reply off and
   // `max_turn_requests` is the engine's own turn bound (issue #193) — neither is a
@@ -341,132 +367,123 @@ export async function advanceWorkflowChainOnSettle(
   // `set()`, so a snapshot in which the turn has already fallen carries the reason that
   // ended it — a whitelist could otherwise have missed an `end_turn`.
   if (settle.reason !== "end_turn") {
-    // The run is CLOSED rather than left open, whatever the reason. A chain whose last
-    // turn was cancelled or cut off is over, and `workflowRunStep` UPSERTS onto an OPEN
-    // run, so a run left open here would hand this chain's steps and running cost to the
-    // NEXT chain this card ever starts — a person who set a 20-step bound would silently
-    // get a shorter one. The reason is stored verbatim (`"cancelled"`, `"max_tokens"`, …)
-    // because `stop_reason` is the record's only narrative field and the wire's own
-    // vocabulary is the truest thing to put in it.
-    await stopChain(
-      settle,
-      settle.reason,
+    // The run is CLOSED rather than left open — UNLESS the link already launched.
+    // This arm used to close unconditionally, and the close was the bug rather than the
+    // spelling: a model that called `mark_done` (so the next link is already launched and
+    // running) and THEN got cut off by `max_tokens` would close the run its own claim had
+    // just stepped, and the next link's step would open a fresh run at `steps = 1` with
+    // `cost_usd` NULL — a per-link budget, reached with no `stop_reason` changing at all.
+    // So the same `alreadyLaunched` test applies here, and the advice call that answers
+    // it costs nothing extra: it is the one call this settle makes either way.
+    //
+    // It is read in a `try` and the fallback on failure is the OLD behaviour (close):
+    // a run this side could not read is a run it must leave closed rather than leak into
+    // the next chain. The sentence goes out either way — it is a true statement about
+    // THIS turn regardless of what the link did.
+    //
+    // The reason is stored verbatim (`"cancelled"`, `"max_tokens"`, …) because
+    // `stop_reason` is the record's only narrative field and the wire's own vocabulary is
+    // the truest thing to put in it.
+    let alreadyLaunched = false;
+    let advice: AdvanceAdvice | null = null;
+    try {
+      advice = await workflowAdvanceAdvice(settle.sessionId, costDeltaUsd);
+      alreadyLaunched = advice.alreadyLaunched;
+    } catch (err) {
+      console.error(
+        `Could not read the advance advice for ${settle.sessionId} on a ${settle.reason} settle:`,
+        err,
+      );
+    }
+    if (!alreadyLaunched) {
+      await closeRun(runOwner(settle, advice), settle.reason);
+    }
+    tellWhyStopped(
+      settle.sessionId,
       `This Session ended (\`${settle.reason}\`) without advancing the card — only a ` +
         "turn that finishes drives an auto-advance chain.",
     );
     return;
   }
 
-  // ── 2. Only a column that was MARKED automatic.
-  const from = stageOf(settle.spacePath, settle.launchedSlug);
-  // An UNLOADED slice and an absent row both answer "not automatic", and that is the
-  // conservative answer rather than a shrug: this module's job is to carry out an
-  // automation a person configured, and a column it cannot read is a column nobody has
-  // told it anything about. Inventing one is the failure mode this file is shaped to
-  // avoid — a card that moves on its own with no column that asked for it.
+  // ── 2. Ask. One call, one authority, no slice, and the real cost delta — this is the
+  // only ceiling evaluation left in the tree (D18), so a `null` here is the ceiling
+  // staying unarmed and a `0` would arm it against a chain that never reported money.
   //
-  // THIS is the one case the design cannot reach, stated rather than papered over:
-  // `store/tasks.ts`'s `load` has one call site per board-shaped surface — the board's
-  // mount and `WorkflowsCanvas`'s — and NEITHER is mounted while the chat column is, so a
-  // chain that settles with no board and no canvas on screen has no slice to read, and
-  // therefore does not advance. (This used to read "exactly ONE call site (the board)" in
-  // the present tense, which the canvas made false; the durable claim is the one above,
-  // and the conclusion is unchanged.) It says NOTHING either, which is the honest half of
-  // the same rule: a sentence about a graph this window never read would be a claim about
-  // rows it did not read. Reaching this case properly means fetching the board on this
-  // path, and that is a decision about who owns the board slice — not something to
-  // smuggle into a settle handler.
-  if (from === undefined || !from.auto) return;
+  // A REJECTION PROPAGATES. This side cannot know whether the step landed, so it will not
+  // invent a `stop_reason` for a write it did not read, and it certainly will not move a
+  // card on the strength of an answer it never saw. `sendLaunchMessage`'s `.catch` is the
+  // one owner of that case and reports it the way this file reports everything else it
+  // cannot rethrow — a line in the Session it failed in.
+  const advice = await workflowAdvanceAdvice(settle.sessionId, costDeltaUsd);
 
-  // ── 3. Where the graph says this column goes — THE SAME derivation the board's launch
-  // pill and the detail modal's buttons run, now shared in `lib/workflowGraph`. That
-  // matters more here than it did for either component: a chain that invented an edge
-  // would move a card along a path the board does not show. `nextSlugs: []` is
-  // "configured, leads nowhere" and yields nothing here exactly as it yields no pill;
-  // `null` is UNCONFIGURED and falls back to the column at `sortOrder + 1`.
-  const columns = useTasks.getState().boardsBySpace[settle.spacePath];
-  const next = nextStepOf(columns, from);
-  if (next === undefined) {
-    // TWO DIFFERENT NOES, and only one of them is "there is nothing after this column".
-    // `nextStepOf` DROPS an edge whose slug the loaded columns cannot resolve while
-    // `nextStepSlugs` KEEPS it — ADR 0119 §7 argues the two verdicts stay two, and they
-    // do; the canvas is drawing this very edge as a ghost node that says "we could not
-    // name it". So when the slug list is NON-EMPTY and the destination still will not
-    // resolve, a sentence saying "`X` is an automatic column with no column after it"
-    // contradicts the graph on screen: the chain took the pill's verdict (correct, do not
-    // move) but the pill has no note to fall back on and the chain does, so it must use
-    // the modal's vocabulary. The `stop_reason` SPELLING stays `no_next_stage` either
-    // way — the column carries the narrative, so a third vocabulary would buy an enum
-    // change and a migration for what one sentence can say.
-    const edge = nextStepSlugs(columns, from);
-    const unresolvable = edge.length > 0;
-    await stopChain(
-      settle,
-      "no_next_stage",
-      unresolvable
-        ? `The chain stopped at \`${from.label}\`: the column after it (\`${edge[0]}\`) ` +
-          "could not be read — the board may be stale (`no_next_stage`). Reload the board " +
-          "to see where this edge goes."
-        : `\`${from.label}\` is an automatic column with no column after it, so the chain ` +
-          "stopped here (`no_next_stage`). Move the card yourself to continue.",
+  // ── 3. The instruction. `destinationOf` is the ONLY reading of `advance`: `advance` is
+  // the authority and a row is never a proxy for it. It returns null for every
+  // non-advancing reason, `already_advanced` among them — and note the reason is NOT that
+  // the dedupe leaves a resolved row sitting on the payload for a careless reader to trip
+  // on. Rust answers that arm with `destination: None` (arm 3 of `advise.rs`); the row its
+  // dedupe looks at is a local read for the lookup and is never serialised. So nothing on
+  // this side is defending against a smuggled row — the guard is simply that a refusal is
+  // not an instruction, whatever its `destination` field happens to hold.
+  const destination = destinationOf(advice);
+  if (destination !== null) {
+    // Does the chain continue past the column we are about to arrive in? Read from the
+    // SAME row the destination came from — the arriving column's `auto` flag is on it, so
+    // this asks the database rather than a slice, and it is the last point that can ask
+    // before the dispatch (which is not awaited, header).
+    //
+    // A column that is not `auto` ends the chain: nothing will fire a settle hook past it.
+    // The run is then CLOSED rather than left open, and that is not tidiness — see the
+    // close rule in the header. The close happens in [`finishLink`] and not here, so that
+    // a launch which then REFUSES still records `launch_refused`: `workflow_run_close`
+    // scopes on `finished_at IS NULL`, so a close written before the dispatch would turn
+    // the refused case's reason into `manual` and the record would name the wrong bound.
+    //
+    // An absent row here is impossible (`destinationOf` returned a destination, which is
+    // built FROM the row); defaulting to "ends here" is the conservative reading of a
+    // payload that cannot be, because a leaked-open run is the worse of the two errors.
+    const chainEndsHere = !(advice.destination?.auto ?? false);
+    void finishLink(settle, advice, destination, chainEndsHere);
+    return;
+  }
+
+  // ── 4. `already_advanced` is the SILENT arm (D20): no `stopChain`, no close, no word
+  // in the transcript. The claim path owns this link and already spoke, and closing the
+  // run the claim just stepped hands the next link a fresh run at `steps = 1` with
+  // `cost_usd` NULL — a 20-step bound becomes 20 steps PER LINK and a ceiling becomes a
+  // per-link allowance, which is the spend bound failing open. This arm is also why the
+  // settle fallback is not merely a duplicate of the claim: it is the arm that PROVES the
+  // claim landed, and its whole job is to get out of the way.
+  if (advice.reason === REASON_ALREADY_ADVANCED) return;
+
+  // ── 5. A refusal that must reach a person.
+  const sentence = sentenceFor(advice);
+  if (sentence === null) {
+    // An `advance: false` with no sentence this build knows: a reason from a newer Rust,
+    // or an `advance: true` whose row went missing. Neither is a reason to guess.
+    console.error(
+      `workflowAdvanceAdvice refused to advance ${settle.task.id} with a reason this ` +
+        `build cannot speak: ${JSON.stringify(advice.reason)}`,
     );
-    return;
-  }
-
-  // ── 4. Record the step and OBEY the verdict. The delta goes through untouched — no
-  // `?? 0` and no `|| null`, neither of which belongs in that signature.
-  const verdict = await workflowRunStep(
-    settle.spacePath,
-    settle.task.id,
-    costDeltaOf(settle.costBeforeTurnUsd, sessionCostFigure(settle.sessionId)),
-  );
-  if (!verdict.advance) {
-    // Rust guarantees `advance: false ⇒ stop.is_some()`, so the arm below is unreachable
-    // through the wire. It used to fall back to `"no_next_stage"`, which INVENTS a graph
-    // reason for what would be a bound failure — a specific falsehood on a path only a
-    // broken verdict can reach, and one that would be indistinguishable in the record from
-    // a column that genuinely has no edge. `unknown` says the only true thing available:
-    // the verdict refused and this side could not read why. The log line is what makes it
-    // a report rather than a shrug (the transcript sentence a person sees cannot carry the
-    // diagnostics, and `stop_reason` must not be a guess).
-    const stop = verdict.stop;
-    if (stop === null || stop === undefined) {
-      console.error(
-        `workflowRunStep refused to advance ${settle.task.id} with no stop reason`,
-      );
-      await stopChain(
-        settle,
-        "unknown",
-        "The auto-advance chain stopped: the step verb refused to advance the card and " +
-          "gave no reason (`unknown`). The card stays where it is.",
-      );
-      return;
+    if (!advice.alreadyLaunched) {
+      await stopChain(settle, advice, "unknown", UNKNOWN_SENTENCE);
     }
-    await stopChain(settle, stop, boundSentence(stop, verdict.maxSteps, verdict.ceilingUsd));
     return;
   }
-
-  // ── 5. Does the chain continue past the column we are about to arrive in? Read
-  // BEFORE the dispatch, because the dispatch is not awaited (header) and this point is
-  // the last one that can still ask.
+  // The `stop_reason` spelling: the bound's own, when a bound stopped it, and the
+  // Session-shaped refusal's `reason` otherwise (`unclaimed`, `not_automatic`,
+  // `unlinked`) — those three have no spelling in the `ChainStop` enum by design (adding
+  // one would be an enum change plus a migration to say what a string already says), and
+  // `stop_reason` is free text whose whole job is the narrative.
   //
-  // A column that is not `auto` ends the chain: nothing will fire a settle hook past it.
-  // The run is then CLOSED rather than left open, and that is not tidiness —
-  // `workflowRunStep` UPSERTS onto an OPEN run, so a run left open here would hand this
-  // chain's step count and running cost to the NEXT chain this card ever starts, and a
-  // person who set a 20-step bound would silently get a shorter one. The close happens in
-  // [`finishLink`] and not here, so that a launch which then REFUSES still records
-  // `launch_refused`: `workflow_run_close` scopes on `finished_at IS NULL`, so a close
-  // written before the dispatch would turn the refused case's reason into `manual` and
-  // the record would name the wrong bound.
-  const arriving = stageOf(settle.spacePath, next.slug);
-
-  // ── 6. Dispatch the next link. `void`, for the reason the header gives: awaiting the
-  // next launch's TURN is the `ask`-gate deadlock, and it would be that deadlock one
-  // level deeper, not less real. What IS observed is the launch's OUTCOME — the half
-  // `launchTaskSession` resolves before any turn runs — because a refused launch has to
-  // be seen, not assumed.
-  void finishLink(settle, next, arriving === undefined || !arriving.auto);
+  // And the close is gated, not assumed: a ceiling that trips on a link which ALREADY
+  // launched is still true and still worth saying, but closing there would reset the
+  // cost the next link inherits and hand the chain a fresh allowance.
+  if (!advice.alreadyLaunched) {
+    await stopChain(settle, advice, advice.stop ?? advice.reason, sentence);
+    return;
+  }
+  tellWhyStopped(settle.sessionId, sentence);
 }
 
 /** Settle the chain's bookkeeping once the next link's OUTCOME is known.
@@ -477,25 +494,71 @@ export async function advanceWorkflowChainOnSettle(
  *  byte-identical, so a literal `$ghost` would read to the model as a skill call), it
  *  THROWS when the store's `moveTask` reports the card ended up somewhere other than the
  *  column it was aimed at (a `board_strict` refusal — the case whose swallow used to make
- *  this look like a success), and it answers `{ sessionId: null }` when its in-flight guard
- *  refuses a second launch of the same card. The guard trip is a RETURN and not a throw,
- *  which is why the outcome is read and not merely caught — a `try`/`catch` alone would
- *  call a refusal a success.
+ *  this look like a success — or a destination a slice never had), and it answers
+ *  `{ sessionId: null }` when its in-flight guard trips and NOTHING is behind the guard.
+ *  A refusal is a RETURN and not a throw for the last of the three, which is why the
+ *  outcome is read and not merely caught — a `try`/`catch` alone would call a refusal a
+ *  success.
+ *
+ *  ## THE INVARIANT, and where this function's half of it lives
+ *
+ *  **A guard trip caused by the other chain door is NOT a refusal, and must never close
+ *  the run.** The two doors (`consumeAdvanceAdvice`, rAF-deferred, and this runtime,
+ *  deferred by nothing) launch the same card for the same link, and since the claim began
+ *  taking its reservation synchronously it can HOLD the key across three IPC reads while a
+ *  settle trips on it. That trip used to answer `{ sessionId: null }` like a refusal, this
+ *  function recorded `launch_refused`, and `workflowRunClose` closed the live run — so the
+ *  next link's step verb re-INSERTed at `steps = 1` with `cost_usd` NULL: `max_steps` and
+ *  the cost ceiling restart per link, the spend bound failing open, beside a false "could
+ *  not start a Session in X" in the transcript.
+ *
+ *  The fix sits in `taskLaunch` and not here, deliberately: the executor is the one party
+ *  that can tell WHICH kind of trip it has, because it is the one holding the registry, so
+ *  it answers an other-door trip with the holder's outcome and this arm never sees one.
+ *  What this function keeps is the honest half — a `null` that reaches it means no launch
+ *  happened (nobody else is launching the card, or the other door tried and launched
+ *  nothing), and a step that started nothing is a refusal that must be recorded AND closed,
+ *  or the run leaks into the next chain. Both halves are pinned: the other-door case in
+ *  `taskLaunch.claim.test.ts` and in "does NOT close when the claim holds the card" here,
+ *  the genuine refusal in "closes with launch_refused when NOTHING is launching the card".
  *
  *  A refusal means THIS STEP did not move the card: a missing Skill throws before the move
- *  is resolved, and a refused move reverted the optimistic paint it had already made. That
- *  is the outcome to report — a card that stayed put with a sentence saying why, rather
- *  than a card parked in a column whose Session never started. It is NOT a claim about
- *  where the card is overall (the guard arm names another launch, which may have moved it),
- *  which is why the sentence says "not moved by this step". */
+ *  is resolved, and a refused move reverted the optimistic paint it had already made (or,
+ *  on the slice-free arm, never made one). That is the outcome to report — a card that
+ *  stayed put with a sentence saying why, rather than a card parked in a column whose
+ *  Session never started. It is NOT a claim about where the card is overall (the guard arm
+ *  names another launch, which may have moved it), which is why the sentence says "not
+ *  moved by this step". */
 async function finishLink(
   settle: WorkflowSettle,
+  advice: AdvanceAdvice,
   next: TaskLaunchDestination,
   chainEndsHere: boolean,
 ): Promise<void> {
+  // THE SAME GATE AS ARM 5, and it binds here too. `alreadyLaunched` is the mechanical
+  // test for "the run this link stepped is still live", and a close from inside the link
+  // resets it exactly as a close from the refusal arms would: `workflowRunStep`'s `None`
+  // branch re-INSERTs at `steps = 1` with `cost_usd` NULL, so a 20-step bound becomes 20
+  // steps PER LINK and a ceiling becomes a per-link allowance.
+  //
+  // Rust cannot answer `advance: true` with `alreadyLaunched: true` today — its arm 3
+  // returns `already_advanced` before the advancing arms — so this gate is currently
+  // unreachable, and that is precisely why it belongs HERE rather than in a comment: the
+  // un-gated version rested on an arm ORDER in another language, asserted by nothing on
+  // this side, and an arm reorder would open the spend bound silently. The gate makes the
+  // header's sentence true OF THE CODE instead of true of Rust's current `if` chain.
+  const mayClose = !advice.alreadyLaunched;
+  /** Record a stop, or say it without recording it. A refusal on a launched link is still
+   *  TRUE and still worth a transcript line — it is only the CLOSE that is withheld. */
+  const stopOrSay = async (reason: string, sentence: string): Promise<void> => {
+    if (mayClose) {
+      await stopChain(settle, advice, reason, sentence);
+      return;
+    }
+    tellWhyStopped(settle.sessionId, sentence);
+  };
   const refused = async (why: string): Promise<void> => {
-    await stopChain(
-      settle,
+    await stopOrSay(
       "launch_refused",
       `The auto-advance chain could not start a Session in \`${next.label}\` — ${why} ` +
         // "The card is where it was" was FALSE in the guard-trip arm: a guard trip means
@@ -509,19 +572,50 @@ async function finishLink(
   try {
     const outcome = await settle.launch(next);
     if (outcome.sessionId === null) {
-      await refused("it was already being launched");
+      // THE GUARD ARM, and the sentence is about THIS STEP rather than about a cause. It
+      // used to say "it was already being launched", and since the other-door fix that is
+      // FALSE on one of the two shapes that reach here: a trip whose holder was the chain's
+      // own pending claim means that launch has ALREADY finished and started nothing — and
+      // the claim has just written its own line saying so ("nothing launched; the card
+      // stayed where it was"), so a second sentence claiming a launch was in flight would
+      // contradict it in the same transcript. What this arm can see is true of both shapes:
+      // something held the card's guard, and this step started nothing. The other shape it
+      // can reach — a double click — is honest under the same wording.
+      await refused("another launch of this card held its guard, and this step started nothing");
+      return;
+    }
+    if (outcome.note !== null) {
+      // THE MOVE WAS SKIPPED, and a Session that started anyway is not a success for THIS
+      // step. `launchTaskSession` sets `note` on exactly one arm — `missingColumnNote`,
+      // the destination is absent from a LOADED slice, i.e. the STALE case that D19
+      // deliberately does NOT trust — so a non-null note here means the card stayed where
+      // it was while the next link's Session started against it. Closing `manual` on that
+      // would write "the card moved to Implement" into the chain's history for a card a
+      // person can see sitting in Research, which is the record-level version of the
+      // swallowed refusal this function exists to stop.
+      await stopOrSay(
+        "launch_refused",
+        `The auto-advance chain could not move the card into \`${next.label}\` — ` +
+          `${outcome.note} The Session that started is working the column the card is ` +
+          "actually in (`launch_refused`).",
+      );
       return;
     }
   } catch (err) {
     await refused(err instanceof Error ? err.message : String(err));
     return;
   }
-  if (chainEndsHere) {
+  // The success arm's close. Silent when the gate is shut, and that is the honest half
+  // rather than a convenience: `manual`'s sentence claims "the chain ends here", which is
+  // the very claim a withheld close refuses to make. A launched link keeps its run open for
+  // the link that already launched — arm 4's rule, applied to the same field.
+  if (chainEndsHere && mayClose) {
     // `"manual"` is the record's own vocabulary for "a person's column took over"
     // (`workflowRunClose`'s doc names it). The four `ChainStop` spellings are the BOUND
     // vocabulary, and this is not a bound — nothing tripped, the graph simply ran out.
     await stopChain(
       settle,
+      advice,
       "manual",
       `The card moved to \`${next.label}\`, which is not an automatic column, so the ` +
         "chain ends here (`manual`).",

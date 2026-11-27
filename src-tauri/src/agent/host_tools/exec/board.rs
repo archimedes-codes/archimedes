@@ -27,7 +27,9 @@ use serde_json::Value;
 
 use super::{opt_str, req_str, row_result, spawn_host_call, to_details};
 use crate::agent::tools::ToolResult;
-use crate::storage::{BoardError, BoardRow, Db, HostToolError, MoveToolOutcome, TaskDetail};
+use crate::storage::{
+    BoardError, BoardRow, Db, HostToolError, MoveAuthor, MoveToolOutcome, TaskDetail,
+};
 
 /// `list_board` — one line per card, plus the rows in `details` for the UI.
 ///
@@ -220,7 +222,15 @@ pub(super) async fn move_task(db: &Arc<Db>, params: &Value) -> Result<ToolResult
     let outcome = spawn_host_call(
         "move_task",
         move || -> Result<MoveToolOutcome, BoardError> {
-            let out = Db::move_task(&db, &space_path, &task_id, &to_stage)?;
+            // `MoveAuthor::Model`: THIS is the door D7 closes. A forward move — one
+            // the Space's graph says is REACHABLE, including through the
+            // `sort_order + 1` fallback a default board runs on — is refused here
+            // with the sentence that sends the model to `mark_done`, and the refusal
+            // happens inside `Db::move_task`, on the write's own lock, so a refused
+            // move writes nothing. The gate is NOT re-implemented in this file: a
+            // second graph read would be a second lock, and ADR 0119 §2 says the
+            // connection mutex is not reentrant.
+            let out = Db::move_task(&db, &space_path, &task_id, &to_stage, MoveAuthor::Model)?;
             // THE MAPPING, spelled out. `to_stage` echoes the CALLER's argument: the
             // desktop's `move_task` refuses before it writes, so a successful move
             // always lands where it was told. `on_enter` becomes `Some` of the storage

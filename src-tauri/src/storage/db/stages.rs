@@ -120,8 +120,8 @@ impl Db {
         stage_row_by_slug(&guard, space_path, slug)
     }
 
-    /// Set one column's outgoing transitions (ADR 0099), JSON-at-rest after the
-    /// `sessions.todos_json` precedent.
+    /// Set one column's outgoing transitions (ADR 0099) AND their edge labels
+    /// (D6/D13), JSON-at-rest after the `sessions.todos_json` precedent.
     ///
     /// Every element is validated against THIS Space's own stages and an unknown
     /// one is a REJECTION naming the valid slugs — a silently dropped destination
@@ -133,15 +133,43 @@ impl Db {
     /// `Some(vec![])`, NOT as NULL, because NULL means "unconfigured,
     /// unconstrained" and an explicit empty graph means "nothing may follow this
     /// column". Collapsing the two is the silent-green shape ADR 0099 rejects.
+    ///
+    /// `outcomes` is POSITIONAL to `slugs`: `outcomes[i]` labels the edge
+    /// `slugs[i]`, and `None` at index `i` means that edge carries no label. It
+    /// MUST be the same length — including both being empty — and a mismatch is
+    /// [`BoardError::EdgeOutcomeCount`], refused before any write: a shifted label
+    /// is a card that moves on the wrong claim, invisibly. Padding or truncating
+    /// would invent a graph, which is the standing refusal for a half-set
+    /// ([`require_position_pair`](crate::commands::tasks::require_position_pair)'s
+    /// argument, one layer down).
+    ///
+    /// BOTH columns are written in ONE `UPDATE`, and that is what makes the
+    /// positional invariant hold at rest: two statements would leave a window (and,
+    /// after a crash between them, a permanent state) where the label list describes
+    /// the graph that USED to be there. A caller with no labels to write passes
+    /// `&[]` alongside an empty `slugs`, or all-`None` alongside a real one — there
+    /// is no "leave the labels alone" spelling here on purpose, because a verb that
+    /// sets the edges and not their labels is exactly the half-set this refuses.
     pub fn set_stage_next(
         &self,
         space_path: &str,
         slug: &str,
         slugs: &[String],
+        outcomes: &[Option<String>],
     ) -> Result<StageRow, BoardError> {
         let guard = self.conn.lock().expect("db mutex poisoned");
         if !stage_slug_exists(&guard, space_path, slug)? {
             return Err(missing_stage(&guard, space_path, slug));
+        }
+        // The arity check runs BEFORE the slug checks and long before the write, so
+        // a call that gets both wrong reports the arity — the one number the caller
+        // cannot see from its own argument list — and neither column moves.
+        if outcomes.len() != slugs.len() {
+            return Err(BoardError::EdgeOutcomeCount {
+                slug: slug.to_string(),
+                slugs: slugs.len(),
+                outcomes: outcomes.len(),
+            });
         }
         for wanted in slugs {
             if wanted == slug {
@@ -158,12 +186,19 @@ impl Db {
         // that errors, and none of the three is reachable from a list of `String`s.
         // `expect` states that rather than inventing an error arm `BoardError` has no
         // business carrying — and the worst case is a panic inside `spawn_blocking`,
-        // which the command layer already flattens to `TasksError::Other`.
+        // which the command layer already flattens to `TasksError::Other`. The SAME
+        // argument covers `&[Option<String>]`: `Option<&str>`/`Option<String>` adds
+        // only `null`, which is a value JSON exists to spell.
         let encoded = serde_json::to_string(slugs)
             .expect("a list of strings always serialises to a JSON array");
+        let encoded_outcomes = serde_json::to_string(outcomes)
+            .expect("a list of optional strings always serialises to a JSON array");
+        // ONE statement for the PAIR — see the doc above. Positional data written in
+        // two statements is positional data that can disagree.
         guard.execute(
-            "UPDATE stages SET next_slugs = ?3 WHERE space_path = ?1 AND slug = ?2",
-            params![space_path, slug, encoded],
+            "UPDATE stages SET next_slugs = ?3, next_outcomes = ?4 \
+             WHERE space_path = ?1 AND slug = ?2",
+            params![space_path, slug, encoded, encoded_outcomes],
         )?;
         stage_row_by_slug(&guard, space_path, slug)
     }
@@ -464,6 +499,31 @@ impl Db {
 /// reading: a corrupt cell loosens nothing the user configured correctly.
 pub(super) fn lenient_next_slugs(raw: Option<String>) -> Option<Vec<String>> {
     raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+}
+
+/// Parse a `next_outcomes` cell, never failing: a value that is NULL, malformed, or
+/// simply not a JSON array reads as "no edge is labelled" (`None`).
+///
+/// A SIBLING of [`lenient_next_slugs`] and NOT a generalisation of it, which is the
+/// point rather than a duplication. The two functions answer two different
+/// questions, and their `None`s mean different things: `None` from
+/// [`lenient_next_slugs`] is "unconfigured, unconstrained" (ADR 0099 — the Strict
+/// move gate reads it and steps aside), while `None` here is "unlabelled" (edge
+/// selection reads it and takes the head). One function returning one `None` for
+/// both is precisely how those two meanings merge, and the merged meaning is a
+/// fail-open on every board.
+///
+/// The element type is `Option<String>` and that is load-bearing: the list is
+/// POSITIONAL to `next_slugs`, so `[null, "ok"]` is a real configuration — "the
+/// first edge carries no name, the second is `ok`". Decoding into `Vec<String>`
+/// would fail the whole cell on that `null` and lose `"ok"` with it, turning a
+/// partially-labelled graph into an unlabelled one — a silently-shrunk workflow,
+/// which is the failure this repo keeps documenting. Same reason as above: the
+/// strictness lives in the WRITER (`set_stage_next` validates the length against
+/// `slugs` and serialises with `serde_json`), so the reader only has to survive
+/// data older or foreigner than itself.
+pub(super) fn lenient_next_outcomes(raw: Option<String>) -> Option<Vec<Option<String>>> {
+    raw.and_then(|s| serde_json::from_str::<Vec<Option<String>>>(&s).ok())
 }
 
 /// The ONE place a single `stages` row is read back after a write, through the

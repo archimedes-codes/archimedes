@@ -782,6 +782,59 @@ fn the_storage_title_refusal_keeps_the_command_envelope_exactly() {
     );
 }
 
+/// (the sentence has ONE owner, and the map re-spells it) the
+/// `BoardError → TasksError` arm for D7's forward refusal must carry `BoardError`'s
+/// `Display` BYTE FOR BYTE.
+///
+/// WHY THIS PIN EXISTS WHEN THE REFUSAL CANNOT REACH THIS WIRE TODAY.
+/// `MoveAuthor::Person` is the only author `commands/tasks.rs`'s `move_task` passes,
+/// so a person's drag can never raise `ForwardMoveRefused` — the arm in
+/// `agent/board_error_map.rs` exists because that `match` is exhaustive over an enum
+/// storage grows. And that arm RE-SPELLS the sentence, the way every `NotFound` arm
+/// in that table does (the `StrictMoveRefused` arm beside it is the precedent), so
+/// the tree holds TWO copies of the string and one of them sits on a path no test
+/// exercises.
+///
+/// An untested duplicate rots silently, so this compares the two renderings of the
+/// SAME variant instead of quoting the sentence: it survives a rewording and reddens
+/// the moment the copies disagree. `BoardError`'s `Display` is the copy a MODEL reads
+/// (through `HostToolError`, pinned in `agent/host_tools/tests/verbs.rs`); this is
+/// the copy a future command door would send. `the_storage_title_refusal_keeps_the_command_envelope_exactly`
+/// above is the model — same technique, the variant whose door IS reachable today.
+#[test]
+fn the_forward_move_refusal_maps_to_the_wire_with_the_storage_sentence_untouched() {
+    use crate::storage::BoardError;
+
+    let refused = BoardError::ForwardMoveRefused {
+        task_id: "tsk_example".to_string(),
+        from: "backlog".to_string(),
+        to: "done".to_string(),
+    };
+    // The model's sentence, rendered ONCE from the variant (`From<BoardError> for
+    // HostToolError` does exactly this and `verbs.rs` pins what the model reads).
+    let storage_sentence = refused.to_string();
+    let wire = TasksError::from(refused);
+
+    assert_eq!(
+        wire.to_string(),
+        storage_sentence,
+        "the `TasksError` arm re-spells the sentence, so rewording \
+         `BoardError::ForwardMoveRefused`'s `#[error(...)]` without updating \
+         `agent/board_error_map.rs` ships two different sentences from two doors"
+    );
+    assert!(
+        wire.to_string().contains("mark_done"),
+        "and the copy that reaches the wire still names the replacement verb — a \
+         refusal that only says 'no' is the failure D9 exists to prevent"
+    );
+    assert_eq!(
+        wire.kind(),
+        "not_found",
+        "the kind the board reverts an optimistic paint on, the same one every other \
+         board policy refusal rides — nothing branches on a sixth kind"
+    );
+}
+
 /// (the badge's wire shape) The WIRE KEYS of `TaskNumberRow` are pinned as
 /// literals: `serde_json::to_value` on a row yields exactly `sessionId`,
 /// `stageSlug` and `taskNumber` — the three the frontend's mirror declares.

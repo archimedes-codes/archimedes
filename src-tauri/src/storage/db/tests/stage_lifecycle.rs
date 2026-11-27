@@ -98,6 +98,7 @@ fn fresh_database_gets_every_gated_column_from_schema_and_seeds_five() {
         ("stages", "prompt_prefix"),
         ("stages", "position_x"),
         ("stages", "position_y"),
+        ("stages", "next_outcomes"),
         ("spaces", "board_strict"),
     ] {
         assert!(
@@ -134,6 +135,13 @@ fn fresh_database_gets_every_gated_column_from_schema_and_seeds_five() {
         board.iter().all(|c| c.stage.next_slugs.is_none()),
         "`next_slugs` is NOT backfilled and the seed leaves it NULL — NULL means \
          unconfigured, not \"no edges\" (ADR 0099)"
+    );
+    assert!(
+        board.iter().all(|c| c.stage.next_outcomes.is_none()),
+        "`next_outcomes` is NOT backfilled either and the seed leaves it NULL — the \
+         seed does not name it in its column list at all, exactly as it omits \
+         `next_slugs`. NULL means no edge out of here carries a label, so a fresh \
+         install routes by the head of `next_slugs` like every board always did"
     );
     assert!(
         board.iter().all(|c| !c.stage.auto),
@@ -620,7 +628,7 @@ fn delete_stage_refuses_a_stage_another_stage_s_next_slugs_names_it() {
     let db = Db::open(&dir.join("t.db")).expect("db should open");
     let space = board_space("del-referenced");
     db.get_board(&space).expect("seed");
-    db.set_stage_next(&space, "backlog", &["doing".to_string()])
+    db.set_stage_next(&space, "backlog", &["doing".to_string()], &[None])
         .expect("backlog → doing");
 
     let err = db
@@ -640,7 +648,7 @@ fn delete_stage_refuses_a_stage_another_stage_s_next_slugs_names_it() {
 
     // A Stage whose graph merely does not mention the target is not a referrer,
     // and a NULL graph never is (unconfigured must not block a delete).
-    db.set_stage_next(&space, "backlog", &["done".to_string()])
+    db.set_stage_next(&space, "backlog", &["done".to_string()], &[None])
         .expect("re-point the edge away");
     db.delete_stage(&space, "doing", None)
         .expect("with the edge gone, the delete goes through");

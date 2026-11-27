@@ -602,6 +602,17 @@ pub fn run() {
             // verb went with it.
             commands::tasks::workflow_run_step,
             commands::tasks::workflow_run_close,
+            // The settle fallback's question: "this Session settled — does its card
+            // advance, and where to?" The SAME decider the model's `mark_done` runs
+            // inside `agent/host_tools/exec/session.rs`, exposed because the
+            // instruction that rides a tool result is consumed once by the turn that
+            // made it and a model that ignores it leaves nobody to act. Unregistered,
+            // the TypeScript fallback throws at runtime while every mocked test stays
+            // green — the "looks configured, does nothing" failure this whole feature
+            // exists to remove, and the reason `scripts/check-commands.sh` is run by
+            // hand on a commit that adds a command (`make check` runs neither it nor
+            // any other `scripts/*.test.sh`).
+            commands::tasks::workflow_advance_advice,
             // issue #180 D1 (spec §1/§2, ADR 0100): a Task's named markdown
             // artifacts. Both take `Arc<Db>` alone — pure database writes, no
             // Session, no sink. D1 ships these as the HUMAN surface only; the

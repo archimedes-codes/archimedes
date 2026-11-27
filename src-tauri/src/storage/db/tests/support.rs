@@ -30,26 +30,28 @@
 //! THREE groups of single-reader items stay here anyway, for two different reasons,
 //! and both reasons are the rule's own wording rather than an exception to it:
 //!
-//!   * NINE of the seventeen `SCHEMA_WITHOUT_*` consts (`…_ARCHIVED`,
+//!   * NINE of the nineteen `SCHEMA_WITHOUT_*` consts (`…_ARCHIVED`,
 //!     `…_CONTEXT_USAGE`, `…_COST_USD`, `…_PARENT_SESSION_ID`,
 //!     `…_STAGES_ON_ENTER_SKILL`,
 //!     `…_STAGES_NEXT_SLUGS`, `…_SPACES_BOARD_STRICT`,
 //!     `…_STAGES_POSITION_X`, `…_STAGES_POSITION_Y`) are read ONLY by
 //!     `tests/open.rs`, and they stay.
 //!     That child consumes them as a COMPLETE SET —
-//!     `each_cluster_schema_omits_exactly_one_gated_column` walks all seventeen by name
+//!     `each_cluster_schema_omits_exactly_one_gated_column` walks all nineteen by name
 //!     and asserts each omits exactly one gated column, so the property lives in the
 //!     SET and not in any one string. One consumer of a set is still the reason the
 //!     set exists: the rule counts CONSUMERS, not call sites, and scattering the
 //!     names into their individual children would split a pin that is only assertable
-//!     over all of them. (The other EIGHT have a genuine second reader and need no
+//!     over all of them. (The other TEN have a genuine second reader and need no
 //!     defence: `…_SPACE_SORT_ORDER` and `…_SESSION_SORT_ORDER` are read by
 //!     `tests/migrations.rs`, `…_STAGES_AUTO` and `…_STAGES_PROMPT_PREFIX` by
 //!     `tests/stage_lifecycle.rs`, `…_SPACES_AUTO_MAX_STEPS` and
 //!     `…_SPACES_AUTO_CEILING_USD` by `tests/auto_guards.rs`,
-//!     `…_IS_SUBAGENT` by `tests/migrations.rs`, and
-//!     `…_READY` — the newest, added with its gate's own pin — by
-//!     `tests/migrations.rs`.)
+//!     `…_IS_SUBAGENT` by `tests/migrations.rs`,
+//!     `…_STAGES_NEXT_OUTCOMES` by `tests/migrations.rs`,
+//!     `…_READY` — added with its gate's own pin — by
+//!     `tests/migrations.rs`, and `…_ADVANCE_OUTCOME` — the newest, added the same way
+//!     — by `tests/migrations.rs`.)
 //!
 //! The census above is RE-DERIVED, not inherited, by the commit that added the two
 //! position fixtures: `grep -rl 'SCHEMA_WITHOUT_<NAME>\b' src-tauri/src/ | grep -v
@@ -93,7 +95,8 @@ use crate::types::SessionInfo;
 // 5-table `CREATE` batch (sessions + stages + spaces + messages +
 // native_messages) with EXACTLY ONE gate's column absent and every OTHER
 // gated column present, so `Db::open`'s other gates find their column and stay
-// SILENT: the test observes its own gate, not twenty gates at once. Two of the
+// SILENT: the test observes its own gate and not every gate at once (count them
+// with `grep -c 'gate(&mut conn' src-tauri/src/storage/db/mod.rs`). Two of the
 // five fixtures were NOT isolated before this consolidation (the `archived` one
 // also omitted `trusted`, both `sort_order`s, `context_usage_json`,
 // `is_subagent`, `todos_json` and `cost_usd`, and carried `agent_id` — so it
@@ -240,17 +243,18 @@ CREATE TABLE sessions (
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
     parent_session_id TEXT,
-    ready INTEGER
+    ready INTEGER,
+    advance_outcome TEXT
 );
 "
     };
 }
 
 /// The `stages` table as a post-#179, post-workflow-columns, post-canvas database
-/// has it — ALL SIX gated columns present, so no `stages` gate fires. EVERY
-/// cluster fixture carries this spelling except the six whose gate owns this
+/// has it — ALL SEVEN gated columns present, so no `stages` gate fires. EVERY
+/// cluster fixture carries this spelling except the seven whose gate owns this
 /// table: `Db::open` probes `stages` too now, so a fixture with NO `stages` table
-/// at all would count as omitting all six columns and break the isolation assert
+/// at all would count as omitting all seven columns and break the isolation assert
 /// on every fixture at once.
 macro_rules! legacy_stages_complete {
     () => {
@@ -267,6 +271,7 @@ CREATE TABLE stages (
     prompt_prefix TEXT,
     position_x REAL,
     position_y REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
@@ -298,6 +303,7 @@ CREATE TABLE stages (
     auto INTEGER NOT NULL DEFAULT 0,
     prompt_prefix TEXT,
     position_y REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
@@ -321,6 +327,7 @@ CREATE TABLE stages (
     auto INTEGER NOT NULL DEFAULT 0,
     prompt_prefix TEXT,
     position_x REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
@@ -344,6 +351,7 @@ CREATE TABLE stages (
     prompt_prefix TEXT,
     position_x REAL,
     position_y REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
@@ -366,6 +374,7 @@ CREATE TABLE stages (
     auto INTEGER NOT NULL DEFAULT 0,
     position_x REAL,
     position_y REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
@@ -388,6 +397,7 @@ CREATE TABLE stages (
     prompt_prefix TEXT,
     position_x REAL,
     position_y REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
@@ -410,15 +420,45 @@ CREATE TABLE stages (
     prompt_prefix TEXT,
     position_x REAL,
     position_y REAL,
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 "
     };
 }
 
-/// The `stages` table as pre-#179 code wrote it — NONE of the six gated columns.
-/// For the migration tests ONLY (a cluster fixture must never use it: it omits SIX
-/// gated columns at once, which is the isolation collapse the cluster pin
+/// The `stages` table WITHOUT `next_outcomes` (every OTHER `stages` column
+/// present, including `next_slugs` and BOTH position columns) — only the edge-label
+/// gate can fire on it.
+///
+/// `next_slugs` is deliberately PRESENT here: the two columns are a positional
+/// pair, and a fixture that omitted both would exercise two gates at once and tell
+/// the cluster pin nothing about either. The pair's "same length or refused" rule
+/// is a WRITE rule, owned by `Db::set_stage_next`, and it is pinned there.
+macro_rules! legacy_stages_without_next_outcomes {
+    () => {
+        "
+CREATE TABLE stages (
+    space_path TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    label TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    on_enter TEXT NOT NULL DEFAULT 'none',
+    on_enter_skill TEXT,
+    next_slugs TEXT,
+    auto INTEGER NOT NULL DEFAULT 0,
+    prompt_prefix TEXT,
+    position_x REAL,
+    position_y REAL,
+    PRIMARY KEY (space_path, slug)
+);
+"
+    };
+}
+
+/// The `stages` table as pre-#179 code wrote it — NONE of the gated columns.
+/// For the migration tests ONLY (a cluster fixture must never use it: it omits ALL
+/// SEVEN gated columns at once, which is the isolation collapse the cluster pin
 /// forbids).
 macro_rules! legacy_stages_pre_task_board_config {
     () => {
@@ -475,9 +515,10 @@ CREATE TABLE native_messages (
 /// spellings plus the tail living here once each so no fixture can invent its own.
 ///
 /// `stages` defaults to [`legacy_stages_complete!`]: `Db::open` probes `stages`
-/// for SIX gated columns now (`on_enter_skill`, `next_slugs`, `auto`,
-/// `prompt_prefix`, `position_x`, `position_y`), so a fixture that omitted the
-/// table entirely would count as omitting ALL SIX and run six gates — the
+/// for SEVEN gated columns now (`on_enter_skill`, `next_slugs`, `auto`,
+/// `prompt_prefix`, `position_x`, `position_y`, `next_outcomes`), so a fixture
+/// that omitted the table entirely would count as omitting ALL SEVEN and run
+/// seven gates — the
 /// isolation collapse the cluster pin below exists to catch. A fixture whose gate
 /// owns `stages` (or `spaces`) picks that arm instead.
 macro_rules! legacy_batch {
@@ -509,6 +550,14 @@ macro_rules! legacy_batch {
         concat!(
             legacy_sessions_complete!(),
             legacy_stages_without_next_slugs!(),
+            legacy_spaces_with_sort_order!(),
+            legacy_tail!()
+        )
+    };
+    (complete_sessions, stages_without_next_outcomes) => {
+        concat!(
+            legacy_sessions_complete!(),
+            legacy_stages_without_next_outcomes!(),
             legacy_spaces_with_sort_order!(),
             legacy_tail!()
         )
@@ -591,7 +640,8 @@ CREATE TABLE sessions (
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
     parent_session_id TEXT,
-    ready INTEGER
+    ready INTEGER,
+    advance_outcome TEXT
 );
 ",
     spaces_with_sort_order
@@ -613,7 +663,8 @@ CREATE TABLE sessions (
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
     parent_session_id TEXT,
-    ready INTEGER
+    ready INTEGER,
+    advance_outcome TEXT
 );
 ",
     spaces_with_sort_order
@@ -651,7 +702,8 @@ CREATE TABLE sessions (
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
     parent_session_id TEXT,
-    ready INTEGER
+    ready INTEGER,
+    advance_outcome TEXT
 );
 ",
     spaces_with_sort_order
@@ -674,7 +726,8 @@ CREATE TABLE sessions (
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
     parent_session_id TEXT,
-    ready INTEGER
+    ready INTEGER,
+    advance_outcome TEXT
 );
 ",
     spaces_with_sort_order
@@ -701,7 +754,8 @@ CREATE TABLE sessions (
     -- `ready` IS here: this fixture's ONE omission is `parent_session_id`, and a
     -- fixture that dropped `ready` too would run two gates inside a test about the
     -- parent link (the isolation collapse the cluster pin catches).
-    ready INTEGER
+    ready INTEGER,
+    advance_outcome TEXT
 );
 ",
     spaces_with_sort_order
@@ -726,7 +780,8 @@ CREATE TABLE sessions (
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
     parent_session_id TEXT,
-    ready INTEGER
+    ready INTEGER,
+    advance_outcome TEXT
 );
 ",
     spaces_without_sort_order
@@ -749,7 +804,8 @@ CREATE TABLE sessions (
     cost_usd REAL,
     title_stage INTEGER NOT NULL DEFAULT 0,
     parent_session_id TEXT,
-    ready INTEGER
+    ready INTEGER,
+    advance_outcome TEXT
 );
 ",
     spaces_with_sort_order
@@ -777,7 +833,39 @@ CREATE TABLE sessions (
     cost_usd REAL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     title_stage INTEGER NOT NULL DEFAULT 0,
-    parent_session_id TEXT
+    parent_session_id TEXT,
+    advance_outcome TEXT
+);
+",
+    spaces_with_sort_order
+);
+
+/// The full 5-table batch with ONLY `sessions.advance_outcome` missing — the
+/// isolation the `dflt_value` pin depends on (a pre-existing Session never NAMED an
+/// edge, so the column must arrive DEFAULT-less; see the `advance_outcome` gate in
+/// `db/mod.rs`).
+///
+/// `ready` IS present, and that is the isolation: this fixture's ONE omission is the
+/// edge-name column, so the `ready` gate stays silent and the test observes its own
+/// gate. Both columns are written by the SAME `UPDATE`, so a reader may expect a
+/// fixture to drop both — it must not, and the cluster pin reddens if it does.
+pub(super) const SCHEMA_WITHOUT_ADVANCE_OUTCOME: &str = legacy_batch!(
+    "
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    cwd TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    title TEXT,
+    capabilities_json TEXT NOT NULL,
+    archived INTEGER NOT NULL DEFAULT 0,
+    context_usage_json TEXT,
+    is_subagent INTEGER NOT NULL DEFAULT 0,
+    todos_json TEXT,
+    cost_usd REAL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    title_stage INTEGER NOT NULL DEFAULT 0,
+    parent_session_id TEXT,
+    ready INTEGER
 );
 ",
     spaces_with_sort_order
@@ -794,6 +882,14 @@ pub(super) const SCHEMA_WITHOUT_STAGES_ON_ENTER_SKILL: &str =
 /// single-ALTER gate (deliberately NO data step, ADR 0099: NULL = unconfigured).
 pub(super) const SCHEMA_WITHOUT_STAGES_NEXT_SLUGS: &str =
     legacy_batch!(complete_sessions, stages_without_next_slugs);
+
+/// The full 5-table batch with ONLY `stages.next_outcomes` missing — the plain
+/// single-ALTER gate (deliberately NO data step, and the same argument
+/// `SCHEMA_WITHOUT_STAGES_NEXT_SLUGS` carries: NULL = "no edge carries a label",
+/// so selection falls back to the head and an upgrade behaves exactly as it does
+/// today. Backfilling it would label edges nobody labelled).
+pub(super) const SCHEMA_WITHOUT_STAGES_NEXT_OUTCOMES: &str =
+    legacy_batch!(complete_sessions, stages_without_next_outcomes);
 
 /// The full 5-table batch with ONLY `stages.auto` missing — the plain
 /// single-ALTER gate for the per-column auto-advance flag. The `DEFAULT 0` rides
@@ -1143,4 +1239,105 @@ pub(super) fn open_run_row(db: &Db, task_id: &str) -> Option<(String, i64, Optio
         Err(rusqlite::Error::QueryReturnedNoRows) => None,
         Err(e) => panic!("reading the open run for `{task_id}`: {e}"),
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The auto-advance ADVISE fixtures, shared by the decider's three test children.
+//
+// These nine moved here from `tests/advise.rs` when the ADR 0112 test gate forced
+// that child to split by subject (`advise` for the arms, `advise_cost` for the
+// settled-cost bank, `advise_outcome` for the edge the model chose). All THREE read
+// them, so this file's own rule — an item lives here because MORE THAN ONE subject
+// child reads it — is what puts them here and not in one of the children.
+//
+// `tests/session_card.rs` declares its OWN local `record`. That is not a duplicate to
+// reconcile: a local item shadows a glob import, its sentence is about the FK in the
+// language that child reads the link table in, and the two bodies are one line apart.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A `Db`, a Space with the five seeded columns, and ONE card sitting in `backlog` —
+/// the fixture every case below starts from.
+///
+/// `upsert_space` IS called, because most cases configure a guard and
+/// `set_auto_guards` is an `UPDATE` on `spaces`; a fixture that omitted the row would
+/// make "the Space configured nothing" indistinguishable from "this Space has no row".
+///
+/// NO `get_board` call, and that is not an oversight to correct: the seeded columns
+/// arrive from `create_task`'s own `seed_default_stages`, so the whole family runs
+/// against a `Db` that has never opened a board.
+pub(super) fn fixture(tag: &str) -> (crate::test_support::ScratchDir, Db, String, String) {
+    let (dir, db, space) = seeded(tag);
+    db.upsert_space(&space, false).expect("upsert_space");
+    let card = db
+        .create_task(&space, "a card under test", None, None)
+        .expect("create_task");
+    (dir, db, space, card.id)
+}
+
+/// A recorded Session. The FK target every link needs — `link_session` does not check
+/// it, the `ON DELETE CASCADE` foreign key rejects a dangling link at the statement.
+pub(super) fn record(db: &Db, id: &str) {
+    db.record_session(&title_session(id))
+        .expect("record_session");
+}
+
+/// A recorded Session linked to `task_id` at `launched_slug`, WITHOUT claiming.
+///
+/// Split out from `claim` so a test can control the ORDER of the link and the claim:
+/// the dedupe compares `rowid`s, and a link written after the launch's own link is
+/// newer than it — which is the difference between "this claim already launched" and
+/// "this claim is the one doing the launching".
+pub(super) fn linked(db: &Db, session_id: &str, task_id: &str, launched_slug: &str) {
+    record(db, session_id);
+    db.link_session(task_id, session_id, Some(launched_slug))
+        .expect("link_session");
+}
+
+/// …and then it claims. The shape one turn in, before anything has launched.
+pub(super) fn claim(db: &Db, session_id: &str, task_id: &str, launched_slug: &str) {
+    linked(db, session_id, task_id, launched_slug);
+    db.set_session_ready(session_id, Some(true), None)
+        .expect("set_session_ready");
+}
+
+/// Flag one column `auto` / not-auto.
+pub(super) fn set_auto(db: &Db, space: &str, slug: &str, auto: bool) {
+    db.set_stage_auto(space, slug, auto)
+        .expect("set_stage_auto");
+}
+
+/// Declare one column's edges and their labels in one call.
+pub(super) fn set_edges(
+    db: &Db,
+    space: &str,
+    slug: &str,
+    slugs: &[&str],
+    outcomes: &[Option<&str>],
+) {
+    let slugs: Vec<String> = slugs.iter().map(|s| s.to_string()).collect();
+    let outcomes: Vec<Option<String>> = outcomes.iter().map(|o| o.map(str::to_string)).collect();
+    db.set_stage_next(space, slug, &slugs, &outcomes)
+        .expect("set_stage_next");
+}
+
+/// The destination column's slug, or `None`.
+pub(super) fn dest_slug(advice: &AdvanceAdvice) -> Option<String> {
+    advice.destination.as_ref().map(|s| s.slug.clone())
+}
+
+/// The advice call, named — the interesting part of each call is which arguments are
+/// `None`, and the three-argument shape would otherwise bury it.
+pub(super) fn advice(
+    db: &Db,
+    session_id: &str,
+    outcome: Option<&str>,
+    cost_delta_usd: Option<f64>,
+) -> AdvanceAdvice {
+    db.workflow_advance_advice(session_id, outcome, cost_delta_usd)
+        .expect("the advice never fails on a well-formed fixture")
+}
+
+/// The open run's `(steps, cost_usd)`, or `None` when no run is open.
+pub(super) fn run_row(db: &Db, task_id: &str) -> Option<(i64, Option<f64>)> {
+    open_run_row(db, task_id).map(|(_id, steps, cost)| (steps, cost))
 }

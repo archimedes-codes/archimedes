@@ -913,7 +913,12 @@ fn stages_and_tasks_seed_and_list_stepwise_from_a_fresh_db() {
 
     // The move verb, and the `get_task` read by GLOBAL id.
     let moved = db
-        .move_task(space, &task.id, "doing")
+        .move_task(
+            space,
+            &task.id,
+            "doing",
+            archimedes_lib::storage::MoveAuthor::Person,
+        )
         .expect("move_task to a seeded stage");
     assert_eq!(moved.on_enter, "none", "a default stage boosts nothing");
     assert_eq!(

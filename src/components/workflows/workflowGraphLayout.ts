@@ -3,6 +3,7 @@ import type { CSSProperties } from "react";
 import type { Edge, Node } from "@xyflow/react";
 
 import { nextStepSlugs } from "../../lib/workflowGraph";
+import { edgeOutcomesOf } from "../../lib/workflowEdgeWrite";
 import type { StageDto, StageWithTasks } from "../../lib/tauri";
 
 /**
@@ -182,10 +183,32 @@ export type WorkflowMissingFlowNode = Node<
 /** Either node, i.e. everything the canvas hands xyflow. */
 export type WorkflowFlowNode = WorkflowStageFlowNode | WorkflowMissingFlowNode;
 
-/** The edge id for one hop. Keyed on the pair rather than random, so a re-render
- *  of an unchanged graph hands xyflow the SAME ids and it does not rebuild every
- *  edge — and so a test can name the edge it means. */
-export const edgeIdOf = (from: string, to: string): string => `${from}->${to}`;
+/** The edge id for one hop, optionally NAMED.
+ *
+ *  Keyed on the pair rather than random, so a re-render of an unchanged graph hands
+ *  xyflow the SAME ids and it does not rebuild every edge — and so a test can name the
+ *  edge it means.
+ *
+ *  The `outcome` half exists because the pair alone could not identify an edge once an
+ *  edge could carry a name. `next_slugs` is not a set — `set_stage_next` validates each
+ *  element names a real column and never that the list has no repeats — so
+ *  `["done","done"]` labelled `["failed","success"]` is legal data that routes two ways
+ *  (`advise.rs` takes the first edge whose label the claim named). With the id keyed on
+ *  the pair alone, the hop loop's dedupe swallowed the second edge: one route in the
+ *  database, one wire on the canvas, and no warning anywhere.
+ *
+ *  **`null` MUST answer the unchanged `${from}->${to}`**, and that is a compatibility
+ *  contract and not a formatting preference: the canvas tests name edge ids as literal
+ *  DOM attributes (`rf__edge-backlog->todo`, `.react-flow__edge[data-id='backlog->doing']`)
+ *  across `WorkflowsCanvas.test.tsx` and `WorkflowsCanvas.editor.test.tsx`, so those pins
+ *  staying green IS the evidence that an unlabelled board — every board that exists today,
+ *  since `next_outcomes` has no SQL `DEFAULT` and is never backfilled — renders exactly as
+ *  it did before this field existed.
+ *
+ *  The separator is `:` and not `->`: an id built as `${from}->${to}->${outcome}` would
+ *  read like a three-node path, and a name is not a node. */
+export const edgeIdOf = (from: string, to: string, outcome: string | null = null): string =>
+  outcome === null ? `${from}->${to}` : `${from}->${to}:${outcome}`;
 
 /** The class and the inline style that mark an edge as **inferred by the graph** rather
  *  than **drawn by a person**.
@@ -289,24 +312,39 @@ export function layoutWorkflowGraph(
   columns: readonly StageWithTasks[],
 ): WorkflowGraph {
   const bySlug = new Map(columns.map((c) => [c.stage.slug, c]));
-  /** Every hop, in column order, deduplicated. Deduplicated because a person can
-   *  save the same slug twice into `next_slugs` — the write validates that each
-   *  entry is a real column, not that the list has no repeats — and two identical
-   *  ids in one `edges` array make xyflow render one of them and warn.
+  /** Every hop, in column order, deduplicated on its EDGE ID.
+   *
+   *  Deduplicated because a person can save the same slug twice into `next_slugs` — the
+   *  write validates that each entry is a real column, not that the list has no repeats —
+   *  and two identical ids in one `edges` array make xyflow render one of them and warn.
+   *
+   *  The dedupe key is the whole edge id and NOT the destination, which is the difference
+   *  between this line and the one it replaced. Keyed on the destination, two edges to
+   *  `done` labelled `failed` and `success` collapsed into one wire: both routes existed
+   *  in the database and fired on a claim, and the person could see only one of them and
+   *  could not tell which. Keyed on the id, they are two hops, and the pair that really
+   *  does collide — same destination, no name on either — still collapses, because that
+   *  one genuinely is one id.
    *
    *  `implicit` records the ONE thing the drawing must not lose: whether this hop came
    *  from the row's own list or from `nextStepSlugs`' `sortOrder + 1` fallback. It is
    *  read off `nextSlugs === null` and NOT off "did the fallback fire", because an
    *  unconfigured row's hop is inferred even when its target is a ghost. */
-  const hops: { from: string; to: string; implicit: boolean }[] = [];
+  const hops: { from: string; to: string; outcome: string | null; implicit: boolean }[] =
+    [];
   const seen = new Set<string>();
   for (const column of columns) {
     const implicit = column.stage.nextSlugs === null;
-    for (const to of nextStepSlugs(columns, column.stage)) {
-      const id = edgeIdOf(column.stage.slug, to);
+    // The positional read, asked of the ONE owner (`workflowEdgeWrite`), so the picture
+    // and the write cannot disagree about which edge a name sits on. A `null` row answers
+    // `[]` — an inferred wire has no index to hold a label.
+    const outcomes = edgeOutcomesOf(column.stage);
+    for (const [index, to] of nextStepSlugs(columns, column.stage).entries()) {
+      const outcome = outcomes[index] ?? null;
+      const id = edgeIdOf(column.stage.slug, to, outcome);
       if (to === column.stage.slug || seen.has(id)) continue;
       seen.add(id);
-      hops.push({ from: column.stage.slug, to, implicit });
+      hops.push({ from: column.stage.slug, to, outcome, implicit });
     }
   }
 
@@ -346,6 +384,7 @@ export function layoutWorkflowGraph(
   const nodes: WorkflowFlowNode[] = columns.map((column) => {
     const stage = column.stage;
     const targets = nextStepSlugs(columns, stage);
+    const nodeOutcomes = edgeOutcomesOf(stage);
     return {
       id: stage.slug,
       type: STAGE_NODE_TYPE,
@@ -361,9 +400,16 @@ export function layoutWorkflowGraph(
         // `sortOrder + 1`. Both mean "the chain stops here" and both look
         // identical on a kanban, which is the point of drawing it.
         deadEnd: targets.length === 0,
-        nextLabels: targets.map(
-          (slug) => bySlug.get(slug)?.stage.label ?? slug,
-        ),
+        // A named edge says so here too, because this becomes the node's
+        // `aria-label` ("Leads to …"). Two edges to `Done` reading "Leads to Done, Done"
+        // is the invisible-collapse defect with a different sensor; an UNLABELLED edge
+        // still contributes its bare label, so every existing board reads verbatim as it
+        // does today.
+        nextLabels: targets.map((slug, index) => {
+          const label = bySlug.get(slug)?.stage.label ?? slug;
+          const outcome = nodeOutcomes[index] ?? null;
+          return outcome === null ? label : `${label} (${outcome})`;
+        }),
       } satisfies WorkflowStageNodeData,
     };
   });
@@ -386,7 +432,7 @@ export function layoutWorkflowGraph(
   return {
     nodes,
     edges: hops.map((hop) => ({
-      id: edgeIdOf(hop.from, hop.to),
+      id: edgeIdOf(hop.from, hop.to, hop.outcome),
       source: hop.from,
       target: hop.to,
       // The inferred wire LOOKS inferred. See `IMPLICIT_EDGE_CLASS` for the contract
@@ -395,6 +441,18 @@ export function layoutWorkflowGraph(
       ...(hop.implicit
         ? { className: IMPLICIT_EDGE_CLASS, style: IMPLICIT_EDGE_STYLE }
         : {}),
+      // The edge's NAME, rendered by the builtin `default` edge — `label` is a
+      // first-class `EdgeLabelOptions` field in `@xyflow/react@13.0.3` and `BaseEdge`
+      // hands it to `EdgeText`, so no `edgeTypes` and no custom edge component are
+      // needed, and `WorkflowsCanvas.tsx` passing none is what makes that true.
+      //
+      // SPREAD CONDITIONALLY, never `label: hop.outcome`. Spreading an unset key puts a
+      // `label` property on every edge of every board, and an unlabelled board is then a
+      // different object than it was — the layout test asserts the exact key set, and the
+      // canvas tests assert literal DOM attributes, because "`null` means no edge carries
+      // a label, so behaviour is exactly as today" is a promise about the byte-level
+      // picture and not a claim about intent.
+      ...(hop.outcome === null ? {} : { label: hop.outcome }),
     })),
   };
 }

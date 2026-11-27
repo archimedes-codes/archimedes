@@ -41,7 +41,7 @@ import { normalizeToolOutput } from "./toolOutput";
  * THE ONE AGREED PRODUCER LIST — FROZEN, NOT RE-DERIVED
  * ---------------------------------------------------------------------------
  *
- * `PRODUCER_KEYS` (Part 1) is the FROZEN copy of the 39-key producer union that
+ * `PRODUCER_KEYS` (Part 1) is the FROZEN copy of the 40-key producer union that
  * the plan re-derived from the tree ONCE
  * (`docs/roadmap/improvement-correctness-seams-task07b-details-registry.md`,
  * §"The frozen producer list", re-derived at HEAD `29b16df` by enumerating every
@@ -88,6 +88,36 @@ import { normalizeToolOutput } from "./toolOutput";
  * different frame — so it is unread-by-name on the envelope and NOT spanning. See
  * `ENVELOPE_READER_FIELDS`.
  *
+ * AND ONE MORE, on the same recorded-not-silently-edited terms: `advanceAdvice`, the
+ * launch instruction the mark-done node signal adds to `mark_done`'s answer
+ * (`agent/host_tools/exec/session.rs`, the `to_details("advanceAdvice", …)` arm). The
+ * tuple is therefore the frozen 34 PLUS `calls` PLUS the four D2 task keys PLUS
+ * `advanceAdvice` = **40**. It follows the D2 four in every respect: a producer key
+ * NO TS reader names by name (the settle-handler that will consume it reads it off a
+ * tool result's `rawOutput`, not through a `READERS`-walk function, so a
+ * `LIVE_READER_READS` entry would be a lie the reader walk could not corroborate), so
+ * it went to Part 2c with a reason and to Part 3 with a fixture group of its NINE
+ * keys, and the Part-2b reader union is UNCHANGED at 25.
+ *
+ * THE HOLE THIS ENTRY EXPOSES, recorded because it is the more important finding.
+ * Nothing in this file reddened when the producer started emitting `advanceAdvice`.
+ * That is not a defect in the four guards as written — each does what it claims — it
+ * is that NONE of them reads a producer. Both cross-pins run between two HAND-MADE
+ * TS lists (`PRODUCER_KEYS` ↔ the Part-3 fixtures) and the third cross-pin runs
+ * between `PRODUCER_KEYS` and the reader walk over `src/lib/*.ts`; no assertion
+ * anywhere enumerates what the Rust emitters actually emit. A key that appears on the
+ * WIRE and not in `PRODUCER_KEYS` is therefore invisible to every one of them, and
+ * the four guards stay green — as they did, measured, for the whole of this feature's
+ * first wave. See the follow-ups record: a wire-contract guard that silently ignores a
+ * new key is the "looks configured, does nothing" shape, and the reverse direction
+ * (every key a producer emits must appear in the list) has no owner here. What DOES
+ * catch the omission today is one hop away and belongs to a different file:
+ * `shape.rs`'s `every_details_payload_key_set_matches_the_frozen_frontend_fixtures`
+ * asserts each payload's EXACT key set against literals copied from the fixtures
+ * below, so a RENAME or an ADDITION inside `advanceAdvice` reddens Rust-side — but
+ * only because a person wrote those literals by hand at the same time, and a key
+ * nobody copies into that file has no such pin.
+ *
  * ONE number in the plan's census TEXT has since drifted, and it is a SITE count,
  * not a key: the plan counts 39 emission sites (28 `details: Some` + 11
  * `ok_text(.., Some(..))`); the tree at this HEAD carries **38** (27 + 11). The
@@ -124,7 +154,7 @@ import { normalizeToolOutput } from "./toolOutput";
  *     silently contributing zero keys;
  *  2. the collected key sets must be NON-EMPTY: the envelope-frame reader set, and
  *     `PRODUCER_KEYS`;
- *  3. `PRODUCER_KEYS`' `as const` TYPE must stay exactly the frozen 39-name tuple
+ *  3. `PRODUCER_KEYS`' `as const` TYPE must stay exactly the frozen 40-name tuple
  *     (`FROZEN_TUPLE_PIN`) — a dropped, added or reordered key, or a collapse to
  *     `string[]`, fails `pnpm build` (tsc typechecks test files) rather than
  *     shrinking the contract silently;
@@ -162,32 +192,43 @@ const stripJsComments = (source: string): string =>
 // no producer emits (it must appear in Part 2b's legacy envelope, likewise with a
 // reason). Copy byte-for-byte.
 
-// THE details wire vocabulary — producer side. 39 keys (the frozen 34 below,
+// THE details wire vocabulary — producer side. 40 keys (the frozen 34 below,
 // plus `calls`, the codemode nested-call list, plus the FOUR keys issue #180's D2
-// task seam adds: `board`, `task`, `moveOutcome`, `artifactMeta`). Re-derived from
+// task seam adds — `board`, `task`, `moveOutcome`, `artifactMeta` — plus
+// `advanceAdvice`, the launch instruction the mark-done node signal adds to
+// `mark_done`'s answer). Re-derived from
 // the tree ONCE at plan time (vet round 2, HEAD 29b16df) by enumerating
 // EVERY production `details: Some(json!({...}))` / `ok_text(.., Some(json!))`
 // site (39 sites, 7 files — see the grep in §The frozen producer list);
 // FROZEN here. task08 (Wave 3, Rust) owns the Rust-side enumeration and
 // copies THIS literal verbatim. Any edit must move a key between Live and
 // legacy-envelope, never silently add it.
+//
+// READ THAT LAST SENTENCE WITH THE GUARD'S REAL SCOPE IN MIND. "Never silently add
+// it" is a rule about THIS list, and nothing in this file can enforce it against the
+// producers: no assertion here reads a Rust emitter, so a key that appears on the
+// WIRE first and in this list never is invisible to all four guards. That is exactly
+// how `advanceAdvice` arrived — emitted by `exec/session.rs`, absent from here, and
+// green — and it is why its entry records the hole in prose above rather than only
+// the key. The reverse direction (enumerate what the producers emit, demand this list
+// cover it) has no owner in this file; the follow-ups record carries it.
 const PRODUCER_KEYS = [
-  "artifactMeta", "board", "bytes", "calls", "cancelled", "command", "customInput",
-  "description", "diff", "dir", "entries", "error", "exitCode", "extractor", "lines",
-  "matches", "moveOutcome", "occurrences", "operation", "path", "provider", "reason",
-  "renderer", "rendererNote", "responseId", "resultCount", "results", "scope",
-  "skill", "skills", "status", "stderr", "stdout", "task", "title", "todos",
-  "truncated", "url", "wordCount",
+  "advanceAdvice", "artifactMeta", "board", "bytes", "calls", "cancelled", "command",
+  "customInput", "description", "diff", "dir", "entries", "error", "exitCode",
+  "extractor", "lines", "matches", "moveOutcome", "occurrences", "operation", "path",
+  "provider", "reason", "renderer", "rendererNote", "responseId", "resultCount",
+  "results", "scope", "skill", "skills", "status", "stderr", "stdout", "task",
+  "title", "todos", "truncated", "url", "wordCount",
 ] as const;
 
 type ProducerKey = (typeof PRODUCER_KEYS)[number];
 
-/** The compile-time half of vacuity guard 3. `PRODUCER_KEYS` is a 39-element
- *  `as const` tuple and must STAY one: this alias spells the frozen 39 names in
+/** The compile-time half of vacuity guard 3. `PRODUCER_KEYS` is a 40-element
+ *  `as const` tuple and must STAY one: this alias spells the frozen 40 names in
  *  the frozen order, and `FROZEN_TUPLE_PIN` is only assignable to `true` while the
  *  two types are mutually assignable. Drop a key, add a key, reorder, or widen the
  *  const to `string[]` and `pnpm build` fails HERE — the contract cannot shrink
- *  silently. (The 39 names are spelled a second time on purpose: this is the
+ *  silently. (The 40 names are spelled a second time on purpose: this is the
  *  tamper seal on the copy above, not a second consumer of it.)
  *
  *  Issue #180 D2 grew this tuple from 35 to 39 — `artifactMeta`, `board`,
@@ -196,14 +237,24 @@ type ProducerKey = (typeof PRODUCER_KEYS)[number];
  *  issue #183 D1 (the crate's copy was deleted in F3); cited by function below,
  *  never by line. That is a live wire change
  *  RECORDED here, not a silent edit: each key also gained a Part-2c reason and a
- *  Part-3 fixture group, which is the sanctioned shape (the `calls` precedent). */
+ *  Part-3 fixture group, which is the sanctioned shape (the `calls` precedent).
+ *
+ *  The mark-done node signal grew it from 39 to 40 — `advanceAdvice`, the launch
+ *  instruction `mark_done` answers with, emitted by the DESKTOP's
+ *  `agent/host_tools/exec/session.rs` (`to_details("advanceAdvice", &advice)`). Same
+ *  sanctioned shape as the D2 four and as `calls`: a Part-2c reason AND a Part-3
+ *  fixture group spelling all NINE wire keys, landed in the same commit as the
+ *  producer. What is NOT the same, and is recorded rather than smoothed over: the
+ *  D2 four entered this list because a person was enumerating producers; this one
+ *  entered because a reviewer noticed the producer had already shipped without it.
+ *  No guard in this file would have noticed. See §THE HOLE THIS ENTRY EXPOSES. */
 type FrozenProducerTuple = readonly [
-  "artifactMeta", "board", "bytes", "calls", "cancelled", "command", "customInput",
-  "description", "diff", "dir", "entries", "error", "exitCode", "extractor", "lines",
-  "matches", "moveOutcome", "occurrences", "operation", "path", "provider", "reason",
-  "renderer", "rendererNote", "responseId", "resultCount", "results", "scope",
-  "skill", "skills", "status", "stderr", "stdout", "task", "title", "todos",
-  "truncated", "url", "wordCount",
+  "advanceAdvice", "artifactMeta", "board", "bytes", "calls", "cancelled", "command",
+  "customInput", "description", "diff", "dir", "entries", "error", "exitCode",
+  "extractor", "lines", "matches", "moveOutcome", "occurrences", "operation", "path",
+  "provider", "reason", "renderer", "rendererNote", "responseId", "resultCount",
+  "results", "scope", "skill", "skills", "status", "stderr", "stdout", "task",
+  "title", "todos", "truncated", "url", "wordCount",
 ];
 
 type AssertEqual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -625,11 +676,20 @@ const ENVELOPE_READER_FIELDS: readonly EnvelopeReaderField[] =
  *  per key — and the reason is part of the assertion: an anonymous allowance is not
  *  enough to let a key through.
  *
- *  Every reason shares one true mechanism (and says which emitter owns the key):
- *  a non-`subagent` tool's `details` reaches the screen through
+ *  Almost every reason shares one true mechanism (and says which emitter owns the
+ *  key): a non-`subagent` tool's `details` reaches the screen through
  *  `normalizeToolOutput`'s JSON dump, so the key is DISPLAYED as opaque text while
  *  no TS code ever names it. That is a real consumer — it is why "unread" is not
- *  "deletable" — and it is exactly the distinction the registry has to keep. */
+ *  "deletable" — and it is exactly the distinction the registry has to keep.
+ *
+ *  ONE row does not share it, and says so: `advanceAdvice` is consumed, from a tool
+ *  result's `rawOutput`, by a caller outside the two files this walk opens. "The walk
+ *  cannot see it" and "nothing reads it" are different claims and the table must not
+ *  collapse them — a reason that borrowed the dump sentence to satisfy the length
+ *  check would be the looks-configured-does-nothing shape written into the very
+ *  column that is supposed to catch it. So the rule the row above states is "no
+ *  accessor in `READERS` names it", not "nothing reads it", and where the two differ
+ *  the reason says which. */
 /** The producer keys that are NOT spanning, computed by the TYPE system as the
  *  same set difference the runtime assertion computes: `Extract` is the type-level
  *  intersection of the two literal unions (the spanning keys) and `Exclude` removes
@@ -642,6 +702,7 @@ const ENVELOPE_READER_FIELDS: readonly EnvelopeReaderField[] =
 type UnreadProducerKey = Exclude<ProducerKey, Extract<ProducerKey, (typeof ENVELOPE_READER_FIELDS)[number]>>;
 
 const UNREAD_BY_NAME_REASONS: Readonly<Record<UnreadProducerKey, string>> = {
+  advanceAdvice: "mark_done (agent/host_tools/exec/session.rs, the `to_details(\"advanceAdvice\", …)` arm) — the launch instruction {advance,stop,destination,reason,maxSteps,ceilingUsd,taskId,spacePath,alreadyLaunched}. UNREAD BY THIS WALK, WHICH IS NOT THE SAME AS UNREAD: the value IS consumed, but from a tool result's `rawOutput` (the transcript frame), and no function in `READERS` — `toolOutput.ts` / `subagentActivity.ts`, the two files this walk opens — names the key, so there is no accessor for the census to find and no envelope-frame field to add to the 25-field union. Entering it as `LIVE_READER_READS` would assert a reader the walk cannot corroborate, which is the lie this table exists to prevent, so it is annotated here on the `moveOutcome`/`task`/`board` precedent instead",
   bytes: "write (fs_tools.rs:121) — shown only inside normalizeToolOutput's JSON dump; the header reads rawInput.path, not details.bytes",
   artifactMeta: "write_artifact (agent/host_tools/exec.rs, the `artifactMeta` envelope) — the host tool's write answer {key,updatedAt,bytes}; no TS card names it, so it rides normalizeToolOutput's JSON dump. D2 deliberately ships NO reader: the artifact chip list comes from the board's `artifactKeys`, not from a tool result",
   board: "list_board (agent/host_tools/exec.rs — both the empty-board and the populated arm) — the host tool's row payload `[{spacePath,number,title,stageSlug,artifactKeys,…}]`; the board UI renders `get_board`, never a tool result, so the rows are dumped as opaque text",
@@ -705,14 +766,14 @@ describe("Part 1 — the frozen producer list (the contract task08 copies)", () 
     expect(new Set(PRODUCER_KEYS).size).toBe(PRODUCER_KEYS.length);
   });
 
-  it("PRODUCER_KEYS' as-const TYPE is exactly the frozen 39-name tuple (vacuity guard 3)", () => {
+  it("PRODUCER_KEYS' as-const TYPE is exactly the frozen 40-name tuple (vacuity guard 3)", () => {
     // `FROZEN_TUPLE_PIN` is typed `true` only while the const's type matches the
     // frozen tuple — a deleted/added/reordered key or a collapse to `string[]`
     // fails `pnpm build` before this line ever runs. The runtime reads below pin the
     // LENGTH, so a list that shrank to something the tuple alias does not describe
     // cannot pass by being merely non-empty.
     expect(FROZEN_TUPLE_PIN).toBe(true);
-    expect(PRODUCER_KEYS.length).toBe(39);
+    expect(PRODUCER_KEYS.length).toBe(40);
     expect([...PRODUCER_KEYS].sort()).toEqual([...PRODUCER_KEYS]);
   });
 });
@@ -1257,6 +1318,58 @@ const DETAILS_FIXTURES: readonly DetailsFixture[] = [
       // key, never as the top-level `bytes` the fs `write` arm emits — the same
       // nesting rule that charges `usage.input` to `usage`.
       artifactMeta: { key: "spec", updatedAt: 1700000000000, bytes: 2048 },
+    },
+  },
+  {
+    group: "{advanceAdvice} — mark_done (the launch instruction, the advancing arm)",
+    emittedBy: [
+      "agent/host_tools/exec/session.rs — `mark_done` (the `to_details(\"advanceAdvice\", &advice)` arm; the payload is `storage::AdvanceAdvice` serialised verbatim by `src-tauri/src/storage/db/advise.rs`'s single decider)",
+    ],
+    registerKeys: ["advanceAdvice"],
+    payload: {
+      // THE ADVANCING ARM, because it is the WIDER of the two: `advance: true`
+      // carries a whole destination row, and every other arm is this same nine keys
+      // with `destination: null` — serde emits the key either way, so the key SET is
+      // arm-invariant and one fixture pins it. `stop` is likewise PRESENT and `null`
+      // here; unlike `AdvanceVerdict`, a `null` stop does NOT mean `advance` (the
+      // Session-shaped refusals have no `ChainStop` spelling), which is exactly why
+      // this payload carries a `reason` the caller branches on instead.
+      //
+      // The nested `destination` is a whole `StageRow` — all TWELVE keys the
+      // `StageDto` mirror declares — and that is load-bearing, not decoration: ADR
+      // 0098's rule is that the Skill a launch loads, the label a sentence names and
+      // the prompt it prepends all come from the ONE row, so a launch works with no
+      // board slice mounted. `nextOutcomes` is `null` (no edge carries a label, so
+      // selection takes the head of `nextSlugs`), and `promptPrefix` is `null` (the
+      // ONLY spelling of "no extra prompt" — `Some("")` is a value a person typed).
+      //
+      // The Rust half of this agreement is pinned by
+      // `agent::host_tools::tests::shape::every_details_payload_key_set_matches_the_frozen_frontend_fixtures`,
+      // which asserts the live payload's EXACT key set against these nine names.
+      advanceAdvice: {
+        advance: true,
+        stop: null,
+        destination: {
+          spacePath: "/w/alpha",
+          slug: "doing",
+          label: "Doing",
+          sortOrder: 1,
+          onEnter: "fresh",
+          onEnterSkill: "research",
+          nextSlugs: ["review", "done"],
+          auto: true,
+          promptPrefix: null,
+          positionX: null,
+          positionY: null,
+          nextOutcomes: null,
+        },
+        reason: "advanced",
+        maxSteps: 20,
+        ceilingUsd: 10,
+        taskId: "tsk_1a2b",
+        spacePath: "/w/alpha",
+        alreadyLaunched: false,
+      },
     },
   },
 ];

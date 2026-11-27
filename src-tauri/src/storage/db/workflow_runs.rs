@@ -362,6 +362,39 @@ impl Db {
         cost_delta_usd: Option<f64>,
     ) -> Result<AdvanceVerdict, DbError> {
         let guard = self.conn.lock().expect("db mutex poisoned");
+        Self::workflow_run_step_on(&guard, space_path, task_id, cost_delta_usd)
+    }
+
+    /// Record one auto-advance on a connection the caller already holds.
+    ///
+    /// The whole verb above, spelled on `&Connection`, leaving [`Db::workflow_run_step`]
+    /// the one line that takes the lock. The pair is [`Db::auto_guards`] /
+    /// [`Db::auto_guards_on`] and that pair's doc states the reason, which binds here
+    /// harder than it binds there: the connection mutex is **not reentrant** (ADR 0119 §2),
+    /// so a verb that holds the guard and calls `workflow_run_step` **deadlocks rather
+    /// than reads** — and the failure is a hung test binary, not an `Err`.
+    /// [`Db::workflow_advance_advice`] holds the one lock the whole
+    /// read→step→read has to ride (the TOCTOU argument above is ITS argument too, with
+    /// a launch on the other side of the race), so it is the caller this shape exists
+    /// for, and the only one.
+    ///
+    /// The alternative — letting the advice re-implement the arithmetic instead — is
+    /// what this shape refuses: a second copy of the `steps + 1` upsert and the
+    /// `>=`/`>` comparisons beside the first is two spend counters that a later edit
+    /// can edit apart, and a spend counter that drifts is a bound that fails open.
+    ///
+    /// EVERY RULE of [`Db::workflow_run_step`]'s doc above is this function's contract
+    /// as well — the cost arms, the card's-own-Space rule, the one-lock shape, the
+    /// guard read after the write, the `NULL` ≠ `0` discipline, `>` on steps and `>=`
+    /// on cost, and the write-is-not-conditional-on-the-verdict ordering. Nothing is
+    /// restated here because nothing changed: this is the same statements in the same
+    /// order with the lock taken by the caller.
+    pub(super) fn workflow_run_step_on(
+        guard: &rusqlite::Connection,
+        space_path: &str,
+        task_id: &str,
+        cost_delta_usd: Option<f64>,
+    ) -> Result<AdvanceVerdict, DbError> {
         // THE CARD'S SPACE, read under the SAME lock, before anything is written.
         //
         // WHY THE VERB DOES NOT TRUST ITS OWN ARGUMENT. `space_path` still arrives
@@ -498,7 +531,7 @@ impl Db {
         // until the read-back above runs, and a guard read before the write would
         // measure a step that had not happened yet against a bound that might be
         // edited before it did.
-        let guards = Self::auto_guards_on(&guard, space_path)?;
+        let guards = Self::auto_guards_on(guard, space_path)?;
         // `NULL` → the shipped fallback. NOT `unwrap_or(0)`: zero is a value a
         // person types, and reading an unset Space as zero would switch
         // auto-chaining off for every Space that never opened the editor.
@@ -556,6 +589,84 @@ impl Db {
             "UPDATE workflow_runs SET finished_at = ?2, stop_reason = ?3 \
              WHERE task_id = ?1 AND finished_at IS NULL",
             params![task_id, now_ms(), stop_reason],
+        )?;
+        // Zero rows matched is the silent no-op the doc above argues for.
+        Ok(())
+    }
+
+    /// Bank a settled cost on the OPEN run **without charging a step**, on a
+    /// connection the caller already holds.
+    ///
+    /// WHY THIS EXISTS AND IS NOT [`Db::workflow_run_step_on`]. That verb is the
+    /// chain's ONE step record, and a step is the thing that BUYS a launch —
+    /// `max_steps` counts steps, so a settle that banks its cost by stepping would
+    /// charge two steps for one link and eat the primary guard on every fully-claimed
+    /// chain. Cost is a different kind of fact: it is money that has ALREADY gone, and
+    /// refusing to record it does not save anything, it only makes the ceiling blind.
+    /// So the two writes are two statements, and the arms that must not spend a step
+    /// can still tell the truth about money.
+    ///
+    /// WHY THE ARMS THAT CALL IT NEED IT AT ALL. `workflow_run_step_on` is the only
+    /// other writer of `cost_usd`, and `decide` reaches it at arm 6 — the LAST arm.
+    /// Arms 3, 4 and 5 all return before it while carrying a real delta, so every
+    /// settle on a fully-claimed chain (arm 3, the NORMAL path: the claim's launch took
+    /// the link, so the settle dedupes) discarded its figure. `cost_usd` therefore
+    /// stayed `NULL` for the whole life of a healthy chain, `open_run_cost` always
+    /// answered `None`, and arm 2's ceiling compared each link's OWN spend against the
+    /// ceiling and never the chain's — a 20-step chain at $10 a link spent $200 under a
+    /// $10 ceiling and never named it. The ceiling was not mis-evaluated; it was
+    /// inert, which is the fail-open `AdvanceVerdict::ceiling_usd` documents as a
+    /// limitation of a `NULL` figure, arrived at by a path that DID have the figure.
+    ///
+    /// THE `None` GUARD IS INSIDE THIS FUNCTION AND NOT AT THE CALL SITES, and that
+    /// placement is the point: `COALESCE(cost_usd, 0.0) + 0.0` turns "no Session in
+    /// this chain ever reported a figure" into "this chain spent exactly nothing", and
+    /// a ceiling armed against a phantom zero fires on a chain that reported nothing.
+    /// ADR 0082's rule, stated at `workflow_run_step_on`'s cost arms and at
+    /// `decide`'s `cost_delta_usd` parameter, and honoured here by making the fold
+    /// unreachable for a `None` rather than by asking each caller to remember. A `None`
+    /// returns `Ok(())` having written nothing: neither set, neither erased.
+    ///
+    /// THE RUNNING TOTAL IS THE SAME STATEMENT as `workflow_run_step_on`'s `Some` arm,
+    /// deliberately — `cost_usd = COALESCE(cost_usd, 0.0) + ?`, which SETS the column
+    /// on the first figure and ADDS to every later one. Two spellings of one running
+    /// total in two files is a total that can be computed two ways, and this file's own
+    /// header argues that a spend counter a later edit can edit apart is a bound that
+    /// fails open. What this shares with that verb is the SQL and the `NULL` ≠ `0`
+    /// discipline; what it does NOT share is the `steps` increment, the INSERT arm, the
+    /// card's-Space refusal and the verdict — none of which a cost-only bank needs, and
+    /// every one of which would be wrong here.
+    ///
+    /// NO OPEN RUN IS A SILENT `Ok(())`, and it is the family's rule rather than a
+    /// shortcut: [`Db::workflow_run_close`]'s zero-row no-op, whose argument is that a
+    /// caller must not fail a Session because the bookkeeping had nothing to do. It is
+    /// also load-bearing in the other direction — an upsert here would let a card that
+    /// never chained gain a chain record because one Session on it settled with a
+    /// figure, and would then hand that chain's FIRST real step an inherited figure
+    /// where it should have opened fresh. `WHERE finished_at IS NULL` is what makes a
+    /// closed chain's history unwriteable by a late settle, the same clause that makes
+    /// a repeated close a no-op rather than an edit to `stop_reason`.
+    ///
+    /// ONE statement, one read, no lock: the `&Connection` shape is why this exists.
+    /// ADR 0119 §2 — the connection mutex is NOT reentrant, so a verb that holds the
+    /// guard and calls a `&self` method **deadlocks rather than reads**, and the
+    /// failure is a hung binary and not an `Err`. [`Db::workflow_advance_advice`] holds
+    /// the one lock its whole read→write→decide has to ride, so this is the only shape
+    /// it can call.
+    pub(super) fn bank_run_cost_on(
+        conn: &rusqlite::Connection,
+        task_id: &str,
+        cost_delta_usd: Option<f64>,
+    ) -> Result<(), DbError> {
+        let Some(delta) = cost_delta_usd else {
+            // The ADR 0082 arm: no figure, no fold, no ceiling armed. NOT `0.0`.
+            return Ok(());
+        };
+        conn.execute(
+            "UPDATE workflow_runs \
+             SET cost_usd = COALESCE(cost_usd, 0.0) + ?2 \
+             WHERE task_id = ?1 AND finished_at IS NULL",
+            params![task_id, delta],
         )?;
         // Zero rows matched is the silent no-op the doc above argues for.
         Ok(())

@@ -975,10 +975,11 @@ describe("useTasks.setStageSkill / useTasks.setStageNext (T3)", () => {
       "doing",
       "backlog",
     ]);
-    expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", [
-      "doing",
-      "backlog",
-    ]);
+    // An unlabelled write still sends one `null` PER EDGE — the two lists are
+    // positional, so a short one is the mismatch storage refuses.
+    expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", ["doing", "backlog"], [null, null]);
+    const painted = useTasks.getState().boardsBySpace[SPACE]![0]!.stage;
+    expect(painted.nextOutcomes).toEqual([null, null]);
   });
 
   it("setStageNext keeps [] as \"configured and leading nowhere\", never as null (ADR 0099)", async () => {
@@ -986,7 +987,7 @@ describe("useTasks.setStageSkill / useTasks.setStageNext (T3)", () => {
       stage("backlog", { nextSlugs: [] }),
     );
     await useTasks.getState().setStageNext(SPACE, "backlog", []);
-    expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", []);
+    expect(setStageNext).toHaveBeenCalledWith(SPACE, "backlog", [], []);
     const next = useTasks.getState().boardsBySpace[SPACE]![0]!.stage.nextSlugs;
     expect(next).toEqual([]);
     expect(next).not.toBeNull();

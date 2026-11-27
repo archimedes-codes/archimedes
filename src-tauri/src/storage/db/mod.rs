@@ -14,9 +14,10 @@
 //!
 //! This parent holds what every subject shares and what the pins read: the three
 //! error types and their `From` maps, the `Db` struct, [`Db::open`] **whole**
-//! (its twenty `gate` calls ARE the migration surface, and
-//! `the_three_task_tables_are_in_schema_and_have_no_gate_entry` counts them from
-//! this file's text), `gate`, `set_journal_pragmas`, `LAST_ACTIVITY` and `SCHEMA`.
+//! (its `gate` calls ARE the migration surface, and the gate-count pin
+//! `each_cluster_schema_omits_exactly_one_gated_column`, counting through
+//! `gated_columns_in_open_source`, reads them from this file's text), `gate`,
+//! `set_journal_pragmas`, `LAST_ACTIVITY` and `SCHEMA`.
 //! Every subject lives in the sibling that names it — [`sessions`], [`messages`],
 //! [`spaces`], [`board`], [`tasks`], [`stages`], [`artifacts`], [`seams`],
 //! [`rows`], [`migrations`], [`auto_guards`], [`workflow_runs`] — and `tests/`
@@ -235,8 +236,9 @@ impl<'a> FieldPatch<'a> {
 ///
 /// Stays a plain enum with no serde derive: the wire route is
 /// `TasksError` in `agent/errors.rs` (ADR 0063 — the WIRE owns the envelope, and
-/// `agent/errors.rs` is where every IPC family lives). This type is the
-/// storage→command boundary, one step below the wire.
+/// `agent/errors.rs` is where every IPC family lives), reached through the
+/// `From<BoardError> for TasksError` table in `agent/board_error_map.rs`. This type
+/// is the storage→command boundary, one step below the wire.
 #[derive(Debug, thiserror::Error)]
 pub enum BoardError {
     #[error("sqlite error: {0}")]
@@ -321,11 +323,82 @@ pub enum BoardError {
         allowed: String,
     },
 
+    /// D7's forward gate: a MODEL asked `move_task` to take a card to a column the
+    /// graph says is REACHABLE from the one it is in, and forward moves are
+    /// `mark_done`'s alone. Only reachable for the `MoveAuthor::Model` door
+    /// (`storage/db/tasks.rs`) — a person's drag is unrestricted (D11) and this
+    /// variant is not constructible from that door.
+    ///
+    /// THE SENTENCE IS THE DELIVERABLE, not a diagnostic, and it is written to the
+    /// same rule [`BoardError::StrictMoveRefused`]'s doc states — naming what is
+    /// legal "is the whole UI this needs". A model that gets a bare "not allowed"
+    /// retries with a different column; one that is told which verb does the move
+    /// stops calling this one. So it names the origin and the destination (the two
+    /// things it just asked about), names `mark_done` TWICE (once as the door, once
+    /// as the call to make), states the condition for making it ("when the work is
+    /// finished and a person should look at it"), and closes with what THIS verb is
+    /// still for — backward and sideways moves — so the refusal does not read as
+    /// "the board is locked".
+    ///
+    /// TWO WORDS ARE BANNED from it, and the ban is not stylistic:
+    /// `agent/host_tools/tests/surface.rs`'s `no_host_tool_spec_names_read_or_subagent`
+    /// scans whole spec text for `read` and `subagent` because a spec containing
+    /// either makes `worker_e2e`'s `!tools_section.contains("read")` assertion pass
+    /// while proving nothing. `ready` contains `read`, and so do `thread`, `already`,
+    /// `spread` and `reads` — the obvious word for the destination column of a board
+    /// is therefore unusable here, as is any sentence about what the Session has
+    /// "already" done. `agent/host_tools/tests/verbs.rs` pins the two substrings on
+    /// THIS sentence, because the refusal text travels as a tool RESULT and a future
+    /// rewording that reaches for "ready" would otherwise redden only the Windows
+    /// leg's grep, far from the edit.
+    #[error(
+        "cannot move {task_id} forward from {from} to {to}: forward moves go through `mark_done`, \
+         which flags the Session and advances the card. Call `mark_done` when the work is finished \
+         and a person should look at it; move backward or sideways with this verb."
+    )]
+    ForwardMoveRefused {
+        task_id: String,
+        from: String,
+        to: String,
+    },
+
     /// `set_stage_next` refuses a slug equal to its own origin. A self-loop is a
     /// button that moves a card to the column it is already in — a control that
     /// appears to do something and does nothing.
     #[error("stage {slug} cannot lead to itself")]
     SelfLoop { slug: String },
+
+    /// `set_stage_next` refuses an outcome list whose LENGTH differs from the slug
+    /// list it is meant to label. The two columns are POSITIONAL — index `i` of
+    /// `next_outcomes` names the edge at index `i` of `next_slugs` — so a
+    /// length mismatch is not a cosmetic off-by-one, it is a graph whose labels
+    /// point at the wrong edges, and the shift is invisible from the board: the
+    /// card still moves, it just moves on the wrong claim.
+    ///
+    /// Refused rather than truncated or padded, and that is the standing rule for a
+    /// half-set, not a preference. Padding with `null` would accept "3 edges, 2
+    /// labels" and silently unlabel the last one — a workflow that shrank, which is
+    /// the failure ADR 0099 refuses twice over. Truncating would DROP a destination
+    /// nobody asked to drop. Both are the invented-state move
+    /// `require_position_pair`'s half-coordinate and `stages.prompt_prefix`'s
+    /// invented empty string each refuse, and the refusal is total: nothing is
+    /// written, so a rejected call cannot leave the two columns disagreeing.
+    ///
+    /// Both counts ride the variant because the caller's question is "which of my
+    /// two lists did I get wrong", and a sentence naming one number cannot answer
+    /// that. `available`-style slug lists are deliberately NOT carried: the slugs
+    /// are already valid here (each was checked above), so echoing them would add
+    /// noise to the one number that is the actual answer.
+    #[error(
+        "stage {slug} got {outcomes} edge label(s) for {slugs} edge(s) — \
+         next_outcomes must have EXACTLY one entry per next_slugs entry, \
+         using null for an edge that carries no label"
+    )]
+    EdgeOutcomeCount {
+        slug: String,
+        slugs: usize,
+        outcomes: usize,
+    },
 
     /// `write_artifact` refuses a key outside `[a-z0-9][a-z0-9-]{0,39}`.
     ///
@@ -390,18 +463,26 @@ pub enum BoardError {
 ///   discovery round trip, and that sentence is what the model reads.
 /// - `StrictMoveRefused` → `Invalid`, likewise: the call was well-formed and the
 ///   Space's own workflow gate refused it. `allowed` rides for the same reason.
+/// - `ForwardMoveRefused` → `Invalid` for the SAME reason and not a new one: the
+///   arguments parsed, the card and both columns exist, and the Space's graph plus
+///   D7 make the move inadmissible for THIS door. It is emphatically not `NotFound`
+///   — nothing is missing — and not `Io`, which would tell the model to retry a
+///   write that refuses identically forever. `Invalid`'s own definition
+///   ("well-formed and still not admissible") is exactly a policy refusal, and the
+///   sentence that arrives is `BoardError`'s `Display`, which is the deliverable:
+///   it teaches the model to call `mark_done` instead.
 /// - `Sqlite` → `Io`, with the same sentence preservation as the `DbError` map
 ///   above.
 ///
 /// The catch-all exists because `move_task` is not the only verb-shaped method on
 /// this type and the match has to be exhaustive over an enum the command layer
 /// grows. `StageNotEmpty`, `StageReferenced`, `LastStage`, `StageSlugTaken`,
-/// `EmptyStageSlug` and `SelfLoop` are all STAGE-management refusals, and there is no
-/// stage HOST tool at all — the seven verbs are board and artifact, never stage.
-/// Folding them into `Invalid` rather than panicking is deliberate: a future verb
-/// that starts raising one gets a correct-if-generic sentence, where a `unreachable!`
-/// would panic inside a `spawn_blocking` and turn a storage refusal into the
-/// `JoinError` the router reports as `Io`.
+/// `EmptyStageSlug`, `SelfLoop` and `EdgeOutcomeCount` are all STAGE-management
+/// refusals, and there is no stage HOST tool at all — the seven verbs are board and
+/// artifact, never stage. Folding them into `Invalid` rather than panicking is
+/// deliberate: a future verb that starts raising one gets a correct-if-generic
+/// sentence, where a `unreachable!` would panic inside a `spawn_blocking` and turn a
+/// storage refusal into the `JoinError` the router reports as `Io`.
 ///
 /// `BadArtifactKey` and `ArtifactTooLarge` sit in the SAME arm but for the opposite
 /// reason: they ARE reachable, because `write_artifact` is a host tool and storage
@@ -440,12 +521,18 @@ impl From<BoardError> for HostToolError {
             | BoardError::EmptyTitle
             | BoardError::MissingStage { .. }
             | BoardError::StrictMoveRefused { .. }
+            // D7's forward gate, and it is REACHABLE — `move_task` is a host tool
+            // and this is the refusal that model's door gets. See the doc bullet
+            // above: a well-formed call the Space's graph refuses is `Invalid`'s
+            // own definition, and the sentence is the teaching text.
+            | BoardError::ForwardMoveRefused { .. }
             | BoardError::StageNotEmpty { .. }
             | BoardError::StageReferenced { .. }
             | BoardError::LastStage { .. }
             | BoardError::StageSlugTaken { .. }
             | BoardError::EmptyStageSlug
-            | BoardError::SelfLoop { .. } => HostToolError::Invalid { message: sentence },
+            | BoardError::SelfLoop { .. }
+            | BoardError::EdgeOutcomeCount { .. } => HostToolError::Invalid { message: sentence },
         }
     }
 }
@@ -1044,9 +1131,11 @@ impl Db {
         // The two hand-arranged canvas coordinates (the Workflows canvas's
         // n8n-style "drag it where you want it and it stays"). TWO gates because
         // `gate` probes ONE column, and one gate naming two columns cannot answer
-        // "is this one absent". They are the LAST two probes, which is the order
-        // `each_cluster_schema_omits_exactly_one_gated_column`'s `GATED` list
-        // spells — that pin walks the list in probe order against the fixtures.
+        // "is this one absent". They were the LAST two probes until
+        // `stages.next_outcomes` arrived; `GATED` in
+        // `each_cluster_schema_omits_exactly_one_gated_column` spells probe order
+        // as DOCUMENTATION ONLY — that pin sorts both sides, so a gate added here
+        // needs its `GATED` entry and its fixture but not a matching position.
         //
         // NO `DEFAULT` and NO backfill on either, and that is the whole upgrade
         // story: `NULL` means "this column was NEVER hand-arranged, so the canvas
@@ -1081,6 +1170,72 @@ impl Db {
         })?;
         gate(&mut conn, "stages", "position_y", |tx| {
             tx.execute("ALTER TABLE stages ADD COLUMN position_y REAL", [])?;
+            Ok(())
+        })?;
+        // The edge LABEL positional to `next_slugs` (D6/D13 of the
+        // `mark_done`-as-the-node-completion-signal work). A new COLUMN on the
+        // pre-existing `stages` table, so gate territory (AGENTS.md).
+        //
+        // NO `DEFAULT` and NO backfill, and the argument is `next_slugs`'s own two
+        // rows up, worn as a label instead of as an edge list: `NULL` means "no
+        // edge out of this column carries an outcome", so selection falls back to
+        // the HEAD of `next_slugs` and every existing board routes the card it
+        // routes today. Backfilling a label would be worse than backfilling an edge
+        // list — a label is the thing `mark_done` selects a branch ON, so a value
+        // invented here would make the first claim after an upgrade take a branch
+        // its owner never named. That is the same fail-open-by-invention
+        // `stages.auto`'s `DEFAULT 0` and `position_x`'s missing `DEFAULT` each
+        // refuse, from their own direction.
+        //
+        // The column is deliberately SEPARATE from `next_slugs` rather than a
+        // widening of it. `lenient_next_slugs`'s documented failure mode is `None`,
+        // and ADR 0099 defines that `None` as "unconfigured, unconstrained" — so an
+        // object array parked inside `next_slugs` would parse as NO GRAPH AT ALL and
+        // the Strict move gate would skip entirely on every existing board. Two
+        // columns, two decoders, two meanings of `None` that cannot merge.
+        //
+        // `dflt_value` is pinned to NULL by
+        // `the_next_outcomes_gate_arrives_null_for_every_pre_existing_stage`, so a
+        // `DEFAULT` added here fails a pin rather than passing quietly.
+        gate(&mut conn, "stages", "next_outcomes", |tx| {
+            tx.execute("ALTER TABLE stages ADD COLUMN next_outcomes TEXT", [])?;
+            Ok(())
+        })?;
+        // The edge NAME a `mark_done` chose (the `mark_done`-as-the-node-completion-
+        // signal work). A new COLUMN on the pre-existing `sessions` table, so gate
+        // territory (AGENTS.md), and `SessionRow` gains NO field: `SESSION_COLUMNS` is
+        // a 10-column projection whose drift-guard arity tie this column must not
+        // touch, and `ready` is not in it either — the same reason the readiness flag
+        // itself crosses no wire type. The value is read and written by SQL alone.
+        //
+        // WHY A COLUMN ON `sessions` AND NOT ON `workflow_runs`, which is the
+        // alternative this considered and rejected. The run looks like the natural
+        // home — it IS the chain record, it is created at claim time, and the advice
+        // already reads it for cost. But it is NOT always there: `workflow_run_step_on`
+        // is reached at arm 6, so a claim in a non-auto column, or one whose column
+        // leads nowhere, never opens a run at all — and the door that writes this value
+        // runs BEFORE the advice decides anything, so it could not know whether the row
+        // it is writing to exists. It also gets CLOSED and re-opened mid-card: a chain
+        // that stops and restarts is a new run, and a name the previous chain wrote
+        // would then govern the next one. And a card can carry several Sessions while it
+        // carries one open run, so a run-scoped name could not say WHICH Session chose
+        // it — which is the whole question, because the settle asks it about one
+        // Session id. The claim is a fact about the Session that made it, exactly as
+        // `ready` is, so it lives beside `ready` and is written by the same statement.
+        //
+        // NO `DEFAULT` and NO backfill, and the argument is `ready`'s own one column
+        // up, worn as a name instead of a flag: NULL means "this Session never named an
+        // edge", which is the ordinary case and resolves to the HEAD edge — so an
+        // upgrade routes exactly the cards it routes today. A `DEFAULT` or a backfill
+        // would name an edge for a claim nobody named and move a card down a transition
+        // its owner never chose, the fail-open-by-invention `stages.next_outcomes` and
+        // `stages.auto` each refuse from their own direction.
+        //
+        // `dflt_value` is pinned to NULL by
+        // `the_advance_outcome_gate_arrives_null_for_every_pre_existing_session`, so a
+        // `DEFAULT` added here fails a pin rather than passing quietly.
+        gate(&mut conn, "sessions", "advance_outcome", |tx| {
+            tx.execute("ALTER TABLE sessions ADD COLUMN advance_outcome TEXT", [])?;
             Ok(())
         })?;
         // One-time migration for pre-existing databases: give
@@ -1214,7 +1369,19 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- the phantom-`$0.00` collapse `cost_usd`'s gate documents and pins, so this
     -- column arrives DEFAULT-less and the gate below backfills only the rows that
     -- genuinely carry the old stored marker.
-    ready INTEGER
+    ready INTEGER,
+    -- The edge NAME this Session's `mark_done` chose, and NOTHING else. Written in the
+    -- SAME statement as `ready` by `set_session_ready`, because the two are one fact —
+    -- "this Session claims it is done, and this is the transition it claims" — and two
+    -- statements would leave a claim naming an edge it did not name. NULL means "it
+    -- claimed and named nothing", which is the ordinary case (every seeded board is
+    -- unlabelled) and resolves to the HEAD edge; the absence of a `DEFAULT` is what
+    -- keeps "never claimed" and "claimed, unnamed" from collapsing into one another,
+    -- the same discipline `ready`'s three states above and `next_outcomes`' NULL each
+    -- hold. NO backfill: a pre-existing row never named an edge, and inventing a name
+    -- for a claim nobody made would route a card down an edge its owner never chose.
+    -- See the `advance_outcome` gate in `Db::open`.
+    advance_outcome TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY,
@@ -1262,6 +1429,14 @@ CREATE TABLE IF NOT EXISTS stages (
     prompt_prefix TEXT,
     position_x REAL,
     position_y REAL,
+    -- The edge LABEL positional to `next_slugs` (index-for-index, not a map).
+    -- Appended LAST for the same reason `rows.rs` appends to `STAGE_COLUMNS`: no
+    -- existing positional index moves. NO `DEFAULT` and NO backfill — NULL means
+    -- "no edge is labelled", so selection falls back to the head of `next_slugs`
+    -- and an upgrade changes nothing. See the `gate` call in `open` for the full
+    -- argument and for why this is a SECOND column rather than a wider
+    -- `next_slugs`.
+    next_outcomes TEXT,
     PRIMARY KEY (space_path, slug)
 );
 CREATE TABLE IF NOT EXISTS tasks (
@@ -1398,8 +1573,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open
 // in the older shape, and a missing column is a `no such column` at the first
 // `SELECT` rather than a table the batch can create. The counts in those two
 // sentences are history, not
-// the current surface — `the_three_task_tables_are_in_schema_and_have_no_gate_entry`
-// pins what the tree measures today. That is the distinction the pin draws: a new
+// the current surface — the surface is DERIVED from this file's `gate` calls by
+// `each_cluster_schema_omits_exactly_one_gated_column` (through
+// `gated_columns_in_open_source`, `tests/open.rs`), so nothing here has to be
+// kept in step with it. `the_three_task_tables_are_in_schema_and_have_no_gate_entry`
+// pins the QUALITATIVE half. That is the distinction the pin draws: a new
 // column on an existing table is gate territory, a new table never is — which is
 // why `workflow_runs`, the FIFTH table in this batch, rides `SCHEMA` with no gate
 // and no entry in that pin's forbidden list by the same rule the four that joined
@@ -1456,15 +1634,32 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open
 //     in `rows`, imported by nothing in `src/` except `db/tests/rows.rs`. They are the
 //     arity side of the drift guards, so their only consumer is the test tree.
 
+// THE SINGLE DECIDER. One function, one lock, and the only verb in this unit whose
+// input is a Session id: it resolves the card, the Space, the frozen launching
+// column, the edge, the dedupe and both budgets, then answers with an INSTRUCTION
+// rather than a launch — because `storage` never names `crate::agent` (measured: zero
+// occurrences outside a comment) and a launch needs a `SessionManager` this layer
+// cannot name. `MoveOutcome::on_enter` and `MoveToolOutcome::note` are the in-repo
+// template for returning a fact as data for exactly that reason.
+mod advise;
 mod artifacts;
 mod auto_guards;
 mod board;
+// The edge GRAPH question (forward reachability) is its own subject: it reads the
+// `stages` rows the `stages` sibling writes but answers a traversal question none
+// of those verbs ask, and its only caller is `tasks.rs`'s `move_task`.
+mod edges;
 mod messages;
 mod migrations;
 mod parent_link;
 mod retention;
 mod rows;
 mod seams;
+// The session→card read (D16) is its own subject: it answers a question no other
+// sibling asks (which card does THIS Session own, and what does that card sit on),
+// and its only caller is the decider above — which is why its read lives on
+// `&Connection` and not `&self`.
+mod session_card;
 mod sessions;
 mod spaces;
 mod stages;
@@ -1484,9 +1679,27 @@ use migrations::{
 // `MessageRow` / `SessionRow` are NOT here — they stay behind the
 // `pub use fulcrum_harness::store_rows::{…}` above, which is where they live.
 pub use rows::{
-    Artifact, ArtifactMeta, BoardRow, MoveOutcome, MoveToolOutcome, SessionRecency, SpaceRow,
-    StageRow, StageWithTasks, TaskCardView, TaskDetail, TaskNumberRow, TaskRow, TaskSessionRow,
+    AdvanceAdvice, Artifact, ArtifactMeta, BoardRow, MoveOutcome, MoveToolOutcome, SessionRecency,
+    SpaceRow, StageRow, StageWithTasks, TaskCardView, TaskDetail, TaskNumberRow, TaskRow,
+    TaskSessionRow,
 };
+
+// The two types the decider's read layer answers with. `CardOfSession` is the row
+// [`Db::card_of_session`] returns and `AdvanceAdvice` is what
+// [`Db::workflow_advance_advice`] returns, so both have to be spellable outside
+// `storage/db/` for the same mechanical reason every line above exists: `mod db;` is
+// private in `storage/mod.rs`, so a `pub` item in a private sibling is not nameable
+// past `storage/` without this widening — and a public method whose return type is
+// not nameable is a private-interface leak the compiler rejects outright.
+pub use session_card::CardOfSession;
+
+// `MoveAuthor` is the forward gate's discriminator and it is part of `Db::move_task`'s
+// signature, so both of the verb's doors have to be able to NAME it: `commands/tasks.rs`
+// (Person) and `agent/host_tools/exec/board.rs` (Model). It lives in the `tasks` sibling
+// beside `MoveOutcome` because that is the verb it gates, and `mod tasks;` is private in
+// `storage/mod.rs`, so without this line the two callers cannot spell the type at all —
+// the same widening the `rows` re-export above performs for a private sibling's items.
+pub use tasks::MoveAuthor;
 
 // The workflow subject's PUBLIC surface: the run record and the VERDICT a step
 // answers with (`AdvanceVerdict` + the `ChainStop` vocabulary it carries), from
@@ -1529,6 +1742,30 @@ pub use retention::{
 // The earlier sentence here claimed the runtime "must name them by path"; it does
 // not, and it must not.
 pub use auto_guards::{DEFAULT_AUTO_CEILING_USD, DEFAULT_AUTO_MAX_STEPS};
+
+// The `reason` spellings the sentence table in `agent/host_tools/exec/session.rs`
+// matches on, widened to `pub(crate)` for that ONE consumer. The table used to key on
+// literals COPIED from `advise.rs`, so the two tables could drift in total silence —
+// re-spelling a reason in one file and not the other leaves every such Session handed
+// whatever the catch-all rendered. Naming the consts makes the spelling one source of
+// truth instead of two. What it does NOT do is turn an eighth refusal into a compile
+// error — a `_` arm cannot, by definition — so the catch-all was made NEUTRAL in the
+// same change, and a reason nobody has written yet renders a sentence that names itself
+// rather than asserting `unlinked`.
+//
+// EIGHT of the nine ride this line. `REASON_ADVANCED` stays private to `advise.rs`:
+// both `advance: true` arms say the same true thing about a card that moved, so the
+// sentence table has no production arm that needs to name it, and a re-export nothing
+// in the non-test build reads is an `unused_imports` error under CI's `-D warnings`.
+//
+// `pub(crate)` and not `pub`: an internal wire vocabulary, not crate API. The two-hop
+// re-export is the same widening every line above performs — `mod advise;` is private
+// here and `mod db;` is private in `storage/mod.rs`, so `pub(crate)` on the const alone
+// is not a nameable path outside `storage/`.
+pub(crate) use advise::{
+    REASON_ADVANCED_UNNAMED_EDGE, REASON_ALREADY_ADVANCED, REASON_COST_CEILING, REASON_MAX_STEPS,
+    REASON_NOT_AUTOMATIC, REASON_NO_NEXT_STAGE, REASON_UNCLAIMED, REASON_UNLINKED,
+};
 
 #[cfg(test)]
 mod tests;

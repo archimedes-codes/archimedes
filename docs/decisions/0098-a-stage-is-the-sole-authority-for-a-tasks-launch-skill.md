@@ -1,7 +1,7 @@
 ---
 status: accepted
 date: 2026-11-10
-superseded-by: 0107-a-deleted-skill-is-a-breaking-change-against-every-stage-that-names-it.md
+superseded-by: 0107-a-deleted-skill-is-a-breaking-change-against-every-stage-that-names-it.md (PARTIAL — the `discuss` seed entry and its two-Skill backfill only; this ADR's core decision STANDS, see the Amendment at the foot of this file)
 ---
 
 # A **Stage** is the sole authority for a **Task**'s launch skill, and `on_enter_skill` is a second column beside `on_enter`
@@ -63,3 +63,34 @@ skill catalog and `expandMentions`, none of which the storage layer is allowed t
   (`docs/features/task-board-known-gaps.md` §2: `TaskStore` is in 0 files of the desktop and 0 of
   the published crate), so there is no crate-side seam to widen, no two-package move, and no
   orphan-rule exposure. Desktop-only: SQLite, one IPC command family, and the renderer.
+
+## Amendment (2026-11-27) — what ADR 0107 did and did not supersede
+
+**AMENDED 2026-11-27 — the front-matter pointer, not the decision.** 0098 is **NOT superseded as a
+whole** and its `status` is unchanged. ADR 0107's own body says so in its own words — *"**Supersedes
+ADR 0098 PARTIALLY.**"* — and then names, one by one, what falls and what stands. Only the
+**"`discuss` needs a Stage to own it"** Consequence (the six-entry `DEFAULT_STAGES`) and the
+**two-Skill backfill** (the `'discuss'` `UPDATE` and the `discuss` row-insert) fell. What stands,
+unchanged and load-bearing: the **Stage** row is the ONE authority for a launch **Skill**; the
+`TASK_LAUNCH_MODES` / `skillOfMode` / `stageOfMode` constant map stays **deleted**; `on_enter_skill`
+stays a second column beside `on_enter`, orthogonal to it; and the inert-`fresh` Consequence stands.
+
+**Why the line was filled rather than left empty.** This repo carries two readings of the same
+pattern — ADR 0030 leaves `superseded-by:` empty for a narrowing, ADR 0120 §7 records 0098 as the
+instance where the line was filled anyway, and calls it *"the one ambiguity in the house pattern."*
+The line stays filled so a tool reading only front matter does not read the two dead Consequences as
+live policy; **the scope is governed by this note, not by the pointer.** ADR 0120 §7 does the same
+thing to 0119 and says so in the same words — *"The scope is governed by the inline note, not by the
+front-matter line."*
+
+**`on_enter_skill` is live, measured at this HEAD, and this feature depends on it.** It is the field
+the next chain link launches: `mark_done` → advice → the destination column's `on_enter_skill` →
+`launchTaskSession`. The proof is in the launch path, not in prose — `src/store/taskLaunch.ts` reads
+`destination.onEnterSkill` in `missingSkill` (the refusal's message is templated on it) and in
+`shouldInlineSkill`, and the name arrives there from the Stage row (`STAGE_COLUMNS` names
+`on_enter_skill` and `stage_row_from` decodes it in `src-tauri/src/storage/db/rows.rs` — no index
+is quoted here because a column added in the middle moves every index after it). A reader who takes
+the bare pointer to mean 0098 is dead would be reading `on_enter_skill` as retired while the canvas
+still edits it (`NodeSettingsBody.tsx`) and the node still renders it (`WorkflowNodes.tsx`). That is
+the reading this
+amendment exists to close.

@@ -342,7 +342,7 @@ fn stage_row_from_maps_the_select_const_columns_in_order() {
         STAGE_ROW_FIELDS,
         "the SELECT built from STAGE_COLUMNS must have exactly STAGE_ROW_FIELDS columns"
     );
-    const EXPECTED_STAGE_COLUMNS: [&str; 11] = [
+    const EXPECTED_STAGE_COLUMNS: [&str; 12] = [
         "space_path",
         "slug",
         "label",
@@ -354,6 +354,7 @@ fn stage_row_from_maps_the_select_const_columns_in_order() {
         "prompt_prefix",
         "position_x",
         "position_y",
+        "next_outcomes",
     ];
     assert_eq!(
         STAGE_COLUMNS.as_slice(),

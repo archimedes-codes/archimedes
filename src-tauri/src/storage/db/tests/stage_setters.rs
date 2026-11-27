@@ -239,7 +239,7 @@ fn set_stage_next_persists_the_edges_and_round_trips_them() {
 
     let wanted = vec!["research".to_string(), "approved".to_string()];
     let set = db
-        .set_stage_next(&space, "backlog", &wanted)
+        .set_stage_next(&space, "backlog", &wanted, &[None, None])
         .expect("set_stage_next");
     assert_eq!(
         set.next_slugs,
@@ -264,6 +264,277 @@ fn set_stage_next_persists_the_edges_and_round_trips_them() {
     );
 }
 
+/// (D6/D13) the labels round-trip POSITIONAL to the edges: a JSON array at rest
+/// with one entry per edge, `null` spelling "this edge carries no label", and the
+/// sibling raw-JSON pin above stays green — proof `next_slugs`'s own at-rest shape
+/// did not move when its label column arrived.
+#[test]
+fn set_stage_next_persists_the_labels_positional_and_round_trips_them() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-outcome-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("outcome");
+    db.get_board(&space).expect("seed");
+
+    let wanted = ["research".to_string(), "approved".to_string()];
+    let set = db
+        .set_stage_next(&space, "backlog", &wanted, &[Some("ok".to_string()), None])
+        .expect("set_stage_next with one labelled edge and one bare");
+    assert_eq!(
+        set.next_outcomes,
+        Some(vec![Some("ok".to_string()), None]),
+        "index 0 labels the `research` edge, index 1 leaves the `approved` edge \
+         unlabelled — a `None` ELEMENT is not a `None` FIELD"
+    );
+
+    let raw = raw_column(
+        &db,
+        &format!(
+            "SELECT next_outcomes FROM stages WHERE space_path = '{space}' AND slug = 'backlog'"
+        ),
+    );
+    assert_eq!(
+        raw.first().map(|s| s.as_str()),
+        Some(r#"["ok",null]"#),
+        "JSON-at-rest with the `null` spelled, because the position is the meaning"
+    );
+    // The sibling column's at-rest shape is UNTOUCHED — the same statement this
+    // file's `…_persists_the_edges_and_round_trips_them` pin makes, restated here
+    // so a change that widened `next_slugs` reddens BOTH.
+    let raw_slugs = raw_column(
+        &db,
+        &format!("SELECT next_slugs FROM stages WHERE space_path = '{space}' AND slug = 'backlog'"),
+    );
+    assert_eq!(
+        raw_slugs.first().map(|s| s.as_str()),
+        Some(r#"["research","approved"]"#),
+        "`next_slugs` still holds a plain array of strings, not an object array \
+         and not a paired structure"
+    );
+
+    let read_back = db.get_board(&space).expect("get_board");
+    assert_eq!(
+        read_back[0].stage.next_outcomes,
+        Some(vec![Some("ok".to_string()), None]),
+        "and the board read decodes it back through `lenient_next_outcomes`"
+    );
+}
+
+/// (D6/D13) a length mismatch is REFUSED and writes NOTHING. The two columns are
+/// positional, so a mismatch is not cosmetic — it is a graph whose labels point at
+/// the wrong edges, and the shift is invisible from the board. Refused rather than
+/// padded: padding with `null` would silently unlabel an edge.
+#[test]
+fn set_stage_next_refuses_an_outcome_count_that_does_not_match_the_edges() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-outcome-len-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("outcome-len");
+    db.get_board(&space).expect("seed");
+
+    // Two edges, one label — the shape that would silently unlabel `approved`
+    // (or, worse, shift `ok` onto the wrong edge) if it were accepted.
+    let err = db
+        .set_stage_next(
+            &space,
+            "backlog",
+            &["research".to_string(), "approved".to_string()],
+            &[Some("ok".to_string())],
+        )
+        .expect_err("a short label list is refused, not padded");
+    assert!(
+        matches!(
+            &err,
+            BoardError::EdgeOutcomeCount { slug, slugs: 2, outcomes: 1 } if slug == "backlog"
+        ),
+        "expected EdgeOutcomeCount naming both counts, got {err:?}"
+    );
+    assert_eq!(
+        db.get_board(&space).expect("get_board")[0].stage.next_slugs,
+        None,
+        "the refusal wrote NOTHING — not even the edge list, which was valid"
+    );
+    assert_eq!(
+        db.get_board(&space).expect("get_board")[0]
+            .stage
+            .next_outcomes,
+        None,
+        "and the label column stayed NULL, so the two can never disagree"
+    );
+
+    // The mirror: too MANY labels, which would invent an edge nobody drew.
+    let err = db
+        .set_stage_next(
+            &space,
+            "backlog",
+            &["research".to_string()],
+            &[Some("ok".to_string()), Some("fail".to_string())],
+        )
+        .expect_err("a long label list is refused, not truncated");
+    assert!(
+        matches!(
+            &err,
+            BoardError::EdgeOutcomeCount { slug, slugs: 1, outcomes: 2 } if slug == "backlog"
+        ),
+        "expected EdgeOutcomeCount naming both counts, got {err:?}"
+    );
+
+    // And the refusal is checked BEFORE the write, so a call that would also fail
+    // the slug checks reports the slug problem first: neither refusal leaves a row.
+    assert_eq!(
+        db.get_board(&space).expect("get_board")[0].stage.next_slugs,
+        None,
+        "still nothing written after BOTH refusals"
+    );
+}
+
+/// (D13) `[]` edges + `[]` labels is a legal configured "no edges" answer and both
+/// columns arrive as `Some(empty)`, NOT NULL — the ADR 0099 NULL-vs-empty discipline
+/// extended to the label column, so "configured, nothing follows this" and "never
+/// configured" stay two stored states on both halves of the pair.
+#[test]
+fn set_stage_next_empty_edges_with_empty_labels_configures_both_columns() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-outcome-0-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("outcome-empty");
+    db.get_board(&space).expect("seed");
+
+    let set = db
+        .set_stage_next(&space, "done", &[], &[])
+        .expect("[] edges with [] labels is a legal configuration");
+    assert_eq!(set.next_slugs, Some(vec![]), "configured, leads nowhere");
+    assert_eq!(
+        set.next_outcomes,
+        Some(vec![]),
+        "the label column is configured-empty too, never NULL"
+    );
+    let raw = raw_column(
+        &db,
+        &format!("SELECT next_outcomes FROM stages WHERE space_path = '{space}' AND slug = 'done'"),
+    );
+    assert_eq!(
+        raw.first().map(|s| s.as_str()),
+        Some("[]"),
+        "at rest it is `[]` and NOT NULL — the two states stay distinguishable"
+    );
+}
+
+/// (D13, the lenient reader) a `next_outcomes` cell a foreign writer left malformed
+/// reads as "unlabelled" (`None`) and does NOT blank the board, and the SAME cell
+/// cannot leak into `next_slugs`'s meaning: the edge list next to it still decodes.
+#[test]
+fn lenient_next_outcomes_reads_a_malformed_cell_as_unlabelled_without_touching_slugs() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-stage-outcome-bad-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("outcome-bad");
+    db.get_board(&space).expect("seed");
+    db.set_stage_next(
+        &space,
+        "backlog",
+        &["research".to_string()],
+        &[Some("ok".to_string())],
+    )
+    .expect("configure a labelled edge first");
+
+    // Corrupt ONLY the label cell, leaving a valid edge list beside it.
+    let corrupt = "not-an-array";
+    db.conn
+        .lock()
+        .expect("db mutex poisoned")
+        .execute(
+            &format!(
+                "UPDATE stages SET next_outcomes = '{corrupt}' \
+                 WHERE space_path = '{space}' AND slug = 'backlog'"
+            ),
+            [],
+        )
+        .expect("raw corrupt write");
+
+    let board = db
+        .get_board(&space)
+        .expect("one bad cell never blanks a board");
+    let stage = board
+        .iter()
+        .find(|c| c.stage.slug == "backlog")
+        .expect("the column is still there");
+    assert_eq!(
+        stage.stage.next_outcomes, None,
+        "a malformed label cell reads as unlabelled, so selection takes the head"
+    );
+    assert_eq!(
+        stage.stage.next_slugs,
+        Some(vec!["research".to_string()]),
+        "and the EDGE list beside it is untouched — the two columns have separate \
+         decoders, so a `None` here never means `None` there"
+    );
+
+    // An object array — the shape the plan rejected for `next_slugs` — is likewise
+    // unparseable as a `(string|null)[]` and reads as unlabelled, not as a label.
+    db.conn
+        .lock()
+        .expect("db mutex poisoned")
+        .execute(
+            &format!(
+                "UPDATE stages SET next_outcomes = '[{{\"to\":\"done\",\"on\":\"ok\"}}]' \
+                 WHERE space_path = '{space}' AND slug = 'backlog'"
+            ),
+            [],
+        )
+        .expect("raw object-array write");
+    let board = db.get_board(&space).expect("opens");
+    assert_eq!(
+        board
+            .iter()
+            .find(|c| c.stage.slug == "backlog")
+            .expect("column")
+            .stage
+            .next_outcomes,
+        None,
+        "an object array is not a `(string|null)[]` and reads as unlabelled"
+    );
+}
+
+/// (D13, the two decoders stay SEPARATE) the same object-array text means
+/// "unconstrained" to `lenient_next_slugs` and "unlabelled" to
+/// `lenient_next_outcomes`, and neither function can be reached through the other.
+/// This is the pin the parallel-column design rests on: if one function ever
+/// answered both, the two `None`s would merge into a fail-open.
+#[test]
+fn the_two_lenient_decoders_answer_for_their_own_column_only() {
+    let object_array = r#"[{"to":"done","on":"ok"}]"#;
+
+    // `next_slugs`'s documented failure mode, unchanged by this change: a cell it
+    // cannot parse is `None`, and ADR 0099 makes that "unconfigured, unconstrained"
+    // — which is why the Strict gate skips on it.
+    assert_eq!(
+        super::super::stages::lenient_next_slugs(Some(object_array.to_string())),
+        None,
+        "`next_slugs` reads an object array as UNCONSTRAINED (ADR 0099)"
+    );
+    assert_eq!(
+        super::super::stages::lenient_next_outcomes(Some(object_array.to_string())),
+        None,
+        "`next_outcomes` reads the same text as UNLABELLED"
+    );
+
+    // The half that proves they are not one function wearing two names: a
+    // `(string|null)[]` is VALID for the label column and INVALID for the edge
+    // column, and each function must answer for its own.
+    assert_eq!(
+        super::super::stages::lenient_next_outcomes(Some(r#"[null,"ok"]"#.to_string())),
+        Some(vec![None, Some("ok".to_string())]),
+        "a positional label list with a bare edge in it is valid here"
+    );
+    assert_eq!(
+        super::super::stages::lenient_next_slugs(Some(r#"[null,"ok"]"#.to_string())),
+        None,
+        "and the same text is not a valid edge list — a `null` destination is not \
+         a slug, so this decodes to unconstrained and NOT to a two-edge graph"
+    );
+
+    // Both are NULL-pure: no cell, no opinion.
+    assert_eq!(super::super::stages::lenient_next_slugs(None), None);
+    assert_eq!(super::super::stages::lenient_next_outcomes(None), None);
+}
+
 /// (spec §4) an unknown destination is a REJECTION naming the valid slugs, not a
 /// silent drop — a dropped destination is a workflow that shrank.
 #[test]
@@ -275,7 +546,7 @@ fn set_stage_next_refuses_an_unknown_slug_naming_the_valid_ones() {
 
     let wanted = vec!["done".to_string(), "sprint-review".to_string()];
     let err = db
-        .set_stage_next(&space, "backlog", &wanted)
+        .set_stage_next(&space, "backlog", &wanted, &[None, None])
         .expect_err("an unknown destination is refused, not filtered");
     match err {
         BoardError::MissingStage { wanted, available } => {
@@ -304,7 +575,7 @@ fn set_stage_next_refuses_a_self_loop() {
     db.get_board(&space).expect("seed");
 
     let err = db
-        .set_stage_next(&space, "doing", &["doing".to_string()])
+        .set_stage_next(&space, "doing", &["doing".to_string()], &[None])
         .expect_err("a stage cannot lead to itself");
     assert!(
         matches!(&err, BoardError::SelfLoop { slug } if slug == "doing"),
@@ -324,7 +595,7 @@ fn set_stage_next_an_empty_slice_persists_explicit_no_edges() {
     db.get_board(&space).expect("seed");
 
     let set = db
-        .set_stage_next(&space, "done", &[])
+        .set_stage_next(&space, "done", &[], &[])
         .expect("[] is a legal configuration");
     assert_eq!(
         set.next_slugs,

@@ -134,7 +134,7 @@ fn move_task_updates_stage_slug_and_reports_the_destination_on_enter() {
     );
 
     let outcome = db
-        .move_task(&space, &task.id, "doing")
+        .move_task(&space, &task.id, "doing", MoveAuthor::Person)
         .expect("move to a seeded stage");
     assert_eq!(
         outcome.on_enter, "none",
@@ -154,7 +154,7 @@ fn move_task_updates_stage_slug_and_reports_the_destination_on_enter() {
     );
 
     let err = db
-        .move_task(&space, &task.id, "nope")
+        .move_task(&space, &task.id, "nope", MoveAuthor::Person)
         .expect_err("an unknown stage slug is a rejection, not a silent write");
     let BoardError::MissingStage { available, .. } = &err else {
         panic!("the unknown-stage arm must be MissingStage; got {err:?}");
@@ -186,7 +186,7 @@ fn move_task_reports_a_compact_stage_so_the_command_can_boost() {
         .expect("create");
 
     let outcome = db
-        .move_task(&space, &task.id, "doing")
+        .move_task(&space, &task.id, "doing", MoveAuthor::Person)
         .expect("move into the compact stage");
     assert_eq!(outcome.on_enter, "compact");
 }
@@ -752,14 +752,14 @@ fn move_task_with_no_spaces_row_is_not_strict() {
     let db = Db::open(&dir.join("t.db")).expect("db should open");
     let space = board_space("strict-absent");
     db.get_board(&space).expect("seed");
-    db.set_stage_next(&space, "backlog", &["done".to_string()])
+    db.set_stage_next(&space, "backlog", &["done".to_string()], &[None])
         .expect("backlog → done only");
     let card = db
         .create_task(&space, "free card", None, None)
         .expect("create_task");
 
     let outcome = db
-        .move_task(&space, &card.id, "approved")
+        .move_task(&space, &card.id, "approved", MoveAuthor::Person)
         .expect("no spaces row → flag 0 → the check is skipped entirely");
     assert_eq!(outcome.on_enter, "none");
     assert_eq!(
@@ -781,13 +781,13 @@ fn move_task_with_board_strict_zero_accepts_a_non_edge_move() {
     db.upsert_space(&space, false).expect("upsert_space");
     db.set_board_strict(&space, false).expect("explicitly off");
     db.get_board(&space).expect("seed");
-    db.set_stage_next(&space, "backlog", &["done".to_string()])
+    db.set_stage_next(&space, "backlog", &["done".to_string()], &[None])
         .expect("backlog → done only");
     let card = db
         .create_task(&space, "unconstrained", None, None)
         .expect("create_task");
 
-    db.move_task(&space, &card.id, "approved")
+    db.move_task(&space, &card.id, "approved", MoveAuthor::Person)
         .expect("flag 0 skips the check entirely");
 }
 
@@ -802,14 +802,14 @@ fn move_task_with_board_strict_one_refuses_a_non_edge_move_naming_the_legal_dest
     db.upsert_space(&space, false).expect("upsert_space");
     db.set_board_strict(&space, true).expect("strict ON");
     db.get_board(&space).expect("seed");
-    db.set_stage_next(&space, "backlog", &["done".to_string()])
+    db.set_stage_next(&space, "backlog", &["done".to_string()], &[None])
         .expect("backlog → done, and nothing else");
     let card = db
         .create_task(&space, "governed card", None, None)
         .expect("create_task");
 
     let err = db
-        .move_task(&space, &card.id, "approved")
+        .move_task(&space, &card.id, "approved", MoveAuthor::Person)
         .expect_err("approved is not an edge of backlog");
     match err {
         BoardError::StrictMoveRefused { from, to, allowed } => {
@@ -829,7 +829,7 @@ fn move_task_with_board_strict_one_refuses_a_non_edge_move_naming_the_legal_dest
     );
 
     // The legal edge, same configuration.
-    db.move_task(&space, &card.id, "done")
+    db.move_task(&space, &card.id, "done", MoveAuthor::Person)
         .expect("the configured edge is accepted");
     assert_eq!(
         db.get_task(&card.id)
@@ -856,9 +856,9 @@ fn move_task_with_board_strict_one_and_null_next_slugs_accepts_any_move() {
         .create_task(&space, "unconfigured board", None, None)
         .expect("create_task");
 
-    db.move_task(&space, &card.id, "done")
+    db.move_task(&space, &card.id, "done", MoveAuthor::Person)
         .expect("NULL next_slugs passes unconditionally");
-    db.move_task(&space, &card.id, "research")
+    db.move_task(&space, &card.id, "research", MoveAuthor::Person)
         .expect("and it passes in both directions — position is not adjacency");
 }
 
@@ -873,14 +873,14 @@ fn move_task_with_board_strict_one_and_an_empty_graph_refuses_everything() {
     db.upsert_space(&space, false).expect("upsert_space");
     db.set_board_strict(&space, true).expect("strict ON");
     db.get_board(&space).expect("seed");
-    db.set_stage_next(&space, "backlog", &[])
+    db.set_stage_next(&space, "backlog", &[], &[])
         .expect("an explicit no-edge graph");
     let card = db
         .create_task(&space, "boxed in", None, None)
         .expect("create_task");
 
     let err = db
-        .move_task(&space, &card.id, "done")
+        .move_task(&space, &card.id, "done", MoveAuthor::Person)
         .expect_err("a configured graph with no edges allows nothing");
     match err {
         BoardError::StrictMoveRefused { allowed, .. } => {
@@ -892,6 +892,242 @@ fn move_task_with_board_strict_one_and_an_empty_graph_refuses_everything() {
         }
         other => panic!("expected StrictMoveRefused, got {other:?}"),
     }
+}
+
+/// (D7 + D15, the acceptance case) on a SEEDED, UNCONFIGURED Space a model's
+/// `backlog → done` is refused, and the same call from a person moves the card.
+///
+/// THE MOST IMPORTANT TEST IN THE FILE, because it is the one the whole gate was
+/// written for and the one an inert implementation passes silently. `get_board`
+/// seeds five columns with `next_slugs` NULL — the state of every Space the app
+/// itself ever creates — so without the `sort_order + 1` fallback the reachability
+/// walk sees an empty edge set, refuses nothing, and every assertion here that
+/// expects a refusal goes red. It is also the ONLY place the two doors are compared
+/// on IDENTICAL arguments, which is what makes `MoveAuthor` the whole difference:
+/// same Space, same card, same destination, and the author is the only input that
+/// changes.
+///
+/// The refusal is checked against the DATABASE and not only against the return
+/// value: a gate that raised the error AFTER the `UPDATE` would answer correctly and
+/// still move the card, which is the refuse-before-write rule every other check in
+/// `move_task` follows.
+#[test]
+fn a_model_cannot_move_a_card_forward_on_a_seeded_board_and_a_person_can() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-forward-default-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("forward-default");
+    db.upsert_space(&space, false).expect("upsert_space");
+    db.get_board(&space)
+        .expect("seed — every next_slugs is NULL, exactly as a fresh install has it");
+    let card = db
+        .create_task(&space, "the default board", None, None)
+        .expect("create_task");
+
+    let err = db
+        .move_task(&space, &card.id, "done", MoveAuthor::Model)
+        .expect_err("`done` is reachable from `backlog` through the fallback chain");
+    match err {
+        BoardError::ForwardMoveRefused { task_id, from, to } => {
+            assert_eq!(task_id, card.id, "the refusal names the card it refused");
+            assert_eq!(from, "backlog", "and the origin");
+            assert_eq!(to, "done", "and the destination");
+        }
+        other => panic!("expected ForwardMoveRefused, got {other:?}"),
+    }
+    assert_eq!(
+        db.get_task(&card.id)
+            .expect("get_task")
+            .expect("card")
+            .stage_slug,
+        "backlog",
+        "a refused forward move writes NOTHING"
+    );
+
+    // The person's door, SAME arguments. D11: the gate is on the door, not on the
+    // destination, and a human drag is never its subject.
+    db.move_task(&space, &card.id, "done", MoveAuthor::Person)
+        .expect("a person moves the same card to the same column");
+    assert_eq!(
+        db.get_task(&card.id)
+            .expect("get_task")
+            .expect("card")
+            .stage_slug,
+        "done",
+        "and it lands where they dragged it"
+    );
+}
+
+/// (D10) a model's BACKWARD move is allowed and inert.
+///
+/// The forward gate answers a graph question and a backward edge is not forward, so
+/// the door stays open. `on_enter` still rides back — "inert" means the GATE is
+/// inert, not that the verb stops reporting, and the command layer's boost is
+/// unchanged for a model's backward drag.
+#[test]
+fn a_model_moves_a_card_backward_and_the_forward_gate_says_nothing() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-forward-back-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("forward-back");
+    db.upsert_space(&space, false).expect("upsert_space");
+    db.get_board(&space).expect("seed");
+    let card = db
+        .create_task(&space, "already downstream", None, Some("doing"))
+        .expect("create_task");
+
+    let outcome = db
+        .move_task(&space, &card.id, "backlog", MoveAuthor::Model)
+        .expect("backward is not forward — the fallback chain is directional");
+    assert_eq!(outcome.on_enter, "none", "the verb still reports on_enter");
+    assert_eq!(
+        db.get_task(&card.id)
+            .expect("get_task")
+            .expect("card")
+            .stage_slug,
+        "backlog",
+        "and the move happened"
+    );
+}
+
+/// (`from == to`) a model's move to the column the card is ALREADY in is not
+/// forward, so it is allowed and the existing behaviour stands.
+#[test]
+fn a_model_moving_a_card_to_its_own_column_is_not_a_forward_move() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-forward-self-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("forward-self");
+    db.upsert_space(&space, false).expect("upsert_space");
+    db.get_board(&space).expect("seed");
+    let card = db
+        .create_task(&space, "stays put", None, None)
+        .expect("create_task");
+
+    db.move_task(&space, &card.id, "backlog", MoveAuthor::Model)
+        .expect("a round trip through the graph is not a forward move");
+}
+
+/// (D8's skip-hole case, an acceptance criterion) on a Space configured so the
+/// graph dead-ends before `done`, a model's `backlog → done` is ALLOWED.
+///
+/// The mirror of the default-board refusal above, and the one that proves the gate
+/// is a graph test and not a `sort_order` comparison in disguise: the destination is
+/// four columns to the RIGHT and it is allowed, because no path leads there. Every
+/// row is configured here because the fallback is per row — a NULL tail would
+/// contribute its order neighbour and make `done` reachable after all.
+/// [`super::edges`] owns the walk-level pin; this one owns the VERB's answer.
+#[test]
+fn a_model_moves_a_card_to_an_unreachable_column_on_a_configured_board() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-forward-skip-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("forward-skip");
+    db.upsert_space(&space, false).expect("upsert_space");
+    db.get_board(&space).expect("seed");
+    db.set_stage_next(&space, "backlog", &["research".to_string()], &[None])
+        .expect("backlog → research");
+    db.set_stage_next(&space, "research", &["approved".to_string()], &[None])
+        .expect("research → approved");
+    db.set_stage_next(&space, "approved", &["doing".to_string()], &[None])
+        .expect("approved → doing");
+    db.set_stage_next(&space, "doing", &[], &[])
+        .expect("doing leads nowhere, so nothing reaches `done`");
+    let card = db
+        .create_task(&space, "the long skip", None, None)
+        .expect("create_task");
+
+    db.move_task(&space, &card.id, "done", MoveAuthor::Model)
+        .expect("`done` is unreachable, so the move is not forward (D8)");
+    assert_eq!(
+        db.get_task(&card.id)
+            .expect("get_task")
+            .expect("card")
+            .stage_slug,
+        "done",
+        "and it landed"
+    );
+}
+
+/// (`[]` refuses nothing) a model's move OUT of a column configured to lead nowhere
+/// is allowed — an empty graph reaches nothing, so nothing is forward.
+#[test]
+fn a_model_moves_a_card_out_of_a_column_with_an_explicitly_empty_graph() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-forward-empty-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("forward-empty");
+    db.upsert_space(&space, false).expect("upsert_space");
+    db.get_board(&space).expect("seed");
+    db.set_stage_next(&space, "backlog", &[], &[])
+        .expect("an explicit no-edge graph");
+    let card = db
+        .create_task(&space, "boxed in on the graph", None, None)
+        .expect("create_task");
+
+    db.move_task(&space, &card.id, "done", MoveAuthor::Model)
+        .expect(
+            "`[]` is configured and closed, so nothing is reachable and nothing \
+                 is forward — this is NOT the Strict gate, which reads the same `[]` \
+                 and refuses everything",
+        );
+}
+
+/// (a `NULL` origin on the LAST column refuses nothing) a model's move out of `done`
+/// is allowed: the fallback has no `sort_order + 1` neighbour to offer.
+#[test]
+fn a_model_moves_a_card_out_of_the_last_column_of_a_null_board() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-forward-last-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("forward-last");
+    db.upsert_space(&space, false).expect("upsert_space");
+    db.get_board(&space).expect("seed");
+    let card = db
+        .create_task(&space, "at the end", None, Some("done"))
+        .expect("create_task");
+
+    db.move_task(&space, &card.id, "backlog", MoveAuthor::Model)
+        .expect("`done` points nowhere, so nothing leaving it is forward");
+}
+
+/// (TWO GATES, TWO ANSWERS — pinned side by side, exactly as D15 requires) on a
+/// `NULL` origin with `board_strict = 1`, the Strict gate still PASSES and the
+/// forward gate still REFUSES.
+///
+/// These are different questions and the pair is the pin that keeps them from being
+/// collapsed into one helper: Strict asks "is this a DECLARED edge" and a `NULL` row
+/// is unconstrained (ADR 0099 — the opposite reading makes every board that opts in
+/// refuse every drag), while the forward gate asks "is this REACHABLE" and a `NULL`
+/// row still has the shape the column order implies. A reader who "deduplicates" one
+/// into the other reddens HERE, on the one configuration where the two disagree.
+#[test]
+fn strict_and_forward_are_two_gates_and_answer_a_null_board_differently() {
+    let dir = crate::test_support::ScratchDir::in_env_temp("db-forward-two-gates-", "scratch");
+    let db = Db::open(&dir.join("t.db")).expect("db should open");
+    let space = board_space("forward-two-gates");
+    db.upsert_space(&space, false).expect("upsert_space");
+    db.set_board_strict(&space, true).expect("strict ON");
+    db.get_board(&space)
+        .expect("seed — every next_slugs is NULL");
+    let card = db
+        .create_task(&space, "both gates see this", None, None)
+        .expect("create_task");
+
+    // Gate 1 passes: NULL is unconstrained under Strict, so nothing here is
+    // `StrictMoveRefused` — which is what the `match` below refuses to be.
+    let err = db
+        .move_task(&space, &card.id, "done", MoveAuthor::Model)
+        .expect_err("but the forward gate fires on the fallback chain anyway");
+    match err {
+        BoardError::ForwardMoveRefused { from, to, .. } => {
+            assert_eq!((from.as_str(), to.as_str()), ("backlog", "done"));
+        }
+        other => panic!(
+            "Strict must PASS a NULL origin (ADR 0099) and the forward gate must \
+             refuse it (D15) — anything else means the two gates were collapsed. \
+             Got {other:?}"
+        ),
+    }
+
+    // And the person's door on the SAME board with Strict still ON: neither gate
+    // binds a human here, so the move goes through.
+    db.move_task(&space, &card.id, "done", MoveAuthor::Person)
+        .expect("Strict is the only gate a person meets, and NULL passes it");
 }
 
 /// Every `tasks` row, read through an INDEPENDENT connection to the same file

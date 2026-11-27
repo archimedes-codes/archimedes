@@ -190,12 +190,15 @@ fn every_host_tool_spec_advertises_the_keys_its_executor_reads() {
             &["task_id", "key", "markdown"],
             &["task_id", "key", "markdown"],
         ),
-        // The one verb with NO keys at all, and the row that keeps it that way: its
-        // subject is the frame's origin id, so a parameter here would be a session id
-        // the model chose. `exec/session.rs` calls neither `req_str` nor `opt_str` —
-        // it reads no `params` whatsoever — and an advertised key with no reader is
-        // exactly what this table exists to catch.
-        ("mark_done", &[] as &[&str], &[] as &[&str]),
+        // The one verb whose SUBJECT is the frame's origin id rather than a value in
+        // `params`, which is why it advertises exactly ONE key and why that key is not
+        // an id. `exec/session.rs` calls `opt_str` on `outcome` and on NOTHING else —
+        // no `req_str`, no `session_id`, no `task_id`, no `space_path` — and this row is
+        // the pin that keeps it to one: a second advertised key on this verb is either a
+        // spoofable subject or an advertised parameter with no reader, and this table
+        // exists to catch both. `required` stays empty because the parameter is optional
+        // by design — omitting it takes the head edge, which is every seeded board.
+        ("mark_done", &["outcome"], &[] as &[&str]),
     ];
     let specs = host_tool_specs();
     for (name, advertised, required) in cases {
