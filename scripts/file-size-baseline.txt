@@ -9,7 +9,7 @@
 1372	src/store/sessions.ts
 1309	src-tauri/src/agent/session/router.rs
 1293	src-tauri/src/config.rs
-1176	src-tauri/src/commands/settings.rs
+1205	src-tauri/src/commands/settings.rs
 1135	src-tauri/src/agent/errors.rs
 1055	src-tauri/src/commands/agents.rs
 866	src-tauri/src/agent/provider_auth/refresh.rs

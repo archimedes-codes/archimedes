@@ -208,8 +208,17 @@ pub async fn list_known_providers() -> Result<Vec<KnownProviderDto>, SettingsErr
 /// `classify_server`'s `as_bool() == Some(true)`, so a non-bool
 /// `"disabled": "yes"` is NOT off — and the Settings row agrees.
 ///
-/// `auth_mcp_server` shares this check and has no test of its own: it cannot
-/// be exercised without the OAuth stack.
+/// `auth_mcp_server` shares this check, and its copy is REACHABLE without the
+/// OAuth stack: the pre-check returns BEFORE `classify_server`, so a
+/// `disabled: true` entry never reaches `authenticate_server`, never opens a
+/// browser and never touches a socket. `auth_mcp_server` is a plain `async fn`
+/// (the `test_mcp_server` precedent — `#[tauri::command]` does not prevent
+/// direct invocation), so the second call site is pinned too, by
+/// `the_off_precheck_runs_in_auth_mcp_server_too_before_any_oauth_call`. That
+/// test matters because a shared helper invites exactly the copy-paste
+/// regression it now catches: a pre-check pushed below `classify_server` here,
+/// or dropped from this call site alone, leaves every `test_mcp_server` test
+/// green.
 fn disabled_mcp_server_error(entry: &Value) -> Option<SettingsError> {
     let off = entry
         .as_object()
@@ -1722,6 +1731,48 @@ mod tests {
         assert!(
             !message.contains("switched off"),
             "a non-bool `disabled` is ON, not off: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_off_precheck_runs_in_auth_mcp_server_too_before_any_oauth_call() {
+        // THE SECOND CALL SITE, PINNED. `disabled_mcp_server_error` is called by
+        // BOTH MCP commands, and a shared helper invites exactly this regression:
+        // pushing the pre-check BELOW `classify_server` in `auth_mcp_server` (or
+        // dropping it there) leaves every `test_mcp_server` test green. The entry
+        // carries a VALID `url` on purpose — it classifies successfully, so the
+        // ONLY thing that can answer it here is the off-check; without the
+        // pre-check this falls through to `classify_server`'s `None` and the
+        // `url`/`command` sentence (the mutation this test must catch).
+        // The pre-check returns BEFORE `authenticate_server`, so no OAuth stack,
+        // no browser and no socket is involved — the timing assertion below is
+        // the proof of that, and `kind()` is `other`, never `mcp_auth_failed`.
+        let started = std::time::Instant::now();
+        let err = auth_mcp_server(
+            "off-server".to_string(),
+            serde_json::json!({"url": "https://x/mcp", "disabled": true}),
+        )
+        .await
+        .expect_err("a switched-off server is not an authenticated server");
+        let elapsed = started.elapsed();
+        let message = err.to_string();
+        assert!(
+            message.contains("switched off"),
+            "the auth row must name the real cause: {message}"
+        );
+        assert!(
+            !message.contains("url"),
+            "the user's own choice must not be reported as a broken config: {message}"
+        );
+        assert!(
+            !message.starts_with("invalid MCP server entry"),
+            "`Other` renders bare; wrapping it re-asserts the defect: {message}"
+        );
+        assert_eq!(err.kind(), "other", "{message}");
+        // A connect would cost the 10 s timeout; the pre-check costs microseconds.
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "the pre-check must answer before any network work: {elapsed:?}"
         );
     }
 }
