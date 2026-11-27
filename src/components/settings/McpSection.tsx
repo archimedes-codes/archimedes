@@ -163,7 +163,18 @@ function McpRow({
           variant="ghost"
           size="icon-sm"
           aria-label={`Test MCP server ${name}`}
-          disabled={testing || authenticating || isDisabled}
+          // NOT gated on `isDisabled`, on purpose (the human decision): the
+          // backend answers a switched-off entry with the honest sentence
+          // (`disabled_mcp_server_error` — "this server is switched off — turn
+          // it on to test it"), and it fires that pre-check BEFORE
+          // `classify_server` and before any connect. Disabling this button
+          // made that sentence unreachable: an inert button reports nothing,
+          // and the row went on implying "need a `url` or a `command`" — the
+          // user's own choice read back as a broken config. Explain instead of
+          // silently refusing. Authenticate KEEPS the gate below: it genuinely
+          // cannot work while the entry is not registered and its flow opens a
+          // browser.
+          disabled={testing || authenticating}
           onClick={() => void runTest()}
         >
           <PlayIcon className="size-3.5" />

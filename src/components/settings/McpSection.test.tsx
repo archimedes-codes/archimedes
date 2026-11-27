@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
 import McpSection from "./McpSection";
 import {
   authMcpServer,
@@ -198,7 +198,7 @@ describe("McpSection: the per-server off-switch (`disabled`)", () => {
       screen.getByRole("button", { name }) as HTMLButtonElement
     ).disabled;
 
-  it("a disabled row badges Off, deadens its actions, and keeps Edit and Remove live", () => {
+  it("a disabled row badges Off, deadens Authenticate but lets Test ANSWER, and keeps Edit and Remove live", () => {
     renderSection();
     // The COUNT comes FIRST, on purpose: the `getByTitle` presence query below
     // throws `Found multiple elements` when a second Off badge appears, and that
@@ -232,9 +232,18 @@ describe("McpSection: the per-server off-switch (`disabled`)", () => {
         '[title="Off — this entry is not registered; a same-named server in a Space or user-level config still applies"]',
       ),
     ).toHaveLength(1);
-    // The actions that CANNOT work while the server is off.
+    // Authenticate CANNOT work while the server is off (the entry is not
+    // registered, and its flow is interactive — it opens a browser), so it
+    // stays deadened.
     expect(isDisabled("Authenticate MCP server off_srv")).toBe(true);
-    expect(isDisabled("Test MCP server off_srv")).toBe(true);
+    // Test ANSWERS instead of being deadened — the explicit human decision.
+    // Disabling it made the honest sentence the Rust command produces
+    // (`disabled_mcp_server_error` -> "this server is switched off — turn it
+    // on to test it") unreachable from the UI: an inert button reports
+    // nothing. Clicking it now reaches `test_mcp_server`, whose pre-check
+    // fires before `classify_server` and before any connect, and the row
+    // surfaces the sentence (pinned by the click test below).
+    expect(isDisabled("Test MCP server off_srv")).toBe(false);
     // The negative half: Edit and Remove are the doors back ON and OUT. A
     // `disabled={isDisabled}` on either would lock the user out of their own
     // server, and the whole settings suite stays green if that happens — this
@@ -250,6 +259,70 @@ describe("McpSection: the per-server off-switch (`disabled`)", () => {
     renderSection();
     expect(isDisabled("Test MCP server plain")).toBe(false);
     expect(isDisabled("Test MCP server oauth_srv")).toBe(false);
+  });
+
+  it("the off row's Test ANSWERS: the click reaches the command and the off sentence is shown", async () => {
+    // This is the test that makes the human's decision real rather than a
+    // predicate tweak: a switched-off row must EXPLAIN, not silently refuse.
+    // The rejection below is the REAL wire shape, traced end to end:
+    // `disabled_mcp_server_error` builds `SettingsError::Other`, its
+    // `#[error("{0}")]` renders the sentence BARE, and `From<SettingsError>
+    // for InvokeError` sends `{kind, message}` — so the message arrives as
+    // the envelope's `message` and `describeIpcError` rule 3 returns it
+    // VERBATIM (it chooses a string, it never re-writes one). The row then
+    // renders `<SettingsBadge title={result.error}>error</SettingsBadge>`, so
+    // the sentence reaches the DOM in the badge's `title` — the same place
+    // the generic and needs-auth sentences go.
+    mockedTest.mockRejectedValue({
+      kind: "other",
+      message: "this server is switched off — turn it on to test it",
+    });
+    renderSection();
+    // The button must be clickable at all: on the previous component (Test
+    // carried `isDisabled`) `fireEvent.click` on a disabled button never
+    // reaches `onClick`, so this wait times out — the RED this test is meant
+    // to produce.
+    await clickTest("off_srv");
+    // The UI no longer refuses locally: it ASKS the backend, passing the
+    // entry as saved (`disabled: true` included) plus the name — which is
+    // what lets Rust's pre-check produce the sentence in the first place.
+    expect(mockedTest).toHaveBeenCalledWith(
+      { url: "https://off.example/mcp", auth: "oauth", disabled: true },
+      "off_srv",
+    );
+    // The off row shows the row's error badge. `findBy*` (not a bare `get`)
+    // because `clickTest` waits only for the CALL; the rejection needs another
+    // microtask flush before `setResult({ error })` lands (the same reason the
+    // two error tests above use `findByText`).
+    // `closest<HTMLElement>`: `within()` requires an `HTMLElement`, and the
+    // bare `closest(".border-t")` the other tests here use yields `Element`
+    // (they only call `querySelectorAll`, which `Element` has, so `tsc` is
+    // happy there — it is not happy here).
+    const offRow = screen
+      .getByRole("button", { name: "Edit MCP server off_srv" })
+      .closest<HTMLElement>(".border-t")!;
+    expect(await within(offRow).findByText("error")).toBeTruthy();
+    // ... and the badge carries the sentence VERBATIM (an equality assert, so
+    // a generic re-word like "test failed" cannot pass it).
+    expect(
+      within(offRow).getByTitle(
+        "this server is switched off — turn it on to test it",
+      ),
+    ).toBeTruthy();
+    // Stated the way the card states it: the words "switched off" reach the
+    // rendered output rather than a generic failure. The row renders the
+    // sentence into the badge's `title` attribute (see above), so read the
+    // row's titles, not its text content.
+    const titles = Array.from(
+      offRow.querySelectorAll("[title]"),
+    ).map((el) => el.getAttribute("title") ?? "");
+    expect(titles.some((t) => t.includes("switched off"))).toBe(true);
+    // The Off badge survives the test result (it is not replaced by it).
+    expect(
+      offRow.querySelectorAll(
+        '[title="Off — this entry is not registered; a same-named server in a Space or user-level config still applies"]',
+      ),
+    ).toHaveLength(1);
   });
 
   it("the edit dialog shows the off switch checked for a disabled draft", () => {
