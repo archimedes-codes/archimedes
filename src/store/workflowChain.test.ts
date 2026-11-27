@@ -1130,6 +1130,108 @@ describe("the auto-advance chain — a refused launch", () => {
     expect(workflowRunClose).toHaveBeenCalledWith("tsk_1", "launch_refused");
   });
 
+  it("closes NOTHING on a link that already launched, whatever the launch's outcome is", async () => {
+    // F4. The module header claims every close is gated on `alreadyLaunched`, and three
+    // of `finishLink`'s closes were not: they were safe only because Rust's arm 3 returns
+    // `already_advanced` BEFORE its arms 6/7, so an `advance: true` payload always carries
+    // `alreadyLaunched: false`. That is an implicit CROSS-LANGUAGE invariant, and it is
+    // asserted nowhere in TypeScript — so it is exactly the kind of thing that breaks
+    // green when the Rust arm order changes.
+    //
+    // DEFENSIVE pin, not a claim about what Rust emits today: an `advance: true` +
+    // `alreadyLaunched: true` payload is one this side must survive without touching the
+    // run. Closing a run that already launched resets `cost_usd` to NULL and hands the
+    // next link a fresh `steps = 1`, which turns a 20-step bound into 20 steps PER LINK —
+    // the spend bound failing open. The sentence still goes out (the refusal is true);
+    // only the close is withheld, which is D20's rule spelled the same way arm 5 spells it.
+    useTasks.setState({ boardsBySpace: {} });
+    answerWith(advice({ alreadyLaunched: true }));
+    await advanceWorkflowChainOnSettle(
+      settle({ launch: async () => ({ sessionId: null, note: null }) }),
+    );
+    await vi.waitFor(() =>
+      expect(lines().some((t) => /launch_refused/.test(t))).toBe(true),
+    );
+    expect(workflowRunClose).not.toHaveBeenCalled();
+  });
+
+  it("closes NOTHING on a launched link whose move was skipped (the note arm)", async () => {
+    // The second ungated close, and the arm that reaches it WITHOUT a malformed payload:
+    // `outcome.note` non-null means the destination was missing from a LOADED slice, and
+    // the guard is the same field on the same advice. Say it, do not close it.
+    answerWith(advice({ alreadyLaunched: true }));
+    await advanceWorkflowChainOnSettle(
+      settle({
+        launch: async () => ({
+          sessionId: "sess_other",
+          note: "This Space has no `implement` column, so T3 stayed in `research`.",
+        }),
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(lines().some((t) => /launch_refused/.test(t))).toBe(true),
+    );
+    expect(workflowRunClose).not.toHaveBeenCalled();
+  });
+
+  it("closes NOTHING and says NOTHING on a launched link that would end the chain", async () => {
+    // The third ungated close, and the one that fires on EVERY successful advance into a
+    // non-auto column — so the gate had to be added without breaking the ordinary close,
+    // which the first case of the `advancing` block still pins for the normal payload.
+    //
+    // This arm is SILENT rather than spoken, and that is the honest half rather than a
+    // shortcut: `manual`'s sentence ends "so the chain ends here", which is precisely the
+    // claim the withheld close refuses to make. A launched link keeps its run open for the
+    // link that already launched, which is arm 4's rule (`already_advanced` closes nothing
+    // and says nothing) applied to the same field.
+    answerWith(advice({ alreadyLaunched: true }));
+    await advanceWorkflowChainOnSettle(settle());
+    // Flushed through the launch (the real one, so the card genuinely moved) rather than
+    // assumed — and the close is the thing under test, not the timing.
+    await vi.waitFor(() =>
+      expect(vi.mocked(sendPrompt)).toHaveBeenCalledTimes(1),
+    );
+    expect(workflowRunClose).not.toHaveBeenCalled();
+    expect(lines().some((t) => /manual/.test(t))).toBe(false);
+  });
+
+  it("closes with launch_refused when the SLICE-FREE move is refused (no board anywhere)", async () => {
+    // F3's chain-side half, and the arm the D19 defect class lives in. With
+    // `boardsBySpace: {}` the launch takes `taskMove`'s slice-free arm, whose only
+    // signal is its return value: a refused `move_task` (a `board_strict` board whose
+    // edge does not exist) answers `null`, `launchTaskSession` compares it against the
+    // slug it aimed at and THROWS, and this file's `finishLink` records
+    // `launch_refused`.
+    //
+    // The no-slice headline case above reaches the same arm on the SUCCESS path only, so
+    // before this pin the refusal path was pinned at the verb (`taskMove.test.ts`) and
+    // nowhere above it — a mutation returning `toStageSlug` from the verb's `catch`
+    // leaves 167 tests green and turns a refused move into a `manual` close, i.e. a
+    // record that says "the card moved to Implement" for a card that never moved.
+    useTasks.setState({ boardsBySpace: {} });
+    vi.mocked(moveTask).mockRejectedValue({
+      kind: "strict_move_refused",
+      message: "research does not lead to implement",
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await advanceWorkflowChainOnSettle(settle());
+      await vi.waitFor(() =>
+        expect(lines().some((t) => /launch_refused/.test(t))).toBe(true),
+      );
+      expect(workflowRunClose).toHaveBeenCalledWith("tsk_1", "launch_refused");
+      // The refusal is the BACKEND's, so the verb was reached — unlike the stale-slice
+      // case above, which refuses this side and never calls the command.
+      expect(moveTask).toHaveBeenCalledWith(SPACE, "tsk_1", "implement");
+      // And nothing launched: a card that did not move must not start the destination's
+      // Session, or the run records a move the database refused.
+      expect(vi.mocked(sendPrompt)).toHaveBeenCalledTimes(0);
+      expect(vi.mocked(workflowRunClose).mock.calls).toEqual([["tsk_1", "launch_refused"]]);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("closes with launch_refused when the launch answers no sessionId", async () => {
     // The OTHER refusal, and the reason the outcome is READ and not merely caught:
     // `launchTaskSession` answers `{ sessionId: null }` when its in-flight guard refuses a

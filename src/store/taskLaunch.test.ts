@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  consumeAdvanceAdvice,
   createTaskFromDraft,
   launchTaskSession,
   resetTaskLaunchInFlight,
@@ -14,12 +15,15 @@ import { resetStores } from "../test/resetStores";
 import {
   createTask,
   getTask,
+  listAgentDefinitionsForSpace,
+  listSkills,
   moveTask,
   sendPrompt,
   startTaskSession,
   taskNumbers,
   workflowAdvanceAdvice,
   workflowRunClose,
+  type AcpSessionUpdate,
   type AdvanceAdvice,
   type SessionInfo,
   type SkillInfo,
@@ -697,6 +701,30 @@ describe("taskLaunch — the research launch (the column transition)", () => {
       CATALOGS(),
     );
     expect(outcome.note).toBeNull();
+  });
+
+  it("issues no move for a card already in the destination column when NO slice is loaded", async () => {
+    // F5. The same-column guard used to sit PAST the `columns === undefined` early
+    // return, so the slice-free (trusted) arm asked for a move even when the card was
+    // already exactly where the chain wanted it. `Db::move_task` never lists a column's
+    // own slug in its own `next_slugs`, so under `board_strict = 1` that write is
+    // REFUSED — and a refusal out of the slice-free arm is a `null`, which
+    // `launchTaskSession` turns into a throw and the chain into `launch_refused` on a
+    // card already sitting in the destination. A no-op has to be a no-op: no `move_task`,
+    // no note, and the Session starts.
+    //
+    // The guard belongs in `resolveStage` and not in `taskMove.moveWithoutBoard`: the
+    // slice-free verb holds only the slug it was asked to move TO, so only the caller
+    // that holds the `TaskRow` can know where the card already is.
+    const outcome = await launchTaskSession(
+      SPACE,
+      taskRow({ stageSlug: "research" }),
+      destination({ slug: "research", label: "Research", onEnterSkill: "research" }),
+      CATALOGS(),
+    );
+    expect(moveTask).not.toHaveBeenCalled();
+    expect(outcome.note).toBeNull();
+    expect(outcome.sessionId).toBe("sess_new");
   });
 
   it("still reports the skipped column when the board was never loaded", async () => {
@@ -1398,3 +1426,158 @@ describe("the auto-advance chain — the settle edge is wired", () => {
     }
   });
 });
+
+/// THE CLAIM PATH — `consumeAdvanceAdvice`, the seam `App.tsx`'s batcher calls.
+///
+/// This block exists because the feature's stated enemy is "looks configured, does
+/// nothing", and until now the claim path was pinned NOWHERE: `consumeAdvanceAdvice` and
+/// `carryOutClaim` appeared in no test file, so the primary mechanism — a live
+/// `tool_call_update` causing a launch — was covered only at the pure layer
+/// (`advanceAdvice.test.ts`) and the settle layer. A batcher that never called this
+/// function, or a guard that never matched a real frame, was green.
+///
+/// THE FRAME IS BUILT AS THE WIRE BUILDS IT (`rawOutput.details.advanceAdvice` on a
+/// `tool_call_update`), because the frame is half the contract: `readAdvanceAdvice`
+/// refuses the `tool_call` announcement, so a fixture that handed the advice over directly
+/// would pin a launch off a promise of a decision.
+describe("consumeAdvanceAdvice — the claim path", () => {
+  /** The claim path's catalog. The shared mock answers `[]` for both catalog reads
+   *  (which is what keeps the ordinary launch cases honest about a missing Skill),
+   *  and `missingSkill` REFUSES a launch whose Skill the catalog lacks — so a case
+   *  that means a SUCCESSFUL claim has to hand over `implement` itself. */
+  function claimCatalogs(): void {
+    vi.mocked(listSkills).mockResolvedValue([skill("implement")]);
+    vi.mocked(listAgentDefinitionsForSpace).mockResolvedValue([]);
+  }
+
+  /** A `tool_call_update` carrying `next` at `rawOutput.details.advanceAdvice` —
+   *  the carrier `normalize.rs` ships (`tool_execution_end{result}` → `ToolResult`
+   *  `{content, details, isError}` → normalised onto a `tool_call_update`). */
+  function claimFrame(next: AdvanceAdvice, sessionUpdate = "tool_call_update"): AcpSessionUpdate {
+    const details = { advanceAdvice: next };
+    const content = [{ type: "text", text: "advanced" }];
+    return { sessionUpdate, toolCallId: "tc_1", status: "completed", rawOutput: { content, details } } as AcpSessionUpdate;
+  }
+
+  it("starts the Session the advice names from a tool_call_update's rawOutput.details", async () => {
+    // THE HEADLINE, and the one thing no other file could prove: a frame arriving on
+    // the live path MOVES A CARD AND STARTS A SESSION. The claimant's Session
+    // (`sess_claim`) is not the Session that gets started (`sess_new`) — the advice
+    // names the card, and the claimant's transcript is where a refusal belongs.
+    //
+    // No board slice is seeded, deliberately: the window a claim settles in has no
+    // board mounted (`App`'s view ternary), which is D19, and this launch has to work
+    // anyway through `taskMove`'s slice-free arm.
+    claimCatalogs();
+    const dispatched = consumeAdvanceAdvice("sess_claim", claimFrame(advancing()));
+    expect(dispatched).toBe(true);
+    // The card first (the claim path holds only a Session id), then the launch.
+    await vi.waitFor(() => expect(getTask).toHaveBeenCalledWith("tsk_1"));
+    await vi.waitFor(() =>
+      expect(startTaskSession).toHaveBeenCalledWith(SPACE, "tsk_1", null),
+    );
+    expect(firstCallOrder(vi.mocked(getTask))).toBeLessThan(firstCallOrder(vi.mocked(startTaskSession)));
+    // And the first message carries the DESTINATION column's Skill, not the
+    // claimant's — the row the advice carried is what configures the new Session.
+    await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(sendPrompt).mock.calls[0]![1]).toContain("$implement");
+    // The move is the slice-free arm of the real verb (no slice exists to paint).
+    expect(moveTask).toHaveBeenCalledWith(SPACE, "tsk_1", "implement");
+  });
+
+  it("returns false and launches nothing for a `tool_call` frame, a non-advice payload, and an `already_advanced` advice", async () => {
+    // THREE silent arms, one case, because they all answer `false` and the caller
+    // does not care which: the announcement frame (the tool has not run, so nothing
+    // has been decided), a frame whose `details` carries no advice (every other tool
+    // in the app), and the dedupe's answer (the claim already launched this link —
+    // launching it again from the settle would start TWO Sessions for one edge).
+    claimCatalogs();
+    const already = advancing({
+      advance: false,
+      reason: "already_advanced",
+      destination: null,
+      alreadyLaunched: true,
+    });
+
+    expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing(), "tool_call"))).toBe(false);
+    expect(consumeAdvanceAdvice("sess_claim", claimFrame(refusal("unclaimed")))).toBe(false);
+    expect(consumeAdvanceAdvice("sess_claim", claimFrame(already))).toBe(false);
+    const noAdvice = {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "tc_2",
+      rawOutput: { content: [], details: { somethingElse: true } },
+    } as AcpSessionUpdate;
+    expect(consumeAdvanceAdvice("sess_claim", noAdvice)).toBe(false);
+
+    // Nothing dispatched, so nothing downstream ran — not a card read, not a Session.
+    await Promise.resolve();
+    expect(getTask).not.toHaveBeenCalled();
+    expect(startTaskSession).not.toHaveBeenCalled();
+    expect(sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("reports a card read that fails, in the claimant's Session, and does not reject unhandled", async () => {
+    // F1. `await getTask(taskId)` sits OUTSIDE the only internal `try`, and nothing
+    // upstream awaits, so before this pin an IPC failure here was reported NOWHERE:
+    // the launch was lost with no console line and no transcript line — the exact
+    // silent-green shape this feature exists to remove. The claimant's Session is the
+    // only guaranteed surface (the board may not be mounted), so the sentence goes
+    // there through the house mechanism.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      claimCatalogs();
+      vi.mocked(getTask).mockRejectedValue({ kind: "command", message: "get_task failed" });
+      expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
+      await vi.waitFor(() => expect(consoleError).toHaveBeenCalled());
+      const all = lines("sess_claim").join("\n");
+      expect(all).toContain("get_task failed");
+      expect(all).toContain("nothing launched");
+      expect(startTaskSession).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("reports a catalog read that fails rather than launching on a catalog it cannot read", async () => {
+    // The second unguarded read: `Promise.all([listSkills, listAgentDefinitionsForSpace])`.
+    // A wrong `skills` list must not become a degraded launch — `missingSkill` refuses
+    // it — so a failed read refuses too, and says so.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      vi.mocked(listSkills).mockRejectedValue({ kind: "command", message: "skill scan failed" });
+      expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
+      await vi.waitFor(() => expect(consoleError).toHaveBeenCalled());
+      const all = lines("sess_claim").join("\n");
+      expect(all).toContain("skill scan failed");
+      expect(startTaskSession).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("reports a failure the transcript itself could not record", async () => {
+    // The `.catch` on the dispatch is the ONE owner of the case the body's `try` cannot
+    // report: a throw from the REPORTER. Rejecting `addSystemLine` is how that is reached,
+    // and the property under test is that nothing escapes unhandled — a rejection raised
+    // inside the handler for a rejection is the same lost launch, one layer further out.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const addSystemLine = vi.spyOn(useSessions.getState(), "addSystemLine");
+    addSystemLine.mockImplementation(() => { throw new Error("transcript unavailable"); });
+    try {
+      vi.mocked(getTask).mockRejectedValue({ kind: "command", message: "get_task failed" });
+      expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
+      const loud = () => consoleError.mock.calls.some((c) => /could not be recorded/.test(String(c[0])));
+      await vi.waitFor(() => expect(loud()).toBe(true));
+    } finally {
+      consoleError.mockRestore();
+      addSystemLine.mockRestore();
+    }
+  });
+});
+
+/** The transcript lines one Session holds, as text (the claim cases need the
+ *  CLAIMANT's transcript, which is not the Session the launch starts). */
+function lines(sessionId: string): string[] {
+  return (useSessions.getState().messages[sessionId] ?? []).map((m) => (m as { text?: string }).text ?? "");
+}
+

@@ -1124,8 +1124,18 @@ describe("the scanner actually reads the tree", () => {
     // IPC wrapper and no wire type is added or removed (`TaskCardView.ready` landed in
     // an earlier commit of this line of work), so both pinned API lists below are
     // untouched.
-    expect(mockers).toHaveLength(72);
-    // 69 of the 70 SPREAD `vi.importActual`, which is the shape that makes the
+    // 72 -> 73 for the move verb's own test sibling: `src/store/taskMove.test.ts`, the
+    // mirror file ADR 0113 requires and `taskMove.ts`'s header already cited. It needs
+    // the seam for the same reason every other store mocker does — its subject IS the
+    // `move_task` wrapper, and the arm under test is the one that ANSWERS `null` when that
+    // wrapper rejects, which is unobservable without a spy (a real `invoke` rejects in
+    // jsdom for the wrong reason). It spreads `vi.importActual`, so the spread half moves
+    // 71 -> 72 and the one wholesale replacement is STILL
+    // `hooks/useWindowMaximized.test.ts`. The barrel's OWN surface is UNCHANGED: no IPC
+    // wrapper and no wire type is added or removed by this commit, so both pinned API
+    // lists below are untouched.
+    expect(mockers).toHaveLength(73);
+    // 72 of the 73 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. The new mockers spread
     // too (they list the arms their own tests drive and leave every other barrel
     // export — `invoke` included — to the real module), so the remaining one
@@ -1136,7 +1146,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(sweep.listed(f) ?? ""),
       ).length,
-).toBe(71);
+).toBe(72);
   });
 });
 

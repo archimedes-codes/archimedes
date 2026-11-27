@@ -155,7 +155,28 @@ export function isAdvanceAdvice(v: unknown): v is AdvanceAdvice {
  *  (many tools answer text), a `details` that is not an object, a `details` with no
  *  such key — and none of them is an error. This function runs on **every** frame of
  *  every Session, so it must be cheap and silent for the 999 in 1000 that carry no
- *  advice, and it must never be the thing that breaks a transcript. */
+ *  advice, and it must never be the thing that breaks a transcript.
+ *
+ * ## WHAT THE FRAME PIN DOES NOT CHECK (read this before tightening it)
+ *
+ * The pin tests the frame's `sessionUpdate` tag, and the tag alone does NOT separate the
+ * settled frame from a live partial. Measured on the crate this repo pins
+ * (`fulcrum-harness` 0.8.0, `normalize.rs` 540-558, the two arms this sentence is about):
+ * `tool_execution_end{result}` and `tool_execution_update{partial_result}` BOTH emit
+ * `"sessionUpdate": "tool_call_update"` with the result in `rawOutput`, and they differ
+ * in exactly one thing — the settle arm also writes `"status"` (`"completed"` /
+ * `"failed"`) and the partial arm writes NO `status` key at all.
+ *
+ * So `status` is a discriminator in principle, and this guard does not use it. That is a
+ * decision and not an oversight: whether a PARTIAL can carry a complete `advanceAdvice` is
+ * the PRODUCER's guarantee, and nothing here has measured it — the instruction is built
+ * when the `mark_done` handler runs and attaches to that call's result, and a claim can be
+ * answered once. A `status === "completed"` clause would be a heuristic pinned to an
+ * incidental field of a third-party normaliser (an absent key and an unknown future status
+ * both read as "not final", so the failure mode it introduces is a launch that silently
+ * stops firing — the exact shape this feature exists to remove, manufactured on this side).
+ * If a partial carrying an instruction is ever OBSERVED, the right fix is to settle
+ * finality where finality is decided — the normaliser — and not to guess at it here. */
 export function readAdvanceAdvice(update: AcpSessionUpdate): AdvanceAdvice | null {
   // THE FRAME PIN. `tool_call` is the announcement — the tool has not run, so there
   // is no decision to read, whatever a fixture claims is sitting under it.
@@ -172,10 +193,12 @@ export function readAdvanceAdvice(update: AcpSessionUpdate): AdvanceAdvice | nul
  *  for "do not launch".
  *
  *  `advance` is the ONLY field obeyed, and `destination !== null` is not a proxy for
- *  it. The `already_advanced` arm resolves a destination internally (its dedupe has
- *  to know the column to look for) and then refuses to advance — so a reader keyed on
- *  the row would launch the link the claim path already launched, and the settle
- *  fallback exists precisely because that claim may have gone unread.
+ *  it. That is a rule about the payload and NOT a defence against a smuggled row: Rust
+ *  answers the `already_advanced` arm with `destination: None` (arm 3 of `advise.rs`) —
+ *  the row its dedupe matched is a local read for the lookup and is never serialised. So
+ *  the sentence to keep is the short one: a refusal is not an instruction, and a row is
+ *  never evidence that the chain was told to move. Keying on the row instead would make
+ *  every future arm that carries a row for its own reasons an instruction to launch.
  *
  *  All four fields come from the one row (ADR 0098), so the move, the Skill token and
  *  the extra prompt cannot name three different columns. `launches` is left unset:

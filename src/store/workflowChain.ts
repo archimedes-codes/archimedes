@@ -123,6 +123,18 @@ import type { TaskLaunchOutcome } from "./taskLaunch";
  * including the `max_tokens` / `cancelled` whitelist arm, which used to close
  * unconditionally — a model that claimed (launching its next link) and then got cut off
  * would have reset the very budget D20 exists to protect, with no `stop_reason` changing.
+ *
+ * THE GATE IS ON EVERY CLOSE PATH, AND THAT IS A CODE FACT AND NOT A BORROWED ONE.
+ * `finishLink`'s three closes (the guard trip, the skipped-move note, and the success
+ * arm's `manual`) sit behind the same test, which is where they used NOT to be: they were
+ * safe only because Rust's arm 3 returns `already_advanced` before its arms 6/7, so an
+ * `advance: true` payload always happens to carry `alreadyLaunched: false`. Resting a
+ * spend bound on the ORDER of `if`s in another language, asserted by nothing on this side,
+ * is the failure this repo keeps cataloguing — an arm reorder would have opened the bound
+ * with every TypeScript test green. The pins for the gated behaviour are in
+ * `workflowChain.test.ts`'s D20 block, and they are DEFENSIVE: none of them claims Rust
+ * emits an `advance: true` + `alreadyLaunched: true` payload today (it cannot), only that
+ * this side does not close a run on one.
  */
 
 /** The settle this runtime was called on: everything the edge already knows, so this
@@ -401,9 +413,14 @@ export async function advanceWorkflowChainOnSettle(
   // cannot rethrow — a line in the Session it failed in.
   const advice = await workflowAdvanceAdvice(settle.sessionId, costDeltaUsd);
 
-  // ── 3. The instruction. `destinationOf` is the ONLY reading of `advance`: it returns
-  // null for every non-advancing reason, including `already_advanced`, whose payload
-  // carries a resolved destination because its dedupe had to resolve one to answer.
+  // ── 3. The instruction. `destinationOf` is the ONLY reading of `advance`: `advance` is
+  // the authority and a row is never a proxy for it. It returns null for every
+  // non-advancing reason, `already_advanced` among them — and note the reason is NOT that
+  // the dedupe leaves a resolved row sitting on the payload for a careless reader to trip
+  // on. Rust answers that arm with `destination: None` (arm 3 of `advise.rs`); the row its
+  // dedupe looks at is a local read for the lookup and is never serialised. So nothing on
+  // this side is defending against a smuggled row — the guard is simply that a refusal is
+  // not an instruction, whatever its `destination` field happens to hold.
   const destination = destinationOf(advice);
   if (destination !== null) {
     // Does the chain continue past the column we are about to arrive in? Read from the
@@ -491,10 +508,30 @@ async function finishLink(
   next: TaskLaunchDestination,
   chainEndsHere: boolean,
 ): Promise<void> {
+  // THE SAME GATE AS ARM 5, and it binds here too. `alreadyLaunched` is the mechanical
+  // test for "the run this link stepped is still live", and a close from inside the link
+  // resets it exactly as a close from the refusal arms would: `workflowRunStep`'s `None`
+  // branch re-INSERTs at `steps = 1` with `cost_usd` NULL, so a 20-step bound becomes 20
+  // steps PER LINK and a ceiling becomes a per-link allowance.
+  //
+  // Rust cannot answer `advance: true` with `alreadyLaunched: true` today — its arm 3
+  // returns `already_advanced` before the advancing arms — so this gate is currently
+  // unreachable, and that is precisely why it belongs HERE rather than in a comment: the
+  // un-gated version rested on an arm ORDER in another language, asserted by nothing on
+  // this side, and an arm reorder would open the spend bound silently. The gate makes the
+  // header's sentence true OF THE CODE instead of true of Rust's current `if` chain.
+  const mayClose = !advice.alreadyLaunched;
+  /** Record a stop, or say it without recording it. A refusal on a launched link is still
+   *  TRUE and still worth a transcript line — it is only the CLOSE that is withheld. */
+  const stopOrSay = async (reason: string, sentence: string): Promise<void> => {
+    if (mayClose) {
+      await stopChain(settle, advice, reason, sentence);
+      return;
+    }
+    tellWhyStopped(settle.sessionId, sentence);
+  };
   const refused = async (why: string): Promise<void> => {
-    await stopChain(
-      settle,
-      advice,
+    await stopOrSay(
       "launch_refused",
       `The auto-advance chain could not start a Session in \`${next.label}\` — ${why} ` +
         // "The card is where it was" was FALSE in the guard-trip arm: a guard trip means
@@ -520,9 +557,7 @@ async function finishLink(
       // would write "the card moved to Implement" into the chain's history for a card a
       // person can see sitting in Research, which is the record-level version of the
       // swallowed refusal this function exists to stop.
-      await stopChain(
-        settle,
-        advice,
+      await stopOrSay(
         "launch_refused",
         `The auto-advance chain could not move the card into \`${next.label}\` — ` +
           `${outcome.note} The Session that started is working the column the card is ` +
@@ -534,7 +569,11 @@ async function finishLink(
     await refused(err instanceof Error ? err.message : String(err));
     return;
   }
-  if (chainEndsHere) {
+  // The success arm's close. Silent when the gate is shut, and that is the honest half
+  // rather than a convenience: `manual`'s sentence claims "the chain ends here", which is
+  // the very claim a withheld close refuses to make. A launched link keeps its run open for
+  // the link that already launched — arm 4's rule, applied to the same field.
+  if (chainEndsHere && mayClose) {
     // `"manual"` is the record's own vocabulary for "a person's column took over"
     // (`workflowRunClose`'s doc names it). The four `ChainStop` spellings are the BOUND
     // vocabulary, and this is not a bound — nothing tripped, the graph simply ran out.

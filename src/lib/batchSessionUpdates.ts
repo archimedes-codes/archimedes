@@ -43,6 +43,27 @@ export interface SessionUpdateBatchItem {
  * reach up into `store/` (`layerBoundary.test.ts`) and `store/advanceAdvice.ts` owns what
  * an advance advice IS. The hot-path cost is one call per frame over a batch the module
  * has already built, and the callback's own first check is a string compare.
+ *
+ * ## A DROPPED BATCH IS TOLERATED, and the settle fallback is what makes that safe
+ *
+ * Two ways a frame never reaches `onAdvice`, both left unfixed ON PURPOSE:
+ *
+ *  1. **`apply` throws.** The callback is the statement after it, so a reducer that
+ *     rejects on one batch skips `onAdvice` for that batch entirely — including any claim
+ *     sitting in it.
+ *  2. **A batch is pending when the page goes away.** There is no flush and no dispose:
+ *     `App.tsx` unlistens on unmount, but a frame already scheduled and never run dies
+ *     with the module closure holding it.
+ *
+ * Neither gets a flush, and the reason is that the claim is NOT the only path to the
+ * launch. `store/workflowChain.advanceWorkflowChainOnSettle` runs on the SETTLE of the
+ * turn that claimed, asks the same Rust decider the same question, and advances the same
+ * link — Rust's `task_sessions` dedupe (`alreadyLaunched`) is what stops the pair from
+ * launching it twice, which is why a consumed claim makes the settle answer
+ * `already_advanced` and stand down. A dropped claim therefore costs LATENCY (the card
+ * advances at the settle instead of mid-turn) and not the advance. That is D14's accepted
+ * cost, stated here so the next reader sees the fallback rather than reaching for a
+ * `flush()` that would add a second owner of a decision Rust already owns.
  */
 export function createBatchedSessionUpdate(
   apply: (items: SessionUpdateBatchItem[]) => void,
@@ -62,6 +83,12 @@ export function createBatchedSessionUpdate(
         apply(batch);
         // After `apply`, and only when a callback was actually wired — every existing
         // caller passes two arguments and must keep paying exactly what it pays today.
+        // NOTE the ordering consequence, documented in the header: if `apply` throws, this
+        // line is skipped and the batch's claim with it. No `try` here on purpose — that
+        // throw is the reducer's failure and the frame's uncaught error is how the app
+        // reports every other reducer failure, and muting it to protect the claim would
+        // trade a loud break for a silent one. The claim is not lost either way: the settle
+        // fallback is the safety net, which is why there is no `flush()` either.
         onAdvice?.(batch);
       });
     }
