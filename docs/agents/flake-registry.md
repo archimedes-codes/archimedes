@@ -322,7 +322,8 @@ Two rules apply to every entry here:
   vanished-path tolerance written for this probe (`layerBoundary.test.ts:139`/`:343`/`:389`,
   `classNameConvention.test.ts:113`/`:330`, `themeTokens.test.ts:836`/`:1365`/`:1408`,
   `tauriBarrel.test.ts:61`, `tauriBoundary.test.ts:86`, `paletteTestKit.ts:323`/`:382`, and
-  `sourceSweep.ts:17`, which is the tolerance's definition rather than a second copy of it). The other
+  `sourceSweep.ts:101`/`:108` (`const VANISHED_CODES` and its exported predicate
+  `isVanishedError`), which are the tolerance's definition rather than a second copy of it). The other
   three do not carry one: `paletteTestKit.test.ts` deliberately reads with `named()`, not `listed()`
   (`:22-23`), so its pin goes red rather than skipping, `sourceSweep.test.ts` drives the mechanism on
   `.tmp` probes it plants itself, and `paletteCompleteness.test.ts` routes its `.tsx` sweep through the
