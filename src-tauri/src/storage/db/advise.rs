@@ -114,7 +114,7 @@ use super::{
 ///
 /// The frozen-slug case is NOT this arm's, and the doc used to claim it was: a link
 /// whose frozen slug a `delete_stage` removed has `launched == None`, so arm 4 has
-/// already returned `not_automatic` two arms earlier and this arm is never reached.
+/// already returned `not_automatic` one arm earlier and this arm is never reached.
 /// `a_link_whose_launching_column_is_gone_advances_nowhere` asserts exactly that
 /// (`tests/advise.rs`), so the sentence a gone column earns is "this column is not
 /// automatic, a person moves it" — half-true about a card with no column, but it

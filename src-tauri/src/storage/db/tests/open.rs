@@ -10,9 +10,9 @@
 //! The mirror (ADR 0113) gives every production sibling a test child of the same
 //! name; this child is the one that mirrors the PARENT, because `open`, `gate`,
 //! `SCHEMA` and `LAST_ACTIVITY` stay in `mod.rs` — the gate-count pin
-//! (`the_three_task_tables_are_in_schema_and_have_no_gate_entry`) reads this
-//! parent's source text and counts the gates inside `open`, so moving them
-//! would move the pin's premise.
+//! (`each_cluster_schema_omits_exactly_one_gated_column`, counting through
+//! [`gated_columns_in_open_source`]) reads this parent's source text and counts
+//! the gates inside `open`, so moving them would move the pin's premise.
 
 use crate::storage::db::*;
 
