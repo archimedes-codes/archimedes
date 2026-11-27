@@ -241,6 +241,28 @@ function resolveStage(
   // "cannot write it". Guessing is a refused write and an error line under a click that
   // succeeded. A TRUSTED caller does hold a row: the advice's, read from the database.
   if (columns === undefined) {
+    // F5: A card ALREADY in the destination needs no move, and the same-slug guard used to
+    // sit BELOW this early return, so the slice-free arm asked for a move it could not
+    // need. That is not merely a wasted round trip: `Db::move_task` never lists a column's
+    // own slug in its own `next_slugs`, so under `board_strict = 1` the write is REFUSED,
+    // a refusal out of the slice-free arm answers `null`, and `launchTaskSession` turns a
+    // `null` into a throw and the chain into `launch_refused` — on a card sitting exactly
+    // where the chain wanted it.
+    //
+    // `{ slug: null }` with NEITHER `absent` NOR `sliceFree` is the shape that makes a
+    // no-op a no-op rather than a refusal: `slug === null` skips the move, so there is no
+    // `landed !== slug` comparison to throw on, and the absence of `absent` means no
+    // `missingColumnNote` — a column the card is already in is not a column this Space
+    // lacks. The Session then starts on the `TaskRow` as held, which is the stage the card
+    // is really in — exactly what the `<task stage>` block has to carry.
+    //
+    // Gated on `trusted`, and the loaded arm's identical guard below is deliberately NOT
+    // lifted up here: a LOADED slice that lacks the column is the STALE case, and that one
+    // must keep its note even when the stored slug matches — `TaskDetailDialog` renders the
+    // note, and `workflowChain.finishLink` records it as `launch_refused`, both of which
+    // are the honest reading of a slice this window can positively see is out of date. Only
+    // the arm with NO slice to contradict changes.
+    if (trusted && task.stageSlug === wanted) return { slug: null };
     // `sliceFree` is the mode the MOVE needs, not just this function's answer: with no
     // slice, `useTasks.moveTask`'s default arm refuses ("No board loaded for this
     // Space.") and a refusal here is a throw and a `launch_refused` on a write that
@@ -565,8 +587,14 @@ export async function launchTaskSession(
  * an `ask` gate; `AskQuestionCard` renders only under `ChatStream`; and `App`'s view
  * ternary renders the board INSTEAD of `ChatStream`. This function is called from inside
  * the turn that is still running, so awaiting a launch here would hold the turn on a gate
- * that has no renderer. The `.catch` is therefore load-bearing and not decoration:
- * nothing upstream awaits, so a rejection would be reported nowhere.
+ * that has no renderer. Nothing upstream awaits, so **a rejection would be reported
+ * nowhere** — and that is not a hypothetical, it is what this path used to do: the only
+ * `try` in `carryOutClaim` wrapped the launch, while `getTask` and the two catalog reads
+ * sat outside it, so an IPC failure on a read vanished. The reporting is therefore in
+ * TWO layers, and both are load-bearing rather than decoration: the body's own `try`
+ * covers every `await` it makes (a read that fails is recorded, not lost), and the
+ * `.catch` on the dispatch below is the belt for the one failure the body cannot report
+ * — a throw from the reporter itself.
  *
  * ## Why the catalogs are fetched here
  *
@@ -609,50 +637,87 @@ export function consumeAdvanceAdvice(
   const taskId = advice?.taskId;
   const spacePath = advice?.spacePath;
   if (destination === null || taskId == null || spacePath == null) return false;
-  void carryOutClaim(sessionId, spacePath, taskId, destination);
+  // THE BELT. `carryOutClaim` reports its OWN failures — every `await` it makes sits in
+  // a `try` that records the failure in the claimant's transcript — so reaching this
+  // `catch` means the reporter itself threw (a store action that rejects while it is
+  // appending the line). It is `console.error` and nothing more, and that is deliberate:
+  // reporting through the same mechanism that just failed would be a rejection raised
+  // from inside the handler for it, which is an unhandled rejection wearing a `.catch`.
+  // The belt's job is that the failure is LOUD somewhere rather than nowhere.
+  void carryOutClaim(sessionId, spacePath, taskId, destination).catch((err: unknown) => {
+    console.error(
+      `The advance advice for ${taskId} failed, and the failure could not be recorded ` +
+        `in the Session it was claimed in:`,
+      err,
+    );
+  });
   return true;
 }
 
 /** The claim path's async half: read the card, read the catalogs, dispatch. Split from
- *  the guard above so the hot path allocates nothing. */
+ *  the guard above so the hot path allocates nothing.
+ *
+ *  EVERY `await` here is inside the `try`, and that is the fix rather than a style.
+ *  `getTask` and the two catalog reads are raw `invoke` wrappers, and the version of
+ *  this function that wrapped only the launch lost their rejections entirely: nothing
+ *  upstream awaits this promise, so the launch was gone with no console line and no
+ *  transcript line. A read this path cannot make is a launch it cannot make, and the
+ *  claimant's Session is where that fact belongs — the board may not be mounted. */
 async function carryOutClaim(
   sessionId: string,
   spacePath: string,
   taskId: string,
   destination: TaskLaunchDestination,
 ): Promise<void> {
-  // The card, read fresh. `launchTaskSession` needs the `TaskRow` (its `<task>` block,
-  // its number, its stored stage), and the claim path has never held one. `null` is a
-  // real answer — the card is gone — and launching on a fabricated row would put a
-  // `<task number>` on the wire that names a card the database does not have.
-  const task = await getTask(taskId);
-  if (task === null) {
-    console.error(
-      `An advance advice named ${taskId}, which this window cannot read — nothing launched.`,
-    );
-    return;
-  }
-  const [skills, agents] = await Promise.all([
-    listSkills(spacePath),
-    listAgentDefinitionsForSpace(spacePath),
-  ]);
-  // DISPATCHED, NOT AWAITED, for the deadlock the header records. The outcome is
-  // observed (a refusal is a fact a person needs, and this frame's transcript is the one
-  // surface guaranteed to be on screen) and the TURN is never waited on.
   try {
-    await launchTaskSession(spacePath, task, destination, { skills, agents });
-  } catch (err) {
-    console.error(`The advance advice could not be carried out for ${taskId}:`, err);
-    useSessions
-      .getState()
-      .addSystemLine(
-        // The Session the CLAIM was made in — the turn this frame belongs to, and the
-        // transcript the person is actually watching. Not the Session the advice
-        // launched: a refusal to move is news about the turn that just asked.
-        sessionId,
-        `The card was not moved to \`${destination.label}\` — ` +
-          `${describeIpcError(err)} (\`launch_refused\`).`,
+    // The card, read fresh. `launchTaskSession` needs the `TaskRow` (its `<task>` block,
+    // its number, its stored stage), and the claim path has never held one. `null` is a
+    // real answer — the card is gone — and launching on a fabricated row would put a
+    // `<task number>` on the wire that names a card the database does not have.
+    const task = await getTask(taskId);
+    if (task === null) {
+      console.error(
+        `An advance advice named ${taskId}, which this window cannot read — nothing launched.`,
       );
+      return;
+    }
+    const [skills, agents] = await Promise.all([
+      listSkills(spacePath),
+      listAgentDefinitionsForSpace(spacePath),
+    ]);
+    // DISPATCHED, NOT AWAITED, for the deadlock the header records. The outcome is
+    // observed (a refusal is a fact a person needs, and this frame's transcript is the one
+    // surface guaranteed to be on screen) and the TURN is never waited on.
+    try {
+      await launchTaskSession(spacePath, task, destination, { skills, agents });
+    } catch (err) {
+      console.error(`The advance advice could not be carried out for ${taskId}:`, err);
+      useSessions
+        .getState()
+        .addSystemLine(
+          // The Session the CLAIM was made in — the turn this frame belongs to, and the
+          // transcript the person is actually watching. Not the Session the advice
+          // launched: a refusal to move is news about the turn that just asked.
+          sessionId,
+          `The card was not moved to \`${destination.label}\` — ` +
+            `${describeIpcError(err)} (\`launch_refused\`).`,
+        );
+    }
+  } catch (err) {
+    // A READ failed, so there was no launch to refuse. Recorded the way this file
+    // records everything it cannot rethrow — a line in the Session it failed in — and
+    // the sentence says the operative half: nothing was launched, so the card is where
+    // it was and the person can move it themselves.
+    console.error(
+      `The advance advice for ${taskId} could not be read (the card, the skills or the ` +
+        `agents):`,
+      err,
+    );
+    useSessions.getState().addSystemLine(
+      sessionId,
+      `The auto-advance chain could not launch \`${destination.label}\` — ` +
+        `${describeIpcError(err)} (nothing launched; the card stayed where it was).`,
+    );
   }
 }
 

@@ -16,8 +16,12 @@ import { describeIpcError } from "../lib/ipcError";
  * a SECOND arm on that verb — a move whose endpoints an auto-advance chain declared
  * rather than a board slice confirmed (D19). Two arms of one write, plus the wiring,
  * do not fit in the headroom, so the verb moved here rather than the ledger moving.
- * That is the shape `AGENTS.md` prescribes anyway: *the default move is to extract*,
- * and ADR 0113's mirror rule gives the new file its test sibling.
+ * That is the shape `AGENTS.md` prescribes anyway: *the default move is to extract*, and
+ * ADR 0113's mirror rule gives the new file its test sibling — `taskMove.test.ts`, which
+ * is where the slice-free arm's REFUSAL is pinned directly. Until that sibling existed
+ * this paragraph cited a file that did not, and the consequence was measurable rather
+ * than cosmetic: mutating the arm's `catch` to `return toStageSlug` — the one-line change
+ * that turns a refused move into a reported success — left 167 tests green.
  *
  * ## The two arms, and why the second one exists
  *
@@ -222,7 +226,16 @@ export async function moveTaskVerb(
  *  honest half: the caller reads the `null` and records the refusal in the transcript
  *  of the Session that caused it, which is the one surface guaranteed to be on screen.
  *  Writing the store's `error` would put the sentence where nobody is looking and
- *  imply a second, unowned report of the same failure. */
+ *  imply a second, unowned report of the same failure.
+ *
+ *  NO SAME-SLUG SKIP, and that is where the skip belongs rather than here. A card already
+ *  in `toStageSlug` needs no write, but this arm holds only the slug it was asked to move
+ *  TO — it cannot know where the card is without reading a slice that by definition is not
+ *  loaded, and adding a `get_task` to ask would put a second read on the chain's hot path.
+ *  `taskLaunch.resolveStage` holds the `TaskRow`, so it catches the case for BOTH arms
+ *  before the verb is reached (`taskLaunch.test.ts` pins that). The loaded arm's own guard
+ *  above stays as the verb's second line of defence for a direct caller — `tasks.test.ts`
+ *  pins that half, and `taskMove.test.ts` pins this arm's answers. */
 async function moveWithoutBoard(
   spacePath: string,
   taskId: string,

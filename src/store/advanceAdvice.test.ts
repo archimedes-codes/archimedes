@@ -278,9 +278,15 @@ describe("destinationOf — one row answers all four fields (ADR 0098)", () => {
     // `advance` is the only field a caller obeys, so `advance: false` must answer
     // `null` here whatever else the payload holds — a row on a refusal is a payload
     // this side cannot explain, and launching on it would move a card Rust refused to
-    // move. `already_advanced` is the case that matters: its dedupe ran against a
-    // RESOLVED destination, so a reader keyed on `destination !== null` would launch
-    // the link the claim path already launched.
+    // move.
+    //
+    // DEFENSIVE, and the wording matters: Rust does NOT emit a row on the
+    // `already_advanced` arm. `advise.rs`'s arm 3 answers `destination: None`, and the
+    // row its dedupe matched is a local read that is never serialised. So this is a pin
+    // on a MALFORMED payload (one this guard cannot produce but a future arm, a partial
+    // write, or a newer Rust could), not a claim about a wire shape that exists today.
+    // The property it pins is the one that must survive any such change: `advance` is
+    // the authority and a row is never a proxy for it.
     const reasons = [
       "unlinked",
       "unclaimed",
