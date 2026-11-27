@@ -166,11 +166,13 @@ version is immutable, so those line numbers cannot drift.
   (`harness/loop.rs:1148-1155`). The reason is real rather than laziness: the
   desktop layer arrives by REBUILDING the manager
   (`harness/loop.rs:1111-1126`, which is safe only because it runs before any
-  server has connected), so a push after connect would drop a live child. Nothing
-  in the UI says the change waits — the one sentence the section offers about
-  sessions reads "Existing sessions are unaffected"
-  (`src/components/settings/McpSection.tsx:196`), which is true of the running
-  Worker and reads as a reassurance instead.
+  server has connected), so a push after connect would drop a live child. The
+  wait IS disclosed now, at the point of save: the add/edit dialog's
+  `<DialogDescription>` says "Switching a server off means the harness never
+  registers it; it takes effect for new sessions"
+  (`src/components/settings/McpSection.tsx:316-322`). The section's OTHER
+  session sentence, "Existing sessions are unaffected" (`:196`), is the REMOVE
+  dialog's — a separate and narrower statement, true of the running Worker.
 - **One `mcp({search})` is not cheap on a multi-server config.** `collect_tools`
   calls `list_tools` on **every** server before it answers, in a plain `for` loop
   that awaits each one in turn (`mcp/tool.rs:121-145`; the callers are
@@ -189,8 +191,16 @@ version is immutable, so those line numbers cannot drift.
   `load_servers` keeps only what
   `classify_server` accepts (`mcp/config.rs:50-56`), and `classify_server`
   answers `None` for `disabled: true` (`mcp/types.rs:278-282`) — so the switch
-  removes the row with no note anywhere. Related, and since `0cb795ff` no
-  longer mis-reported: `test_mcp_server` and `auth_mcp_server` answer a
+  removes the row with no note anywhere. And the drop is one-directional, with a
+  user-visible consequence: because the merge is a later-`insert`-wins loop
+  (`mcp/config.rs:50-56`) and a disabled entry is never `insert`ed at all, it
+  SHADOWS nothing, so a lower-precedence layer shows through — switching a server
+  off in Settings can leave a same-named server ON via `~/.pi/agent/mcp.json` or
+  the Space's `.pi/mcp.json` (the crate pins exactly this in
+  `load_servers_desktop_disabled_entries_are_dropped` (`mcp/config.rs:223`),
+  whose comment reads "a disabled entry is off, not shadow", `:234-235`).
+  Related, and since `0cb795ff` no longer mis-reported: `test_mcp_server` and
+  `auth_mcp_server` answer a
   `disabled: true` entry with the off-state's OWN sentence — "this server is
   switched off — turn it on to test it" — from a `disabled_mcp_server_error`
   pre-check that runs BEFORE `classify_server`
