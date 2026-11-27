@@ -202,17 +202,23 @@ version is immutable, so those line numbers cannot drift.
   Related, and since `0cb795ff` no longer mis-reported: `test_mcp_server` and
   `auth_mcp_server` answer a
   `disabled: true` entry with the off-state's OWN sentence — "this server is
-  switched off — turn it on to test it" — from a `disabled_mcp_server_error`
-  pre-check that runs BEFORE `classify_server`
-  (`src-tauri/src/commands/settings.rs:213-222`, called at `:231-233`,
-  `:247-249`); it is a `SettingsError::Other`, which renders `{0}` bare
+  switched off — turn it on to test it" — from the `disabled_mcp_server_error`
+  pre-check that runs BEFORE `classify_server`, at the top of BOTH commands
+  (`src-tauri/src/commands/settings.rs`, grep-anchored:
+  `disabled_mcp_server_error` `:222-231`, its `test_mcp_server` call site
+  `:240-242`, its `auth_mcp_server` one `:256-258` — names locate, the numbers
+  only date them, measured at `bac7b122`); it is a `SettingsError::Other`,
+  which renders `{0}` bare
   (`src-tauri/src/agent/errors.rs:609-610`), so the sentence stands alone
   instead of inside "invalid MCP server entry (…)". `classify_server`'s `None`
   still covers THREE causes — off (`mcp/types.rs:280-282`), legacy `sse`
   (`:283-285`), neither a usable `url` nor a usable `command` (`:327`) — and
-  the collapsed "need a `url` or a `command`" (`settings.rs:234-236`,
-  `:250-252`) still covers the OTHER two: the legacy-`sse` entry and the
-  genuinely-malformed one. The off cause is the one the pre-check took over.
+  the collapsed "need a `url` or a `command`" (the `ok_or_else` on
+  `classify_server`'s `None`, in both commands — grep
+  `SettingsError::InvalidMcpServer` in `settings.rs:243-245` and `:259-261`,
+  measured at `bac7b122`) still covers the OTHER two: the legacy-`sse` entry
+  and the genuinely-malformed one. The off cause is the one the pre-check took
+  over.
   (The `#` trigger is itself off by default — `mcpMentionsEnabled`,
   `src/components/settings/GeneralSection.tsx:61-67`.)
 - **`annotations` are discarded at the transport boundary.** `ToolInfo` is
