@@ -58,12 +58,20 @@ export interface SessionUpdateBatchItem {
  * Neither gets a flush, and the reason is that the claim is NOT the only path to the
  * launch. `store/workflowChain.advanceWorkflowChainOnSettle` runs on the SETTLE of the
  * turn that claimed, asks the same Rust decider the same question, and advances the same
- * link — Rust's `task_sessions` dedupe (`alreadyLaunched`) is what stops the pair from
- * launching it twice, which is why a consumed claim makes the settle answer
- * `already_advanced` and stand down. A dropped claim therefore costs LATENCY (the card
- * advances at the settle instead of mid-turn) and not the advance. That is D14's accepted
- * cost, stated here so the next reader sees the fallback rather than reaching for a
- * `flush()` that would add a second owner of a decision Rust already owns.
+ * link, which is why a dropped claim costs LATENCY (the card advances at the settle
+ * instead of mid-turn) and not the advance. That is D14's accepted cost, stated here so
+ * the next reader sees the fallback rather than reaching for a `flush()` that would add a
+ * second owner of a decision Rust already owns.
+ *
+ * WHAT THIS PARAGRAPH USED TO CLAIM, and no longer does: that Rust's `task_sessions`
+ * dedupe is "what stops the pair from launching it twice". It is what stops the pair in
+ * ONE order — a consumed claim followed by the settle, which is answered
+ * `already_advanced`. It cannot stop the other order, because a dedupe reads the database
+ * and the launch it would refuse has not been written yet, and `onAdvice` runs on a
+ * scheduled frame while the settle edge is deferred by nothing. The guard in THAT
+ * direction is the card's key in `store/taskLaunch.ts`'s `inFlight` set, taken by
+ * `consumeAdvanceAdvice` synchronously; this module's scheduling is what makes the race
+ * possible, so the rule belongs to the module that closes it.
  */
 export function createBatchedSessionUpdate(
   apply: (items: SessionUpdateBatchItem[]) => void,

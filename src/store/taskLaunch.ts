@@ -569,9 +569,24 @@ export async function launchTaskSession(
  * Because the claim is the moment the decision was made, and the settle edge is a
  * fallback for the case where nobody consumed it (D14's accepted cost). Both ask the
  * same Rust decider and both hand the same destination to the same executor, so they
- * cannot disagree; and Rust's dedupe (`alreadyLaunched`) is what stops the pair from
- * launching the same link twice — the settle that follows a consumed claim gets
- * `already_advanced`, which is a silent no-op for exactly that reason.
+ * cannot disagree about WHERE to go.
+ *
+ * WHAT RUST'S DEDUPE DOES NOT DO — and this header used to claim that it did. It does
+ * not make the pair safe. `alreadyLaunched` is a DATABASE read, so it can only ever
+ * stop the launch that runs after the other one has already STARTED and been recorded.
+ * That covers the ordering this function was written for — claim first, settle second,
+ * where the settle asks and is answered `already_advanced`, which is why a consumed
+ * claim makes the settle a silent no-op. It does NOT cover the other ordering, which is
+ * the one this tree produces: the advice is consumed from inside `App.tsx`'s
+ * `requestAnimationFrame` callback (`batchSessionUpdates.ts` invokes `onAdvice` inside
+ * the scheduled function), while the settle edge fires the instant `await
+ * sendPrompt(...)` resolves and is deferred by NOTHING. A settle that wins that race has
+ * launched AND RELEASED before the queued frame runs — `launchTaskSession` releases at
+ * the dispatch — so the claim arrives at a free guard and at a `task_sessions` table
+ * nobody has read since. Rust cannot refuse a launch that has not happened yet. The
+ * safety in THAT direction is the reservation below: the claim takes the card's key
+ * synchronously, on the same key `launchTaskSession` guards on, which makes the two
+ * paths mutually exclusive in either order and costs no extra IPC to ask.
  *
  * ## THE SEAM, and why it is `App.tsx`'s batcher callback
  *
@@ -615,8 +630,12 @@ export async function launchTaskSession(
  *
  * Returns whether it dispatched. `false` covers every silent arm at once — not an advice
  * frame, an advice that does not advance, an advice already launched by its own claim, a
- * card that is gone — and the caller does not care which, because all four mean "nothing
- * for you to do".
+ * card that is gone, a card whose launch is ALREADY in flight (the reservation above, held
+ * by the settle path or by a click) — and the caller does not care which, because all five
+ * mean "nothing for you to do". A held reservation is the one arm that is not merely silent
+ * but informative, and it is still not the caller's to report: the launch that holds the key
+ * owns the outcome, and `workflowChain.finishLink` records the refused one as
+ * `launch_refused`.
  *
  * `sessionId` is the Session the FRAME arrived on, which the batch item already carries.
  * It is not derived from the advice: the advice names the card it decided for, and the
@@ -643,6 +662,30 @@ export function consumeAdvanceAdvice(
   const taskId = advice?.taskId;
   const spacePath = advice?.spacePath;
   if (destination === null || taskId == null || spacePath == null) return false;
+  // THE RESERVATION, taken HERE and not inside `carryOutClaim`, and taken SYNCHRONOUSLY —
+  // no `await` may sit between the decision above and the `add` below (pinned by a source
+  // scan in `taskLaunch.claim.test.ts`, because a doc-comment cannot hold a timing rule).
+  // It is the SAME key `launchTaskSession` guards on, and it is what makes the claim and
+  // the settle mutually exclusive: the settle path funnels through that executor too, so
+  // whichever of the two gets here first holds the card's key across its own launch, and
+  // the other is refused. Deferred by one microtask this would be worthless, because the
+  // asymmetry it defends against is between a rAF-deferred claim and an UNDEFERRED settle
+  // — see the header. And it cannot be replaced by a check of `advice.alreadyLaunched`:
+  // the claim's own advice carries `alreadyLaunched: false` by construction (the dedupe
+  // matches a `task_sessions` row, and this launch has not written one yet), so a gate
+  // there would be a gate that never closes.
+  //
+  // A trip is a RETURN of `false` and not an error: an in-flight launch of this card IS
+  // the launch this advice wanted, and `finishLink` reports the refused one.
+  if (inFlight.has(taskId)) return false;
+  inFlight.add(taskId);
+  // OWNERSHIP TRANSFERS TO `carryOutClaim` HERE, and that function's `finally` is its
+  // one-shot net for every arm it can exit through — a `getTask` rejection, a card that is
+  // gone, a catalog read that fails, a launch that refuses, and a launch that fails with
+  // its own reporter. A key dropped on any of those arms makes the card un-launchable by a
+  // chain for the life of the app, which is a worse failure than the double launch this
+  // closes, so the arms are pinned one by one in `taskLaunch.claim.test.ts`.
+  //
   // THE BELT. `carryOutClaim` reports its OWN failures — every `await` it makes sits in
   // a `try` that records the failure in the claimant's transcript — so reaching this
   // `catch` means the reporter itself threw (a store action that rejects while it is
@@ -675,6 +718,21 @@ async function carryOutClaim(
   taskId: string,
   destination: TaskLaunchDestination,
 ): Promise<void> {
+  // THE ONE-SHOT NET for the reservation `consumeAdvanceAdvice` handed to this function,
+  // and the one-shot is the point (the same shape `launchTaskSession` uses for its own
+  // guard, for the same reason). Every arm that exits this function passes through the
+  // `finally` below: a `getTask` rejection, a card the database does not have, a catalog
+  // read that fails, a launch that refuses, and a launch that fails with its own reporter
+  // thrown. A key leaked on any of them makes the card un-launchable by any chain for the
+  // rest of the app's life — strictly worse than the double launch the reservation exists
+  // to prevent — and the flag is what keeps the net from deleting a key this function no
+  // longer owns once the launch has taken it (see the hand-off at the call below).
+  let claimGuardHeld = true;
+  const releaseClaimGuard = (): void => {
+    if (!claimGuardHeld) return;
+    claimGuardHeld = false;
+    inFlight.delete(taskId);
+  };
   try {
     // The card, read fresh. `launchTaskSession` needs the `TaskRow` (its `<task>` block,
     // its number, its stored stage), and the claim path has never held one. `null` is a
@@ -694,6 +752,20 @@ async function carryOutClaim(
     // DISPATCHED, NOT AWAITED, for the deadlock the header records. The outcome is
     // observed (a refusal is a fact a person needs, and this frame's transcript is the one
     // surface guaranteed to be on screen) and the TURN is never waited on.
+    //
+    // THE RESERVATION IS HANDED OVER HERE, one statement before the call, and the hand-off
+    // is atomic in the only sense that matters: `releaseClaimGuard()` and the `launchTaskSession`
+    // call sit in the same synchronous turn, and `launchTaskSession` takes the card's key
+    // at the top of its own body (`inFlight.add(task.id)`), so no other launch can slip
+    // between the release and the re-take. It has to be a hand-off rather than a hold
+    // because the executor guards on the SAME key the claim reserved — walking into it
+    // while still holding that key would have the claim refuse its OWN launch. Releasing
+    // first is also leak-proof in the arm where the executor never reaches its `add` (a
+    // `missingSkill` refusal throws above it): a released key is free for the next launch,
+    // never stranded, and the one-shot below makes this function's `finally` a no-op for a
+    // key it no longer owns — the exact mistake `launchTaskSession`'s own one-shot exists
+    // to prevent.
+    releaseClaimGuard();
     try {
       await launchTaskSession(spacePath, task, destination, { skills, agents });
     } catch (err) {
@@ -749,6 +821,16 @@ async function carryOutClaim(
       `The auto-advance chain could not launch \`${destination.label}\` — ` +
         `${describeIpcError(err)} (nothing launched; the card stayed where it was).`,
     );
+  } finally {
+    // THE NET, and the last statement of the last arm. Every exit above passes here, and
+    // the one-shot makes it a no-op once the reservation has been handed to
+    // `launchTaskSession` — so this line releases the key on the four arms that never reach
+    // the hand-off (a `getTask` rejection, a card that is gone, a catalog read that fails,
+    // and a throw from the reporter) and does nothing on the arms that did. A guard that
+    // survived any of them would make the card un-launchable for the life of the app, and
+    // the belt's own throw is no exception: a `finally` runs on the throwing path too, which
+    // is why the release is here and not at the end of the `try`.
+    releaseClaimGuard();
   }
 }
 
