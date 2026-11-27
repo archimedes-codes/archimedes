@@ -144,26 +144,42 @@ version is immutable, so those line numbers cannot drift.
   (`mcp/types.rs:280-282`). **The Settings off-switch for it exists** (it
   landed in the same run as this section, `93d4be46`, after this item was
   written). The dialog draft carries the flag (`McpDraft.disabled`,
-  `src/components/settings/McpSection.tsx:224`, grep `disabled: boolean;` —
-  names locate, the numbers only date them, measured at `93073edc`) and the
+  `src/components/settings/McpSection.tsx:235`, grep `disabled: boolean;` —
+  names locate, the numbers only date them, measured at `649b241a`) and the
   `Switch server off` control binds it for BOTH kinds, because that row sits
-  AFTER the kind ternary (`:431-439`). `draftToEntry` (`:261-284`) writes the
-  wire field (`src/lib/tauri/types.ts:1341`) OUTSIDE the `kind` branch, as
-  `if (d.disabled) entry.disabled = true;` (`:282`) — OMITTED when false, so a
+  AFTER the kind ternary (`src/components/settings/McpSection.tsx:444-448`,
+  grep `Switch server off`). `draftToEntry`
+  (`src/components/settings/McpSection.tsx:272`, grep `function draftToEntry`)
+  writes the wire field (`src/lib/tauri/types.ts:1341`) OUTSIDE the `kind`
+  branch, as `if (d.disabled) entry.disabled = true;`
+  (`src/components/settings/McpSection.tsx:293`) — OMITTED when false, so a
   clean entry stays clean and the key still means only "off". The row badges
-  it `Off` (`:127-131`) and disables Test / Authenticate (`:155`, `:166`)
-  while Edit and Remove stay live, and `entryToDraft` reads the key back as
-  `entry.disabled === true` (`:245`) — mirroring `classify_server`'s
+  it `Off` (`src/components/settings/McpSection.tsx:127-131`, grep
+  `isDisabled &&`) and DEADENS only Authenticate — its flow is interactive and
+  cannot work while the entry is not registered
+  (`src/components/settings/McpSection.tsx:155`, grep
+  `disabled={testing || authenticating || isDisabled}`). Test is NOT deadened:
+  `649b241a` dropped `isDisabled` from its predicate on purpose
+  (`src/components/settings/McpSection.tsx:177`, grep
+  `disabled={testing || authenticating}`), so clicking Test on an off row
+  reaches the command and the row ANSWERS with the off sentence rather than
+  refusing silently; Edit and Remove stay live. `entryToDraft` reads the key
+  back as `entry.disabled === true`
+  (`src/components/settings/McpSection.tsx:256`, grep
+  `disabled: entry.disabled === true`) — mirroring `classify_server`'s
   `as_bool() == Some(true)`, so a malformed `"disabled": "yes"` still edits as
-  ON. The list is still unfiltered (`:477`): an off entry is listed and
-  badged, not hidden. Switching a server off is a Settings click, not a
-  hand-edit of `settings.json`.
+  ON. The list is still unfiltered
+  (`src/components/settings/McpSection.tsx:488`, grep
+  `Object.entries(settings.mcpServers)`): an off entry is listed and badged,
+  not hidden. Switching a server off is a Settings click, not a hand-edit of
+  `settings.json`.
 - **A new or edited server takes effect for the NEXT session, not the running
   one.** `push_config_update` deliberately excludes `providers` and
-  `mcp_servers` — "the recorded residual hole (both stay session-construction
-  snapshots)" (`src-tauri/src/agent/session/router.rs:913-914`) — and sends the
-  three remaining fields (`router.rs:934-945`); crate-side, `apply_config_update`
-  has no `mcp_servers` parameter that could receive it
+  `mcp_servers` — the recorded "residual hole (both stay session-construction
+  snapshots)" (`src-tauri/src/agent/session/router.rs:913-914`, grep
+  `residual hole`) — and sends the three remaining fields
+  (`router.rs:934-945`); crate-side, `apply_config_update` has no
+  `mcp_servers` parameter that could receive it
   (`harness/loop.rs:1148-1155`). The reason is real rather than laziness: the
   desktop layer arrives by REBUILDING the manager
   (`harness/loop.rs:1111-1126`, which is safe only because it runs before any
@@ -171,18 +187,19 @@ version is immutable, so those line numbers cannot drift.
   wait IS disclosed — but for the OFF SWITCH ONLY, and inside the dialog, not at
   the point of save: the add/edit dialog's `<DialogDescription>` says
   "Switching a server off means Settings stops registering it; it takes effect
-  for new sessions" (`src/components/settings/McpSection.tsx:317-323`, grep
+  for new sessions" (`src/components/settings/McpSection.tsx:328-334`, grep
   `takes effect`; `93073edc` reworded this copy from "the harness never
   registers it" — names locate, the numbers only date them, measured at
-  `93073edc`), and that block renders while the dialog is still OPEN, i.e.
+  `649b241a`), and that block renders while the dialog is still OPEN, i.e.
   BEFORE save. It is the only such sentence (`grep -c 'takes effect'` there is
   **1**) and it names only the switch, so a plain add or edit that never
   touches it gets no disclosure at all — `saveMcpServer`
   (`src/components/settings/SettingsPage.tsx:415-419`) raises no toast and no
   notice, it updates and closes. The section's OTHER session sentence,
   "Existing sessions are unaffected"
-  (`src/components/settings/McpSection.tsx:196`), is the REMOVE dialog's — a
-  separate and narrower statement, true of the running Worker.
+  (`src/components/settings/McpSection.tsx:207`, grep that sentence), is the
+  REMOVE dialog's — a separate and narrower statement, true of the running
+  Worker.
 - **One `mcp({search})` is not cheap on a multi-server config.** `collect_tools`
   calls `list_tools` on **every** server before it answers, in a plain `for` loop
   that awaits each one in turn (`mcp/tool.rs:121-145`; the callers are
@@ -215,8 +232,9 @@ version is immutable, so those line numbers cannot drift.
   same-named desktop entry whether or not that entry is switched off
   (`load_servers_project_overrides_desktop_by_name`, `mcp/config.rs:204`) —
   plain precedence, and the order the first bullet states.
-  Related, and since `0cb795ff` no longer mis-reported: `test_mcp_server` and
-  `auth_mcp_server` answer a
+  Related, and since `0cb795ff` no longer mis-reported — and since `649b241a`
+  reachable from the row itself, because Test is not gated on the off state
+  (the item above): `test_mcp_server` and `auth_mcp_server` answer a
   `disabled: true` entry with the off-state's OWN sentence — "this server is
   switched off — turn it on to test it" — from the `disabled_mcp_server_error`
   pre-check that runs BEFORE `classify_server`, at the top of BOTH commands
