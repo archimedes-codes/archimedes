@@ -76,6 +76,7 @@ function McpRow({
   >(null);
   const isHttp = entry.url !== undefined;
   const isOAuth = entry.auth !== undefined;
+  const isDisabled = entry.disabled === true;
   const kind = isHttp ? "HTTP" : "stdio";
   const summary = isHttp
     ? entry.url
@@ -123,6 +124,11 @@ function McpRow({
             </span>
             <SettingsBadge>{kind}</SettingsBadge>
             {isOAuth && <SettingsBadge>OAuth</SettingsBadge>}
+            {isDisabled && (
+              <SettingsBadge title="Off — this server is not registered with the harness">
+                Off
+              </SettingsBadge>
+            )}
           </div>
           <div className="truncate text-ui-sm text-foreground-subtle">{summary}</div>
         </div>
@@ -146,7 +152,7 @@ function McpRow({
             size="icon-sm"
             aria-label={`Authenticate MCP server ${name}`}
             title="Sign in with OAuth"
-            disabled={testing || authenticating}
+            disabled={testing || authenticating || isDisabled}
             onClick={() => void runAuth()}
           >
             <KeyIcon className="size-3.5" />
@@ -157,7 +163,7 @@ function McpRow({
           variant="ghost"
           size="icon-sm"
           aria-label={`Test MCP server ${name}`}
-          disabled={testing || authenticating}
+          disabled={testing || authenticating || isDisabled}
           onClick={() => void runTest()}
         >
           <PlayIcon className="size-3.5" />
@@ -213,6 +219,8 @@ export interface McpDraft {
   args: string; // one arg per line
   env: string; // `KEY=VALUE` lines
   cwd: string;
+  /** Checked means OFF: the engine never registers it (`disabled: true`). */
+  disabled: boolean;
 }
 
 /** The `mcpServers` entry → draft (the form's pre-fill for the EDIT case). */
@@ -230,6 +238,10 @@ function entryToDraft(name: string, entry: McpServerEntry): McpDraft {
     args: (entry.args ?? []).join("\n"),
     env: mapToLines(entry.env),
     cwd: entry.cwd ?? "",
+    // `=== true` and not `!!entry.disabled`: a malformed `"disabled": "yes"`
+    // reads as ON, matching `classify_server`, which tests
+    // `and_then(Value::as_bool) == Some(true)`.
+    disabled: entry.disabled === true,
   };
 }
 
@@ -262,6 +274,11 @@ function draftToEntry(d: McpDraft): McpServerEntry {
     if (env) entry.env = env;
     if (d.cwd.trim() !== "") entry.cwd = d.cwd.trim();
   }
+  // `disabled` is common to both kinds, so it is written outside the branch.
+  // Omitted when false: this function's contract is that empty fields are
+  // OMITTED, and SettingsPage.test.tsx asserts saved entries with toEqual on
+  // the WHOLE object.
+  if (d.disabled) entry.disabled = true;
   return entry;
 }
 
@@ -299,7 +316,9 @@ function McpDialog({
           <DialogDescription>
             Stored in the desktop's settings.json. A Space's own MCP config
             overrides an entry here, and an entry here overrides the
-            user-level config (Space &gt; desktop &gt; user).
+            user-level config (Space &gt; desktop &gt; user). Switching a
+            server off means the harness never registers it; it takes effect
+            for new sessions.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3">
@@ -401,6 +420,23 @@ function McpDialog({
               </Field>
             </>
           )}
+          {/* Common to both kinds, so it sits AFTER the kind ternary (the
+              OAuth switch above cannot be reused: it lives inside the http
+              branch). The hand-rolled idiom matches that row — a bare `div`
+              + a `text-ui-sm text-foreground-subtle` label + `Switch`, not
+              `Field` and not `SettingsRow`. The visible label and the
+              `aria-label` stay byte-identical (the OAuth one is queried by
+              name in SettingsPage.test.tsx). */}
+          <div>
+            <div className="mb-1 text-ui-sm text-foreground-subtle">
+              Switch server off
+            </div>
+            <Switch
+              checked={draft.disabled}
+              aria-label="Switch server off"
+              onCheckedChange={(c) => set({ disabled: c })}
+            />
+          </div>
         </div>
         <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
@@ -461,6 +497,7 @@ export default function McpSection({
             args: "",
             env: "",
             cwd: "",
+            disabled: false,
           })
         }
       >

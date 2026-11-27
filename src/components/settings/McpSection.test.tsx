@@ -1,7 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import McpSection from "./McpSection";
-import { authMcpServer, testMcpServer, type AppSettings } from "@/lib/tauri";
+import {
+  authMcpServer,
+  testMcpServer,
+  type AppSettings,
+  type McpServerEntry,
+} from "@/lib/tauri";
 
 // The `WebSearchSection.test.tsx` pattern: module-path mock of the barrel,
 // spreading `importActual` so the value imports (`describeIpcError` rides in
@@ -32,6 +37,17 @@ const settings: AppSettings = {
   mcpServers: {
     oauth_srv: { url: "https://auth.example/mcp", auth: "oauth" },
     plain: { url: "https://plain.example/mcp" },
+    // A DISABLED entry, OAuth so BOTH action buttons render (Authenticate is
+    // only rendered under `(isOAuth || needsAuth)`) — the only way the "both
+    // buttons disabled" criterion below is actually exercised.
+    off_srv: { url: "https://off.example/mcp", auth: "oauth", disabled: true },
+    // A MALFORMED flag: the engine reads `disabled` through
+    // `and_then(Value::as_bool) == Some(true)`, so a non-bool is NOT disabled.
+    // The frontend must agree, hence `=== true` and not `!!entry.disabled`.
+    sloppy: {
+      url: "https://s.example/mcp",
+      disabled: "yes",
+    } as unknown as McpServerEntry,
   },
   font: { sizePx: 14, uiFamily: null, codeFamily: null },
   defaultThinkingLevels: {},
@@ -168,5 +184,186 @@ describe("McpSection (the MCP rows, ADR 0019)", () => {
     expect(
       screen.getByRole("button", { name: "Authenticate MCP server oauth_srv" }),
     ).toBeTruthy();
+  });
+});
+
+describe("McpSection: the per-server off-switch (`disabled`)", () => {
+  // NOTE: this project has NO jest-dom and no `expect.extend` (documented in
+  // `SessionsSection.test.tsx`, `PermissionsSection.test.tsx`, `SpacesList.test.tsx`,
+  // `TaskDetailDialog.test.tsx`, `UpdateSection.test.tsx`), so `toBeDisabled()`
+  // DOES NOT exist (TS2339 at `pnpm build`). Read the DOM property instead —
+  // do not re-introduce the matcher.
+  const isDisabled = (name: string): boolean =>
+    (
+      screen.getByRole("button", { name }) as HTMLButtonElement
+    ).disabled;
+
+  it("a disabled row badges Off, deadens its actions, and keeps Edit and Remove live", () => {
+    renderSection();
+    // Queried by title, NOT by text: `controls.tsx` already renders a label
+    // "Off" elsewhere in Settings, so a text query collides the moment two
+    // sections are mounted together.
+    expect(
+      screen.getByTitle("Off — this server is not registered with the harness"),
+    ).toBeTruthy();
+    // The actions that CANNOT work while the server is off.
+    expect(isDisabled("Authenticate MCP server off_srv")).toBe(true);
+    expect(isDisabled("Test MCP server off_srv")).toBe(true);
+    // The negative half: Edit and Remove are the doors back ON and OUT. A
+    // `disabled={isDisabled}` on either would lock the user out of their own
+    // server, and the whole settings suite stays green if that happens — this
+    // loop is the only thing standing between this task and that bug.
+    for (const name of ["Edit", "Remove"]) {
+      expect(isDisabled(`${name} MCP server off_srv`)).toBe(false);
+    }
+  });
+
+  it("an ordinary row keeps its Test button enabled (the contrast pair)", () => {
+    // Without this, the assertion above could pass vacuously (every button in
+    // the file disabled, say).
+    renderSection();
+    expect(isDisabled("Test MCP server plain")).toBe(false);
+    expect(isDisabled("Test MCP server oauth_srv")).toBe(false);
+  });
+
+  it("the edit dialog shows the off switch checked for a disabled draft", () => {
+    // `renderSection()` passes `dialog={null}`, so this one passes the draft
+    // directly (`McpDraft` is exported — no new export needed). This proves
+    // ONLY the render wiring: the draft is hand-built here, so `entryToDraft`
+    // and `draftToEntry` are pinned by the two round-trip tests below.
+    // `useOAuth` is FALSE while `disabled` is TRUE on purpose: with both true,
+    // `checked={draft.useOAuth}` would pass too and the assertion is a
+    // tautology (measured upstream). The two booleans must differ.
+    render(
+      <McpSection
+        settings={settings}
+        dialog={{
+          name: "off_srv",
+          kind: "http",
+          url: "https://off.example/mcp",
+          headers: "",
+          bearerTokenEnv: "",
+          useOAuth: false,
+          command: "",
+          args: "",
+          env: "",
+          cwd: "",
+          disabled: true,
+        }}
+        setDialog={vi.fn()}
+        onSave={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    expect(
+      screen
+        .getByRole("switch", { name: "Switch server off" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  it("editing a row pre-fills the switch from the entry (and a non-bool reads as on)", () => {
+    // `entryToDraft` is private, so the read is pinned through the row's own
+    // Edit button: the draft the component hands the parent IS its output.
+    const setDialog = vi.fn();
+    render(
+      <McpSection
+        settings={settings}
+        dialog={null}
+        setDialog={setDialog}
+        onSave={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit MCP server off_srv" }));
+    expect(setDialog).toHaveBeenCalledWith(
+      expect.objectContaining({ disabled: true }),
+    );
+    // The malformed `"disabled": "yes"` arrives as `false` — i.e. the server
+    // stays ON, exactly as `classify_server` reads it
+    // (`and_then(Value::as_bool) == Some(true)`). This is the only assertion
+    // that enforces `=== true` over `!!entry.disabled`, and the badge is the
+    // surface where the two would visibly disagree with the engine.
+    fireEvent.click(screen.getByRole("button", { name: "Edit MCP server sloppy" }));
+    expect(setDialog).toHaveBeenLastCalledWith(
+      expect.objectContaining({ disabled: false }),
+    );
+  });
+
+  it("saving omits the key when the switch is off and writes `disabled: true` when on", () => {
+    // `draftToEntry` is private, so the write is pinned through `onSave`'s
+    // second argument. NOTE: no `rerender()` here — `McpDialog` does
+    // `useState(initial)`, so it copies the prop ONCE and a re-render with a
+    // new `dialog` prop cannot reach the dialog's internal draft; the second
+    // Save would silently re-submit the unchecked one. Clicking the switch is
+    // also the only thing that pins `onCheckedChange`.
+    const onSave = vi.fn();
+    const draft = {
+      name: "n",
+      kind: "http" as const,
+      url: "https://n/mcp",
+      headers: "",
+      bearerTokenEnv: "",
+      useOAuth: false,
+      command: "",
+      args: "",
+      env: "",
+      cwd: "",
+      disabled: false,
+    };
+    render(
+      <McpSection
+        settings={settings}
+        dialog={draft}
+        setDialog={vi.fn()}
+        onSave={onSave}
+        onRemove={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    // The whole-object form: `{url}` with NO `disabled` key. `draftToEntry`'s
+    // contract is that empty fields are OMITTED, and `SettingsPage.test.tsx`
+    // asserts saved entries with `toEqual` on the WHOLE object.
+    expect(onSave).toHaveBeenLastCalledWith("n", { url: "https://n/mcp" });
+    fireEvent.click(screen.getByRole("switch", { name: "Switch server off" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenLastCalledWith("n", {
+      url: "https://n/mcp",
+      disabled: true,
+    });
+
+    // The stdio half. Nothing else in the repository builds an stdio draft
+    // with `disabled: true`, so without this block, moving the write INSIDE
+    // the `kind === "http"` branch — the exact defect this task's design note
+    // exists to prevent — leaves the whole suite and `tsc` green (measured
+    // upstream).
+    cleanup();
+    const onSaveStdio = vi.fn();
+    render(
+      <McpSection
+        settings={settings}
+        dialog={{
+          name: "n",
+          kind: "stdio",
+          url: "",
+          headers: "",
+          bearerTokenEnv: "",
+          useOAuth: false,
+          command: "npx",
+          args: "",
+          env: "",
+          cwd: "",
+          disabled: true,
+        }}
+        setDialog={vi.fn()}
+        onSave={onSaveStdio}
+        onRemove={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSaveStdio).toHaveBeenLastCalledWith("n", {
+      command: "npx",
+      disabled: true,
+    });
   });
 });
