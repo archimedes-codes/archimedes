@@ -788,6 +788,38 @@ fn an_unbilled_chain_cannot_trip_any_ceiling_including_a_zero_one() {
     );
     assert_eq!(run_row(&db, &task_id), Some((1, None)));
 
+    // THE DELTA ARM, inside this test. `None` is what the claim path sends and what
+    // every case above exercises; the `Some(delta)` arm's baseline —
+    // `banked.unwrap_or(0.0) + delta` — was guarded here by NOTHING, and it is the
+    // arm a "tidy" fail-open targets: treating `banked: None` as "no spend" instead of
+    // "no FIGURE" would let a first-ever $50 settle sail past a $10 ceiling.
+    //
+    // `Some(0.0)` against this run (open, `cost_usd` still NULL) is the tightest
+    // probe of that baseline, and the honest answer is that it TRIPS: a REPORTED zero
+    // is a figure, `0.0 + 0.0 >= 0.0`, and that is `>=` behaving as designed — the
+    // same arithmetic both of `workflow_run_step`'s write arms perform
+    // (`COALESCE(cost_usd, 0.0) + ?2`, and the INSERT that stores the delta verbatim).
+    // What cannot trip is the ABSENCE of a figure, which is `a` above; a reported $0.00
+    // is not an absence, and the pair of assertions is what makes this a NULL rule
+    // rather than a broken ceiling.
+    let reported_zero = advice(&db, "s-free", None, Some(0.0));
+    assert!(
+        !reported_zero.advance,
+        "a REPORTED $0.00 delta against a $0.00 ceiling trips even on a run nothing \
+         has banked on; got {:?}",
+        reported_zero.reason
+    );
+    assert_eq!(
+        reported_zero.reason, "cost_ceiling",
+        "and it is the ceiling and not another arm that answered"
+    );
+    assert_eq!(
+        run_row(&db, &task_id),
+        Some((1, None)),
+        "the ceiling is READ-ONLY (D18): no second step, and the run's figure is \
+         still NULL — the fold is arithmetic, not a write"
+    );
+
     // The SAME chain, once a figure lands, does trip — which makes the case above a
     // NULL rule and not a broken ceiling.
     db.workflow_run_step(&space, &task_id, Some(0.0))

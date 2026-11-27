@@ -1,11 +1,17 @@
-//! Tests for what `db/mod.rs` keeps: `Db::open` and its twenty migration gates,
+//! Tests for what `db/mod.rs` keeps: `Db::open` and its migration gates,
 //! `SCHEMA`, `LAST_ACTIVITY`, `set_journal_pragmas`.
+//!
+//! The gate COUNT is deliberately not stated here, because it moves with every gated
+//! column and a stale figure reads as a broken guard. Measure it when you need it:
+//! `grep -c 'gate(&mut conn' src-tauri/src/storage/db/mod.rs`, and the `(table,
+//! column)` surface itself is DERIVED by [`gated_columns_in_open_source`] below rather
+//! than listed.
 //!
 //! The mirror (ADR 0113) gives every production sibling a test child of the same
 //! name; this child is the one that mirrors the PARENT, because `open`, `gate`,
 //! `SCHEMA` and `LAST_ACTIVITY` stay in `mod.rs` — the gate-count pin
 //! (`the_three_task_tables_are_in_schema_and_have_no_gate_entry`) reads this
-//! parent's source text and counts the twenty gates inside `open`, so moving them
+//! parent's source text and counts the gates inside `open`, so moving them
 //! would move the pin's premise.
 
 use crate::storage::db::*;

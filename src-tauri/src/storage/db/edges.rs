@@ -20,15 +20,17 @@
 //!
 //! # Why the walk is in Rust and not in SQL
 //!
-//! `delete_stage` argues this for the same column and the
-//! here verbatim (`stages.rs`): the candidates come back as raw JSON and the match
-//! happens through the SAME lenient parser the reader uses, *rather than via
-//! `json_each`: a cell SQLite cannot parse would error inside the SQL, and a cell
+//! `delete_stage` argues this for the same column (`stages.rs`, Refusal 2), and its
+//! sentence is carried here with ONE word changed — that file refuses to *block a
+//! delete*, this one refuses to *block the move*: the candidates come back as raw JSON
+//! and the match happens through the SAME lenient parser the reader uses, *rather than
+//! via `json_each`: a cell SQLite cannot parse would error inside the SQL, and a cell
 //! this file reads as "unconfigured" must not be able to* block *the move — it
 //! cannot be pointing anywhere, because nothing reads it as an edge.* A gate that
 //! answered `Sqlite` where the board answers "unconfigured" would turn a foreign
 //! writer's garbage into a refusal, which is the fail-closed twin of the
-//! silently-shrunk workflow ADR 0099 refuses.
+//! silently-shrunk workflow ADR 0099 refuses. Same argument, same column, one verb
+//! swapped — which is why it is borrowed rather than re-derived.
 //!
 //! # Why it takes `&Connection` and not `Db::list_stages`
 //!
@@ -122,6 +124,18 @@ pub(super) fn forward_reachable(
     // `next_slugs` comes back as the RAW cell and is decoded below through the
     // same lenient parser the board read uses — see the module doc for why that is
     // a correctness requirement and not a style choice.
+    //
+    // NO `ORDER BY`, and that is deliberate rather than an oversight worth "fixing".
+    // The board read orders `sort_order ASC, slug ASC`; this one does not, because
+    // nothing here reads the result in order — the two maps below are keyed lookups and
+    // the BFS asks only set membership ("is `to` among this column's successors?"), so
+    // SQLite's arbitrary row order cannot change an answer. The honest limit is worth
+    // naming: `by_order`'s per-`sort_order` Vec therefore has an arbitrary element
+    // ORDER. That is invisible to this function, but `nextStepOf` elsewhere DOES pick
+    // the HEAD of its next-step list and so does depend on board order — so the rule
+    // for a future editor is: if a caller ever starts reading a list built here
+    // positionally, this query gains the board read's `ORDER BY sort_order ASC,
+    // slug ASC` in the same change.
     let mut stmt =
         conn.prepare("SELECT slug, next_slugs, sort_order FROM stages WHERE space_path = ?1")?;
     let rows: Vec<(String, Option<String>, i64)> = stmt

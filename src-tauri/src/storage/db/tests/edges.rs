@@ -18,14 +18,16 @@
 //! reddens here naming the graph, not in a gate test where the reader has to work
 //! out which of the two gates spoke.
 //!
-//! WHY THIS FILE CARRIES TWO `expect("db mutex poisoned")` SITES
-//! (AGENTS.md's poisoned-mutex rule): one in [`reachable`], to hand the BFS the
-//! guard it is called under in production, and one in the unparseable-cell test,
-//! to write a `next_slugs` value `set_stage_next` would refuse. Both guard `Db`'s
-//! ONE shared `rusqlite::Connection` — a single, shared resource a panic
-//! mid-transaction can leave genuinely unusable — so the panic spelling is the
-//! correct one and the worked example to cite is the production
-//! `record_messages_batch` (`docs/agents/census.md` keeps the instrument).
+//! WHY THIS FILE CARRIES ITS `expect("db mutex poisoned")` SITES, and where they are
+//! (AGENTS.md's poisoned-mutex rule): [`reachable`], to hand the BFS the guard it is
+//! called under in production, and [`raw_execute`], to write a `stages` value no `Db`
+//! verb would accept — an undecodable `next_slugs` cell, and a `sort_order` two
+//! columns are not supposed to share. Both guard `Db`'s ONE shared
+//! `rusqlite::Connection` — a single, shared resource a panic mid-transaction can
+//! leave genuinely unusable — so the panic spelling is the correct one and the worked
+//! example to cite is the production `record_messages_batch` (`docs/agents/census.md`
+//! keeps the instrument, and it counts no site here on purpose: a number in a comment
+//! is the thing this branch's other fix exists to remove).
 
 use crate::storage::db::*;
 
@@ -37,9 +39,29 @@ use super::support::*;
 /// raise is `Sqlite`, and a read of a table the test just wrote has no honest
 /// reason to fail — a real one is a bug in the query, and this says so.
 fn reachable(db: &Db, space: &str, from: &str, to: &str) -> bool {
-    // THE ONE SITE IN THIS FILE. See the header for the rationale.
+    // One of this file's TWO panic sites — see the header for the rationale.
     let guard = db.conn.lock().expect("db mutex poisoned");
     super::super::edges::forward_reachable(&guard, space, from, to).expect("the BFS only reads")
+}
+
+/// One raw `UPDATE` on `stages`, for the two shapes no `Db` verb will write.
+///
+/// Both cases below need a row a writer refuses to produce — a `next_slugs` cell that
+/// is not a JSON array (`set_stage_next` validates and would reject it), and a
+/// `sort_order` two columns share (`reorder_stages` writes a dense 0-based index and
+/// cannot collide). The FK-free, UNIQUE-free `stages` schema makes both reachable from
+/// a foreign writer, which is exactly why the BFS must survive them, so the test that
+/// pins that survival has to write them.
+///
+/// ONE helper and not two inline lock-and-execute blocks, so the file holds one panic
+/// site for raw writes instead of one per test — the header's site count is a claim a
+/// reader checks, and a second `expect` added three tests away would make it false.
+fn raw_execute(db: &Db, sql: &str, space: &str) {
+    db.conn
+        .lock()
+        .expect("db mutex poisoned")
+        .execute(sql, params![space])
+        .expect("the raw write");
 }
 
 /// (D8's headline case) a CONFIGURED chain is walked edge by edge, forward.
@@ -340,6 +362,90 @@ fn forward_reachable_resolves_nothing_across_a_hole_left_by_a_deleted_column() {
     );
 }
 
+/// (`sort_order` is NOT unique, and BOTH columns at a collided order contribute) a
+/// `NULL` row whose fallback order holds TWO columns resolves both, exactly as
+/// `nextStepSlugs` filters every match rather than taking one.
+///
+/// WHY THIS WAS PINNED NOWHERE. `forward_reachable` builds
+/// `by_order: HashMap<i64, Vec<String>>` and the `Vec` is the whole point — the
+/// primary key is `(space_path, slug)` and NOTHING bounds `sort_order` to be distinct,
+/// so two rows can share one order, and a `HashMap<i64, String>` would have compiled,
+/// passed every other test in this file, and silently dropped whichever column the
+/// `HashMap` happened to visit second. `nextStepSlugs`
+/// (`src/lib/workflowGraph.ts`) spells the rule as a `filter` over EVERY column whose
+/// `sortOrder` matches, and the production comment at `edges.rs` claims that agreement
+/// "by construction, not by luck" — a claim that was true of the type and unproven of
+/// the behaviour until this case.
+///
+/// THE SHAPE IS REACHABLE, not hypothetical: `reorder_stages` writes a dense 0-based
+/// index so the app itself never collides, but no UNIQUE constraint or index backs that
+/// up, so a foreign writer (or a later verb that stops renumbering everything) can.
+/// Written as raw SQL for exactly that reason — there is no verb that produces it, and
+/// that absence is a fact about today's writers, not a promise about tomorrow's.
+#[test]
+fn forward_reachable_resolves_every_column_sharing_a_sort_order_and_not_just_one() {
+    let (_dir, db, space) = seeded("edges-dup-order");
+    db.get_board(&space).expect("seed the five columns");
+    // A sixth column, then collide it with `approved` at sort_order 2. `create_stage`
+    // joins at MAX + 1 = 5, so the collision needs the raw write either way.
+    db.create_stage(&space, "review", "Review", None)
+        .expect("create_stage");
+    raw_execute(
+        &db,
+        "UPDATE stages SET sort_order = 2 WHERE space_path = ?1 AND slug = 'review'",
+        &space,
+    );
+
+    // The premise, asserted and not assumed: a pin that quietly stopped colliding
+    // would pass forever for the wrong reason.
+    let at_two: Vec<String> = db
+        .list_stages(&space)
+        .expect("list_stages")
+        .into_iter()
+        .filter(|s| s.sort_order == 2)
+        .map(|s| s.slug)
+        .collect();
+    assert_eq!(
+        at_two,
+        vec!["approved".to_string(), "review".to_string()],
+        "the fixture must actually hold TWO columns at one `sort_order` \
+         (board order, so the pair is deterministic)"
+    );
+
+    // `research` (sort_order 1) stays NULL, so its fallback is the order-2 set. Give
+    // each of the two collided columns a DIFFERENT door, so each assertion below can
+    // only be satisfied by the column it names — a reading that kept one and dropped
+    // the other fails exactly one assertion and says which.
+    db.set_stage_next(&space, "approved", &["doing".to_string()], &[None])
+        .expect("approved → doing");
+    db.set_stage_next(&space, "review", &["done".to_string()], &[None])
+        .expect("review → done");
+    // `doing` is a CONFIGURED dead end, and that is load-bearing for the third
+    // assertion: left NULL it would fall back to its `sort_order + 1` neighbour `done`
+    // and `research → done` would hold through `approved` alone, so the assertion
+    // below would pass with the collision resolved OR dropped. Ending the `approved`
+    // branch is what makes `done` reachable only THROUGH the second column.
+    db.set_stage_next(&space, "doing", &[], &[])
+        .expect("and the FIRST column's branch ends, so only `review` reaches `done`");
+
+    assert!(
+        reachable(&db, &space, "research", "approved"),
+        "the FIRST column at the collided order contributes its edge"
+    );
+    assert!(
+        reachable(&db, &space, "research", "review"),
+        "and so does the SECOND — `nextStepSlugs` filters EVERY column whose \
+         `sortOrder` matches, so dropping one here would make Rust answer a claim \
+         TypeScript answers differently"
+    );
+    assert!(
+        reachable(&db, &space, "research", "done"),
+        "the walk traverses THROUGH the second column too, so the collision is \
+         resolved for the whole walk and not just for the fallback's first hop \
+         (`doing` is a configured `[]`, so this is only reachable via `review`)"
+    );
+}
+
 /// (unknown `from`) a column this Space does not have has no edges, so nothing is
 /// reachable. `move_task` refuses an unknown DESTINATION before it ever asks this
 /// question, and an unknown ORIGIN is not reachable either — the answer is `false`,
@@ -410,15 +516,12 @@ fn forward_reachable_reads_an_unparseable_cell_as_unconfigured_and_falls_back() 
     // A JSON OBJECT, not an array: `serde_json::from_str::<Vec<String>>` fails on
     // it, so the cell decodes to `None` = unconfigured. Written as raw SQL because
     // `set_stage_next` validates and would refuse it.
-    db.conn
-        .lock()
-        .expect("db mutex poisoned")
-        .execute(
-            "UPDATE stages SET next_slugs = '{\"not\":\"an array\"}' \
-             WHERE space_path = ?1 AND slug = 'backlog'",
-            params![space],
-        )
-        .expect("the raw write");
+    raw_execute(
+        &db,
+        "UPDATE stages SET next_slugs = '{\"not\":\"an array\"}' \
+         WHERE space_path = ?1 AND slug = 'backlog'",
+        &space,
+    );
 
     assert!(
         reachable(&db, &space, "backlog", "research"),

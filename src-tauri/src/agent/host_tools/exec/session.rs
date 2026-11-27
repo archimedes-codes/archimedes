@@ -13,7 +13,11 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::agent::tools::ToolResult;
-use crate::storage::{AdvanceAdvice, Db, HostToolError};
+use crate::storage::{
+    AdvanceAdvice, Db, HostToolError, REASON_ADVANCED_UNNAMED_EDGE, REASON_ALREADY_ADVANCED,
+    REASON_COST_CEILING, REASON_MAX_STEPS, REASON_NOT_AUTOMATIC, REASON_NO_NEXT_STAGE,
+    REASON_UNCLAIMED, REASON_UNLINKED,
+};
 
 use super::{opt_str, spawn_host_call, to_details};
 
@@ -190,25 +194,45 @@ fn sentence_for(
             .as_ref()
             .map(|d| format!("`{}`", d.slug))
             .unwrap_or_else(|| "the next column".to_string());
-        return if advice.reason == "advanced_unnamed_edge" {
-            format!(
+        // Two reasons arrive with `advance: true`, and only the second earns the hedge.
+        // The catch-all is deliberate: a reason this file has never seen on a verdict
+        // that says the card MOVED still gets the true sentence — it moved to `label` —
+        // so this arm needs neither a hedge nor an apology. In practice the reasons that
+        // land here are `advanced_unnamed_edge` above and `REASON_ADVANCED` here, and
+        // the refusal table below is where an unknown reason must not be guessed at.
+        return match advice.reason.as_str() {
+            REASON_ADVANCED_UNNAMED_EDGE => format!(
                 "this Session is marked done and its card advanced to {label} — this \
                  column has no transition named `{}`, so the first one was taken",
                 outcome.unwrap_or("")
-            )
-        } else {
-            format!("this Session is marked done and its card advanced to {label}")
+            ),
+            _ => format!("this Session is marked done and its card advanced to {label}"),
         };
     }
     // The refusals, each naming what the model can do about it. The bound arms quote the
     // numbers AS THE ADVICE RETURNED THEM.
+    //
+    // EVERY arm names a `REASON_*` CONST and not a literal, and that is the binding
+    // this table was missing: the spellings are `advise`'s, and a `match` on copied
+    // strings cannot see the list change, so an eighth refusal would compile clean and
+    // fall to the arm below. The consts arrive through `storage/mod.rs` — see the
+    // `pub(crate) use` there for why two hops are needed.
     match advice.reason.as_str() {
-        "max_steps" => format!(
-            "this Session is marked done, but the chain is at its {}-step bound, so the \
-             card stayed put",
-            advice.max_steps.unwrap_or(0)
-        ),
-        "cost_ceiling" => match advice.ceiling_usd {
+        REASON_MAX_STEPS => match advice.max_steps {
+            Some(steps) => format!(
+                "this Session is marked done, but the chain is at its {steps}-step bound, \
+                 so the card stayed put"
+            ),
+            // The arm the ceiling has had all along and this one did not: `None` means
+            // no number was returned, so no number is quoted. The old
+            // `unwrap_or(0)` rendered a phantom "0-step bound" — a bound nobody
+            // configured, on the one figure a person would act on. Runtime-dead today
+            // (every arm but `unlinked` carries the effective number) and still wrong.
+            None => "this Session is marked done, but the chain is at its step bound, so \
+                     the card stayed put"
+                .to_string(),
+        },
+        REASON_COST_CEILING => match advice.ceiling_usd {
             Some(ceiling) => format!(
                 "this Session is marked done, but the chain has reached its ${ceiling:.2} \
                  ceiling, so the card stayed put"
@@ -220,20 +244,246 @@ fn sentence_for(
                      ceiling, so the card stayed put"
                 .to_string(),
         },
-        "not_automatic" => "this Session is marked done and flagged for review; this \
-                            column is not automatic, so the card stayed put and a person \
-                            moves it"
+        REASON_NOT_AUTOMATIC => "this Session is marked done and flagged for review; this \
+                                 column is not automatic, so the card stayed put and a \
+                                 person moves it"
             .to_string(),
-        "already_advanced" => "this Session is marked done; this handoff has already \
-                               launched, so nothing moved again"
+        REASON_ALREADY_ADVANCED => "this Session is marked done; this handoff has already \
+                                    launched, so nothing moved again"
             .to_string(),
-        "unclaimed" => "this Session is marked done; the card did not advance".to_string(),
-        "no_next_stage" => "this Session is marked done and flagged for review; this \
-                            column leads nowhere, so the card stayed put"
+        REASON_UNCLAIMED => "this Session is marked done; the card did not advance".to_string(),
+        REASON_NO_NEXT_STAGE => "this Session is marked done and flagged for review; this \
+                                 column leads nowhere, so the card stayed put"
             .to_string(),
-        // No card to advance. The flag still landed, and that is the whole truth.
-        _ => "this Session is marked done — a person should look at it, though this \
-              Session is not linked to a card, so nothing moved on the board"
+        // No card to advance. The flag still landed, and that is the whole truth. This
+        // claim is `unlinked`'s ALONE — it is the only arm whose Session provably owns
+        // no card — so it now has its own arm and the catch-all below may not make it.
+        REASON_UNLINKED => "this Session is marked done — a person should look at it, \
+                            though this Session is not linked to a card, so nothing moved \
+                            on the board"
             .to_string(),
+        // A reason this table does not know. NEUTRAL, and it quotes the reason it was
+        // given rather than asserting a cause: the sentence used to be `unlinked`'s, so
+        // every future refusal was silently told it had no card — a claim this arm has
+        // no evidence for and that may well be false. Naming the unknown reason keeps
+        // the sentence true and makes the gap visible to whoever reads the transcript.
+        _ => format!(
+            "this Session is marked done; the card did not advance (`{}`)",
+            advice.reason
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The sentence table, pinned at the one door that renders it.
+    //!
+    //! This region is INLINE rather than a child of `host_tools/tests/` for a
+    //! mechanical reason: [`sentence_for`] is private and every field it reads
+    //! arrives on the advice, so a test that goes through `run` cannot hand it a
+    //! `reason` the decider does not currently emit — which is exactly the input
+    //! the unbound-table pin below needs. ADR 0113 permits this (the mirror binds
+    //! the naming of a `tests/` directory that exists; `agent/` holds inline
+    //! regions beside its children).
+
+    use super::*;
+
+    /// A refusal-shaped advice carrying `reason` and nothing else interesting —
+    /// every other field holds what a refusal carries anyway, so the table under
+    /// test is the only variable in each assertion below.
+    fn refused(reason: &str) -> AdvanceAdvice {
+        AdvanceAdvice {
+            advance: false,
+            stop: None,
+            destination: None,
+            reason: reason.to_string(),
+            max_steps: Some(20),
+            ceiling_usd: Some(10.0),
+            task_id: Some("tsk_under_test".to_string()),
+            space_path: Some("/exec/session".to_string()),
+            already_launched: false,
+        }
+    }
+
+    /// THE FINDING THIS REGION EXISTS FOR: the table was keyed on string literals
+    /// duplicated from `advise.rs`, so an eighth refusal would compile clean and be
+    /// told the `unlinked` sentence — "not linked to a card" about a card that may
+    /// well exist. The catch-all must be NEUTRAL and must name the reason it was
+    /// given, so a new refusal reads as itself and not as a lie about the card.
+    #[test]
+    fn a_reason_the_table_does_not_know_renders_neutral_and_not_the_unlinked_sentence() {
+        let text = sentence_for(
+            "sess-1",
+            true,
+            None,
+            &refused("a_refusal_nobody_has_written_yet"),
+        );
+
+        assert_eq!(
+            text,
+            "this Session is marked done; the card did not advance \
+             (`a_refusal_nobody_has_written_yet`)",
+            "an unknown reason gets the neutral sentence with the reason quoted"
+        );
+        assert!(
+            !text.contains("not linked to a card"),
+            "and it is NOT the `unlinked` sentence — that claim is arm 0's alone, \
+             and asserting it about a card that exists is the confident lie this \
+             guard refuses; got {text}"
+        );
+        assert!(
+            !text.contains("leads nowhere"),
+            "nor is it any other refusal's sentence; got {text}"
+        );
+    }
+
+    /// `unlinked` keeps its own sentence now that the catch-all is neutral, and the
+    /// only way to keep it is to name it — which is why the arms read the consts.
+    #[test]
+    fn the_unlinked_reason_still_gets_the_cardless_sentence() {
+        let text = sentence_for("sess-1", true, None, &refused(REASON_UNLINKED));
+        assert_eq!(
+            text,
+            "this Session is marked done — a person should look at it, though this \
+             Session is not linked to a card, so nothing moved on the board",
+            "`unlinked` is the ONE arm that may say the Session has no card"
+        );
+    }
+
+    /// A `None` bound is not a zero bound. The `ceiling_usd` arm already omits its
+    /// figure when there is none (ADR 0082's phantom zero); `max_steps` rendered
+    /// `unwrap_or(0)` and so told every such Session it had a 0-step bound — a
+    /// number nobody configured, and the one number a person would act on.
+    #[test]
+    fn a_step_bound_with_no_number_omits_the_figure_instead_of_inventing_zero() {
+        let mut advice = refused(REASON_MAX_STEPS);
+        advice.max_steps = None;
+
+        let text = sentence_for("sess-1", true, None, &advice);
+
+        assert_eq!(
+            text,
+            "this Session is marked done, but the chain is at its step bound, so the \
+             card stayed put",
+            "the sentence without the number, mirroring the ceiling arm's `None`"
+        );
+        assert!(
+            !text.contains("0-step"),
+            "and no phantom 0-step bound; got {text}"
+        );
+    }
+
+    /// The byte-identity pin for the whole table. Four of these sentences are
+    /// asserted BY SUBSTRING in `host_tools/tests/verbs.rs` — `not_automatic` via
+    /// `done` (:768) and `not automatic` (:899), the advance sentence via the
+    /// destination slug `research` (:849), and `max_steps` via `1-step` (:939) plus
+    /// the negative `!contains("20-step")` (:944) — and every one of them is read by a
+    /// model, so a re-word here is a wire change dressed as a refactor.
+    ///
+    /// `verbs.rs` cannot pin these any tighter: it drives the verb through `run`, so
+    /// the only inputs it can construct are the ones the decider actually emits. This
+    /// table calls `sentence_for` directly and asserts EQUALITY against the literal,
+    /// not `contains` — a `contains` pin passes when a sentence grows a clause beside
+    /// the needle, which is exactly how a model-facing sentence drifts unnoticed.
+    ///
+    /// The stronger proof lives outside the suite: rendering HEAD's `sentence_for`
+    /// beside this one over 9,360 combinations of `(claimed, advance, reason,
+    /// max_steps, ceiling_usd, destination, outcome)` produced zero differences outside
+    /// the two this commit sets out to make.
+    #[test]
+    fn every_refusal_sentence_is_pinned_byte_for_byte() {
+        let mut ceiling = refused(REASON_COST_CEILING);
+        ceiling.ceiling_usd = Some(4.0);
+
+        let mut bound = refused(REASON_MAX_STEPS);
+        bound.max_steps = Some(1);
+
+        let mut fell_back = refused(REASON_ADVANCED_UNNAMED_EDGE);
+        fell_back.advance = true;
+
+        let mut advanced = refused("advanced");
+        advanced.advance = true;
+
+        // The ceiling arm's `None` half: no figure exists to quote, and rendering
+        // one would be ADR 0082's phantom zero in a sentence.
+        let mut ceilingless = refused(REASON_COST_CEILING);
+        ceilingless.ceiling_usd = None;
+
+        for (reason, text, want) in [
+            (
+                "the row that is not there",
+                sentence_for("sess-gone", false, None, &refused("advanced")),
+                "mark_done wrote nothing: this frame's origin session id `sess-gone` \
+                 matches no Session row, so nothing was flagged and nothing advanced"
+                    .to_string(),
+            ),
+            (
+                "max_steps",
+                sentence_for("sess-1", true, None, &bound),
+                "this Session is marked done, but the chain is at its 1-step bound, so \
+                 the card stayed put"
+                    .to_string(),
+            ),
+            (
+                "cost_ceiling with a figure",
+                sentence_for("sess-1", true, None, &ceiling),
+                "this Session is marked done, but the chain has reached its $4.00 \
+                 ceiling, so the card stayed put"
+                    .to_string(),
+            ),
+            (
+                "cost_ceiling without one",
+                sentence_for("sess-1", true, None, &ceilingless),
+                "this Session is marked done, but the chain has reached its cost \
+                 ceiling, so the card stayed put"
+                    .to_string(),
+            ),
+            (
+                "not_automatic",
+                sentence_for("sess-1", true, None, &refused(REASON_NOT_AUTOMATIC)),
+                "this Session is marked done and flagged for review; this column is \
+                 not automatic, so the card stayed put and a person moves it"
+                    .to_string(),
+            ),
+            (
+                "already_advanced",
+                sentence_for("sess-1", true, None, &refused(REASON_ALREADY_ADVANCED)),
+                "this Session is marked done; this handoff has already launched, so \
+                 nothing moved again"
+                    .to_string(),
+            ),
+            (
+                "unclaimed",
+                sentence_for("sess-1", true, None, &refused(REASON_UNCLAIMED)),
+                "this Session is marked done; the card did not advance".to_string(),
+            ),
+            (
+                "no_next_stage",
+                sentence_for("sess-1", true, None, &refused(REASON_NO_NEXT_STAGE)),
+                "this Session is marked done and flagged for review; this column leads \
+                 nowhere, so the card stayed put"
+                    .to_string(),
+            ),
+            (
+                "advanced (no destination row)",
+                sentence_for("sess-1", true, None, &advanced),
+                "this Session is marked done and its card advanced to the next column".to_string(),
+            ),
+            (
+                "advanced_unnamed_edge",
+                sentence_for("sess-1", true, Some("escalated"), &fell_back),
+                "this Session is marked done and its card advanced to the next column \
+                 — this column has no transition named `escalated`, so the first one \
+                 was taken"
+                    .to_string(),
+            ),
+        ] {
+            assert_eq!(
+                text, want,
+                "the `{reason}` sentence changed byte-for-byte — six of these are \
+                 asserted by substring in `host_tools/tests/verbs.rs` and all of them \
+                 are read by a model"
+            );
+        }
     }
 }

@@ -1690,5 +1690,29 @@ pub use retention::{
 // not, and it must not.
 pub use auto_guards::{DEFAULT_AUTO_CEILING_USD, DEFAULT_AUTO_MAX_STEPS};
 
+// The `reason` spellings the sentence table in `agent/host_tools/exec/session.rs`
+// matches on, widened to `pub(crate)` for that ONE consumer. The table used to key on
+// literals COPIED from `advise.rs`, so the two tables could drift in total silence —
+// re-spelling a reason in one file and not the other leaves every such Session handed
+// whatever the catch-all rendered. Naming the consts makes the spelling one source of
+// truth instead of two. What it does NOT do is turn an eighth refusal into a compile
+// error — a `_` arm cannot, by definition — so the catch-all was made NEUTRAL in the
+// same change, and a reason nobody has written yet renders a sentence that names itself
+// rather than asserting `unlinked`.
+//
+// EIGHT of the nine ride this line. `REASON_ADVANCED` stays private to `advise.rs`:
+// both `advance: true` arms say the same true thing about a card that moved, so the
+// sentence table has no production arm that needs to name it, and a re-export nothing
+// in the non-test build reads is an `unused_imports` error under CI's `-D warnings`.
+//
+// `pub(crate)` and not `pub`: an internal wire vocabulary, not crate API. The two-hop
+// re-export is the same widening every line above performs — `mod advise;` is private
+// here and `mod db;` is private in `storage/mod.rs`, so `pub(crate)` on the const alone
+// is not a nameable path outside `storage/`.
+pub(crate) use advise::{
+    REASON_ADVANCED_UNNAMED_EDGE, REASON_ALREADY_ADVANCED, REASON_COST_CEILING, REASON_MAX_STEPS,
+    REASON_NOT_AUTOMATIC, REASON_NO_NEXT_STAGE, REASON_UNCLAIMED, REASON_UNLINKED,
+};
+
 #[cfg(test)]
 mod tests;

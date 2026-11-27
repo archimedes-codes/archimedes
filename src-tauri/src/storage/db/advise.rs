@@ -107,11 +107,19 @@ use super::{
 /// 20-step bound into 20 steps per link) while every other refusal closes and speaks.
 /// A spelling that drifts is a spend bound failing open, so the arms cannot invent.
 ///
-/// `no_next_stage` covers two shapes and says the same true thing about both: no edge
-/// out of the launched column (it is configured `[]`, or unconfigured with a `sort_order`
-/// HOLE where the `sort_order + 1` neighbour used to be), and no launched column to
-/// resolve an edge from at all (a link whose frozen slug a `delete_stage` removed). In
-/// both, there is no column to advance to.
+/// `no_next_stage` covers TWO shapes and says the same true thing about both, and both
+/// are questions about the launched column's edges: no edge out of it, because it is
+/// configured `[]`, or because it is unconfigured and a `sort_order` HOLE sits where the
+/// `sort_order + 1` neighbour used to be. In both, there is no column to advance to.
+///
+/// The frozen-slug case is NOT this arm's, and the doc used to claim it was: a link
+/// whose frozen slug a `delete_stage` removed has `launched == None`, so arm 4 has
+/// already returned `not_automatic` two arms earlier and this arm is never reached.
+/// `a_link_whose_launching_column_is_gone_advances_nowhere` asserts exactly that
+/// (`tests/advise.rs`), so the sentence a gone column earns is "this column is not
+/// automatic, a person moves it" — half-true about a card with no column, but it
+/// fails safe (the card stays put) and a new reason spelling would be a wire change
+/// the TypeScript side has to make in lockstep. Recorded as a follow-up, not fixed here.
 ///
 /// `advanced` vs `advanced_unnamed_edge` is the outcome-selection answer, and the
 /// distinction is exactly ONE case wide: the first is "the edge you named fired, or you
@@ -127,15 +135,32 @@ use super::{
 /// stops and ride the shared enum; the Session-shaped refusals are not, and inventing a
 /// variant for each would be an enum change plus a migration to spell what a string
 /// already says.
-const REASON_UNLINKED: &str = "unlinked";
-const REASON_UNCLAIMED: &str = "unclaimed";
-const REASON_ALREADY_ADVANCED: &str = "already_advanced";
-const REASON_NOT_AUTOMATIC: &str = "not_automatic";
-const REASON_NO_NEXT_STAGE: &str = "no_next_stage";
-const REASON_MAX_STEPS: &str = "max_steps";
-const REASON_COST_CEILING: &str = "cost_ceiling";
-const REASON_ADVANCED: &str = "advanced";
-const REASON_ADVANCED_UNNAMED_EDGE: &str = "advanced_unnamed_edge";
+///
+/// `pub(crate)` — and EIGHT of the nine are re-exported through `db/mod.rs` +
+/// `storage/mod.rs` — because the sentence table that renders these lives in
+/// `agent/host_tools/exec/session.rs`, and a table keyed on LITERALS copied from here
+/// can drift from this list in total silence: re-spelling a reason in one file and not
+/// the other leaves every such Session handed whatever the catch-all rendered. Naming
+/// the consts makes the spelling ONE source of truth. What it does not do is make an
+/// eighth refusal a compile error — a `_` arm cannot, by definition — so that
+/// catch-all was made NEUTRAL in the same change and an unknown reason now renders a
+/// sentence that names itself instead of asserting `unlinked`. `REASON_ADVANCED` is the
+/// one const left unre-exported: both `advance: true` arms say the same true thing about
+/// a card that moved, so no production arm needs to name it, and a re-export the non-test
+/// build never reads is an `unused_imports` error under CI's `-D warnings`. The re-export
+/// chain is the same widening every other line in `db/mod.rs`'s `pub use` block
+/// documents — `mod advise;` is private there and `mod db;` is private in
+/// `storage/mod.rs`, so `pub(crate)` on the const alone is not nameable outside
+/// `storage/`.
+pub(crate) const REASON_UNLINKED: &str = "unlinked";
+pub(crate) const REASON_UNCLAIMED: &str = "unclaimed";
+pub(crate) const REASON_ALREADY_ADVANCED: &str = "already_advanced";
+pub(crate) const REASON_NOT_AUTOMATIC: &str = "not_automatic";
+pub(crate) const REASON_NO_NEXT_STAGE: &str = "no_next_stage";
+pub(crate) const REASON_MAX_STEPS: &str = "max_steps";
+pub(crate) const REASON_COST_CEILING: &str = "cost_ceiling";
+pub(crate) const REASON_ADVANCED: &str = "advanced";
+pub(crate) const REASON_ADVANCED_UNNAMED_EDGE: &str = "advanced_unnamed_edge";
 
 impl Db {
     /// Decide what this Session's `mark_done` claim does to its card.
@@ -348,9 +373,10 @@ fn decide(
 
     // ── arm 5: is there a destination at all? ─────────────────────────────────
     //
-    // Three shapes reach this and all three answer the same true sentence: the column
-    // is configured `[]`; it is unconfigured and a deleted column left a HOLE at
-    // `sort_order + 1`; or the link's frozen slug names a column that is gone.
+    // TWO shapes reach this and both answer the same true sentence: the column is
+    // configured `[]`, or it is unconfigured and a deleted column left a HOLE at
+    // `sort_order + 1`. The gone-column shape is NOT here — `launched` is `None` by
+    // then, so arm 4 has already answered `not_automatic`.
     let Some(dest) = destination else {
         return Ok(AdvanceAdvice {
             advance: false,
@@ -493,7 +519,7 @@ fn space_stages(conn: &Connection, space_path: &str) -> Result<Vec<StageRow>, Bo
 /// ordinary case — every seeded board is one — and reporting it as a fallback would put
 /// a hedge in the sentence of every claim the feature exists to serve.
 ///
-/// `None` is "no destination", and the three shapes that produce it are arm 5's.
+/// `None` is "no destination", and the two shapes that produce it are arm 5's.
 /// Infallible: it reads only the rows the caller already fetched.
 /// `StageRow::next_slugs` is ALREADY the lenient decode — `stage_row_from` runs
 /// [`super::stages::lenient_next_slugs`] at index 6 — so a cell a foreign writer left
@@ -501,9 +527,11 @@ fn space_stages(conn: &Connection, space_path: &str) -> Result<Vec<StageRow>, Bo
 /// the fallback wants and the same one the frontend gets, since such a cell crosses the
 /// wire as absent. This function therefore never re-parses a raw cell.
 ///
-/// `forward_reachable` is imported for the reason stated at the bottom of this
-/// function's doc block: the edge this picks is the same graph the forward gate
-/// refuses a model's `move_task` over, and both must read it the same way.
+/// [`super::edges::forward_reachable`] is deliberately NOT imported and NOT called
+/// here, and the reason is at the bottom of this file: this picks one edge, so its
+/// answer is one hop away and always reachable — a reachability test would be a walk
+/// whose result is known before it starts. What the two DO share is the fallback rule,
+/// stated where it is implemented, below.
 fn pick_edge(
     from: &StageRow,
     stages: &[StageRow],

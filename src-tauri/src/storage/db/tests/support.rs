@@ -94,7 +94,8 @@ use crate::types::SessionInfo;
 // 5-table `CREATE` batch (sessions + stages + spaces + messages +
 // native_messages) with EXACTLY ONE gate's column absent and every OTHER
 // gated column present, so `Db::open`'s other gates find their column and stay
-// SILENT: the test observes its own gate, not twenty gates at once. Two of the
+// SILENT: the test observes its own gate and not every gate at once (count them
+// with `grep -c 'gate(&mut conn' src-tauri/src/storage/db/mod.rs`). Two of the
 // five fixtures were NOT isolated before this consolidation (the `archived` one
 // also omitted `trusted`, both `sort_order`s, `context_usage_json`,
 // `is_subagent`, `todos_json` and `cost_usd`, and carried `agent_id` — so it
