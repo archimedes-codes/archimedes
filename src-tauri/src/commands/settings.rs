@@ -195,6 +195,32 @@ pub async fn list_known_providers() -> Result<Vec<KnownProviderDto>, SettingsErr
     Ok(KNOWN_PROVIDERS.iter().map(KnownProviderDto::from).collect())
 }
 
+/// The OFF check, run BEFORE `classify_server`.
+///
+/// `classify_server` returns `None` for three different reasons — `disabled:
+/// true`, a legacy `type: "sse"`, and an entry with neither a `url` nor a
+/// `command` — and both MCP commands below collapsed all three into "need a
+/// `url` or a `command`". That sentence is FALSE about a deliberately
+/// switched-off entry: it reports the user's own choice as a broken config.
+/// `SettingsError::Other` renders `{0}` bare, so the sentence stands alone —
+/// `InvalidMcpServer` would wrap it in "invalid MCP server entry (…)", which
+/// is the very claim this check exists to stop making. The predicate mirrors
+/// `classify_server`'s `as_bool() == Some(true)`, so a non-bool
+/// `"disabled": "yes"` is NOT off — and the Settings row agrees.
+///
+/// `auth_mcp_server` shares this check and has no test of its own: it cannot
+/// be exercised without the OAuth stack.
+fn disabled_mcp_server_error(entry: &Value) -> Option<SettingsError> {
+    let off = entry
+        .as_object()
+        .and_then(|m| m.get("disabled"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    off.then(|| {
+        SettingsError::Other("this server is switched off — turn it on to test it".to_string())
+    })
+}
+
 /// Test ONE MCP server definition (the Settings page's Test action, ADR
 /// 0019): a one-shot bounded connect + `tools/list`. `Ok` = the tool
 /// count; `Err` = the error text (surfaced verbatim in the row — a
@@ -202,6 +228,9 @@ pub async fn list_known_providers() -> Result<Vec<KnownProviderDto>, SettingsErr
 /// `mcpServers` entry VERBATIM (pi's shape — classified, not re-shaped).
 #[tauri::command]
 pub async fn test_mcp_server(name: Option<String>, entry: Value) -> Result<u32, SettingsError> {
+    if let Some(err) = disabled_mcp_server_error(&entry) {
+        return Err(err);
+    }
     let def = crate::agent::mcp::types::classify_server(&entry).ok_or_else(|| {
         SettingsError::InvalidMcpServer("need a `url` or a `command`".to_string())
     })?;
@@ -215,6 +244,9 @@ pub async fn test_mcp_server(name: Option<String>, entry: Value) -> Result<u32, 
 /// Run interactive OAuth authentication for an MCP server (Settings UI).
 #[tauri::command]
 pub async fn auth_mcp_server(name: String, entry: Value) -> Result<String, SettingsError> {
+    if let Some(err) = disabled_mcp_server_error(&entry) {
+        return Err(err);
+    }
     let def = crate::agent::mcp::types::classify_server(&entry).ok_or_else(|| {
         SettingsError::InvalidMcpServer("need a `url` or a `command`".to_string())
     })?;
@@ -1627,5 +1659,69 @@ mod tests {
         .expect_err("a store that cannot be written is an error");
         browser.settle().await;
         assert_eq!(err.kind(), "oidc_store_failed", "{err}");
+    }
+
+    // ── a switched-off MCP server says so (the `classify_server` `None` fan-in) ──
+
+    #[tokio::test]
+    async fn a_disabled_server_is_reported_as_off_not_as_a_malformed_entry() {
+        // `classify_server` returns `None` for THREE causes, and the command said
+        // "need a `url` or a `command`" for all three — a sentence that is FALSE
+        // about this entry, which has a `url` and was switched off on purpose.
+        // `test_mcp_server` is stateless (the `list_tools` precedent), so it is
+        // called directly; the pre-check returns before the connect, so no socket.
+        let err = test_mcp_server(
+            None,
+            serde_json::json!({"url": "https://x/mcp", "disabled": true}),
+        )
+        .await
+        .expect_err("a switched-off server is not a successful test");
+        let message = err.to_string();
+        assert!(
+            message.contains("switched off"),
+            "the row must name the real cause: {message}"
+        );
+        // THE HALF THAT MAKES THIS A REAL PIN: without it, the old sentence
+        // ("need a `url` or a `command`") satisfies a bare `is_err()`.
+        assert!(
+            !message.contains("url"),
+            "the user's own choice must not be reported as a broken config: {message}"
+        );
+        assert!(
+            !message.starts_with("invalid MCP server entry"),
+            "`Other` renders bare; wrapping it re-asserts the defect: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_malformed_entry_still_names_the_two_keys_it_wants() {
+        // The contrast pair: the OFF pre-check must not swallow the GENUINE
+        // malformed case, which is the only thing the `classify_server` sentence
+        // is actually true about.
+        let err = test_mcp_server(None, serde_json::json!({}))
+            .await
+            .expect_err("an entry with neither key is malformed");
+        let message = err.to_string();
+        assert!(message.contains("url"), "{message}");
+        assert!(message.contains("command"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_non_bool_disabled_is_not_off() {
+        // The predicate mirrors `classify_server`'s `as_bool() == Some(true)`, so
+        // a non-bool `"disabled": "yes"` is NOT off — and the Settings row agrees.
+        // NO `url` and NO `command` here on purpose: a valid `url` would classify
+        // successfully and the command would attempt a REAL 10-second connect, so
+        // the fixture stays malformed to keep this test off the network and reach
+        // the `url`/`command` sentence.
+        let err = test_mcp_server(None, serde_json::json!({"disabled": "yes"}))
+            .await
+            .expect_err("a malformed entry is malformed whatever `disabled` says");
+        let message = err.to_string();
+        assert!(message.contains("url"), "{message}");
+        assert!(
+            !message.contains("switched off"),
+            "a non-bool `disabled` is ON, not off: {message}"
+        );
     }
 }
