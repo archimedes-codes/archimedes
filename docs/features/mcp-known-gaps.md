@@ -167,10 +167,15 @@ version is immutable, so those line numbers cannot drift.
   desktop layer arrives by REBUILDING the manager
   (`harness/loop.rs:1111-1126`, which is safe only because it runs before any
   server has connected), so a push after connect would drop a live child. The
-  wait IS disclosed now, at the point of save: the add/edit dialog's
-  `<DialogDescription>` says "Switching a server off means the harness never
-  registers it; it takes effect for new sessions"
-  (`src/components/settings/McpSection.tsx:316-322`). The section's OTHER
+  wait IS disclosed — but for the OFF SWITCH ONLY, and inside the dialog, not at
+  the point of save: the add/edit dialog's `<DialogDescription>` says "Switching
+  a server off means the harness never registers it; it takes effect for new
+  sessions" (`src/components/settings/McpSection.tsx:316-322`), and that block
+  renders while the dialog is still OPEN, i.e. BEFORE save. It is the only such
+  sentence (`grep -c 'takes effect'` there is **1**) and it names only the
+  switch, so a plain add or edit that never touches it gets no disclosure at all
+  — `saveMcpServer` (`src/components/settings/SettingsPage.tsx:415-419`) raises
+  no toast and no notice, it updates and closes. The section's OTHER
   session sentence, "Existing sessions are unaffected" (`:196`), is the REMOVE
   dialog's — a separate and narrower statement, true of the running Worker.
 - **One `mcp({search})` is not cheap on a multi-server config.** `collect_tools`
@@ -194,11 +199,17 @@ version is immutable, so those line numbers cannot drift.
   removes the row with no note anywhere. And the drop is one-directional, with a
   user-visible consequence: because the merge is a later-`insert`-wins loop
   (`mcp/config.rs:50-56`) and a disabled entry is never `insert`ed at all, it
-  SHADOWS nothing, so a lower-precedence layer shows through — switching a server
-  off in Settings can leave a same-named server ON via `~/.pi/agent/mcp.json` or
-  the Space's `.pi/mcp.json` (the crate pins exactly this in
-  `load_servers_desktop_disabled_entries_are_dropped` (`mcp/config.rs:223`),
-  whose comment reads "a disabled entry is off, not shadow", `:234-235`).
+  SHADOWS nothing, so the lower-precedence GLOBAL layer shows through — switching
+  a server off in Settings can leave a same-named server ON via
+  `~/.pi/agent/mcp.json`, because Settings writes only the desktop layer (the
+  crate pins exactly this in `load_servers_desktop_disabled_entries_are_dropped`
+  (`mcp/config.rs:223`), whose comment reads "a disabled entry is off, not
+  shadow", `:234-235`). A Space's `.pi/mcp.json` showing the same name is a
+  DIFFERENT fact and NOT a consequence of the drop: that layer is LAST in
+  `layers` (`mcp/config.rs:42-49`) and so the HIGHEST, so it overrides a
+  same-named desktop entry whether or not that entry is switched off
+  (`load_servers_project_overrides_desktop_by_name`, `mcp/config.rs:204`) —
+  plain precedence, and the order the first bullet states.
   Related, and since `0cb795ff` no longer mis-reported: `test_mcp_server` and
   `auth_mcp_server` answer a
   `disabled: true` entry with the off-state's OWN sentence — "this server is
