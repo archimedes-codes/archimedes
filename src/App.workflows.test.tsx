@@ -337,6 +337,28 @@ describe("App (the Workflows view)", () => {
     // reports are on the canvas, joined by the fallback edge.
     expect(screen.getByTestId("workflow-node-backlog")).toBeTruthy();
     expect(screen.getByTestId("workflow-node-doing")).toBeTruthy();
+    // THE WAIT, and why it is wider than `openWorkflows()`'s single tick. An xyflow edge
+    // renders only once BOTH endpoints have handle bounds, and those bounds arrive from a
+    // DEFERRED `ResizeObserver` callback that lands a tick after the nodes mount — so the
+    // edge's own render pass sits one tick behind the tick that delivered the bounds. One
+    // `setTimeout(0)` covers the first hop and not the second, which is why this assertion
+    // failed on CI macOS in 3 of 4 attempts, including run `45730182982` — a run on a
+    // DOCS-ONLY commit, which is the witness that nothing in this branch's code made it
+    // flake (the fixture answers `nextSlugs: null` with zero `nextOutcomes`, so the edge is
+    // not value-reachable either; it is timing and nothing else). The fix is the pattern
+    // `WorkflowsCanvas.test.tsx` and `WorkflowsCanvas.editor.test.tsx` already use before
+    // reading an `rf__edge-*` node: their `settled()` flush runs ONCE PER HOP that can move
+    // the picture — one after the mount, another after the gesture that follows it
+    // (`WorkflowsCanvas.test.tsx:597` then `:600` around the node click; the editor file's
+    // `:456` then `:463` around the drag, before its `rf__edge-backlog->doing` read at
+    // `:472-474`) — rather than one flush per test. Same flush shape as this file's own
+    // `openWorkflows()`, repeated here for the hop that helper does not cover.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     expect(
       document.querySelector('[data-testid="rf__edge-backlog->doing"]'),
     ).toBeTruthy();

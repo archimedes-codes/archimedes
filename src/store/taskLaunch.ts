@@ -824,7 +824,9 @@ export function consumeAdvanceAdvice(
  *  claimant's Session is where that fact belongs — the board may not be mounted.
  *
  *  It also OWNS THE REGISTRY ENTRY the guard above registered: the `finally` below settles
- *  it with whatever this claim did and removes it, on every arm. */
+ *  it with whatever this claim did and removes it on every arm — REMOVES IT, THAT IS, IF THE
+ *  MAP STILL HOLDS THIS CLAIM under the card's key, which a later claim for the same card
+ *  can have displaced. See the identity guard at the removal itself. */
 async function carryOutClaim(
   sessionId: string,
   spacePath: string,
@@ -966,12 +968,20 @@ async function carryOutClaim(
     // from reading a dead claim as "the other door owns this card" and answering its stale
     // outcome for a launch that has nothing to do with it.
     //
-    // The removal is unconditional rather than one-shot like the guard's, because this entry
-    // has no hand-off: the launch the claim dispatches takes the `inFlight` key, never the
-    // registry's, and by the time this `finally` runs that launch has released its key at
-    // its own dispatch. So the entry is always this claim's to drop.
+    // The removal is GUARDED BY IDENTITY, and the guard is the whole statement: this entry
+    // has no hand-off of its OWN key, but it does have a hand-off of the WINDOW. The launch
+    // this claim dispatches takes the `inFlight` key, releases it at its own dispatch, and
+    // this claim then still awaits the badge refetch — so for the length of that refetch the
+    // key is FREE and a second claim for the same card can pass the guard and REPLACE this
+    // entry in the map. An unconditional delete would then drop the LATER claim's entry, and
+    // a settle racing inside that later claim's window would find the key held with no
+    // registry entry behind it and be answered `NOTHING` — the exact closed-run budget hole
+    // this registry was written to close, arriving back through the map. So: delete only what
+    // you still hold, which is the same discipline `releaseClaimGuard` above and the one-shot
+    // in `launchTaskSession` already keep for the key. Deleting a key you do not hold is how
+    // a guard becomes a hole.
     claim.settle(outcome);
-    pendingClaims.delete(taskId);
+    if (pendingClaims.get(taskId) === claim) pendingClaims.delete(taskId);
   }
 }
 

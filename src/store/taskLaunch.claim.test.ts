@@ -760,6 +760,86 @@ describe("consumeAdvanceAdvice — the claim's launch reservation", () => {
     }
   });
 
+  it("leaves a LATER claim's registry entry alone when the earlier claim finishes last", async () => {
+    // THE HOLE A BARE `pendingClaims.delete(taskId)` OPENS — and it is the SAME budget hole
+    // the registry was written to close, resurrected through the map.
+    //
+    // A claim releases the `inFlight` key at the HAND-OFF and then still has work to do.
+    // `launchTaskSession` releases at the DISPATCH, and `startAndSendLinked` still awaits
+    // the cosmetic badge refetch (`refreshTaskNumbers`) after that, so `carryOutClaim` sits
+    // parked there — its `finally`, and therefore its removal from the registry, is a full
+    // IPC round trip away. Inside that window the key is FREE, so a second claim for the
+    // same card passes the guard and `pendingClaims.set(taskId, B)` REPLACES A's entry.
+    // A's `finally` then runs, and an unconditional delete removes B's entry — a key A does
+    // not hold.
+    //
+    // The consequence is precisely the failure the registry exists to prevent: a settle that
+    // trips the guard inside B's window finds `inFlight` held and NO entry, so the trip arm
+    // answers `NOTHING`, `finishLink` reads that as `launch_refused` and CLOSES THE LIVE
+    // RUN, and `workflow_runs` re-INSERTs the next link at `steps = 1` with `cost_usd` NULL
+    // — `max_steps` and the cost ceiling restarting per link, the spend bound failing open.
+    //
+    // THE FIX IS THE IDENTITY DISCIPLINE THE NEIGHBOURING ONE-SHOT FLAG ALREADY USES: delete
+    // the entry only if it is still THIS claim's. Deleting a key you do not hold is how a
+    // guard becomes a hole.
+    claimCatalogs();
+    // Claim A reads its card, launches, dispatches — and parks on the badge refetch, which
+    // is the LAST statement before its `finally`. First refetch parked, later ones real.
+    let badgeReads = 0;
+    let releaseBadgeRefetch!: () => void;
+    const badgeRefetch = new Promise<void>((resolve) => (releaseBadgeRefetch = resolve));
+    vi.mocked(taskNumbers).mockImplementation(async () => {
+      badgeReads += 1;
+      if (badgeReads === 1) await badgeRefetch;
+      return [];
+    });
+    // Claim B parks on its card read, so it is provably STILL IN FLIGHT — key held, registry
+    // entry current — at the instant A's `finally` runs.
+    const secondCardRead = deferred(() => taskRow());
+    let cardReads = 0;
+    vi.mocked(getTask).mockImplementation(() => {
+      cardReads += 1;
+      return cardReads === 1 ? Promise.resolve(taskRow()) : secondCardRead.promise;
+    });
+
+    // ── CLAIM A, out past its hand-off and into the badge refetch.
+    expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
+    // The refetch is awaited AFTER `onDispatched()`, so the fact that it has been called
+    // proves A released the `inFlight` key at the dispatch and is now parked with its
+    // `finally` — and its registry removal — still outstanding.
+    await vi.waitFor(() => expect(taskNumbers).toHaveBeenCalledTimes(1));
+    expect(startTaskSession).toHaveBeenCalledTimes(1);
+    expect(hasPendingClaim("tsk_1")).toBe(true); // A's entry
+
+    // ── CLAIM B, INSIDE A's window. The key is free (A released it), so B takes it and
+    // `set`s the registry, replacing A's entry — legitimately: B is the holder now.
+    expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
+    expect(hasPendingClaim("tsk_1")).toBe(true); // B's entry, now the current one
+    expect(startTaskSession).toHaveBeenCalledTimes(1); // B is parked on its read, not launched
+
+    // ── A'S `finally` FIRES. It owns neither the key (B's, and its own one-shot is spent)
+    // nor the entry (B's), so it must remove NOTHING. This is the assertion the unconditional
+    // `delete` fails.
+    releaseBadgeRefetch();
+    await macrotask();
+    await macrotask();
+    expect(hasPendingClaim("tsk_1")).toBe(true);
+
+    // ── THE CONSEQUENCE, behaviourally. A settle races into B's window: the key IS held, so
+    // the trip arm must FIND B and inherit B's outcome rather than answer `NOTHING`.
+    const raced = launchTaskSession(SPACE, taskRow(), CLAIM_DESTINATION, CLAIM_CATALOGS());
+    expect(startTaskSession).toHaveBeenCalledTimes(1); // it started nothing of its own
+
+    // B carries its own launch out, and the racer is handed THAT outcome — a real Session,
+    // which is what keeps `finishLink` from closing a run its own chain is standing on.
+    secondCardRead.resolve();
+    await vi.waitFor(() => expect(startTaskSession).toHaveBeenCalledTimes(2));
+    expect((await raced).sessionId).toBe("sess_new");
+
+    // B's own net then runs, and B DOES own its entry: nothing is left behind for the reset.
+    await vi.waitFor(() => expect(hasPendingClaim("tsk_1")).toBe(false));
+  });
+
   it("registers the pending claim SYNCHRONOUSLY, at the instant the key is taken", async () => {
     // THE BEHAVIOURAL HALF of the source-scan pin above. A scan proves the `set` sits in the
     // right BLOCK; this proves the ENTRY IS VISIBLE BEFORE THE FIRST AWAIT RETURNS, which is

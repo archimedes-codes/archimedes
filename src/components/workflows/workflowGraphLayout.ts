@@ -267,7 +267,8 @@ function rank(
   columns: readonly StageWithTasks[],
   missing: readonly string[],
   hops: readonly { from: string; to: string }[],
-): Map<string, { x: number; y: number }> {  const g = new dagre.graphlib.Graph();
+): Map<string, { x: number; y: number }> {
+  const g = new dagre.graphlib.Graph();
   // `setGraph` FIRST: dagre keeps layout settings on the graph object, and
   // `layout()` reads `rankdir` from it — set it after `setNode` and the default
   // top-to-bottom rankdir is what the ranks get.
