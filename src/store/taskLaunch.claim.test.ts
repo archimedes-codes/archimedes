@@ -25,7 +25,7 @@ import {
  * worker `carryOutClaim`. ADR 0113 mirror naming beside `taskLaunch.test.ts`, which
  * owns the launch half (`launchTaskSession`, `createTaskFromDraft`, the settle edge).
  *
- * WHY THIS FILE EXISTS SEPARATELY: the parent reached 1,040 code lines against the
+ * WHY THIS FILE EXISTS SEPARATELY: the parent reached 998 code lines against the
  * 1,000-line test gate (`docs/agents/file-size.md`, ADR 0112), and the claim path is a
  * SEPARATE SUBJECT from the launch — a second entry point into the same executor,
  * reached from `App.tsx`'s session-update batcher rather than from a click. Splitting
