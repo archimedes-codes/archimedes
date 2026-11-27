@@ -200,12 +200,36 @@ describe("McpSection: the per-server off-switch (`disabled`)", () => {
 
   it("a disabled row badges Off, deadens its actions, and keeps Edit and Remove live", () => {
     renderSection();
+    // The COUNT comes FIRST, on purpose: the `getByTitle` presence query below
+    // throws `Found multiple elements` when a second Off badge appears, and that
+    // accidental throw used to be the ONLY thing catching `!!entry.disabled` at
+    // `McpSection.tsx:79`. Counting first makes the failure a deliberate length
+    // assertion instead. `sloppy`'s malformed `"disabled": "yes"` must NOT
+    // badge, so exactly one badge exists in the mounted section.
+    expect(
+      screen.getAllByTitle(
+        "Off — this server is not registered with the harness",
+      ),
+    ).toHaveLength(1);
     // Queried by title, NOT by text: `controls.tsx` already renders a label
     // "Off" elsewhere in Settings, so a text query collides the moment two
     // sections are mounted together.
     expect(
       screen.getByTitle("Off — this server is not registered with the harness"),
     ).toBeTruthy();
+    // And the single badge belongs to the `off_srv` row, NOT to `sloppy` — a
+    // bare global count cannot tell those two apart, so the count is repeated
+    // inside the row. `.border-t` (an exact class), NOT `[class*="border-t"]`:
+    // the ghost buttons carry `border-transparent`, which that substring
+    // selector matches.
+    const offRow = screen
+      .getByRole("button", { name: "Edit MCP server off_srv" })
+      .closest(".border-t")!;
+    expect(
+      offRow.querySelectorAll(
+        '[title="Off — this server is not registered with the harness"]',
+      ),
+    ).toHaveLength(1);
     // The actions that CANNOT work while the server is off.
     expect(isDisabled("Authenticate MCP server off_srv")).toBe(true);
     expect(isDisabled("Test MCP server off_srv")).toBe(true);
@@ -281,9 +305,55 @@ describe("McpSection: the per-server off-switch (`disabled`)", () => {
     );
     // The malformed `"disabled": "yes"` arrives as `false` — i.e. the server
     // stays ON, exactly as `classify_server` reads it
-    // (`and_then(Value::as_bool) == Some(true)`). This is the only assertion
-    // that enforces `=== true` over `!!entry.disabled`, and the badge is the
-    // surface where the two would visibly disagree with the engine.
+    // (`and_then(Value::as_bool) == Some(true)`). THIS assertion pins
+    // `entryToDraft`'s `=== true` (`McpSection.tsx:244`); the Off-badge count in
+    // the first test here pins the row's `=== true` (`McpSection.tsx:79`, which
+    // drives the badge and the Test/Authenticate disabled state). TWO sites, two
+    // pins — the comment here used to claim it was the only one, which was
+    // wrong. The two must not diverge: a badge that disagrees with the pre-fill
+    // tells the user two different things about the same server, so the
+    // agreement itself is pinned by the next test.
+    fireEvent.click(screen.getByRole("button", { name: "Edit MCP server sloppy" }));
+    expect(setDialog).toHaveBeenLastCalledWith(
+      expect.objectContaining({ disabled: false }),
+    );
+  });
+
+  it("the badge and the pre-fill agree on the malformed flag (the two === true sites must not diverge)", () => {
+    // `McpSection.tsx:79` and `McpSection.tsx:244` each spell `=== true` for
+    // themselves — the row's badge/buttons and the edit dialog's pre-fill. Each
+    // site has its own pin, but NOTHING pinned that they AGREE: a refactor could
+    // flip one, leave every current query finding exactly one match, and the
+    // suite would stay green while the UI contradicts itself. This test reads
+    // BOTH surfaces for the SAME entry in one mount, so it fails if EITHER site
+    // becomes `!!entry.disabled`: via the global badge count (the `:79` flip
+    // badges `sloppy` too) or via the draft (the `:244` flip pre-fills the
+    // switch as OFF for a server the engine keeps ON).
+    const OFF_TITLE = "Off — this server is not registered with the harness";
+    const setDialog = vi.fn();
+    render(
+      <McpSection
+        settings={settings}
+        dialog={null}
+        setDialog={setDialog}
+        onSave={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    // Surface 1 — the badge. One badge in the whole section, and `sloppy`'s own
+    // row carries none of it.
+    expect(screen.getAllByTitle(OFF_TITLE)).toHaveLength(1);
+    const sloppyRow = screen
+      .getByRole("button", { name: "Edit MCP server sloppy" })
+      .closest(".border-t")!;
+    expect(sloppyRow.querySelectorAll(`[title="${OFF_TITLE}"]`)).toHaveLength(0);
+    // `sloppy` is ON, so its actions stay live — the `:79` site again, read
+    // through the button rather than the badge.
+    expect(
+      (screen.getByRole("button", { name: "Test MCP server sloppy" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    // Surface 2 — the edit pre-fill for the SAME entry.
     fireEvent.click(screen.getByRole("button", { name: "Edit MCP server sloppy" }));
     expect(setDialog).toHaveBeenLastCalledWith(
       expect.objectContaining({ disabled: false }),
