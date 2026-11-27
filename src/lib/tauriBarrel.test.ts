@@ -1134,8 +1134,22 @@ describe("the scanner actually reads the tree", () => {
     // `hooks/useWindowMaximized.test.ts`. The barrel's OWN surface is UNCHANGED: no IPC
     // wrapper and no wire type is added or removed by this commit, so both pinned API
     // lists below are untouched.
-    expect(mockers).toHaveLength(73);
-    // 72 of the 73 SPREAD `vi.importActual`, which is the shape that makes the
+    // 73 -> 74 for the claim path's own test sibling: `src/store/taskLaunch.claim.test.ts`,
+    // the ADR 0113 mirror file `taskLaunch.test.ts` needed once the parent reached 1,040
+    // code lines against ADR 0112's 1,000-line test gate. It is a SPLIT, not an addition of
+    // coverage: `consumeAdvanceAdvice — the claim path` moved out of the parent verbatim
+    // (6 tests out, 6 tests in, leaf-name diff reports loss = 0), so the tree gained a FILE
+    // and no test. It needs the seam for the same reason every other store mocker does — its
+    // subject IS the `get_task` / `list_skills` / `move_task` / `start_task_session` wrappers,
+    // and the arms under test are the ones that REJECT, which is unobservable without a spy
+    // (a real `invoke` rejects in jsdom for the wrong reason). It spreads
+    // `vi.importActual`, so the spread half moves 72 -> 73 and the one wholesale replacement
+    // is STILL `hooks/useWindowMaximized.test.ts`. The parent `taskLaunch.test.ts` REMAINS a
+    // mocker — it keeps mocking, so no mocker is removed by this commit. The barrel's OWN
+    // surface is UNCHANGED: no IPC wrapper and no wire type is added or removed, so both
+    // pinned API lists below are untouched.
+    expect(mockers).toHaveLength(74);
+    // 73 of the 74 SPREAD `vi.importActual`, which is the shape that makes the
     // seam forgiving: an unlisted export still resolves. The new mockers spread
     // too (they list the arms their own tests drive and leave every other barrel
     // export — `invoke` included — to the real module), so the remaining one
@@ -1146,7 +1160,7 @@ describe("the scanner actually reads the tree", () => {
       mockers.filter((f) =>
         /vi\.importActual/.test(sweep.listed(f) ?? ""),
       ).length,
-).toBe(72);
+).toBe(73);
   });
 });
 

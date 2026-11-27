@@ -270,7 +270,13 @@ function resolveStage(
     // re-deriving it from the store a second time.
     return trusted ? { slug: wanted, sliceFree: true } : { slug: null, absent: true };
   }
-  // A loaded slice without the slug is STALE, and stale is never trusted (above).
+  // A loaded slice without the slug is STALE, and stale is never trusted (above). THE
+  // ORDER OF THIS CHECK AND THE ONE BELOW IS NOW PINNED, not prose: `keeps the note for a
+  // loaded slice that lacks the column, even when the stored slug already matches` in
+  // `taskLaunch.test.ts` seeds a LOADED slice with no `research`, a card whose stored slug
+  // IS `research`, and a supplied destination, and requires the note. Swapping the two
+  // checks keeps that case red — the same-slug guard would answer the no-`absent` shape
+  // above and the note would vanish for a slice the window can see is out of date.
   if (!columns.some((c) => c.stage.slug === wanted)) {
     return { slug: null, absent: true };
   }
@@ -692,19 +698,44 @@ async function carryOutClaim(
       await launchTaskSession(spacePath, task, destination, { skills, agents });
     } catch (err) {
       console.error(`The advance advice could not be carried out for ${taskId}:`, err);
-      useSessions
-        .getState()
-        .addSystemLine(
-          // The Session the CLAIM was made in — the turn this frame belongs to, and the
-          // transcript the person is actually watching. Not the Session the advice
-          // launched: a refusal to move is news about the turn that just asked.
-          sessionId,
-          `The card was not moved to \`${destination.label}\` — ` +
-            `${describeIpcError(err)} (\`launch_refused\`).`,
+      // THE REPORTER IS GUARDED, and the guard is what keeps the diagnosis truthful
+      // rather than merely loud. This `addSystemLine` used to sit unguarded INSIDE the
+      // outer `try`, so a transcript write that threw fell into the OUTER catch — which
+      // prints "could not be read (the card, the skills or the agents)" and appends
+      // "nothing launched; the card stayed where it was". Both halves are false on this
+      // path: every read succeeded, and the card may have moved before the start failed.
+      // Re-wording the outer sentence instead would have made it vaguer for the READ
+      // case, which is where it is exactly right, so the guard goes here: the launch
+      // failure keeps its own sentence, the read failure keeps its own, and a failed
+      // report is reported by the same belt as any other unreportable failure.
+      try {
+        useSessions
+          .getState()
+          .addSystemLine(
+            // The Session the CLAIM was made in — the turn this frame belongs to, and the
+            // transcript the person is actually watching. Not the Session the advice
+            // launched: a refusal to move is news about the turn that just asked.
+            sessionId,
+            `The card was not moved to \`${destination.label}\` — ` +
+              `${describeIpcError(err)} (\`launch_refused\`).`,
+          );
+      } catch (reportErr) {
+        // Same shape as the dispatch's `.catch` below, and for the same reason: a
+        // rejection raised inside the handler for a rejection is an unhandled rejection
+        // wearing a `.catch`, and it must not reach the outer arm and be re-diagnosed as
+        // a failed read.
+        console.error(
+          `The advance advice for ${taskId} failed, and the failure could not be recorded ` +
+            `in the Session it was claimed in:`,
+          reportErr,
         );
+      }
     }
   } catch (err) {
-    // A READ failed, so there was no launch to refuse. Recorded the way this file
+    // A READ failed, so there was no launch to refuse. Reached ONLY by the reads now
+    // that the inner report is guarded: a launch failure whose transcript write threw is
+    // reported by the inner `catch`'s own belt and never falls through to this sentence,
+    // which would call a failed launch a failed read. Recorded the way this file
     // records everything it cannot rethrow — a line in the Session it failed in — and
     // the sentence says the operative half: nothing was launched, so the card is where
     // it was and the person can move it themselves.
