@@ -14,9 +14,10 @@
 //!
 //! This parent holds what every subject shares and what the pins read: the three
 //! error types and their `From` maps, the `Db` struct, [`Db::open`] **whole**
-//! (its `gate` calls ARE the migration surface, and
-//! `the_three_task_tables_are_in_schema_and_have_no_gate_entry` counts them from
-//! this file's text), `gate`, `set_journal_pragmas`, `LAST_ACTIVITY` and `SCHEMA`.
+//! (its `gate` calls ARE the migration surface, and the gate-count pin
+//! `each_cluster_schema_omits_exactly_one_gated_column`, counting through
+//! `gated_columns_in_open_source`, reads them from this file's text), `gate`,
+//! `set_journal_pragmas`, `LAST_ACTIVITY` and `SCHEMA`.
 //! Every subject lives in the sibling that names it — [`sessions`], [`messages`],
 //! [`spaces`], [`board`], [`tasks`], [`stages`], [`artifacts`], [`seams`],
 //! [`rows`], [`migrations`], [`auto_guards`], [`workflow_runs`] — and `tests/`
@@ -1523,8 +1524,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open
 // in the older shape, and a missing column is a `no such column` at the first
 // `SELECT` rather than a table the batch can create. The counts in those two
 // sentences are history, not
-// the current surface — `the_three_task_tables_are_in_schema_and_have_no_gate_entry`
-// pins what the tree measures today. That is the distinction the pin draws: a new
+// the current surface — the surface is DERIVED from this file's `gate` calls by
+// `each_cluster_schema_omits_exactly_one_gated_column` (through
+// `gated_columns_in_open_source`, `tests/open.rs`), so nothing here has to be
+// kept in step with it. `the_three_task_tables_are_in_schema_and_have_no_gate_entry`
+// pins the QUALITATIVE half. That is the distinction the pin draws: a new
 // column on an existing table is gate territory, a new table never is — which is
 // why `workflow_runs`, the FIFTH table in this batch, rides `SCHEMA` with no gate
 // and no entry in that pin's forbidden list by the same rule the four that joined
