@@ -208,14 +208,16 @@ describe("McpSection: the per-server off-switch (`disabled`)", () => {
     // badge, so exactly one badge exists in the mounted section.
     expect(
       screen.getAllByTitle(
-        "Off — this server is not registered with the harness",
+        "Off — this entry is not registered; a same-named server in a Space or user-level config still applies",
       ),
     ).toHaveLength(1);
     // Queried by title, NOT by text: `controls.tsx` already renders a label
     // "Off" elsewhere in Settings, so a text query collides the moment two
     // sections are mounted together.
     expect(
-      screen.getByTitle("Off — this server is not registered with the harness"),
+      screen.getByTitle(
+        "Off — this entry is not registered; a same-named server in a Space or user-level config still applies",
+      ),
     ).toBeTruthy();
     // And the single badge belongs to the `off_srv` row, NOT to `sloppy` — a
     // bare global count cannot tell those two apart, so the count is repeated
@@ -227,7 +229,7 @@ describe("McpSection: the per-server off-switch (`disabled`)", () => {
       .closest(".border-t")!;
     expect(
       offRow.querySelectorAll(
-        '[title="Off — this server is not registered with the harness"]',
+        '[title="Off — this entry is not registered; a same-named server in a Space or user-level config still applies"]',
       ),
     ).toHaveLength(1);
     // The actions that CANNOT work while the server is off.
@@ -329,7 +331,8 @@ describe("McpSection: the per-server off-switch (`disabled`)", () => {
     // becomes `!!entry.disabled`: via the global badge count (the `:79` flip
     // badges `sloppy` too) or via the draft (the `:244` flip pre-fills the
     // switch as OFF for a server the engine keeps ON).
-    const OFF_TITLE = "Off — this server is not registered with the harness";
+    const OFF_TITLE =
+      "Off — this entry is not registered; a same-named server in a Space or user-level config still applies";
     const setDialog = vi.fn();
     render(
       <McpSection

@@ -125,7 +125,7 @@ function McpRow({
             <SettingsBadge>{kind}</SettingsBadge>
             {isOAuth && <SettingsBadge>OAuth</SettingsBadge>}
             {isDisabled && (
-              <SettingsBadge title="Off — this server is not registered with the harness">
+              <SettingsBadge title="Off — this entry is not registered; a same-named server in a Space or user-level config still applies">
                 Off
               </SettingsBadge>
             )}
@@ -219,7 +219,8 @@ export interface McpDraft {
   args: string; // one arg per line
   env: string; // `KEY=VALUE` lines
   cwd: string;
-  /** Checked means OFF: the engine never registers it (`disabled: true`). */
+  /** Checked means OFF: Settings stops registering it (`disabled: true`); a
+   * same-named Space or user-level entry still applies. */
   disabled: boolean;
 }
 
@@ -317,7 +318,7 @@ function McpDialog({
             Stored in the desktop's settings.json. A Space's own MCP config
             overrides an entry here, and an entry here overrides the
             user-level config (Space &gt; desktop &gt; user). Switching a
-            server off means the harness never registers it; it takes effect
+            server off means Settings stops registering it; it takes effect
             for new sessions.
           </DialogDescription>
         </DialogHeader>
