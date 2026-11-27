@@ -1,7 +1,7 @@
 ---
 status: live
-last-verified: 2026-10-29
-verified-by: read against this tree at `2b6bd26` (`agent/mcp/tool.rs`, `agent/harness/tool_specs.rs`) — every gap below re-confirmed still open, not copied from the plan — DATED PATH NOTE 2026-11-25, and it is about a PATH and not about any gap below. The second path this line cites, `agent/harness/tool_specs.rs`, no longer exists in this tree. `agent/harness/` is now an ALIAS module with only `{mod,store,trust}.rs` (the harness moved to the crates.io-pinned `fulcrum-harness`), and since ADR 0102 / issue #183 `tool_specs()` is the ENGINE's 19-name table while the seven board verbs are this repo's own Host-tool specs in `agent/host_tools/specs.rs`. No `mcp` gap is closed or opened by that move. `mcp` stays a loop-internal arm, its `action: "auth"` needs to prompt so no name-level `ScriptAccess` field can express its reach, and the `mcp` spec text itself is unchanged among the crate's 19.
+last-verified: 2026-11-27
+verified-by: read against this tree at `2b6bd26` (`agent/mcp/tool.rs`, `agent/harness/tool_specs.rs`) — every gap below re-confirmed still open, not copied from the plan — DATED PATH NOTE 2026-11-25, and it is about a PATH and not about any gap below. The second path this line cites, `agent/harness/tool_specs.rs`, no longer exists in this tree. `agent/harness/` is now an ALIAS module with only `{mod,store,trust}.rs` (the harness moved to the crates.io-pinned `fulcrum-harness`), and since ADR 0102 / issue #183 `tool_specs()` is the ENGINE's 19-name table while the board verbs are this repo's own Host-tool specs in `agent/host_tools/specs.rs`. CORRECTION 2026-11-27, of a figure THIS line had WRONG: it said "the seven board verbs", and `mark_done` (shipped in `ec5f4f37`) made that stale — the count measured at this tree is EIGHT, not seven, and it is re-run rather than carried (`grep -c "ToolSpec {" src-tauri/src/agent/host_tools/specs.rs` gives 8, `src-tauri/src/agent/host_tools/tests/surface.rs` declares `const HOST_TOOL_NAMES: [&str; 8]` and pins `the_eight_host_specs_are_disjoint_from_the_engine_advertised_set`, and the composed advertised set that file asserts is 27). No `mcp` gap is closed or opened by that move. `mcp` stays a loop-internal arm, its `action: "auth"` needs to prompt so no name-level `ScriptAccess` field can express its reach, and the `mcp` spec text itself is unchanged among the crate's 19. NEW SECTION 2026-11-27 — `## MCP as the way to add a tool, and what an MCP tool is invisible to (#47)` — seven registration-consequence claims, each re-measured in that sitting against the registry extract of the PINNED `fulcrum-harness` 0.8.0 (`src-tauri/Cargo.toml` declares it, so the crate line numbers below cannot drift) plus this tree. The three-layer `mcpServers` merge with the project layer last, `mcp` outside `POLICIED_TOOLS` with `mcp: deny` a no-op at BOTH the gate and the child's advertised set, `enabled_tools` unable to name a server or one of its tools, `push_config_update` excluding `mcp_servers` while `apply_config_update` has no parameter to receive it, `collect_tools` awaiting every server serially under a 60 s per-request bound, the `#`-mention picker dropping a `disabled` server with no note, and `annotations` discarded by both `list_tools` parsers (0 hits crate-wide). ONE claim that section was expected to carry is FALSE at this tree and is written as false INSIDE it rather than omitted — there is NO Settings off-switch for an MCP server here, `draftToEntry` never sets `disabled` and the section lists every entry unfiltered, so `disabled: true` is reachable only by hand-editing `settings.json`. Rust read, not executed — no test reads this file, so the citations ARE the instrument. `docs/decisions/0123-*.md` (user-supplied tool code is declined) is deliberately NOT cited anywhere in this file; if it lands, that is where the security half of the registration story belongs, and nothing here depends on it.
 ---
 
 # MCP — known gaps
@@ -91,6 +91,118 @@ the name is raw). `search` still lists the shadowed tool under its own
 that spelling. Accepted: the alternative — preferring a literal raw name over a
 known-server prefix — would make the callable form `search` prints unreliable,
 which is the whole point of the change.
+
+## MCP as the way to add a tool, and what an MCP tool is invisible to (#47)
+
+Board card #47 is "No way to add a tool without a desktop release", and the
+mechanism that answers it is already in the tree — `mcpServers` IS the extension
+door. What no document said before this section is what an MCP tool is NOT wired
+into: the permission gate, the tool allowlist, the live config push, and the
+`#`-mention picker. Every claim below was re-measured in one sitting against the
+registry extract of `fulcrum-harness` 0.8.0 (the pin in `src-tauri/Cargo.toml`)
+and this tree; the crate paths are that extract's, and a published crates.io
+version is immutable, so those line numbers cannot drift.
+
+- **A `mcpServers` entry is the registration mechanism — no rebuild, no crate
+  release.** Three layers merge crate-side in `load_servers`
+  (`mcp/config.rs:36-58`) — `<$HOME>/.pi/agent/mcp.json`, then the desktop's
+  `settings.json` `mcpServers`, then `<space cwd>/.pi/mcp.json`
+  (`mcp/config.rs:42-49`) — and because the merge is a later-`insert`-wins loop
+  over exactly that order (`mcp/config.rs:50-56`), **per-Space MCP config
+  already ships, at the highest precedence**. The first server costs zero extra
+  context, because the `mcp` spec sits in the engine's own table
+  (`harness/tool_specs.rs:322`) and `advertised_tool_specs` filters that table on
+  `enabled_tools` and the child guard and nothing else
+  (`harness/loop.rs:2199-2215`) — there is no server-count condition anywhere on
+  that path, so the name is advertised whether or not a single server exists.
+- **An MCP tool reaches no permission judge at all — and `mcp: deny` is a no-op
+  at both layers.** `POLICIED_TOOLS` is exactly
+  `bash read find grep ls write edit` (`harness/loop/gate.rs:18-26`) and
+  `policy_verdict` opens with `policed_direction(&tc.name)?`
+  (`harness/loop/gate.rs:179`), so a name off that table returns `None` —
+  ungated — before any policy is read, and that table's own doc names `mcp` as
+  one of the ungated tools (`gate.rs:40-42`). The only name the model can emit
+  is `mcp`, and the server tool is a STRING inside its arguments
+  (`harness/loop/tools.rs:259-271`), so no spelling of it can reach the judge.
+  There is no `ToolKey::Mcp` variant (`definition_permission.rs:156-172` — an
+  `mcp` key falls to `Unrecognized`, `:193`) and the `definition_verdict` consult
+  sits at `gate.rs:252`, PAST that early return, so a `permission:` block naming
+  `mcp` produces no verdict. Nor does it narrow a child — the pre-wire deny
+  filter drops a name only where `tool_key_name` answers `Some`
+  (`harness/launch.rs:353-366`) and `Unrecognized` answers `None`
+  (`harness/launch.rs:425`), so the name stays in the child's advertised set.
+  ADR 0030 already says it: "`sudo_exec` and the MCP tools sit outside the policy
+  … `Shell = Sandboxed` confines `bash` and nothing else."
+  (`docs/decisions/0030-file-access-policy.md:46`).
+- **No `enabled_tools` value can mean "not this server" or "not this tool".**
+  `enabled_tools` is a name filter over `advertised_tool_specs`
+  (`harness/loop.rs:2208-2211`), and MCP tools are not in that set and
+  structurally cannot be — a server tool has no `ToolSpec` and no executor, it
+  is a name the one `mcp` arm forwards at call time (`mcp/types.rs:99-103`,
+  `harness/loop/tools.rs:259-271`). `disabled: true` is therefore the ONLY
+  per-server switch, and it works by making `classify_server` answer `None`
+  (`mcp/types.rs:280-282`). **What is NOT true, and was expected here:** there is
+  no Settings off-switch for it. The field exists on the wire type
+  (`src/lib/tauri/types.ts:1341`) and no Settings surface writes it —
+  `draftToEntry` builds an entry from the URL / command fields and never sets
+  `disabled` (`src/components/settings/McpSection.tsx:248-266`), and the section
+  lists every entry unfiltered (`McpSection.tsx:440`). Switching a server off is
+  a hand-edit of `settings.json`, and the entry it leaves is clean because
+  nothing writes the key at all.
+- **A new or edited server takes effect for the NEXT session, not the running
+  one.** `push_config_update` deliberately excludes `providers` and
+  `mcp_servers` — "the recorded residual hole (both stay session-construction
+  snapshots)" (`src-tauri/src/agent/session/router.rs:913-914`) — and sends the
+  three remaining fields (`router.rs:934-945`); crate-side, `apply_config_update`
+  has no `mcp_servers` parameter that could receive it
+  (`harness/loop.rs:1148-1155`). The reason is real rather than laziness: the
+  desktop layer arrives by REBUILDING the manager
+  (`harness/loop.rs:1111-1126`, which is safe only because it runs before any
+  server has connected), so a push after connect would drop a live child. Nothing
+  in the UI says the change waits — the one sentence the section offers about
+  sessions reads "Existing sessions are unaffected"
+  (`src/components/settings/McpSection.tsx:190`), which is true of the running
+  Worker and reads as a reassurance instead.
+- **One `mcp({search})` is not cheap on a multi-server config.** `collect_tools`
+  calls `list_tools` on **every** server before it answers, in a plain `for` loop
+  that awaits each one in turn (`mcp/tool.rs:121-145`; the callers are
+  `tool.rs:530`, `:576`, `:682`), and `list_tools` connects first
+  (`mcp/manager.rs:292-298`) — so a five-stdio-server config spawns up to five
+  children and waits for them serially. Each is bounded: `TIMEOUT` is
+  `Duration::from_secs(60)` (`mcp/tool.rs:36`) and it is the stdio request bound,
+  while an HTTP client IGNORES that argument and applies its own `read_timeout`
+  (`mcp/manager.rs:41-52`), which `connect` built from the same value
+  (`mcp/http.rs:63-66`, `:107`) as an idle-between-bytes bound and not a total
+  one. Idle cost is near zero — connect is lazy and an untouched server spawns
+  nothing (`mcp/manager.rs:1-4`).
+- **A switched-off server is silently absent from the `#`-mention picker, and
+  that is accepted.** `commands/mcp.rs` answers the picker with
+  `server_infos(&load_servers(…))` (`src-tauri/src/commands/mcp.rs:34`),
+  `load_servers` keeps only what
+  `classify_server` accepts (`mcp/config.rs:50-56`), and `classify_server`
+  answers `None` for `disabled: true` (`mcp/types.rs:278-282`) — so the switch
+  removes the row with no note anywhere. Related, and reachable from a
+  hand-edited file: `test_mcp_server` and `auth_mcp_server` both answer
+  "need a `url` or a `command`" for a deliberately-off entry
+  (`src-tauri/src/commands/settings.rs:204-207`, `:217-220`), because
+  `classify_server` returns `None` for THREE distinct causes — off
+  (`mcp/types.rs:280-282`), legacy `sse` (`:283-285`), and neither a usable `url`
+  nor a usable `command` (`:327`) — and both commands collapse the three into one
+  message. (The `#` trigger is itself off by default — `mcpMentionsEnabled`,
+  `src/components/settings/GeneralSection.tsx:61-67`.)
+- **`annotations` are discarded at the transport boundary.** `ToolInfo` is
+  `name` / `description` / `input_schema` and nothing else
+  (`mcp/types.rs:95-103`), and both `list_tools` parsers pick exactly those three
+  keys and drop the rest of the entry (`mcp/stdio.rs:260-279`,
+  `mcp/http.rs:321-340`). `grep -rn annotations` across the crate extract is
+  **0** hits, and across this repo it is 5, every one of them unrelated UI prose
+  about a message bubble's annotation bands
+  (`src/components/MessageBubble.tsx:322`) — nothing reads the MCP field. The
+  spec defines four hints, `readOnlyHint` / `destructiveHint` /
+  `idempotentHint` / `openWorldHint`, and itself warns that a client MUST treat
+  annotations as untrusted unless they come from a trusted server (the
+  2025-06-18 tools spec at modelcontextprotocol.io), so what is on the table is
+  a badge opportunity at most and never a gate.
 
 ## Two pointers the same loop recorded, so they are not re-derived
 
