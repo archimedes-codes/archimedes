@@ -263,3 +263,90 @@ Two rules apply to every entry here:
   `worker_e2e` entries above, this one does NOT co-occur with the temp-dir census
   guard: on that run the census step passed and only `cargo test` failed, so a red
   here is one incident and nothing else needs explaining.
+- **`src/lib/paletteTestKit.test.ts`'s four discovery tests fail TOGETHER, all with the identical
+  `src/styles/guardprobe.css cannot be read — a Palette spec must name a CSS file it owns` — a LOCAL
+  cross-worker plant/delete race, and it needs an owner, not a drive-by fix.** **It bit LOCALLY, on a
+  desktop `pnpm test`, not on a CI leg** — so there is no run ID to cite and `gh run view` is the wrong
+  tool; check your own terminal first. It is one of only two local entries here (the
+  `provider_gcloud_adc` bullet above is the other, and unlike this one CI *cannot* hit it — see its
+  "CI is safe" paragraph). It is also the **only entry here whose mechanism is a test writing into this
+  repo's own tracked working tree**: every other local or load entry churns `/tmp`, a scratch `HOME`, or
+  a process-global env, never a path `git ls-files` can see.
+  The four tests, named in file order because you must match on the NAME:
+  `every row's modes match its blocks, and every registry mode is graded`,
+  `every row declares its own id and its own CSS file`,
+  `grades every shipped Palette clean, so the harness is not simply broken`, and
+  `grades every graded text token in every Palette — a Palette cannot shrink the set`.
+  **THE TELL, which is cheap and recognisable: all four fail with the SAME message, and it names
+  `guardprobe`.** It is thrown by `readCssFile` (`src/lib/paletteTestKit.ts:72`; the message literal
+  is at `:73`) from the palette-discovery walk and from `gradePalette`
+  (`src/lib/paletteTestKit.ts:568-569`, which reads `spec.cssFile` and `spec.baseCssFile`). If you see
+  one of those four red alone, it is not this. If you see **all four** red with that one string, stop
+  reading assertions and re-run.
+  **The cause is a race between two vitest WORKERS, not load and not timing sensitivity.**
+  `src/lib/paletteCompleteness.test.ts` runs a live guard that PLANTS a fake Palette into the real
+  swept directory — `src/lib/palettes/guardprobe.ts` + `src/styles/guardprobe.css`
+  (`GUARD_TS`/`GUARD_CSS` at `:3020-3021`) — writes them at `:3069-3070` and `:3080-3081`, and removes
+  them in a `finally` at `:3233-3234`, with a further delete in `beforeEach` at `:3107` and a
+  boot-time cleanup of both paths at `:84-85`. It cannot write anywhere else and still test discovery.
+  `paletteTestKit.test.ts` takes its discovery snapshot ONCE, at module scope
+  (`const specs = await listPaletteSpecs()`, `:44`), and discovery excludes nothing —
+  `specFileNames`' filter is `/^[a-z][a-z0-9-]*\.ts$/` (`src/lib/paletteTestKit.ts:309`) and
+  `guardprobe.ts` matches it. `vite.config.ts:40-43` sets `environment: "jsdom"` and overrides neither
+  `fileParallelism` nor `maxWorkers`, so vitest builds one environment per file and runs these files in
+  parallel workers, and the window is real.
+  **CORRECTION TO THE OBVIOUS STORY, and it matters because it decides what the fix is: the hazard is
+  NOT "the `.ts` row exists while the `.css` does not".** That interleaving is not reachable from this
+  code's ordering — the plant writes **CSS first** (`:3069`) and the delete removes **TS first**
+  (`:3050`), so the `.css` is the last thing to go and the first thing to arrive. The window that
+  actually produces the error is the SNAPSHOT OUTLIVING THE PLANT: discovery captures the `guardprobe`
+  row while both files exist, the guard's `finally` then removes them, and the four tests later read
+  `cssFile` off a row they are already holding. The `.ts` being gone is irrelevant by then — the row
+  survives in the snapshot, and `readCssFile` hits the deleted `.css`. **Consequence: "make the plant
+  atomic" does NOT close this.** A perfectly atomic plant still leaves a snapshot holding a row whose
+  CSS is deleted afterwards. What closes it is giving the guard its own file set that discovery cannot
+  enumerate (or excluding the probe from discovery) — real work, with a blast radius wider than it
+  looks: `grep -rln guardprobe src/ scripts/` measures **ten files** today
+  (`paletteCompleteness.test.ts`, `paletteTestKit.ts`, `paletteTestKit.test.ts`, `sourceSweep.ts`,
+  `sourceSweep.test.ts`, `layerBoundary.test.ts`, `classNameConvention.test.ts`,
+  `themeTokens.test.ts`, `tauriBarrel.test.ts`, `tauriBoundary.test.ts`), and six of them carry
+  tolerances written specifically for this probe (`layerBoundary.test.ts:139`/`:343`/`:389`,
+  `classNameConvention.test.ts:113`/`:330`, `sourceSweep.ts:17`, and
+  `themeTokens.test.ts:836`/`:1365`/`:1408`). **The hazard is therefore already documented in-repo and
+  only TOLERATED, never closed** —
+  `paletteTestKit.test.ts:668` and `paletteTestKit.ts:316` both name the other-worker plant/delete
+  explicitly, and `sourceSweep.ts:8-23` exists precisely because seven gates list-then-read a tree
+  another worker is churning. What that machinery catches is a path that VANISHED before it was
+  opened; `readCssFile` is a bare `readFileSync` in a `try`/`catch` (`:68-76`) with no vanished-path
+  tolerance at all, which is why the probe's CSS throws instead of being skipped.
+  **Why the failure count is EXACTLY FOUR, and the arithmetic corroborates the diagnosis:** six tests
+  in the file iterate that snapshot, but only these four read CSS from it — `:304`, `:347`, `:353`
+  (via `gradePalette`) and `:642`/`:644`. The other two (`discovers one row per Palette the registry
+  offers` at `:233`, `discovers AT LEAST the two shipped Palettes…` at `:277`) only map over `spec.id`,
+  and an extra `guardprobe` id passes both by design — `:239-248` records that the
+  directory-may-exceed-registry direction was deliberately removed, so a surplus row is legal. Four CSS
+  readers, four failures. That is the shape, not a coincidence.
+  **Evidence: one observation, LOCAL, at `61c2e19d` on 2026-11-27** (the integrated tree of
+  `feature/tool-registration`, a merge commit — so read its diff against BOTH parents, not with a bare
+  `git show --stat`, which on a merge lists only what differs from every parent and here printed a
+  single file). `pnpm test` reported `Test Files 1 failed (220) / Tests 4 failed | 5285 passed |
+  1 skipped`, and those four tests were the only failures. An **immediate re-run of the same command on
+  the same commit** reported `Test Files 220 passed (220)` with **zero** occurrences of the string
+  `guardprobe` in the output. **The re-run-green conclusion is sound rather than a coin flip, and the
+  check is the one this file's header prescribes:** the union of `61c2e19d`'s two parent diffs is seven
+  files — `src/components/settings/McpSection.tsx`, `McpSection.test.tsx`,
+  `src-tauri/src/commands/settings.rs`, `scripts/file-size-baseline.txt`,
+  `docs/features/mcp-known-gaps.md`, `CONTEXT.md`, and the new
+  `docs/decisions/0123-user-supplied-tool-code-is-declined-the-registered-tool-surface-is-mcp-and-data.md`
+  — and **none of them is reachable from palette code**: `git diff --name-only main...61c2e19d |
+  grep -ciE 'palette|src/styles'` → `0`, and `git diff main...61c2e19d | grep -icE
+  'palette|guardprobe'` → `0`, i.e. the word does not appear anywhere in the diff text. A diff with
+  zero palette references cannot change what discovery enumerates. Per the file's own squash-orphan
+  rule, prefer the run's own output over this SHA once the branch squash-merges: `61c2e19d` is an
+  ancestor of `feature/tool-registration`'s HEAD today, but it will not survive the merge.
+  **Re-run before investigating, and name the tell out loud so nobody re-derives the race.** Then do
+  not treat this as a drive-by: unlike the load entries above there IS a real defect here, it is just
+  not in the tests — closing it means the file-set change described above across the ten files, which
+  is its own task with its own blast radius. And because this one is LOCAL, a green CI leg proves
+  nothing about it: the load-sensitive entries above need a loaded runner to bite, this one only needs
+  two files to be scheduled as near-simultaneous workers on your own machine.
