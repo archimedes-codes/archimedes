@@ -189,7 +189,11 @@ export interface WorkflowSettle {
    *  needs a board slice to exist. It refuses THREE different ways — it THROWS for a
    *  Skill the catalog lacks, it THROWS when `moveTask` reports the card ended in a
    *  column other than the one it was aimed at, and it answers `{ sessionId: null }`
-   *  when its in-flight guard trips — and all three are handled in [`finishLink`]. */
+   *  when its in-flight guard trips with NOBODY behind the guard — and all three are
+   *  handled in [`finishLink`]. The guard's fourth answer is the one that is NOT a
+   *  refusal: when the trip is caused by the chain's OWN pending claim, the executor
+   *  awaits that claim and returns its outcome, so this runtime never sees the case. See
+   *  [`finishLink`]'s invariant. */
   launch: (next: TaskLaunchDestination) => Promise<TaskLaunchOutcome>;
 }
 
@@ -491,9 +495,32 @@ export async function advanceWorkflowChainOnSettle(
  *  THROWS when the store's `moveTask` reports the card ended up somewhere other than the
  *  column it was aimed at (a `board_strict` refusal — the case whose swallow used to make
  *  this look like a success — or a destination a slice never had), and it answers
- *  `{ sessionId: null }` when its in-flight guard refuses a second launch of the same
- *  card. The guard trip is a RETURN and not a throw, which is why the outcome is read and
- *  not merely caught — a `try`/`catch` alone would call a refusal a success.
+ *  `{ sessionId: null }` when its in-flight guard trips and NOTHING is behind the guard.
+ *  A refusal is a RETURN and not a throw for the last of the three, which is why the
+ *  outcome is read and not merely caught — a `try`/`catch` alone would call a refusal a
+ *  success.
+ *
+ *  ## THE INVARIANT, and where this function's half of it lives
+ *
+ *  **A guard trip caused by the other chain door is NOT a refusal, and must never close
+ *  the run.** The two doors (`consumeAdvanceAdvice`, rAF-deferred, and this runtime,
+ *  deferred by nothing) launch the same card for the same link, and since the claim began
+ *  taking its reservation synchronously it can HOLD the key across three IPC reads while a
+ *  settle trips on it. That trip used to answer `{ sessionId: null }` like a refusal, this
+ *  function recorded `launch_refused`, and `workflowRunClose` closed the live run — so the
+ *  next link's step verb re-INSERTed at `steps = 1` with `cost_usd` NULL: `max_steps` and
+ *  the cost ceiling restart per link, the spend bound failing open, beside a false "could
+ *  not start a Session in X" in the transcript.
+ *
+ *  The fix sits in `taskLaunch` and not here, deliberately: the executor is the one party
+ *  that can tell WHICH kind of trip it has, because it is the one holding the registry, so
+ *  it answers an other-door trip with the holder's outcome and this arm never sees one.
+ *  What this function keeps is the honest half — a `null` that reaches it means no launch
+ *  happened (nobody else is launching the card, or the other door tried and launched
+ *  nothing), and a step that started nothing is a refusal that must be recorded AND closed,
+ *  or the run leaks into the next chain. Both halves are pinned: the other-door case in
+ *  `taskLaunch.claim.test.ts` and in "does NOT close when the claim holds the card" here,
+ *  the genuine refusal in "closes with launch_refused when NOTHING is launching the card".
  *
  *  A refusal means THIS STEP did not move the card: a missing Skill throws before the move
  *  is resolved, and a refused move reverted the optimistic paint it had already made (or,
@@ -545,7 +572,16 @@ async function finishLink(
   try {
     const outcome = await settle.launch(next);
     if (outcome.sessionId === null) {
-      await refused("it was already being launched");
+      // THE GUARD ARM, and the sentence is about THIS STEP rather than about a cause. It
+      // used to say "it was already being launched", and since the other-door fix that is
+      // FALSE on one of the two shapes that reach here: a trip whose holder was the chain's
+      // own pending claim means that launch has ALREADY finished and started nothing — and
+      // the claim has just written its own line saying so ("nothing launched; the card
+      // stayed where it was"), so a second sentence claiming a launch was in flight would
+      // contradict it in the same transcript. What this arm can see is true of both shapes:
+      // something held the card's guard, and this step started nothing. The other shape it
+      // can reach — a double click — is honest under the same wording.
+      await refused("another launch of this card held its guard, and this step started nothing");
       return;
     }
     if (outcome.note !== null) {

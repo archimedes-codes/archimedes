@@ -5,7 +5,7 @@ import {
   costDeltaOf,
   type WorkflowSettle,
 } from "./workflowChain";
-import { launchTaskSession, type TaskLaunchCatalogs } from "./taskLaunch";
+import { consumeAdvanceAdvice, launchTaskSession, type TaskLaunchCatalogs } from "./taskLaunch";
 import type { TaskLaunchDestination } from "../lib/taskPrompt";
 import { resetTaskLaunchInFlight } from "./taskLaunch";
 import { useInteractive } from "./interactive";
@@ -13,12 +13,16 @@ import { useSessions } from "./sessions";
 import { useTasks } from "./tasks";
 import { resetStores } from "../test/resetStores";
 import {
+  getTask,
+  listAgentDefinitionsForSpace,
+  listSkills,
   moveTask,
   sendPrompt,
   startTaskSession,
   taskNumbers,
   workflowAdvanceAdvice,
   workflowRunClose,
+  type AcpSessionUpdate,
   type AdvanceAdvice,
   type SessionInfo,
   type SkillInfo,
@@ -288,6 +292,53 @@ function lines(sessionId = "sess_new"): string[] {
   return (useSessions.getState().messages[sessionId] ?? []).map(
     (m) => ((m as { text?: string }).text ?? ""),
   );
+}
+
+/// ── THE OTHER CHAIN DOOR, so the two doors can be raced HERE and not only in
+/// `taskLaunch.claim.test.ts`.
+///
+/// The bug these helpers reach for is a TWO-DOOR bug: the claim (`consumeAdvanceAdvice`,
+/// rAF-deferred by `App.tsx`'s batcher) and the settle (`advanceWorkflowChainOnSettle`,
+/// deferred by nothing) both launch the same card for the same link. Pinning the trip at the
+/// claim alone would leave the consequence — a closed run, and therefore a step count and a
+/// cost ceiling that restart per link — asserted nowhere, because the consequence lives in
+/// THIS file's `finishLink`. So the settle door is driven by the real entry point below and
+/// the claim door by the real `consumeAdvanceAdvice`, both against the real
+/// `launchTaskSession`, which `./taskLaunch` is deliberately not mocked to replace.
+/** A promise plus its resolver, for parking the claim's first read at a chosen instant —
+ *  every mock in this file resolves immediately, so the window the settle has to arrive
+ *  inside is manufactured by hand rather than hoped for. */
+function deferred<T>(value: () => T): { promise: Promise<T>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<T>((r) => {
+    resolve = () => r(value());
+  });
+  return { promise, resolve };
+}
+
+/** A macrotask, to flush past a dispatch whose ordering microtasks cannot pin. */
+const macrotask = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** The catalog the CLAIM reads through the barrel mocks. `launchTaskSession` expands the
+ *  destination's `$implement` token against `catalogs.skills`, and `missingSkill` REFUSES a
+ *  launch whose Skill the catalog lacks — so a claim that is meant to succeed has to be
+ *  handed the Skill itself. */
+function claimCatalogs(): void {
+  vi.mocked(listSkills).mockResolvedValue([skill("implement")]);
+  vi.mocked(listAgentDefinitionsForSpace).mockResolvedValue([]);
+}
+
+/** A live `tool_call_update` carrying `next` at `rawOutput.details.advanceAdvice` — the
+ *  carrier `normalize.rs` ships, and the frame `consumeAdvanceAdvice` reads. */
+function claimFrame(next: AdvanceAdvice): AcpSessionUpdate {
+  const details = { advanceAdvice: next };
+  const content = [{ type: "text", text: "advanced" }];
+  return {
+    sessionUpdate: "tool_call_update",
+    toolCallId: "tc_1",
+    status: "completed",
+    rawOutput: { content, details },
+  } as AcpSessionUpdate;
 }
 
 beforeEach(() => {
@@ -1232,11 +1283,27 @@ describe("the auto-advance chain — a refused launch", () => {
     }
   });
 
-  it("closes with launch_refused when the launch answers no sessionId", async () => {
-    // The OTHER refusal, and the reason the outcome is READ and not merely caught:
-    // `launchTaskSession` answers `{ sessionId: null }` when its in-flight guard refuses a
-    // second launch of the same card. A guard trip is a RETURN, not a throw, so a
+  it("closes with launch_refused when NOTHING is launching the card (a genuine refusal)", async () => {
+    // THE OTHER REFUSAL, and the reason the outcome is READ and not merely caught:
+    // `launchTaskSession` answers `{ sessionId: null }` when its in-flight guard trips and
+    // NOBODY is registered behind the guard. A guard trip is a RETURN, not a throw, so a
     // `try`/`catch` alone would call this a success.
+    //
+    // ── WHAT THIS PIN USED TO SAY, and why the shape it kept is the true one.
+    // It used to read "when the launch answers no sessionId", on the premise that any
+    // `{ sessionId: null }` was a refusal. That premise is what this pin existed to catch
+    // for the OTHER door: a trip caused by the chain's OWN pending claim used to answer
+    // `null` too, and closing on it handed the next link a fresh run at `steps = 1` with
+    // `cost_usd` NULL — the step bound and the cost ceiling restarting per link, i.e. the
+    // spend bound failing open, beside a false "could not start a Session in Implement".
+    // `taskLaunch` now answers an other-door trip with the HOLDER'S OUTCOME, so a `null`
+    // reaching this arm means one of two things, and BOTH are a step that did not move the
+    // card: nobody is launching it, or the other door tried and launched nothing (its card
+    // read failed, its Skill was missing). Either way the close is right, so the
+    // assertions are unchanged and only the SHAPE THE CASE NAMES is corrected. The
+    // other-door case is pinned where it is actually decided —
+    // `taskLaunch.claim.test.ts`'s reservation block — and, at this level, in the case
+    // below: one launch, no sentence, and NO CLOSE.
     await advanceWorkflowChainOnSettle(
       settle({ launch: async () => ({ sessionId: null, note: null }) }),
     );
@@ -1253,6 +1320,52 @@ describe("the auto-advance chain — a refused launch", () => {
     const sentence = lines().find((t) => /launch_refused/.test(t)) ?? "";
     expect(sentence).toContain("not moved by this step");
     expect(sentence).not.toMatch(/is where it was/);
+  });
+
+  it("does NOT close when the claim holds the card: the settle inherits its launch", async () => {
+    // THE RUN STAYS OPEN, end to end through both real doors. The card's `mark_done` claim
+    // is mid-flight — parked on `getTask`, holding the card's key across three IPC reads —
+    // and the SETTLE arrives inside that window and asks for the same launch. Pre-fix that
+    // trip answered `{ sessionId: null }`, this file recorded `launch_refused`, and
+    // `workflowRunClose` CLOSED THE LIVE RUN; the next link's step verb then re-INSERTed at
+    // `steps = 1` with `cost_usd` NULL, so `max_steps` and the ceiling restarted per link.
+    //
+    // THE FIX IS UPSTREAM OF THIS FILE, and that is the point of pinning it here:
+    // `launchTaskSession`'s guard-trip arm awaits the pending claim and returns ITS outcome,
+    // so the chain continues with a real `sessionId`, the link is not refused, and the only
+    // thing `finishLink` is asked about is a launch that worked. `workflowRunStep` counts the
+    // step inside Rust, so the TypeScript-side fact that preserves the budget is exactly the
+    // one asserted below: NO `workflowRunClose` call. `advance: true` into a column that IS
+    // `auto`, so a correct chain has no reason to close at all — the chain continues, and the
+    // run it continues on is the run that already carries the step count and the cost.
+    useTasks.setState({ boardsBySpace: {} });
+    answerWith(advice({ destination: stage("implement", { skill: "implement", auto: true }) }));
+    claimCatalogs();
+    const cardRead = deferred(() => taskRow({ stageSlug: "research" }));
+    vi.mocked(getTask).mockImplementation(() => cardRead.promise);
+
+    // THE CLAIM DOOR takes the card's key and parks on its first read.
+    expect(consumeAdvanceAdvice("sess_claim", claimFrame(advice()))).toBe(true);
+
+    // THE SETTLE DOOR arrives inside the window. The chain's launch is the real
+    // `launchTaskSession`, and it trips on the claim's key.
+    await advanceWorkflowChainOnSettle(settle());
+    expect(startTaskSession).not.toHaveBeenCalled();
+
+    // The claim carries its launch out, and the chain is handed THAT Session.
+    cardRead.resolve();
+    await vi.waitFor(() => expect(startTaskSession).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(moveTask).toHaveBeenCalledWith(SPACE, "tsk_1", "implement"));
+    // Flushed past the dispatch and the settle edge the claim's own launch fires, so the
+    // assertions below read a settled chain rather than one still on the wire.
+    await macrotask();
+    // EXACTLY ONE launch for the link — the reservation's job, unchanged by the fix.
+    expect(startTaskSession).toHaveBeenCalledTimes(1);
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    // NO REFUSAL AND NO CLOSE: the run the next link steps is still the open one, so its
+    // `steps` and `cost_usd` carry over instead of restarting.
+    expect(lines().some((t) => /launch_refused/.test(t))).toBe(false);
+    expect(workflowRunClose).not.toHaveBeenCalled();
   });
 
   it("says nothing when the launch starts a Session", async () => {

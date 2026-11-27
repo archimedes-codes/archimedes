@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   consumeAdvanceAdvice,
+  hasPendingClaim,
   launchTaskSession,
   resetTaskLaunchInFlight,
   type TaskLaunchCatalogs,
@@ -558,11 +559,21 @@ describe("consumeAdvanceAdvice — the claim's launch reservation", () => {
     expect(sendPrompt).toHaveBeenCalledTimes(2);
   });
 
-  it("refuses the settle's launch when the claim reached the card first", async () => {
-    // THE OTHER INTERLEAVING, which the fix closes from the other side: the claim decides
-    // while the key is FREE, and the settle's launch starts while the claim is still reading.
-    // The claim's reservation is what refuses the SETTLE now, and `finishLink` reads that
-    // refusal as `launch_refused` rather than as a success.
+  it("hands the settle's launch the claim's outcome when the claim reached the card first", async () => {
+    // THE OTHER INTERLEAVING: the claim decides while the key is FREE, and the settle's
+    // launch starts while the claim is still reading. The claim's reservation is what trips
+    // the SETTLE's guard — and a trip caused by the OTHER CHAIN DOOR is NOT a refusal. The
+    // claim registers itself in the pending-claim map when it takes the key, so the tripped
+    // arm answers with the HOLDER'S OUTCOME instead of `NOTHING`: a real `sessionId`, one
+    // Session for the link, and nothing for `finishLink` to refuse and close.
+    //
+    // THE BUG THIS PINS (the mirror of the one the reservation closed): the reservation made
+    // the claim the HOLDER across three IPC round trips, and the settle was the party
+    // refused. `NOTHING` could not say "someone else is already launching this card, and
+    // here is what they did", so `finishLink` recorded `launch_refused` and CLOSED THE LIVE
+    // RUN — and `workflow_runs`' `None` branch re-INSERTs the next link at `steps = 1` with
+    // `cost_usd` NULL, which restarts `max_steps` and the cost ceiling per link. The spend
+    // bound fails open, beside a false "could not start a Session in Implement".
     //
     // `launchTaskSession` is called directly here because that IS what the settle edge
     // calls: `sendLaunchMessage` wires `launch: (next) => launchTaskSession(…)`, and the
@@ -572,21 +583,75 @@ describe("consumeAdvanceAdvice — the claim's launch reservation", () => {
     vi.mocked(getTask).mockImplementation(() => cardRead.promise);
 
     expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
-    // The settle's launch of the same card, dispatched inside the claim's read window.
-    const settled = await launchTaskSession(
+    // The settle's launch of the same card, dispatched inside the claim's read window. NOT
+    // awaited yet — it now waits on the holder, so awaiting it before releasing the claim
+    // would be a test that hangs rather than a test that fails.
+    const settled = launchTaskSession(
       SPACE,
       taskRow(),
       CLAIM_DESTINATION,
       CLAIM_CATALOGS(),
     );
-    expect(settled.sessionId).toBeNull();
+    // It did not launch, and it did not refuse: it is waiting for the claim.
     expect(startTaskSession).not.toHaveBeenCalled();
 
-    // And the claim still carries its own launch out — a reservation is not a refusal.
+    // The claim carries its own launch out, and the settle is handed THAT outcome.
     cardRead.resolve();
     await vi.waitFor(() => expect(startTaskSession).toHaveBeenCalledTimes(1));
+    expect((await settled).sessionId).toBe("sess_new");
+    // EXACTLY ONE launch for the link — the whole point of the reservation, preserved. The
+    // settle awaits the claim's Session rather than starting its own.
     expect(moveTask).toHaveBeenCalledTimes(1);
     expect(moveTask).toHaveBeenCalledWith(SPACE, "tsk_1", "implement");
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not wait on the holder's TURN, only on its outcome", async () => {
+    // THE DEADLOCK CHECK for the await Option A adds. `finishLink` awaits the launch's
+    // OUTCOME and never its turn, and the header of both doors says why: `sendPrompt`
+    // resolves on `agent_settled`, the merged `research` Skill ends on an `ask` gate, and
+    // `AskQuestionCard` has no renderer outside `ChatStream`. Awaiting a promise that
+    // awaits three IPC reads is safe; awaiting one that awaits a TURN is the wedge. So the
+    // claim's `sendPrompt` is parked FOREVER here, and the racing launch still resolves —
+    // because `startAndSendLinked` resolves the launch at the DISPATCH and `void`s the turn.
+    claimCatalogs();
+    vi.mocked(sendPrompt).mockImplementation(() => new Promise<StopReason>(() => {}));
+    const cardRead = deferred(() => taskRow());
+    vi.mocked(getTask).mockImplementation(() => cardRead.promise);
+
+    expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
+    const settled = launchTaskSession(
+      SPACE,
+      taskRow(),
+      CLAIM_DESTINATION,
+      CLAIM_CATALOGS(),
+    );
+    cardRead.resolve();
+    // The turn is parked and will never settle; the outcome is nonetheless delivered.
+    await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
+    expect((await settled).sessionId).toBe("sess_new");
+  });
+
+  it("hands the racing launch a REFUSAL when the claim launched nothing", async () => {
+    // The map entry carries the holder's OUTCOME, not a blanket success. A claim whose
+    // reads failed started nothing, and a step that did not move the card is exactly what
+    // `finishLink` must still record as `launch_refused`. A fix that answered "someone else
+    // has it" with a fabricated `sessionId` would pass the case above and lie here.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      vi.mocked(getTask).mockRejectedValue({ kind: "command", message: "get_task failed" });
+      expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
+      const raced = await launchTaskSession(
+        SPACE,
+        taskRow(),
+        CLAIM_DESTINATION,
+        CLAIM_CATALOGS(),
+      );
+      expect(raced.sessionId).toBeNull();
+      expect(startTaskSession).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("takes the reservation with no await between the decision and the key", async () => {
@@ -609,32 +674,147 @@ describe("consumeAdvanceAdvice — the claim's launch reservation", () => {
     // Comments are stripped by the scanner, so this says the CODE holds no await, not that
     // the file says so in prose.
     expect(source).not.toBe("");
+
+    // ── AND THE PENDING-CLAIM REGISTRY SITS IN THAT SAME SYNCHRONOUS BLOCK.
+    //
+    // The other chain door answers a guard trip by awaiting the holder's outcome, which
+    // only works if it can FIND the holder. A `pendingClaims.set` that landed a microtask
+    // later — e.g. inside `carryOutClaim` — would be invisible to a settle that trips the
+    // guard in the gap, and the gap is exactly the window this whole file is about: the
+    // answer would fall back to a refusal and the run would close. So the insert is pinned
+    // POSITIONALLY rather than by a timing test that could pass by luck: after the `add`,
+    // and with nothing between the two that can suspend.
+    const registered = source.indexOf("pendingClaims.set(taskId");
+    expect(registered).toBeGreaterThan(taken);
+    expect(source.slice(taken, registered)).not.toMatch(/\bawait\b/);
+    expect(source.slice(taken, registered)).not.toMatch(/\.then\(/);
+    // The registration is still inside the function that decides, not deferred into the
+    // async half — `carryOutClaim`'s own body may await all it likes.
+    expect(registered).toBeLessThan(source.length);
   });
 
-  it("refuses a launch of the card the instant it decides, before any read has run", async () => {
+  it("removes the pending-claim entry on every arm, including a successful claim", async () => {
+    // THE SECOND LEAK, and the one the reservation's own release does NOT cover. The
+    // `inFlight` key is released on every arm by `carryOutClaim`'s `finally`; the
+    // pending-claim entry is SEPARATE state, and a stale entry outlives a released key. It
+    // is a module `Map`, so it survives a component unmount and grows one entry per card
+    // that ever claimed for the life of the app — and a stale entry is what a later guard
+    // trip would read as "the other door owns this card", answering a dead claim's outcome
+    // for a launch that is nothing to do with it. The fix's own new state therefore gets the
+    // same per-arm net the reservation's leak pins demand, and the same test seam
+    // (`resetTaskLaunchInFlight` is the module's documented seam for exactly this reason:
+    // `src/test/resetStores.ts` cannot reach module scope).
+    //
+    // EVERY arm is walked, and the arms are the ones the existing `inFlight` pins walk: a
+    // `getTask` rejection, a card the database does not have, a catalog read that fails, a
+    // launch that refuses, and a SUCCESS — success being the arm where the entry is handed
+    // to `launchTaskSession` rather than dropped, and therefore the arm most likely to be
+    // forgotten.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      claimCatalogs();
+      // Arm 1: `getTask` rejects.
+      vi.mocked(getTask).mockRejectedValue({ kind: "command", message: "get_task failed" });
+      expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
+      await vi.waitFor(() => expect(consoleError).toHaveBeenCalled());
+      expect(hasPendingClaim("tsk_1")).toBe(false);
+
+      // Arm 2: `getTask` answers `null` — the card is gone.
+      consoleError.mockClear();
+      vi.mocked(getTask).mockResolvedValue(null);
+      expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
+      await vi.waitFor(() => expect(consoleError).toHaveBeenCalled());
+      expect(hasPendingClaim("tsk_1")).toBe(false);
+
+      // Arm 3: a catalog read rejects.
+      consoleError.mockClear();
+      vi.mocked(getTask).mockResolvedValue(taskRow());
+      vi.mocked(listSkills).mockRejectedValue({ kind: "command", message: "skill scan failed" });
+      expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
+      await vi.waitFor(() => expect(consoleError).toHaveBeenCalled());
+      expect(hasPendingClaim("tsk_1")).toBe(false);
+
+      // Arm 4: the launch itself fails.
+      consoleError.mockClear();
+      vi.mocked(listSkills).mockResolvedValue([skill("implement")]);
+      vi.mocked(startTaskSession).mockRejectedValue({
+        kind: "command",
+        message: "start_task_session failed",
+      });
+      expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
+      await vi.waitFor(() =>
+        expect(consoleError).toHaveBeenCalledWith(
+          expect.stringContaining("could not be carried out"),
+          expect.anything(),
+        ),
+      );
+      expect(hasPendingClaim("tsk_1")).toBe(false);
+
+      // Arm 5: SUCCESS — the entry is handed over, not leaked.
+      vi.mocked(startTaskSession).mockResolvedValue(info());
+      expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
+      await vi.waitFor(() => expect(startTaskSession).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(hasPendingClaim("tsk_1")).toBe(false));
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("registers the pending claim SYNCHRONOUSLY, at the instant the key is taken", async () => {
+    // THE BEHAVIOURAL HALF of the source-scan pin above. A scan proves the `set` sits in the
+    // right BLOCK; this proves the ENTRY IS VISIBLE BEFORE THE FIRST AWAIT RETURNS, which is
+    // the only property the other chain door depends on when it trips the guard. A `set`
+    // that ran a microtask late would satisfy the positional scan (it still sits between the
+    // `add` and the dispatch) and still leave the window open, because the window this whole
+    // file guards is one macrotask wide at its narrowest.
+    claimCatalogs();
+    const cardRead = deferred(() => taskRow());
+    vi.mocked(getTask).mockImplementation(() => cardRead.promise);
+
+    expect(hasPendingClaim("tsk_1")).toBe(false);
+    expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
+    // Same synchronous turn: no `await` between the two lines, so nothing could have run.
+    expect(hasPendingClaim("tsk_1")).toBe(true);
+
+    cardRead.resolve();
+    await vi.waitFor(() => expect(startTaskSession).toHaveBeenCalledTimes(1));
+  });
+
+  it("binds a launch of the card to the claim the instant it decides, before any read has run", async () => {
     // THE SAME FACT BEHAVIOURALLY, because a source scan alone would pass on a function that
     // takes the key in the wrong place. The claim is parked on `getTask`; a launch of the
-    // SAME card dispatched in the same synchronous turn is refused outright. Without the
-    // synchronous reservation the key is still free at that instant, this launch wins, and
-    // the assertion below is a `sessionId` rather than `null`.
+    // SAME card dispatched in the same synchronous turn does not start a Session of its own.
+    // Without the synchronous reservation the key is still free at that instant, this launch
+    // wins, and the assertion below is a SECOND `startTaskSession` rather than none.
+    //
+    // WHAT THIS CASE USED TO ASSERT, and why it no longer can: `raced.sessionId` was
+    // expected to be `null`. That `null` was the bug — the trip could not tell the other
+    // chain door from a real refusal, so it answered "nothing was launched", and
+    // `finishLink` closed the run on the strength of it. The reservation's job was always
+    // "not TWO Sessions", and it still is; what changed is that the late arrival is handed
+    // the holder's outcome instead of a refusal. So the case is RESTATEd, not dropped: no
+    // second Session starts, and the racing launch ends up holding the CLAIM's Session.
     claimCatalogs();
     const cardRead = deferred(() => taskRow());
     vi.mocked(getTask).mockImplementation(() => cardRead.promise);
 
     expect(consumeAdvanceAdvice("sess_claim", claimFrame(advancing()))).toBe(true);
     // NO `await` on the line above and this one: same turn, same tick, no interleaving.
-    const raced = await launchTaskSession(
+    const raced = launchTaskSession(
       SPACE,
       taskRow(),
       CLAIM_DESTINATION,
       CLAIM_CATALOGS(),
     );
-    expect(raced.sessionId).toBeNull();
+    // Nothing has launched and nothing has been refused — it is bound to the claim.
     expect(startTaskSession).not.toHaveBeenCalled();
 
     // Release the claim so the case does not leave the card's key behind for the reset.
     cardRead.resolve();
     await vi.waitFor(() => expect(startTaskSession).toHaveBeenCalledTimes(1));
+    expect((await raced).sessionId).toBe("sess_new");
+    // ONE Session for one link — the reservation's actual job.
+    expect(startTaskSession).toHaveBeenCalledTimes(1);
   });
 
   it("releases the reservation when a READ fails, so the card is launchable again", async () => {

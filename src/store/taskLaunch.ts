@@ -127,6 +127,12 @@ export interface TaskLaunchCatalogs {
  *  can tell "opened" from "refused"; the sidebar row and the visible transcript are
  *  already handled by `addSession`, which selects.
  *
+ *  A `null` therefore means "THIS call started nothing", which is not always "nothing
+ *  was started": when the guard trips on the OTHER chain door's reservation the answer is
+ *  that door's outcome instead — see [`pendingClaims`] and the trip arm of
+ *  [`launchTaskSession`], because a caller that reads `null` as a refusal will close a run
+ *  another launch is standing on.
+ *
  *  `note` is a WARNING and never a failure — the Session started, the card exists.
  *  It is the "your Research column is gone" case, which is this repo's documented
  *  silent-green shape made visible: a configured effect that did not fire. */
@@ -188,9 +194,64 @@ export const SAVE_ONLY: TaskLaunchDestination = {
  *  the test seam, because `src/test/resetStores.ts` cannot reach a module `let`. */
 const inFlight = new Set<string>();
 
-/** Test-only: clear the in-flight guard (a module `Set` is not store state). */
+/** A card whose launch a CLAIM owns: the reservation `consumeAdvanceAdvice` took, plus
+ *  what that claim ends up doing.
+ *
+ *  The `settle` half is held by nobody but the claim, and it is resolved exactly once, in
+ *  `carryOutClaim`'s `finally` — the same statement that releases the key. */
+interface PendingClaim {
+  /** What the claim did. `NOTHING` on every arm that launched nothing (a card read that
+   *  failed, a card that is gone, a catalog read that fails, a launch that throws), and the
+   *  real outcome on the arm that launched. A promise, never a turn — see the trip arm of
+   *  [`launchTaskSession`] for why that distinction is the whole safety argument. */
+  readonly outcome: Promise<TaskLaunchOutcome>;
+  readonly settle: (outcome: TaskLaunchOutcome) => void;
+}
+
+/** The claims currently holding a card's key, keyed by the card.
+ *
+ *  WHY A MAP BESIDES THE `Set`. `inFlight` answers "is this card being launched?"; it cannot
+ *  answer "and what did the launch that is holding it end up doing?", and that second
+ *  question is the one the OTHER chain door has to ask before it decides whether a guard trip
+ *  is news or a refusal. The two doors — `consumeAdvanceAdvice` (the model's own `mark_done`,
+ *  rAF-deferred by `App.tsx`'s batcher) and the settle edge (`advanceWorkflowChainOnSettle`,
+ *  deferred by NOTHING) — launch the same card for the same link, and since the claim began
+ *  taking its reservation synchronously the claim can be the HOLDER across three IPC round
+ *  trips while the settle trips the guard inside that window. Answering that trip with
+ *  `NOTHING` said "nothing was started", which `finishLink` recorded as `launch_refused` and
+ *  answered by CLOSING THE LIVE RUN: `workflow_runs`' no-open-run branch re-INSERTs the next
+ *  link at `steps = 1` with `cost_usd` NULL, so `max_steps` and the cost ceiling restart per
+ *  link — the spend bound failing open — beside a false "could not start a Session in X" in
+ *  the transcript. With the holder registered, the two doors are one operation: the trip
+ *  awaits the outcome and continues on the Session the other door started.
+ *
+ *  A module `Map` for the reason [`inFlight`] is one: it has to survive a component unmount,
+ *  and `src/test/resetStores.ts` cannot reach module scope — hence
+ *  [`resetTaskLaunchInFlight`]. */
+const pendingClaims = new Map<string, PendingClaim>();
+
+/** A claim's registry entry: a promise plus the resolver only the claim holds. */
+function newPendingClaim(): PendingClaim {
+  let settle!: (outcome: TaskLaunchOutcome) => void;
+  const outcome = new Promise<TaskLaunchOutcome>((resolve) => {
+    settle = resolve;
+  });
+  return { outcome, settle };
+}
+
+/** Is a CLAIM holding this card's key right now? Test-only, for the same reason
+ *  [`resetTaskLaunchInFlight`] exists: a module `Map` is not store state, and the property
+ *  that matters — the entry exists BEFORE the claim's first `await` returns, and is gone on
+ *  every arm after — cannot be observed from the outcome of a launch. */
+export function hasPendingClaim(taskId: string): boolean {
+  return pendingClaims.has(taskId);
+}
+
+/** Test-only: clear the in-flight guard and the pending-claim registry (a module `Set` and
+ *  `Map` are not store state). */
 export function resetTaskLaunchInFlight(): void {
   inFlight.clear();
+  pendingClaims.clear();
 }
 
 /** The destination column this Space actually has, and what to write.
@@ -464,7 +525,40 @@ export async function launchTaskSession(
   if (refusal !== null) throw refusal;
   // Guarded on the CARD id and not per-destination: launching two buttons against one
   // card at once is the same double-Session outcome the guard exists for.
-  if (inFlight.has(task.id)) return NOTHING;
+  //
+  // ── THE GUARD TRIP IS NOT ALWAYS A REFUSAL, and telling the two apart is what this arm
+  // does. THE INVARIANT: a guard trip caused by the OTHER CHAIN DOOR is not a refusal, and
+  // must never close the run.
+  //
+  // Two doors launch the same card for the same link — the model's own `mark_done` claim,
+  // and the settle edge — and the claim holds this key across three IPC reads. When the
+  // settle trips on that key, `NOTHING` used to be the answer, and `NOTHING` asserts
+  // "nothing was started". `finishLink` reads `{ sessionId: null }` as `launch_refused` and
+  // CLOSES the run, which hands the next link a fresh `steps = 1` and a NULL `cost_usd` —
+  // `max_steps` and the cost ceiling restarting per link, the spend bound failing open —
+  // plus a transcript line saying a Session could not be started in a column where one had
+  // just started. So the arm now asks who holds the key: a registered claim answers with
+  // its own outcome, and the chain continues on the Session the claim started.
+  //
+  // THE AWAIT IS SAFE, and the safety is specific. It waits on the claim's OUTCOME, which
+  // `carryOutClaim` settles in its `finally` — after its reads and its launch, never after
+  // its TURN (`startAndSendLinked` dispatches the first message with a `void` of its own and
+  // releases the launch there). That is the same boundary `finishLink` itself respects: the
+  // `ask`-gate deadlock both headers record is a TURN that never settles under a view with
+  // no renderer for its gate, and three IPC reads plus a dispatch cannot produce one.
+  //
+  // A trip with NO claim behind it keeps the old answer, because there the old answer is
+  // true: nothing else is launching this card and nothing was started. That is a genuine
+  // refusal — a double click, or a claim that already finished — and `finishLink` still
+  // refuses it and still closes, so the run does not leak into the next chain.
+  if (inFlight.has(task.id)) {
+    const holder = pendingClaims.get(task.id);
+    if (holder === undefined) return NOTHING;
+    // The other door owns this card. Hand back what it does — including its `null`, because
+    // a claim whose reads failed genuinely launched nothing and that IS a refusal this side
+    // must still record.
+    return await holder.outcome;
+  }
   inFlight.add(task.id);
   // ONE-SHOT, and the one-shot is the point. The guard is released at the dispatch (the
   // callback below) and this `finally` is the safety net for every arm that returns before
@@ -634,8 +728,10 @@ export async function launchTaskSession(
  * by the settle path or by a click) — and the caller does not care which, because all five
  * mean "nothing for you to do". A held reservation is the one arm that is not merely silent
  * but informative, and it is still not the caller's to report: the launch that holds the key
- * owns the outcome, and `workflowChain.finishLink` records the refused one as
- * `launch_refused`.
+ * owns the outcome. THE MIRROR OF THAT SENTENCE IS THE LOAD-BEARING HALF — when THIS path is
+ * the holder, the key it holds is read by the settle's launch, and what the settle gets must
+ * be that outcome rather than a refusal, or the chain closes a run its own claim is standing
+ * on. That is what [`pendingClaims`] carries; see the trip arm of [`launchTaskSession`].
  *
  * `sessionId` is the Session the FRAME arrived on, which the batch item already carries.
  * It is not derived from the advice: the advice names the card it decided for, and the
@@ -668,17 +764,31 @@ export function consumeAdvanceAdvice(
   // It is the SAME key `launchTaskSession` guards on, and it is what makes the claim and
   // the settle mutually exclusive: the settle path funnels through that executor too, so
   // whichever of the two gets here first holds the card's key across its own launch, and
-  // the other is refused. Deferred by one microtask this would be worthless, because the
-  // asymmetry it defends against is between a rAF-deferred claim and an UNDEFERRED settle
-  // — see the header. And it cannot be replaced by a check of `advice.alreadyLaunched`:
-  // the claim's own advice carries `alreadyLaunched: false` by construction (the dedupe
-  // matches a `task_sessions` row, and this launch has not written one yet), so a gate
-  // there would be a gate that never closes.
+  // the other does not launch. Deferred by one microtask this would be worthless, because
+  // the asymmetry it defends against is between a rAF-deferred claim and an UNDEFERRED
+  // settle — see the header. And it cannot be replaced by a check of
+  // `advice.alreadyLaunched`: the claim's own advice carries `alreadyLaunched: false` by
+  // construction (the dedupe matches a `task_sessions` row, and this launch has not written
+  // one yet), so a gate there would be a gate that never closes.
   //
-  // A trip is a RETURN of `false` and not an error: an in-flight launch of this card IS
-  // the launch this advice wanted, and `finishLink` reports the refused one.
+  // A trip is a RETURN of `false` and not an error: an in-flight launch of this card IS the
+  // launch this advice wanted. WHAT HOLDING THE KEY COSTS, and it is the reason the registry
+  // below exists at all: this reservation made the claim the HOLDER across three IPC reads,
+  // and the party turned away inside that window is the settle — whose refusal is not a
+  // transcript line but a CLOSED RUN. So being the holder obliges the claim to answer for
+  // what it did.
   if (inFlight.has(taskId)) return false;
   inFlight.add(taskId);
+  // THE REGISTRY, in this same synchronous block and on the same tick as the `add` above —
+  // pinned positionally by a source scan in `taskLaunch.claim.test.ts`, because the entry is
+  // only worth having if the other chain door can find it while the key is held. An entry
+  // written a microtask later would be invisible to a settle that trips the guard inside the
+  // window, and the window is exactly what this is for. The entry is what lets
+  // `launchTaskSession`'s trip arm answer "here is what the holder did" instead of `NOTHING`,
+  // which is what stops the settle from refusing a launch that succeeded and closing a live
+  // run — see [`pendingClaims`].
+  const claim = newPendingClaim();
+  pendingClaims.set(taskId, claim);
   // OWNERSHIP TRANSFERS TO `carryOutClaim` HERE, and that function's `finally` is its
   // one-shot net for every arm it can exit through — a `getTask` rejection, a card that is
   // gone, a catalog read that fails, a launch that refuses, and a launch that fails with
@@ -693,7 +803,7 @@ export function consumeAdvanceAdvice(
   // reporting through the same mechanism that just failed would be a rejection raised
   // from inside the handler for it, which is an unhandled rejection wearing a `.catch`.
   // The belt's job is that the failure is LOUD somewhere rather than nowhere.
-  void carryOutClaim(sessionId, spacePath, taskId, destination).catch((err: unknown) => {
+  void carryOutClaim(sessionId, spacePath, taskId, destination, claim).catch((err: unknown) => {
     console.error(
       `The advance advice for ${taskId} failed, and the failure could not be recorded ` +
         `in the Session it was claimed in:`,
@@ -711,13 +821,21 @@ export function consumeAdvanceAdvice(
  *  this function that wrapped only the launch lost their rejections entirely: nothing
  *  upstream awaits this promise, so the launch was gone with no console line and no
  *  transcript line. A read this path cannot make is a launch it cannot make, and the
- *  claimant's Session is where that fact belongs — the board may not be mounted. */
+ *  claimant's Session is where that fact belongs — the board may not be mounted.
+ *
+ *  It also OWNS THE REGISTRY ENTRY the guard above registered: the `finally` below settles
+ *  it with whatever this claim did and removes it, on every arm. */
 async function carryOutClaim(
   sessionId: string,
   spacePath: string,
   taskId: string,
   destination: TaskLaunchDestination,
+  claim: PendingClaim,
 ): Promise<void> {
+  // What the other chain door is waiting on. Every arm that did not launch leaves this at
+  // `NOTHING` — an honest `null`, because nothing WAS started and a step that started
+  // nothing is a refusal `finishLink` must still record — and the launch arm replaces it.
+  let outcome: TaskLaunchOutcome = NOTHING;
   // THE ONE-SHOT NET for the reservation `consumeAdvanceAdvice` handed to this function,
   // and the one-shot is the point (the same shape `launchTaskSession` uses for its own
   // guard, for the same reason). Every arm that exits this function passes through the
@@ -758,16 +876,26 @@ async function carryOutClaim(
     // call sit in the same synchronous turn, and `launchTaskSession` takes the card's key
     // at the top of its own body (`inFlight.add(task.id)`), so no other launch can slip
     // between the release and the re-take. It has to be a hand-off rather than a hold
-    // because the executor guards on the SAME key the claim reserved — walking into it
-    // while still holding that key would have the claim refuse its OWN launch. Releasing
-    // first is also leak-proof in the arm where the executor never reaches its `add` (a
-    // `missingSkill` refusal throws above it): a released key is free for the next launch,
-    // never stranded, and the one-shot below makes this function's `finally` a no-op for a
-    // key it no longer owns — the exact mistake `launchTaskSession`'s own one-shot exists
-    // to prevent.
+    // because the executor guards on the SAME key the claim reserved.
+    //
+    // SINCE THE REGISTRY LANDED, THIS RELEASE IS WHAT KEEPS THE PATH LIVE RATHER THAN MERELY
+    // CORRECT. Walking into `launchTaskSession` while still holding the key would no longer
+    // be a self-refusal — the trip arm would find THIS claim in `pendingClaims` and await
+    // `claim.outcome`, which is settled in the `finally` below, which that await would be
+    // standing in front of. A permanent deadlock, on the hot path, for every card that ever
+    // claimed. Do not "simplify" the hand-off into a hold.
+    //
+    // Releasing first is also leak-proof in the arm where the executor never reaches its
+    // `add` (a `missingSkill` refusal throws above it): a released key is free for the next
+    // launch, never stranded, and the one-shot below makes this function's `finally` a no-op
+    // for a key it no longer owns — the exact mistake `launchTaskSession`'s own one-shot
+    // exists to prevent.
     releaseClaimGuard();
     try {
-      await launchTaskSession(spacePath, task, destination, { skills, agents });
+      // THE OUTCOME IS CAPTURED, and it is what the other chain door gets. Awaiting the
+      // launch (not its turn — `startAndSendLinked` resolves at the dispatch) is what makes
+      // the hand-back a fact rather than a guess.
+      outcome = await launchTaskSession(spacePath, task, destination, { skills, agents });
     } catch (err) {
       console.error(`The advance advice could not be carried out for ${taskId}:`, err);
       // THE REPORTER IS GUARDED, and the guard is what keeps the diagnosis truthful
@@ -831,6 +959,19 @@ async function carryOutClaim(
     // the belt's own throw is no exception: a `finally` runs on the throwing path too, which
     // is why the release is here and not at the end of the `try`.
     releaseClaimGuard();
+    // THE REGISTRY'S OWN NET, and it is a SEPARATE piece of state, so it needs its own
+    // statement: `inFlight.delete` does not touch it, and a stale entry outlives a released
+    // key. Settle first, then remove — a door already waiting on this claim must be woken
+    // with the answer rather than left parked, and the removal is what stops a LATER trip
+    // from reading a dead claim as "the other door owns this card" and answering its stale
+    // outcome for a launch that has nothing to do with it.
+    //
+    // The removal is unconditional rather than one-shot like the guard's, because this entry
+    // has no hand-off: the launch the claim dispatches takes the `inFlight` key, never the
+    // registry's, and by the time this `finally` runs that launch has released its key at
+    // its own dispatch. So the entry is always this claim's to drop.
+    claim.settle(outcome);
+    pendingClaims.delete(taskId);
   }
 }
 

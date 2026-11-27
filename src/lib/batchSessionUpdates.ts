@@ -72,6 +72,13 @@ export interface SessionUpdateBatchItem {
  * direction is the card's key in `store/taskLaunch.ts`'s `inFlight` set, taken by
  * `consumeAdvanceAdvice` synchronously; this module's scheduling is what makes the race
  * possible, so the rule belongs to the module that closes it.
+ *
+ * AND THE GUARD CUTS BOTH WAYS, which is the half this paragraph used to miss: a
+ * SYNCHRONOUS reservation makes the claim the HOLDER across its own IPC reads, and the party
+ * turned away inside that window is the settle — whose answer used to be a refusal, and whose
+ * refusal closes the chain's run. So the holder registers itself in that module's
+ * `pendingClaims` map on the same tick it takes the key, and the turned-away launch is handed
+ * the holder's outcome. Neither door may treat the other's reservation as a refusal.
  */
 export function createBatchedSessionUpdate(
   apply: (items: SessionUpdateBatchItem[]) => void,
